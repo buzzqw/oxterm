@@ -2,9 +2,7 @@ name: Build terust executable
 
 on:
   push:
-    branches: [main, master]
   pull_request:
-    branches: [main, master]
   workflow_dispatch:
 
 permissions:
@@ -17,7 +15,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

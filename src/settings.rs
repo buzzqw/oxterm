@@ -473,7 +473,16 @@ impl Settings {
                     return;
                 }
                 let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
-                if let Err(e) = fs::rename(&tmp, &config_file()) {
+                let target = config_file();
+                if target.exists() {
+                    let backup = target.with_extension("json.bak");
+                    if let Err(e) = fs::copy(&target, &backup) {
+                        LOGGER.warning(&format!("settings_backup_failed error={}", e));
+                    } else {
+                        let _ = fs::set_permissions(&backup, fs::Permissions::from_mode(0o600));
+                    }
+                }
+                if let Err(e) = fs::rename(&tmp, &target) {
                     LOGGER.error(&format!("settings_save_failed error={}", e));
                 }
             }
@@ -741,6 +750,20 @@ mod tests {
         assert_eq!(light.get("foreground"), Some(&"#2e3436"));
         assert_eq!(light.get("background"), Some(&"#ffffff"));
         assert_eq!(color_palettes().get("Light").unwrap().len(), 16);
+    }
+
+    #[test]
+    fn validates_settings_limits_and_colors() {
+        assert!(Settings::valid_value("scrollback_lines", &json!(1_000_000)));
+        assert!(Settings::valid_value("scrollback_lines", &json!(-1)));
+        assert!(!Settings::valid_value(
+            "scrollback_lines",
+            &json!(1_000_001)
+        ));
+        assert!(Settings::valid_value("opacity", &json!(0.1)));
+        assert!(!Settings::valid_value("opacity", &json!(0.09)));
+        assert!(Settings::valid_value("foreground_color", &json!("#abcdef")));
+        assert!(!Settings::valid_value("foreground_color", &json!("#abc")));
     }
 }
 

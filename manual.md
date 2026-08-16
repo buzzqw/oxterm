@@ -310,13 +310,15 @@ The integration supports Bash and Zsh. Use `Ctrl+Shift+Up` and
 
 ```text
 ~/.config/tpgk/settings.json
+~/.config/tpgk/settings.json.bak
 ~/.config/tpgk/history.db
 ~/.config/tpgk/sessions/
 ~/.config/tpgk/profiles/
 ```
 
-The directory is shared with TPGK by design. Backup it before manually editing
-settings or migrating between versions.
+The directory is shared with TPGK by design. terust keeps the previous valid
+settings file as `settings.json.bak` when replacing Preferences. Back up the
+whole directory before manually editing settings or migrating between versions.
 
 ## Troubleshooting
 

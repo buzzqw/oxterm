@@ -625,9 +625,7 @@ impl TerminalBox {
         }
         vte.set_allow_bold(s.get_bool("allow_bold_text"));
         let encoding = s.get_str("encoding");
-        if encoding.to_uppercase() != "UTF-8" {
-            let _ = vte.set_encoding(Some(&encoding));
-        }
+        let _ = vte.set_encoding(Some(&encoding));
         *self.imp().cached_backspace_binding.borrow_mut() = s.get_str("backspace_binding");
         *self.imp().cached_delete_binding.borrow_mut() = s.get_str("delete_binding");
         *self.imp().cached_broadcast_input.borrow_mut() = s.get_bool("broadcast_input");
@@ -952,9 +950,18 @@ impl TerminalBox {
     fn write_osc133_script(&self) {
         let dir = settings::config_dir();
         let path = dir.join("osc133.sh");
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(&path, OSC133_SCRIPT);
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            LOGGER.error(&format!("osc133_dir_failed error={}", e));
+            return;
+        }
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        if let Err(e) = std::fs::write(&path, OSC133_SCRIPT) {
+            LOGGER.error(&format!("osc133_write_failed error={}", e));
+            return;
+        }
+        if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
+            LOGGER.error(&format!("osc133_permissions_failed error={}", e));
+        }
     }
 
     pub fn terminate(&self) {

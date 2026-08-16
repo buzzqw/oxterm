@@ -152,6 +152,7 @@ terust intentionally uses the TPGK data directory:
 
 ```text
 ~/.config/tpgk/settings.json   Preferences and provider configuration
+~/.config/tpgk/settings.json.bak Previous valid Preferences snapshot
 ~/.config/tpgk/history.db      SQLite command history
 ~/.config/tpgk/sessions/       Saved sessions
 ~/.config/tpgk/profiles/       Named profiles
@@ -198,7 +199,8 @@ cargo build --release
 ```
 
 The GitHub Actions workflows run the same checks and build an x86_64 release
-artifact on every push, pull request, and manual workflow dispatch.
+artifact on every commit push, pull request, and manual workflow dispatch on any
+branch. Version tags also trigger AppImage and SHA256 checksum generation.
 
 Release automation is available through:
 
