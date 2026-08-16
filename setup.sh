@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREFIX="${PREFIX:-${HOME}/.local}"
 
+if git -C "${ROOT_DIR}" rev-parse --git-dir >/dev/null 2>&1; then
+    git -C "${ROOT_DIR}" config core.hooksPath .githooks
+fi
+
 if ! command -v cargo >/dev/null 2>&1; then
     printf '%s\n' "terust: cargo is required (install Rust from https://rustup.rs/)" >&2
     exit 1

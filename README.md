@@ -67,6 +67,11 @@ binary:
 ./terust.sh
 ```
 
+The repository includes a local `post-commit` hook. Configure it once with
+`./setup.sh` or `git config core.hooksPath .githooks`; after each commit it
+builds `terust-linux-x86-64` in the project root. The generated file is ignored
+by Git.
+
 Install the binary and desktop entry under `~/.local`:
 
 ```bash

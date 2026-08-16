@@ -40,12 +40,13 @@ jobs:
       - name: Package executable
         run: |
           mkdir -p dist
-          install -m 0755 target/release/terust dist/terust-linux-x86_64
-          tar -C dist -czf dist/terust-linux-x86_64.tar.gz terust-linux-x86_64
+          install -m 0755 target/release/terust terust-linux-x86-64
+          install -m 0755 terust-linux-x86-64 dist/terust-linux-x86-64
+          tar -C dist -czf dist/terust-linux-x86-64.tar.gz terust-linux-x86-64
 
       - name: Upload executable artifact
         uses: actions/upload-artifact@v4
         with:
-          name: terust-linux-x86_64
-          path: dist/terust-linux-x86_64.tar.gz
+          name: terust-linux-x86-64
+          path: dist/terust-linux-x86-64.tar.gz
           if-no-files-found: error

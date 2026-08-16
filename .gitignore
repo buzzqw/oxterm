@@ -1,5 +1,6 @@
 # Rust build output
 /target/
+/terust-linux-x86-64
 
 # Local release artifacts
 /dist/
