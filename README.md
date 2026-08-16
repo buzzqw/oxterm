@@ -7,9 +7,8 @@
 [![License](https://img.shields.io/badge/License-EUPL%201.2-blue)](LICENSE)
 
 **terust** is a fast, native Linux terminal emulator written in Rust with GTK3
-and VTE. It is the Rust port of [TPGK](https://github.com/buzzqw/TPGK), with
-the same configuration and history format so existing TPGK users can migrate
-without losing their data.
+and VTE. It preserves the existing configuration and history format so users
+can migrate without losing their data.
 
 The project combines a full terminal emulator with tabs, split panes, command
 history, notes, shell integration, profiles, sessions, and optional AI chat.
@@ -148,7 +147,7 @@ completion.
 
 ## Configuration and Data
 
-terust intentionally uses the TPGK data directory:
+terust intentionally uses the existing shared data directory:
 
 ```text
 ~/.config/tpgk/settings.json   Preferences and provider configuration

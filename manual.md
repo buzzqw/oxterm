@@ -316,9 +316,10 @@ The integration supports Bash and Zsh. Use `Ctrl+Shift+Up` and
 ~/.config/tpgk/profiles/
 ```
 
-The directory is shared with TPGK by design. terust keeps the previous valid
-settings file as `settings.json.bak` when replacing Preferences. Back up the
-whole directory before manually editing settings or migrating between versions.
+The directory is shared with the original application by design. terust keeps
+the previous valid settings file as `settings.json.bak` when replacing
+Preferences. Back up the whole directory before manually editing settings or
+migrating between versions.
 
 ## Troubleshooting
 
