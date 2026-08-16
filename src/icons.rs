@@ -1,5 +1,5 @@
-use gtk::prelude::*;
 use gtk::gdk;
+use gtk::prelude::*;
 
 pub const ICON_SIZE: i32 = 20;
 

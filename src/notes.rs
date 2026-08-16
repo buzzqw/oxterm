@@ -26,8 +26,7 @@ impl NotesManager {
         } else {
             expand_user(&notes_dir_raw)
         };
-        let notes_dir_abs = std::fs::canonicalize(&notes_dir)
-            .unwrap_or_else(|_| notes_dir.clone());
+        let notes_dir_abs = std::fs::canonicalize(&notes_dir).unwrap_or_else(|_| notes_dir.clone());
         let configured = s.get_str("notes_file");
         let name = filename.map(|f| f.to_string()).unwrap_or_else(|| {
             if !configured.is_empty() {
@@ -40,8 +39,9 @@ impl NotesManager {
             if filename.is_some() {
                 return Err("Note filename must be relative to the notes directory".to_string());
             }
-            return Ok(std::fs::canonicalize(expand_user(&name))
-                .unwrap_or_else(|_| expand_user(&name)));
+            return Ok(
+                std::fs::canonicalize(expand_user(&name)).unwrap_or_else(|_| expand_user(&name))
+            );
         }
         let mut name = name;
         if !name.ends_with(".md") {
@@ -68,7 +68,8 @@ impl NotesManager {
         let notes_dir = std::fs::canonicalize(&notes_dir).unwrap_or(notes_dir);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            let parent_canon = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+            let parent_canon =
+                std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
             if !allow_configured_external && !parent_canon.starts_with(&notes_dir) {
                 return Err("Note path escapes the notes directory".to_string());
             }
@@ -84,7 +85,11 @@ impl NotesManager {
         let ts = human_now();
         let entry = format!("\n## {}\n\n{}\n", ts, text);
         let mut opts = OpenOptions::new();
-        opts.create(true).append(true).write(true).mode(0o600);
+        opts.create(true)
+            .append(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW);
         let mut f = opts.open(&path).map_err(|e| e.to_string())?;
         use std::io::Write;
         f.write_all(entry.as_bytes()).map_err(|e| e.to_string())?;
@@ -97,15 +102,23 @@ impl NotesManager {
         let configured = settings().get_str("notes_file");
         let allow_external = filename.is_none() && Path::new(&configured).is_absolute();
         self.ensure_parent(&path, allow_external)?;
-        if fs::symlink_metadata(&path).map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+        if fs::symlink_metadata(&path)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
             return Err("Note path must not be a symbolic link".to_string());
         }
         if !path.is_file() {
             let mut opts = OpenOptions::new();
-            opts.create(true).write(true).append(true).mode(0o600);
+            opts.create(true)
+                .write(true)
+                .append(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW);
             let mut f = opts.open(&path).map_err(|e| e.to_string())?;
             use std::io::Write;
-            f.write_all(b"# TPGK Notes\n\n").map_err(|e| e.to_string())?;
+            f.write_all(b"# TPGK Notes\n\n")
+                .map_err(|e| e.to_string())?;
             let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
         }
 

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=terust Terminal
+Comment=GTK3/VTE terminal emulator with AI, history and notes
+Exec=terust
+Icon=utilities-terminal
+Terminal=false
+Type=Application
+Categories=System;TerminalEmulator;
+StartupWMClass=terust

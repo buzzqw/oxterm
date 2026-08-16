@@ -55,7 +55,9 @@ pub const PROVIDERS: &[(&str, &str, &str, &str, &str)] = &[
     ),
 ];
 
-pub fn provider_info(provider: &str) -> Option<(&'static str, &'static str, &'static str, &'static str)> {
+pub fn provider_info(
+    provider: &str,
+) -> Option<(&'static str, &'static str, &'static str, &'static str)> {
     PROVIDERS
         .iter()
         .find(|p| p.0 == provider)
@@ -84,12 +86,22 @@ impl std::fmt::Display for AiError {
 const MAX_MESSAGE_PAIRS: usize = 20;
 
 static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+static STREAM_AGENT: OnceLock<ureq::Agent> = OnceLock::new();
 
 fn agent() -> &'static ureq::Agent {
     AGENT.get_or_init(|| {
         ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(10))
             .timeout_read(Duration::from_secs(120))
+            .build()
+    })
+}
+
+fn stream_agent() -> &'static ureq::Agent {
+    STREAM_AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(10))
+            .timeout_read(Duration::from_secs(5))
             .build()
     })
 }
@@ -102,6 +114,7 @@ pub struct AIClient {
     protocol: String,
     messages: Mutex<Vec<Value>>,
     system_prompt: String,
+    cancel_requested: AtomicBool,
 }
 
 impl AIClient {
@@ -111,7 +124,8 @@ impl AIClient {
         model: Option<&str>,
         base_url: &str,
     ) -> Result<AIClient, String> {
-        let info = provider_info(provider).ok_or_else(|| format!("Unknown provider: {}", provider))?;
+        let info =
+            provider_info(provider).ok_or_else(|| format!("Unknown provider: {}", provider))?;
         let model = model
             .map(|m| m.to_string())
             .filter(|m| !m.is_empty())
@@ -129,6 +143,7 @@ impl AIClient {
             protocol: info.3.to_string(),
             messages: Mutex::new(Vec::new()),
             system_prompt: String::new(),
+            cancel_requested: AtomicBool::new(false),
         })
     }
 
@@ -176,21 +191,30 @@ impl AIClient {
 
     fn remove_last_user(&self) {
         let mut msgs = self.messages.lock().unwrap();
-        if let Some(pos) = msgs.iter().rposition(|m| m.get("role").and_then(|r| r.as_str()) == Some("user")) {
+        if let Some(pos) = msgs
+            .iter()
+            .rposition(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+        {
             msgs.remove(pos);
         }
     }
 
     fn remove_last_system(&self) {
         let mut msgs = self.messages.lock().unwrap();
-        if let Some(pos) = msgs.iter().position(|m| m.get("role").and_then(|r| r.as_str()) == Some("system")) {
+        if let Some(pos) = msgs
+            .iter()
+            .position(|m| m.get("role").and_then(|r| r.as_str()) == Some("system"))
+        {
             msgs.remove(pos);
         }
     }
 
     pub fn cancel(&self) {
-        // Cancellation is signalled via the shared AtomicBool passed to
-        // chat_stream; the worker unwinds on the next read iteration.
+        self.cancel_requested.store(true, Ordering::SeqCst);
+    }
+
+    fn is_cancelled(&self, cancel: &AtomicBool) -> bool {
+        cancel.load(Ordering::SeqCst) || self.cancel_requested.load(Ordering::SeqCst)
     }
 
     pub fn chat(&self, message: &str) -> Result<String, String> {
@@ -226,6 +250,7 @@ impl AIClient {
     where
         F: FnMut(&str),
     {
+        self.cancel_requested.store(false, Ordering::SeqCst);
         self.truncate_messages();
         let mut system_message = None;
         if !self.system_prompt.is_empty() && !self.has_system_message() {
@@ -247,8 +272,13 @@ impl AIClient {
         result
     }
 
-    fn open_stream(&self, url: &str, headers: &BTreeMap<String, String>, body: Value) -> Result<ureq::Response, AiError> {
-        let mut req = agent().post(url);
+    fn open_stream(
+        &self,
+        url: &str,
+        headers: &BTreeMap<String, String>,
+        body: Value,
+    ) -> Result<ureq::Response, AiError> {
+        let mut req = stream_agent().post(url);
         for (k, v) in headers {
             req = req.set(k, v);
         }
@@ -335,7 +365,8 @@ impl AIClient {
 
     fn call_openai(&self, streaming: bool) -> Result<String, String> {
         let headers = self.auth_headers();
-        let mut payload = json!({"model": self.model, "messages": self.messages.lock().unwrap().clone()});
+        let mut payload =
+            json!({"model": self.model, "messages": self.messages.lock().unwrap().clone()});
         if streaming {
             payload["stream"] = Value::Bool(true);
         }
@@ -364,20 +395,29 @@ impl AIClient {
         Ok(content)
     }
 
-    fn call_openai_stream<F: FnMut(&str)>(&self, cancel: &AtomicBool, on_chunk: &mut F) -> Result<(), AiError> {
+    fn call_openai_stream<F: FnMut(&str)>(
+        &self,
+        cancel: &AtomicBool,
+        on_chunk: &mut F,
+    ) -> Result<(), AiError> {
         let headers = self.auth_headers();
-        let mut payload = json!({"model": self.model, "messages": self.messages.lock().unwrap().clone()});
+        let mut payload =
+            json!({"model": self.model, "messages": self.messages.lock().unwrap().clone()});
         payload["stream"] = Value::Bool(true);
         let resp = self.open_stream(&self.base_url, &headers, payload)?;
         if resp.status() != 200 {
             let status = resp.status();
             let text = resp.into_string().unwrap_or_default();
-            return Err(AiError::Http(format!("HTTP {}: {}", status, truncate(&text, 300))));
+            return Err(AiError::Http(format!(
+                "HTTP {}: {}",
+                status,
+                truncate(&text, 300)
+            )));
         }
         let mut full = String::new();
         let reader = std::io::BufReader::new(resp.into_reader());
         for line in reader.lines() {
-            if cancel.load(Ordering::SeqCst) {
+            if self.is_cancelled(cancel) {
                 return Err(AiError::Cancelled);
             }
             let line = line.map_err(|e| AiError::Http(e.to_string()))?;
@@ -404,7 +444,7 @@ impl AIClient {
                 }
             }
         }
-        if cancel.load(Ordering::SeqCst) {
+        if self.is_cancelled(cancel) {
             return Err(AiError::Cancelled);
         }
         self.add_message("assistant", &full);
@@ -441,7 +481,11 @@ impl AIClient {
         Ok(content)
     }
 
-    fn call_claude_stream<F: FnMut(&str)>(&self, cancel: &AtomicBool, on_chunk: &mut F) -> Result<(), AiError> {
+    fn call_claude_stream<F: FnMut(&str)>(
+        &self,
+        cancel: &AtomicBool,
+        on_chunk: &mut F,
+    ) -> Result<(), AiError> {
         let headers = self.claude_headers();
         let mut payload = self.build_messages_payload(true);
         payload["stream"] = Value::Bool(true);
@@ -449,13 +493,17 @@ impl AIClient {
         if resp.status() != 200 {
             let status = resp.status();
             let text = resp.into_string().unwrap_or_default();
-            return Err(AiError::Http(format!("HTTP {}: {}", status, truncate(&text, 300))));
+            return Err(AiError::Http(format!(
+                "HTTP {}: {}",
+                status,
+                truncate(&text, 300)
+            )));
         }
         let mut full = String::new();
         let mut event_type = String::new();
         let reader = std::io::BufReader::new(resp.into_reader());
         for line in reader.lines() {
-            if cancel.load(Ordering::SeqCst) {
+            if self.is_cancelled(cancel) {
                 return Err(AiError::Cancelled);
             }
             let line = line.map_err(|e| AiError::Http(e.to_string()))?;
@@ -496,7 +544,7 @@ impl AIClient {
                 }
             }
         }
-        if cancel.load(Ordering::SeqCst) {
+        if self.is_cancelled(cancel) {
             return Err(AiError::Cancelled);
         }
         self.add_message("assistant", &full);
@@ -511,6 +559,13 @@ impl AIClient {
             }
         } else {
             url = url.replace(":streamGenerateContent", ":generateContent");
+        }
+        if streaming && !url.contains("alt=") {
+            if url.contains('?') {
+                url.push_str("&alt=sse");
+            } else {
+                url.push_str("?alt=sse");
+            }
         }
         url
     }
@@ -546,7 +601,11 @@ impl AIClient {
         Ok(content)
     }
 
-    fn call_gemini_stream<F: FnMut(&str)>(&self, cancel: &AtomicBool, on_chunk: &mut F) -> Result<(), AiError> {
+    fn call_gemini_stream<F: FnMut(&str)>(
+        &self,
+        cancel: &AtomicBool,
+        on_chunk: &mut F,
+    ) -> Result<(), AiError> {
         let url = self.gemini_url(true);
         let headers = self.gemini_headers();
         let (payload, _) = self.build_gemini_payload();
@@ -554,12 +613,16 @@ impl AIClient {
         if resp.status() != 200 {
             let status = resp.status();
             let text = resp.into_string().unwrap_or_default();
-            return Err(AiError::Http(format!("HTTP {}: {}", status, truncate(&text, 300))));
+            return Err(AiError::Http(format!(
+                "HTTP {}: {}",
+                status,
+                truncate(&text, 300)
+            )));
         }
         let mut full = String::new();
         let reader = std::io::BufReader::new(resp.into_reader());
         for line in reader.lines() {
-            if cancel.load(Ordering::SeqCst) {
+            if self.is_cancelled(cancel) {
                 return Err(AiError::Cancelled);
             }
             let line = line.map_err(|e| AiError::Http(e.to_string()))?;
@@ -583,7 +646,7 @@ impl AIClient {
                 }
             }
         }
-        if cancel.load(Ordering::SeqCst) {
+        if self.is_cancelled(cancel) {
             return Err(AiError::Cancelled);
         }
         self.add_message("assistant", &full);
@@ -596,7 +659,10 @@ pub fn fetch_models(provider: &str, api_key: &str, base_url: &str) -> Vec<String
         let mut url = if base_url.is_empty() {
             "http://localhost:11434".to_string()
         } else {
-            base_url.replace("/v1/chat/completions", "").trim_end_matches('/').to_string()
+            base_url
+                .replace("/v1/chat/completions", "")
+                .trim_end_matches('/')
+                .to_string()
         };
         if url.is_empty() {
             url = "http://localhost:11434".to_string();
@@ -611,7 +677,9 @@ pub fn fetch_models(provider: &str, api_key: &str, base_url: &str) -> Vec<String
             .map(|(b, _)| b.trim_end_matches('/').to_string())
             .filter(|b| !b.is_empty())
             .unwrap_or_else(|| base_url.trim_end_matches('/').to_string());
-        let mut req = agent().get(&format!("{}/models", base)).timeout(Duration::from_secs(5));
+        let mut req = agent()
+            .get(&format!("{}/models", base))
+            .timeout(Duration::from_secs(5));
         if !api_key.is_empty() {
             req = req.set("Authorization", &format!("Bearer {}", api_key));
         }
@@ -624,7 +692,9 @@ pub fn fetch_models(provider: &str, api_key: &str, base_url: &str) -> Vec<String
             .rsplit_once("/chat/completions")
             .map(|(b, _)| b.trim_end_matches('/').to_string())
             .unwrap_or_default();
-        let mut req = agent().get(&format!("{}/models", base)).timeout(Duration::from_secs(5));
+        let mut req = agent()
+            .get(&format!("{}/models", base))
+            .timeout(Duration::from_secs(5));
         req = req.set("Authorization", &format!("Bearer {}", api_key));
         req.call()
     } else {
@@ -668,12 +738,43 @@ pub fn fetch_models(provider: &str, api_key: &str, base_url: &str) -> Vec<String
     out
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gemini_stream_url_requests_sse() {
+        let client = AIClient::new(
+            "gemini",
+            "key",
+            Some("model"),
+            "http://localhost/models/{model}:streamGenerateContent",
+        )
+        .unwrap();
+        assert_eq!(
+            client.gemini_url(true),
+            "http://localhost/models/model:streamGenerateContent?alt=sse"
+        );
+    }
+
+    #[test]
+    fn cancellation_flag_is_observed() {
+        let client = AIClient::new("ollama", "", None, "").unwrap();
+        let external = AtomicBool::new(false);
+        assert!(!client.is_cancelled(&external));
+        client.cancel();
+        assert!(client.is_cancelled(&external));
+    }
+}
+
 pub fn ping_provider(provider: &str, url: &str) -> bool {
     let result = if provider == "ollama" {
         let u = if url.is_empty() {
             "http://localhost:11434".to_string()
         } else {
-            url.replace("/v1/chat/completions", "").trim_end_matches('/').to_string()
+            url.replace("/v1/chat/completions", "")
+                .trim_end_matches('/')
+                .to_string()
         };
         agent()
             .get(&format!("{}/api/tags", u.trim_end_matches('/')))
@@ -687,7 +788,11 @@ pub fn ping_provider(provider: &str, url: &str) -> bool {
             .unwrap_or_else(|| url.trim_end_matches('/').to_string());
         let mut ok = false;
         for test_url in [url.to_string(), format!("{}/models", base), base.clone()] {
-            if let Ok(r) = agent().get(&test_url).timeout(Duration::from_secs(3)).call() {
+            if let Ok(r) = agent()
+                .get(&test_url)
+                .timeout(Duration::from_secs(3))
+                .call()
+            {
                 if r.status() == 200 {
                     ok = true;
                     break;
@@ -713,5 +818,8 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 pub fn log_provider_error(provider: &str, msg: &str) {
-    LOGGER.error(&format!("ai_models_fetch_failed provider={} error={}", provider, msg));
+    LOGGER.error(&format!(
+        "ai_models_fetch_failed provider={} error={}",
+        provider, msg
+    ));
 }

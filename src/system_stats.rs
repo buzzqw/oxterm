@@ -1,4 +1,5 @@
 use std::fs;
+use std::time::Instant;
 
 fn mb(val: u64) -> String {
     let gb = 1024 * 1024 * 1024;
@@ -11,7 +12,11 @@ fn mb(val: u64) -> String {
 }
 
 fn parse_kmg_swap(unit: &str, factor: u64) -> u64 {
-    unit.trim().parse::<f64>().unwrap_or(0.0) as u64 * factor
+    unit.split_whitespace()
+        .next()
+        .and_then(|value| value.parse::<f64>().ok())
+        .map(|value| (value * factor as f64) as u64)
+        .unwrap_or(0)
 }
 
 fn meminfo() -> (u64, u64) {
@@ -114,7 +119,7 @@ pub fn collect_self() -> String {
     let pid = std::process::id();
     let rss = proc_rss(pid);
     let cpu = process_cpu_percent(pid);
-    format!("TPGK  CPU {:5.1}%  RAM {}  ", cpu, mb(rss))
+    format!("terust  CPU {:5.1}%  RAM {}  ", cpu, mb(rss))
 }
 
 fn proc_rss(pid: u32) -> u64 {
@@ -131,6 +136,8 @@ fn proc_rss(pid: u32) -> u64 {
 }
 
 fn process_cpu_percent(pid: u32) -> f64 {
+    static PROCESS_CPU_PREV: std::sync::Mutex<Option<(u32, u64, Instant)>> =
+        std::sync::Mutex::new(None);
     let Ok(content) = fs::read_to_string(format!("/proc/{}/stat", pid)) else {
         return 0.0;
     };
@@ -139,13 +146,38 @@ fn process_cpu_percent(pid: u32) -> f64 {
     let fields: Vec<&str> = after_comm.split_whitespace().collect();
     let utime: u64 = fields.get(11).and_then(|v| v.parse().ok()).unwrap_or(0);
     let stime: u64 = fields.get(12).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let ticks = utime + stime;
     let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
     if hz <= 0.0 {
         return 0.0;
     }
-    (utime + stime) as f64 / hz * 100.0
+    let now = Instant::now();
+    let mut previous = PROCESS_CPU_PREV.lock().unwrap();
+    let result = previous
+        .filter(|(previous_pid, _, _)| *previous_pid == pid)
+        .and_then(|(_, previous_ticks, previous_at)| {
+            let elapsed = previous_at.elapsed().as_secs_f64();
+            if elapsed <= 0.0 {
+                return None;
+            }
+            Some(ticks.saturating_sub(previous_ticks) as f64 / hz / elapsed * 100.0)
+        })
+        .unwrap_or(0.0);
+    *previous = Some((pid, ticks, now));
+    result
 }
 
 pub fn ssh_placeholder() -> String {
     "  [SSH] Remote session".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_proc_memory_with_units() {
+        assert_eq!(parse_kmg_swap(" 123456 kB", 1024), 123456 * 1024);
+        assert_eq!(parse_kmg_swap("invalid", 1024), 0);
+    }
 }

@@ -1,1 +1,26 @@
-/target
+# Rust build output
+/target/
+
+# Local release artifacts
+/dist/
+/build/
+*.AppImage
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Temporary packaging files
+packaging/appimage/appimagetool-*.AppImage

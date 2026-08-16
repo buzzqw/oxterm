@@ -1,0 +1,53 @@
+name: Build terust executable
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Linux x86_64 release
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Install GTK and VTE development packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libgtk-3-dev libvte-2.91-dev
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run tests
+        run: cargo test --all-targets
+
+      - name: Build release executable
+        run: cargo build --release
+
+      - name: Package executable
+        run: |
+          mkdir -p dist
+          install -m 0755 target/release/terust dist/terust-linux-x86_64
+          tar -C dist -czf dist/terust-linux-x86_64.tar.gz terust-linux-x86_64
+
+      - name: Upload executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terust-linux-x86_64
+          path: dist/terust-linux-x86_64.tar.gz
+          if-no-files-found: error

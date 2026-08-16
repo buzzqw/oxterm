@@ -47,18 +47,22 @@ unsafe impl<T> Sync for Sendable<T> {}
 
 struct CliOptions {
     start_dir: Option<String>,
+    requested_dir: bool,
     new_window: bool,
     no_restore: bool,
     execute: Option<Vec<String>>,
     version: bool,
+    help: bool,
 }
 
 fn parse_cli(args: &[String]) -> Result<CliOptions, String> {
     let mut start_dir: Option<String> = None;
+    let mut requested_dir = false;
     let mut new_window = false;
     let mut no_restore = false;
     let mut execute: Option<Vec<String>> = None;
     let mut version = false;
+    let mut help = false;
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
@@ -72,6 +76,7 @@ fn parse_cli(args: &[String]) -> Result<CliOptions, String> {
                     return Err("directory and --working-directory cannot be used together".into());
                 }
                 start_dir = Some(args[i].clone());
+                requested_dir = true;
             }
             "--new-window" => new_window = true,
             "--no-restore" => no_restore = true,
@@ -88,6 +93,7 @@ fn parse_cli(args: &[String]) -> Result<CliOptions, String> {
                 execute = Some(cmd);
             }
             "--version" => version = true,
+            "--help" | "-h" => help = true,
             _ => {
                 if arg.starts_with('-') {
                     return Err(format!("Unknown option: {}", arg));
@@ -96,17 +102,33 @@ fn parse_cli(args: &[String]) -> Result<CliOptions, String> {
                     return Err("directory and --working-directory cannot be used together".into());
                 }
                 start_dir = Some(arg.clone());
+                requested_dir = true;
             }
         }
         i += 1;
     }
+    start_dir = match start_dir {
+        Some(dir) => Some(expand_dir(dir)?),
+        None => Some(
+            std::env::current_dir()
+                .map_err(|e| format!("cannot determine current directory: {}", e))?
+                .to_string_lossy()
+                .to_string(),
+        ),
+    };
     Ok(CliOptions {
         start_dir,
+        requested_dir,
         new_window,
         no_restore,
         execute,
         version,
+        help,
     })
+}
+
+fn usage() -> &'static str {
+    "Usage: terust [DIRECTORY] [OPTIONS]\n\nOptions:\n  -w, --working-directory DIR  Working directory for the new terminal\n      --new-window             Open a new window\n      --no-restore              Do not restore the last session\n  -e, --execute CMD...          Run a command instead of the configured shell\n      --version                 Show the terust version\n  -h, --help                   Show this help\n"
 }
 
 struct App {
@@ -117,11 +139,11 @@ struct App {
 impl App {
     fn new() -> App {
         let app = gtk::Application::new(
-            Some("com.buzzqw.tpgk"),
+            Some("com.buzzqw.terust"),
             gio::ApplicationFlags::HANDLES_COMMAND_LINE | gio::ApplicationFlags::NON_UNIQUE,
         );
-        let _ = glib::set_prgname(Some("tpgk"));
-        let _ = glib::set_application_name("TPGK Terminal");
+        let _ = glib::set_prgname(Some(window::APP_NAME));
+        let _ = glib::set_application_name(window::APP_TITLE);
 
         let _settings = settings();
 
@@ -157,15 +179,21 @@ impl App {
 
         App {
             app,
-            current_dir: None,
+            current_dir: std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().to_string()),
         }
     }
 
     fn run(&mut self, args: Vec<String>) -> i32 {
         let app = self.app.clone();
         if let Ok(options) = parse_cli(&args[1..]) {
+            if options.help {
+                print!("{}", usage());
+                return 0;
+            }
             if options.version {
-                println!("TPGK {}", window::VERSION);
+                println!("{} {}", window::APP_NAME, window::VERSION);
                 return 0;
             }
         }
@@ -179,24 +207,27 @@ impl App {
             let opts = match parse_cli(&args) {
                 Ok(o) => o,
                 Err(e) => {
-                    eprintln!("tpgk: {}", e);
+                    eprintln!("{}: {}", window::APP_NAME, e);
                     return 2;
                 }
             };
             if opts.version {
-                println!("TPGK {}", window::VERSION);
+                println!("{} {}", window::APP_NAME, window::VERSION);
                 return 0;
             }
-            let explicit = opts.start_dir.is_some() || opts.execute.is_some() || opts.new_window;
+            if opts.help {
+                print!("{}", usage());
+                return 0;
+            }
+            let explicit = opts.requested_dir || opts.execute.is_some() || opts.new_window;
             let windows = app.windows();
             if !windows.is_empty() && !explicit {
                 windows[0].present();
                 return 0;
             }
-            let start_dir = opts.start_dir.map(expand_dir);
             let win = MainWindow::new(
                 Some(app),
-                start_dir,
+                opts.start_dir,
                 opts.execute,
                 !(opts.no_restore || explicit),
             );
@@ -219,7 +250,7 @@ impl App {
     }
 }
 
-fn expand_dir(d: String) -> String {
+fn expand_dir(d: String) -> Result<String, String> {
     let expanded = if let Some(rest) = d.strip_prefix("~/") {
         dirs::home_dir()
             .map(|p| p.join(rest).to_string_lossy().to_string())
@@ -234,10 +265,39 @@ fn expand_dir(d: String) -> String {
     if std::path::Path::new(&expanded).is_dir() {
         std::fs::canonicalize(&expanded)
             .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or(expanded)
+            .map_err(|e| format!("cannot resolve directory {}: {}", expanded, e))
     } else {
-        eprintln!("tpgk: not a directory: {}", expanded);
-        expanded
+        Err(format!("not a directory: {}", expanded))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| (*v).to_string()).collect()
+    }
+
+    #[test]
+    fn cli_defaults_to_current_directory_without_explicit_open() {
+        let options = parse_cli(&[]).unwrap();
+        assert!(!options.requested_dir);
+        assert_eq!(
+            options.start_dir,
+            Some(
+                std::env::current_dir()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn cli_rejects_missing_directories_and_supports_help() {
+        assert!(parse_cli(&args(&["/definitely/not/a/dir"])).is_err());
+        assert!(parse_cli(&args(&["--help"])).unwrap().help);
     }
 }
 fn main() {

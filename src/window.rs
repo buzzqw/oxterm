@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 
 use glib::prelude::*;
-use glib::translate::*;
 use glib::subclass::prelude::*;
+use glib::translate::*;
 use gtk::gdk;
 #[allow(non_snake_case)]
 mod K {
@@ -33,13 +33,26 @@ pub const SIGNALS: &[(&str, i32)] = &[
 ];
 
 pub const ENCODINGS: &[&str] = &[
-    "UTF-8", "ISO-8859-1", "ISO-8859-15", "UTF-16", "UTF-16BE", "UTF-16LE", "CP1252", "CP850",
-    "ASCII", "KOI8-R", "Shift_JIS", "EUC-JP", "GBK",
+    "UTF-8",
+    "ISO-8859-1",
+    "ISO-8859-15",
+    "UTF-16",
+    "UTF-16BE",
+    "UTF-16LE",
+    "CP1252",
+    "CP850",
+    "ASCII",
+    "KOI8-R",
+    "Shift_JIS",
+    "EUC-JP",
+    "GBK",
 ];
 
 pub const EUPL_LICENSE_TEXT: &str = "Licensed under the European Union Public Licence (EUPL) v. 1.2.\n\nCopyright (c) 2026 Andres Zanzani.\n\nThe complete licence text is distributed in the LICENSE file and is available at:\nhttps://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12\n";
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const APP_NAME: &str = "terust";
+pub const APP_TITLE: &str = "terust Terminal";
 
 pub fn detect_file_manager() -> Option<String> {
     let s = settings();
@@ -48,7 +61,14 @@ pub fn detect_file_manager() -> Option<String> {
         return Some(fm);
     }
     for candidate in [
-        "nemo", "thunar", "dolphin", "nautilus", "pcmanfm", "caja", "nemo-desktop", "spacefm",
+        "nemo",
+        "thunar",
+        "dolphin",
+        "nautilus",
+        "pcmanfm",
+        "caja",
+        "nemo-desktop",
+        "spacefm",
     ] {
         if crate::notes::which(candidate).is_some() {
             return Some(candidate.to_string());
@@ -56,7 +76,6 @@ pub fn detect_file_manager() -> Option<String> {
     }
     None
 }
-
 
 /// Interface implemented by both window types so a terminal can drive its
 /// host window without knowing which concrete kind it is.
@@ -74,7 +93,6 @@ pub trait TerminalWindow {
 }
 
 // ── DetachedWindow ───────────────────────────────────────────
-
 
 mod det_imp {
     use super::*;
@@ -125,17 +143,21 @@ glib::wrapper! {
 impl DetachedWindow {
     pub fn new(terminal: &TerminalBox, title: &str) -> DetachedWindow {
         let this: DetachedWindow = glib::Object::new();
-        this.update_title(&format!("TPGK - {}", title));
+        this.update_title(&format!("{} - {}", APP_NAME, title));
         *this.imp().terminal.borrow_mut() = Some(terminal.clone());
         this.apply_window_visuals();
         this.apply_window_size();
 
         let stats_sys_label = gtk::Label::new(Some(""));
         stats_sys_label.set_halign(gtk::Align::Start);
-        stats_sys_label.style_context().add_class("tpgk-stats-label");
+        stats_sys_label
+            .style_context()
+            .add_class("tpgk-stats-label");
         let stats_self_label = gtk::Label::new(Some(""));
         stats_self_label.set_halign(gtk::Align::End);
-        stats_self_label.style_context().add_class("tpgk-stats-label");
+        stats_self_label
+            .style_context()
+            .add_class("tpgk-stats-label");
         let stats_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         stats_box.pack_start(&stats_sys_label, true, true, 0);
         stats_box.pack_end(&stats_self_label, false, false, 0);
@@ -185,8 +207,17 @@ impl DetachedWindow {
                 }
             }
         });
+        let h3 = settings().connect_changed({
+            let w = this.downgrade();
+            move || {
+                if let Some(w) = w.upgrade() {
+                    w.apply_ui_visibility();
+                }
+            }
+        });
         this.imp().settings_handlers.borrow_mut().push(h1);
         this.imp().settings_handlers.borrow_mut().push(h2);
+        this.imp().settings_handlers.borrow_mut().push(h3);
 
         let weak = this.downgrade();
         this.connect_delete_event(move |w, _| {
@@ -254,7 +285,7 @@ impl DetachedWindow {
     fn build_headerbar(&self, title: &str) {
         let header = gtk::HeaderBar::new();
         header.set_show_close_button(true);
-        header.set_title(Some(&format!("TPGK - {}", title)));
+        header.set_title(Some(&format!("{} - {}", APP_NAME, title)));
         *self.imp().headerbar.borrow_mut() = Some(header.clone());
 
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
@@ -347,7 +378,13 @@ impl DetachedWindow {
             if let Some(accel_group) = self.imp().accel_group.borrow().clone() {
                 let (raw_key, mods) = gtk::accelerator_parse(accel);
                 if raw_key != 0 {
-                    item.add_accelerator("activate", &accel_group, raw_key, mods, gtk::AccelFlags::VISIBLE);
+                    item.add_accelerator(
+                        "activate",
+                        &accel_group,
+                        raw_key,
+                        mods,
+                        gtk::AccelFlags::VISIBLE,
+                    );
                 }
             }
         }
@@ -389,7 +426,7 @@ impl DetachedWindow {
                 }
             }),
             Some("<Primary><Shift>N"),
-            Some("Open a new TPGK terminal window"),
+            Some("Open a new terust terminal window"),
         );
         file_menu.append(&gtk::SeparatorMenuItem::new());
         let weak = crate::SendWeak::new(self);
@@ -501,7 +538,7 @@ impl DetachedWindow {
                 }
             }),
             None,
-            Some("Open the TPGK settings dialog"),
+            Some("Open the terust settings dialog"),
         );
         menus.push(("Edit".into(), edit_menu));
 
@@ -729,7 +766,7 @@ impl DetachedWindow {
                 }
             }),
             None,
-            Some("Show information about TPGK"),
+            Some("Show information about terust"),
         );
         menus.push(("Help".into(), help_menu));
 
@@ -781,17 +818,23 @@ impl DetachedWindow {
             Some("Set Title"),
             Some(self),
             gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
-            &[("Cancel", gtk::ResponseType::Cancel), ("Set", gtk::ResponseType::Ok)],
+            &[
+                ("Cancel", gtk::ResponseType::Cancel),
+                ("Set", gtk::ResponseType::Ok),
+            ],
         );
         let entry = gtk::Entry::new();
-        let current = self.title().unwrap_or_default().replace("TPGK - ", "");
+        let current = self
+            .title()
+            .unwrap_or_default()
+            .replace(&format!("{} - ", APP_NAME), "");
         entry.set_text(&current);
         dialog.content_area().pack_start(&entry, true, true, 8);
         dialog.show_all();
         if dialog.run() == gtk::ResponseType::Ok {
             let title = entry.text().trim().to_string();
             if !title.is_empty() {
-                self.update_title(&format!("TPGK - {}", title));
+                self.update_title(&format!("{} - {}", APP_NAME, title));
             }
         }
         dialog.close();
@@ -950,6 +993,17 @@ impl DetachedWindow {
             label.set_text(&crate::system_stats::collect_self());
         }
     }
+
+    fn apply_ui_visibility(&self) {
+        let s = settings();
+        if let Some(menubar) = self.imp().menubar.borrow().clone() {
+            menubar.set_visible(s.get_bool("show_menubar"));
+        }
+        if let Some(toolbar) = self.imp().toolbar.borrow().clone() {
+            toolbar.set_visible(s.get_bool("show_toolbar"));
+        }
+        self.apply_stats_visibility();
+    }
 }
 
 impl TerminalWindow for DetachedWindow {
@@ -978,7 +1032,7 @@ impl TerminalWindow for DetachedWindow {
     fn split_signal(&self, _mode: &str) {}
     fn focus_other_pane_signal(&self) {}
     fn set_tab_title_from_terminal(&self, _term: &TerminalBox, title: &str) {
-        self.update_title(&format!("TPGK - {}", title));
+        self.update_title(&format!("{} - {}", APP_NAME, title));
     }
     fn broadcast_feed(&self, _source: &TerminalBox, _data: &[u8]) {}
 }
@@ -1008,7 +1062,8 @@ mod main_imp {
         pub remote_stats_generation: RefCell<u64>,
         pub split_mode: RefCell<String>,
         pub tab_base_titles: RefCell<std::collections::HashMap<TerminalBox, String>>,
-        pub tab_labels: RefCell<std::collections::HashMap<TerminalBox, (gtk::EventBox, gtk::Label)>>,
+        pub tab_labels:
+            RefCell<std::collections::HashMap<TerminalBox, (gtk::EventBox, gtk::Label)>>,
         pub next_tab_number: RefCell<i64>,
         pub current_pages: RefCell<std::collections::HashMap<gtk::Notebook, u32>>,
         pub encoding_actions: RefCell<Vec<(gtk::CheckMenuItem, String)>>,
@@ -1050,6 +1105,14 @@ glib::wrapper! {
         @extends gtk::ApplicationWindow, gtk::Window, gtk::Bin, gtk::Container, gtk::Widget;
 }
 
+struct SplitGuard<'a>(&'a std::cell::RefCell<bool>);
+
+impl Drop for SplitGuard<'_> {
+    fn drop(&mut self) {
+        *self.0.borrow_mut() = false;
+    }
+}
+
 impl MainWindow {
     pub fn new(
         app: Option<&gtk::Application>,
@@ -1066,7 +1129,7 @@ impl MainWindow {
     }
 
     fn init(&self, start_dir: Option<String>, command: Option<Vec<String>>, restore_session: bool) {
-        self.set_title("TPGK Terminal");
+        self.set_title(APP_TITLE);
         let s = settings();
         let cols = s.get_i64("terminal_columns") as i32;
         let rows = s.get_i64("terminal_rows") as i32;
@@ -1136,10 +1199,14 @@ impl MainWindow {
 
         let stats_sys_label = gtk::Label::new(Some(""));
         stats_sys_label.set_halign(gtk::Align::Start);
-        stats_sys_label.style_context().add_class("tpgk-stats-label");
+        stats_sys_label
+            .style_context()
+            .add_class("tpgk-stats-label");
         let stats_self_label = gtk::Label::new(Some(""));
         stats_self_label.set_halign(gtk::Align::End);
-        stats_self_label.style_context().add_class("tpgk-stats-label");
+        stats_self_label
+            .style_context()
+            .add_class("tpgk-stats-label");
         let stats_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         stats_box.pack_start(&stats_sys_label, true, true, 0);
         stats_box.pack_end(&stats_self_label, false, false, 0);
@@ -1185,10 +1252,7 @@ impl MainWindow {
             glib::ControlFlow::Break
         });
 
-        let toolbar = self.imp().toolbar.borrow().clone().unwrap();
-        toolbar.set_visible(settings().get_bool("show_toolbar"));
-        menubar.set_visible(settings().get_bool("show_menubar"));
-        self.apply_stats_visibility();
+        self.apply_ui_visibility();
         self.apply_tab_colors();
 
         let h1 = settings().connect_changed({
@@ -1218,6 +1282,24 @@ impl MainWindow {
         self.imp().settings_handlers.borrow_mut().push(h1);
         self.imp().settings_handlers.borrow_mut().push(h2);
         self.imp().settings_handlers.borrow_mut().push(h3);
+        let h4 = settings().connect_changed({
+            let w = self.downgrade();
+            move || {
+                if let Some(w) = w.upgrade() {
+                    w.apply_ui_visibility();
+                }
+            }
+        });
+        self.imp().settings_handlers.borrow_mut().push(h4);
+        let h5 = settings().connect_changed({
+            let w = self.downgrade();
+            move || {
+                if let Some(w) = w.upgrade() {
+                    w.apply_dynamic_titles();
+                }
+            }
+        });
+        self.imp().settings_handlers.borrow_mut().push(h5);
 
         let weak = crate::SendWeak::new(self);
         let sd = start_dir.clone();
@@ -1231,17 +1313,16 @@ impl MainWindow {
         });
     }
 
-    fn initialize_terminal(&self, start_dir: Option<&str>, command: &Option<Vec<String>>, restore: bool) {
+    fn initialize_terminal(
+        &self,
+        start_dir: Option<&str>,
+        command: &Option<Vec<String>>,
+        restore: bool,
+    ) {
         if restore && self.restore_session() {
             return;
         }
-        self.add_new_tab(
-            start_dir,
-            None,
-            None,
-            None,
-            command.as_ref(),
-        );
+        self.add_new_tab(start_dir, None, None, None, command.as_ref());
     }
 
     fn fix_paned_position(&self) {
@@ -1276,6 +1357,23 @@ impl MainWindow {
         } else {
             self.set_app_paintable(false);
         }
+    }
+
+    fn apply_ui_visibility(&self) {
+        let s = settings();
+        if let Some(nb) = self.imp().notebook.borrow().clone() {
+            nb.set_show_tabs(s.get_bool("show_tabs"));
+        }
+        if let Some(nb) = self.imp().notebook2.borrow().clone() {
+            nb.set_show_tabs(s.get_bool("show_tabs"));
+        }
+        if let Some(menubar) = self.imp().menubar.borrow().clone() {
+            menubar.set_visible(s.get_bool("show_menubar"));
+        }
+        if let Some(toolbar) = self.imp().toolbar.borrow().clone() {
+            toolbar.set_visible(s.get_bool("show_toolbar"));
+        }
+        self.apply_stats_visibility();
     }
 
     fn update_title(&self, title: &str) {
@@ -1374,7 +1472,12 @@ impl MainWindow {
         .into_iter()
         .flatten()
         {
-            let cur = *self.imp().current_pages.borrow().get(&nb).unwrap_or(&nb.current_page().unwrap_or(0));
+            let cur = *self
+                .imp()
+                .current_pages
+                .borrow()
+                .get(&nb)
+                .unwrap_or(&nb.current_page().unwrap_or(0));
             if let Some(idx) = nb.page_num(term.upcast_ref::<gtk::Widget>()) {
                 if idx == cur {
                     return true;
@@ -1392,12 +1495,37 @@ impl MainWindow {
         .into_iter()
         .flatten()
         {
-            let cur = *self.imp().current_pages.borrow().get(&nb).unwrap_or(&nb.current_page().unwrap_or(0));
+            let cur = *self
+                .imp()
+                .current_pages
+                .borrow()
+                .get(&nb)
+                .unwrap_or(&nb.current_page().unwrap_or(0));
             for i in 0..nb.n_pages() {
                 if let Some(page) = nb.nth_page(Some(i)) {
                     if let Ok(term) = page.downcast::<TerminalBox>() {
                         let is_active = i == cur;
                         self.recolor_tab_label(&term, is_active);
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_dynamic_titles(&self) {
+        for nb in [
+            self.imp().notebook.borrow().clone(),
+            self.imp().notebook2.borrow().clone(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            for i in 0..nb.n_pages() {
+                if let Some(page) = nb.nth_page(Some(i)) {
+                    if let Ok(term) = page.downcast::<TerminalBox>() {
+                        if let Some(title) = term.vte().window_title() {
+                            self.set_tab_title_from_terminal(&term, title.as_str());
+                        }
                     }
                 }
             }
@@ -1430,7 +1558,7 @@ impl MainWindow {
     fn build_headerbar(&self) {
         let header = gtk::HeaderBar::new();
         header.set_show_close_button(true);
-        header.set_title(Some("TPGK Terminal"));
+        header.set_title(Some(APP_TITLE));
         *self.imp().headerbar.borrow_mut() = Some(header.clone());
 
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
@@ -1615,7 +1743,13 @@ impl MainWindow {
             if let Some(accel_group) = self.imp().accel_group.borrow().clone() {
                 let (raw_key, mods) = gtk::accelerator_parse(accel);
                 if raw_key != 0 {
-                    item.add_accelerator("activate", &accel_group, raw_key, mods, gtk::AccelFlags::VISIBLE);
+                    item.add_accelerator(
+                        "activate",
+                        &accel_group,
+                        raw_key,
+                        mods,
+                        gtk::AccelFlags::VISIBLE,
+                    );
                 }
             }
         }
@@ -1670,7 +1804,7 @@ impl MainWindow {
                 }
             }),
             Some("<Primary><Shift>N"),
-            Some("Open a new TPGK terminal window"),
+            Some("Open a new terust terminal window"),
         );
         file_menu.append(&gtk::SeparatorMenuItem::new());
         let weak = crate::SendWeak::new(self);
@@ -1721,7 +1855,7 @@ impl MainWindow {
                 }
             }),
             Some("<Primary>Q"),
-            Some("Quit TPGK (close all windows)"),
+            Some("Quit terust (close all windows)"),
         );
         menus.push(("File".into(), file_menu));
 
@@ -1795,7 +1929,7 @@ impl MainWindow {
                 }
             }),
             None,
-            Some("Open the TPGK settings dialog"),
+            Some("Open the terust settings dialog"),
         );
         menus.push(("Edit".into(), edit_menu));
 
@@ -2217,7 +2351,7 @@ impl MainWindow {
                 }
             }),
             None,
-            Some("Show information about TPGK"),
+            Some("Show information about terust"),
         );
         menus.push(("Help".into(), help_menu));
 
@@ -2242,6 +2376,7 @@ impl MainWindow {
         if *self.imp().splitting.borrow() {
             return;
         }
+        let _split_guard = SplitGuard(&self.imp().splitting);
         *self.imp().splitting.borrow_mut() = true;
         *self.imp().split_mode.borrow_mut() = mode.to_string();
         let nb = self.imp().notebook.borrow().clone().unwrap();
@@ -2263,6 +2398,7 @@ impl MainWindow {
                 a.set_active(false);
             }
         } else if mode == "vertical" {
+            paned.show();
             paned.set_orientation(gtk::Orientation::Horizontal);
             if nb2.n_pages() == 0 && create_tab {
                 nb2.show();
@@ -2282,6 +2418,7 @@ impl MainWindow {
             let (w, _h) = self.size();
             paned.set_position((w / 2).max(200));
         } else if mode == "horizontal" {
+            paned.show();
             paned.set_orientation(gtk::Orientation::Vertical);
             if nb2.n_pages() == 0 && create_tab {
                 nb2.show();
@@ -2302,7 +2439,6 @@ impl MainWindow {
             paned.set_position((h / 2).max(100));
         }
         self.update_tabs_menu();
-        *self.imp().splitting.borrow_mut() = false;
     }
 
     fn move_tab_between(&self, src: &gtk::Notebook, dst: &gtk::Notebook, idx: u32) {
@@ -2342,7 +2478,7 @@ impl MainWindow {
         let nb = self.imp().notebook.borrow().clone().unwrap();
         let nb2 = self.imp().notebook2.borrow().clone().unwrap();
         let focused = self.focused_notebook();
-        let target = if focused == nb { nb } else { nb2 };
+        let target = if focused == nb { nb2 } else { nb };
         if let Some(idx) = target.current_page() {
             if let Some(page) = target.nth_page(Some(idx)) {
                 if let Ok(term) = page.downcast::<TerminalBox>() {
@@ -2390,7 +2526,7 @@ impl MainWindow {
             .insert(term.clone(), (lbl_box.clone(), lbl));
         let idx = nb.append_page(&term, Some(&lbl_box));
         nb.set_tab_reorderable(&term, true);
-        nb.set_show_tabs(true);
+        nb.set_show_tabs(settings().get_bool("show_tabs"));
         nb.show_all();
         nb.set_current_page(Some(idx));
         self.update_tabs_menu();
@@ -2425,9 +2561,10 @@ impl MainWindow {
         btn.set_relief(gtk::ReliefStyle::None);
         btn.set_focus_on_click(false);
         btn.set_tooltip_text(Some("Close tab"));
-        btn.add(
-            &gtk::Image::from_icon_name(Some("window-close-symbolic"), gtk::IconSize::Menu),
-        );
+        btn.add(&gtk::Image::from_icon_name(
+            Some("window-close-symbolic"),
+            gtk::IconSize::Menu,
+        ));
         let term3 = term.clone();
         let weak = crate::SendWeak::new(self);
         btn.connect_clicked(move |_| {
@@ -2589,7 +2726,7 @@ impl MainWindow {
         };
         self.set_tab_text(term, &display);
         if self.total_tabs() == 1 {
-            self.update_title(&format!("TPGK - {}", title));
+            self.update_title(&format!("{} - {}", APP_NAME, title));
         }
     }
 
@@ -2608,7 +2745,12 @@ impl MainWindow {
         let nb2 = self.imp().notebook2.borrow().clone().unwrap();
         let mut idx = 0;
         for (notebook, prefix) in [(&nb, ""), (&nb2, "[R] ")] {
-            let cur = *self.imp().current_pages.borrow().get(notebook).unwrap_or(&notebook.current_page().unwrap_or(0));
+            let cur = *self
+                .imp()
+                .current_pages
+                .borrow()
+                .get(notebook)
+                .unwrap_or(&notebook.current_page().unwrap_or(0));
             let cur_page = if cur < notebook.n_pages() {
                 notebook.nth_page(Some(cur))
             } else {
@@ -2748,9 +2890,14 @@ impl MainWindow {
     }
 
     fn on_switch_tab(&self, page: &gtk::Widget, page_num: u32) {
-        let nb = page.parent().and_then(|p| p.downcast::<gtk::Notebook>().ok());
+        let nb = page
+            .parent()
+            .and_then(|p| p.downcast::<gtk::Notebook>().ok());
         if let Some(nb) = nb {
-            self.imp().current_pages.borrow_mut().insert(nb, page_num as u32);
+            self.imp()
+                .current_pages
+                .borrow_mut()
+                .insert(nb, page_num as u32);
         }
         if let Ok(term) = page.clone().downcast::<TerminalBox>() {
             let weak = crate::SendWeak::new(&term);
@@ -2839,7 +2986,10 @@ impl MainWindow {
             Some("Set Tab Title"),
             Some(self),
             gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
-            &[("Cancel", gtk::ResponseType::Cancel), ("Set", gtk::ResponseType::Ok)],
+            &[
+                ("Cancel", gtk::ResponseType::Cancel),
+                ("Set", gtk::ResponseType::Ok),
+            ],
         );
         let entry = gtk::Entry::new();
         if let Some(term) = self.current_terminal() {
@@ -2850,13 +3000,10 @@ impl MainWindow {
         if dialog.run() == gtk::ResponseType::Ok {
             let title = entry.text().trim().to_string();
             if !title.is_empty() {
-                self.update_title(&format!("TPGK - {}", title));
+                self.update_title(&format!("{} - {}", APP_NAME, title));
                 if let Some(term) = self.current_terminal() {
                     self.set_tab_text(&term, &title);
-                    self.imp()
-                        .tab_base_titles
-                        .borrow_mut()
-                        .insert(term, title);
+                    self.imp().tab_base_titles.borrow_mut().insert(term, title);
                 }
             }
         }
@@ -2868,7 +3015,10 @@ impl MainWindow {
             Some("Save Profile"),
             Some(self),
             gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
-            &[("Cancel", gtk::ResponseType::Cancel), ("Save", gtk::ResponseType::Ok)],
+            &[
+                ("Cancel", gtk::ResponseType::Cancel),
+                ("Save", gtk::ResponseType::Ok),
+            ],
         );
         let entry = gtk::Entry::new();
         entry.set_placeholder_text(Some("Profile name..."));
@@ -2883,7 +3033,9 @@ impl MainWindow {
                         settings().set_str("active_profile", &name);
                     }
                     false => {
-                        self.show_error("Could not save the profile. See the application log for details.");
+                        self.show_error(
+                            "Could not save the profile. See the application log for details.",
+                        );
                     }
                 }
             }
@@ -2896,7 +3048,10 @@ impl MainWindow {
             Some("Save Session"),
             Some(self),
             gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
-            &[("Cancel", gtk::ResponseType::Cancel), ("Save", gtk::ResponseType::Ok)],
+            &[
+                ("Cancel", gtk::ResponseType::Cancel),
+                ("Save", gtk::ResponseType::Ok),
+            ],
         );
         let entry = gtk::Entry::new();
         entry.set_placeholder_text(Some("Session name..."));
@@ -2908,7 +3063,9 @@ impl MainWindow {
             let name = entry.text().trim().to_string();
             if !name.is_empty() {
                 if !self.save_session_named(&name) {
-                    self.show_error("Could not save the session. See the application log for details.");
+                    self.show_error(
+                        "Could not save the session. See the application log for details.",
+                    );
                 }
             }
         }
@@ -3085,7 +3242,11 @@ impl MainWindow {
         glib::Propagation::Stop
     }
 
-    fn on_window_key(&self, _widget: &gtk::ApplicationWindow, event: &gdk::EventKey) -> glib::Propagation {
+    fn on_window_key(
+        &self,
+        _widget: &gtk::ApplicationWindow,
+        event: &gdk::EventKey,
+    ) -> glib::Propagation {
         let ctrl = event.state().contains(gdk::ModifierType::CONTROL_MASK);
         let key = event.keyval();
         if (ctrl && key == K::F11) || key == K::F11 {
@@ -3265,10 +3426,7 @@ impl MainWindow {
         data.split_mode = self.imp().split_mode.borrow().clone();
         let nb = self.imp().notebook.borrow().clone().unwrap();
         let nb2 = self.imp().notebook2.borrow().clone().unwrap();
-        for (notebook, target) in [
-            (&nb, &mut data.tabs_left),
-            (&nb2, &mut data.tabs_right),
-        ] {
+        for (notebook, target) in [(&nb, &mut data.tabs_left), (&nb2, &mut data.tabs_right)] {
             for i in 0..notebook.n_pages() {
                 let Some(page) = notebook.nth_page(Some(i)) else {
                     continue;
@@ -3326,16 +3484,34 @@ impl MainWindow {
         let tabs_right = data.tabs_right.clone();
         if !tabs_left.is_empty() {
             let first = &tabs_left[0];
-            self.add_new_tab(Some(&first.cwd), None, Some(&first.base_title), Some(&first.title), None);
+            self.add_new_tab(
+                Some(&first.cwd),
+                None,
+                Some(&first.base_title),
+                Some(&first.title),
+                None,
+            );
             for tab in &tabs_left[1..] {
-                self.add_new_tab(Some(&tab.cwd), None, Some(&tab.base_title), Some(&tab.title), None);
+                self.add_new_tab(
+                    Some(&tab.cwd),
+                    None,
+                    Some(&tab.base_title),
+                    Some(&tab.title),
+                    None,
+                );
             }
         }
         if !tabs_right.is_empty() && split != "single" {
             let nb2 = self.imp().notebook2.borrow().clone().unwrap();
             self.set_split(&split, false);
             for tab in &tabs_right {
-                self.add_new_tab(Some(&tab.cwd), Some(&nb2), Some(&tab.base_title), Some(&tab.title), None);
+                self.add_new_tab(
+                    Some(&tab.cwd),
+                    Some(&nb2),
+                    Some(&tab.base_title),
+                    Some(&tab.title),
+                    None,
+                );
             }
         } else if split == "single" {
             self.set_split("single", false);
@@ -3411,7 +3587,6 @@ fn escape_markup(text: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
-
 
 fn spawn_new_process(_new_window: bool) {
     let current_exe = std::env::current_exe().unwrap_or_default();

@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use serde_json::Value;
 
 use crate::logging::LOGGER;
+use crate::persistence::temporary_path;
 use crate::persistence::validate_name;
 use crate::settings::{self, Settings};
 
@@ -18,13 +19,10 @@ fn ensure_dir() {
     let _ = fs::set_permissions(&profile_dir(), fs::Permissions::from_mode(0o700));
 }
 
-pub fn profile_path(name: &str) -> PathBuf {
+pub fn profile_path(name: &str) -> Result<PathBuf, String> {
     ensure_dir();
-    let name = validate_name(name, "Profile").unwrap_or_else(|e| {
-        LOGGER.error(&e);
-        "default".to_string()
-    });
-    profile_dir().join(format!("{}.json", name))
+    let name = validate_name(name, "Profile")?;
+    Ok(profile_dir().join(format!("{}.json", name)))
 }
 
 const COLOR_RE: &str = "^#[0-9a-fA-F]{6}$";
@@ -34,13 +32,36 @@ fn is_hex(s: &str) -> bool {
 }
 
 const PROFILE_KEYS: &[&str] = &[
-    "font_name", "font_size", "color_scheme", "foreground_color", "background_color",
-    "cursor_color", "cursor_shape", "highlight_color", "highlight_bg_color", "opacity",
-    "enable_transparency", "scrollback_lines", "scrollbar_position", "custom_palette",
-    "allow_bold_text", "cursor_blink", "tab_title_color", "tab_active_title_color",
-    "shell_command", "login_shell", "encoding", "osc133", "backspace_binding",
-    "delete_binding", "scroll_on_output", "scroll_on_keystroke", "window_padding_horizontal",
-    "window_padding_vertical", "bell_notification", "undercurl_style",
+    "font_name",
+    "font_size",
+    "color_scheme",
+    "foreground_color",
+    "background_color",
+    "cursor_color",
+    "cursor_shape",
+    "highlight_color",
+    "highlight_bg_color",
+    "opacity",
+    "enable_transparency",
+    "scrollback_lines",
+    "scrollbar_position",
+    "custom_palette",
+    "allow_bold_text",
+    "cursor_blink",
+    "tab_title_color",
+    "tab_active_title_color",
+    "shell_command",
+    "login_shell",
+    "encoding",
+    "osc133",
+    "backspace_binding",
+    "delete_binding",
+    "scroll_on_output",
+    "scroll_on_keystroke",
+    "window_padding_horizontal",
+    "window_padding_vertical",
+    "bell_notification",
+    "undercurl_style",
 ];
 
 fn validate_profile(data: &Value) -> Option<Value> {
@@ -80,12 +101,16 @@ fn validate_profile(data: &Value) -> Option<Value> {
                         }
                 }
             }
-            Value::String(_) => value.is_string() && value.as_str().unwrap().chars().count() <= 4096,
+            Value::String(_) => {
+                value.is_string() && value.as_str().unwrap().chars().count() <= 4096
+            }
             Value::Null => value.is_null(),
             Value::Object(_) => {
                 if let Value::Object(m) = value {
                     !m.iter().any(|(k, v)| {
-                        k.chars().count() > 100 || !v.is_string() || v.as_str().unwrap().chars().count() > 4096
+                        k.chars().count() > 100
+                            || !v.is_string()
+                            || v.as_str().unwrap().chars().count() > 4096
                     })
                 } else {
                     false
@@ -127,10 +152,18 @@ pub fn save_profile(name: &str, settings_data: &Value) -> bool {
         }
     };
     ensure_dir();
-    let path = profile_path(name);
-    let tmp = profile_dir().join(".profile_tmp");
-    let _ = fs::remove_file(&tmp);
-    match fs::write(&tmp, serde_json::to_string_pretty(&validated).unwrap_or_default()) {
+    let path = match profile_path(name) {
+        Ok(path) => path,
+        Err(e) => {
+            LOGGER.warning(&e);
+            return false;
+        }
+    };
+    let tmp = temporary_path(&profile_dir(), "profile_tmp");
+    match fs::write(
+        &tmp,
+        serde_json::to_string_pretty(&validated).unwrap_or_default(),
+    ) {
         Ok(()) => {
             let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
             if fs::rename(&tmp, &path).is_ok() {
@@ -147,7 +180,7 @@ pub fn save_profile(name: &str, settings_data: &Value) -> bool {
 }
 
 pub fn load_profile(name: &str) -> Option<Value> {
-    let p = profile_path(name);
+    let p = profile_path(name).ok()?;
     if !p.exists() {
         return None;
     }
@@ -173,7 +206,9 @@ pub fn load_profile(name: &str) -> Option<Value> {
 }
 
 pub fn delete_profile(name: &str) {
-    let p = profile_path(name);
+    let Ok(p) = profile_path(name) else {
+        return;
+    };
     if p.exists() {
         let _ = fs::remove_file(&p);
     }

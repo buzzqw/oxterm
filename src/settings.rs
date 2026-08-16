@@ -11,6 +11,7 @@ use glib::subclass::prelude::*;
 use serde_json::{json, Map, Value};
 
 use crate::logging::LOGGER;
+use crate::persistence::temporary_path;
 
 const HEX_COLOR_RE: &str = "^#[0-9a-fA-F]{6}$";
 
@@ -112,78 +113,150 @@ pub type ColorMap = BTreeMap<&'static str, &'static str>;
 
 fn init_data() -> BTreeMap<&'static str, ColorMap> {
     let dark: ColorMap = BTreeMap::from([
-        ("black", "#0a0a0a"), ("red", "#cc0000"), ("green", "#4e9a06"),
-        ("yellow", "#c4a000"), ("blue", "#3465a4"), ("magenta", "#75507b"),
-        ("cyan", "#06989a"), ("white", "#d3d7cf"),
-        ("brightblack", "#555753"), ("brightred", "#ef2929"),
-        ("brightgreen", "#8ae234"), ("brightyellow", "#fce94f"),
-        ("brightblue", "#729fcf"), ("brightmagenta", "#ad7fa8"),
-        ("brightcyan", "#34e2e2"), ("brightwhite", "#eeeeec"),
+        ("black", "#0a0a0a"),
+        ("red", "#cc0000"),
+        ("green", "#4e9a06"),
+        ("yellow", "#c4a000"),
+        ("blue", "#3465a4"),
+        ("magenta", "#75507b"),
+        ("cyan", "#06989a"),
+        ("white", "#d3d7cf"),
+        ("brightblack", "#555753"),
+        ("brightred", "#ef2929"),
+        ("brightgreen", "#8ae234"),
+        ("brightyellow", "#fce94f"),
+        ("brightblue", "#729fcf"),
+        ("brightmagenta", "#ad7fa8"),
+        ("brightcyan", "#34e2e2"),
+        ("brightwhite", "#eeeeec"),
     ]);
     let light: ColorMap = BTreeMap::from([
-        ("black", "#2e3436"), ("red", "#cc0000"), ("green", "#4e9a06"),
-        ("yellow", "#c4a000"), ("blue", "#3465a4"), ("magenta", "#75507b"),
-        ("cyan", "#06989a"), ("white", "#d3d7cf"),
-        ("brightblack", "#555753"), ("brightred", "#ef2929"),
-        ("brightgreen", "#8ae234"), ("brightyellow", "#fce94f"),
-        ("brightblue", "#729fcf"), ("brightmagenta", "#ad7fa8"),
-        ("brightcyan", "#34e2e2"), ("brightwhite", "#eeeeec"),
+        ("black", "#2e3436"),
+        ("red", "#cc0000"),
+        ("green", "#4e9a06"),
+        ("yellow", "#c4a000"),
+        ("blue", "#3465a4"),
+        ("magenta", "#75507b"),
+        ("cyan", "#06989a"),
+        ("white", "#d3d7cf"),
+        ("brightblack", "#555753"),
+        ("brightred", "#ef2929"),
+        ("brightgreen", "#8ae234"),
+        ("brightyellow", "#fce94f"),
+        ("brightblue", "#729fcf"),
+        ("brightmagenta", "#ad7fa8"),
+        ("brightcyan", "#34e2e2"),
+        ("brightwhite", "#eeeeec"),
     ]);
     let solarized_dark: ColorMap = BTreeMap::from([
-        ("black", "#002b36"), ("red", "#dc322f"), ("green", "#859900"),
-        ("yellow", "#b58900"), ("blue", "#268bd2"), ("magenta", "#d33682"),
-        ("cyan", "#2aa198"), ("white", "#eee8d5"),
-        ("brightblack", "#073642"), ("brightred", "#cb4b16"),
-        ("brightgreen", "#586e75"), ("brightyellow", "#657b83"),
-        ("brightblue", "#839496"), ("brightmagenta", "#6c71c4"),
-        ("brightcyan", "#93a1a1"), ("brightwhite", "#fdf6e3"),
+        ("black", "#002b36"),
+        ("red", "#dc322f"),
+        ("green", "#859900"),
+        ("yellow", "#b58900"),
+        ("blue", "#268bd2"),
+        ("magenta", "#d33682"),
+        ("cyan", "#2aa198"),
+        ("white", "#eee8d5"),
+        ("brightblack", "#073642"),
+        ("brightred", "#cb4b16"),
+        ("brightgreen", "#586e75"),
+        ("brightyellow", "#657b83"),
+        ("brightblue", "#839496"),
+        ("brightmagenta", "#6c71c4"),
+        ("brightcyan", "#93a1a1"),
+        ("brightwhite", "#fdf6e3"),
     ]);
     let solarized_light: ColorMap = BTreeMap::from([
-        ("black", "#073642"), ("red", "#dc322f"), ("green", "#859900"),
-        ("yellow", "#b58900"), ("blue", "#268bd2"), ("magenta", "#d33682"),
-        ("cyan", "#2aa198"), ("white", "#eee8d5"),
-        ("brightblack", "#002b36"), ("brightred", "#cb4b16"),
-        ("brightgreen", "#586e75"), ("brightyellow", "#657b83"),
-        ("brightblue", "#839496"), ("brightmagenta", "#6c71c4"),
-        ("brightcyan", "#93a1a1"), ("brightwhite", "#fdf6e3"),
+        ("black", "#073642"),
+        ("red", "#dc322f"),
+        ("green", "#859900"),
+        ("yellow", "#b58900"),
+        ("blue", "#268bd2"),
+        ("magenta", "#d33682"),
+        ("cyan", "#2aa198"),
+        ("white", "#eee8d5"),
+        ("brightblack", "#002b36"),
+        ("brightred", "#cb4b16"),
+        ("brightgreen", "#586e75"),
+        ("brightyellow", "#657b83"),
+        ("brightblue", "#839496"),
+        ("brightmagenta", "#6c71c4"),
+        ("brightcyan", "#93a1a1"),
+        ("brightwhite", "#fdf6e3"),
     ]);
     let gruvbox: ColorMap = BTreeMap::from([
-        ("black", "#282828"), ("red", "#cc241d"), ("green", "#98971a"),
-        ("yellow", "#d79921"), ("blue", "#458588"), ("magenta", "#b16286"),
-        ("cyan", "#689d6a"), ("white", "#a89984"),
-        ("brightblack", "#928374"), ("brightred", "#fb4934"),
-        ("brightgreen", "#b8bb26"), ("brightyellow", "#fabd2f"),
-        ("brightblue", "#83a598"), ("brightmagenta", "#d3869b"),
-        ("brightcyan", "#8ec07c"), ("brightwhite", "#ebdbb2"),
+        ("black", "#282828"),
+        ("red", "#cc241d"),
+        ("green", "#98971a"),
+        ("yellow", "#d79921"),
+        ("blue", "#458588"),
+        ("magenta", "#b16286"),
+        ("cyan", "#689d6a"),
+        ("white", "#a89984"),
+        ("brightblack", "#928374"),
+        ("brightred", "#fb4934"),
+        ("brightgreen", "#b8bb26"),
+        ("brightyellow", "#fabd2f"),
+        ("brightblue", "#83a598"),
+        ("brightmagenta", "#d3869b"),
+        ("brightcyan", "#8ec07c"),
+        ("brightwhite", "#ebdbb2"),
     ]);
     let monokai: ColorMap = BTreeMap::from([
-        ("black", "#272822"), ("red", "#f92672"), ("green", "#a6e22e"),
-        ("yellow", "#f4bf75"), ("blue", "#66d9ef"), ("magenta", "#ae81ff"),
-        ("cyan", "#a1efe4"), ("white", "#f8f8f2"),
-        ("brightblack", "#75715e"), ("brightred", "#f92672"),
-        ("brightgreen", "#a6e22e"), ("brightyellow", "#f4bf75"),
-        ("brightblue", "#66d9ef"), ("brightmagenta", "#ae81ff"),
-        ("brightcyan", "#a1efe4"), ("brightwhite", "#f9f8f5"),
+        ("black", "#272822"),
+        ("red", "#f92672"),
+        ("green", "#a6e22e"),
+        ("yellow", "#f4bf75"),
+        ("blue", "#66d9ef"),
+        ("magenta", "#ae81ff"),
+        ("cyan", "#a1efe4"),
+        ("white", "#f8f8f2"),
+        ("brightblack", "#75715e"),
+        ("brightred", "#f92672"),
+        ("brightgreen", "#a6e22e"),
+        ("brightyellow", "#f4bf75"),
+        ("brightblue", "#66d9ef"),
+        ("brightmagenta", "#ae81ff"),
+        ("brightcyan", "#a1efe4"),
+        ("brightwhite", "#f9f8f5"),
     ]);
     let nord: ColorMap = BTreeMap::from([
-        ("black", "#3b4252"), ("red", "#bf616a"), ("green", "#a3be8c"),
-        ("yellow", "#ebcb8b"), ("blue", "#81a1c1"), ("magenta", "#b48ead"),
-        ("cyan", "#88c0d0"), ("white", "#e5e9f0"),
-        ("brightblack", "#4c566a"), ("brightred", "#bf616a"),
-        ("brightgreen", "#a3be8c"), ("brightyellow", "#ebcb8b"),
-        ("brightblue", "#81a1c1"), ("brightmagenta", "#b48ead"),
-        ("brightcyan", "#8fbcbb"), ("brightwhite", "#eceff4"),
+        ("black", "#3b4252"),
+        ("red", "#bf616a"),
+        ("green", "#a3be8c"),
+        ("yellow", "#ebcb8b"),
+        ("blue", "#81a1c1"),
+        ("magenta", "#b48ead"),
+        ("cyan", "#88c0d0"),
+        ("white", "#e5e9f0"),
+        ("brightblack", "#4c566a"),
+        ("brightred", "#bf616a"),
+        ("brightgreen", "#a3be8c"),
+        ("brightyellow", "#ebcb8b"),
+        ("brightblue", "#81a1c1"),
+        ("brightmagenta", "#b48ead"),
+        ("brightcyan", "#8fbcbb"),
+        ("brightwhite", "#eceff4"),
     ]);
     let matrix: ColorMap = BTreeMap::from([
-        ("black", "#0d0208"), ("red", "#008f11"), ("green", "#00ff41"),
-        ("yellow", "#00ff41"), ("blue", "#008f11"), ("magenta", "#00ff41"),
-        ("cyan", "#00ff41"), ("white", "#00ff41"),
-        ("brightblack", "#003b00"), ("brightred", "#00ff41"),
-        ("brightgreen", "#00ff41"), ("brightyellow", "#00ff41"),
-        ("brightblue", "#00ff41"), ("brightmagenta", "#00ff41"),
-        ("brightcyan", "#00ff41"), ("brightwhite", "#00ff41"),
+        ("black", "#0d0208"),
+        ("red", "#008f11"),
+        ("green", "#00ff41"),
+        ("yellow", "#00ff41"),
+        ("blue", "#008f11"),
+        ("magenta", "#00ff41"),
+        ("cyan", "#00ff41"),
+        ("white", "#00ff41"),
+        ("brightblack", "#003b00"),
+        ("brightred", "#00ff41"),
+        ("brightgreen", "#00ff41"),
+        ("brightyellow", "#00ff41"),
+        ("brightblue", "#00ff41"),
+        ("brightmagenta", "#00ff41"),
+        ("brightcyan", "#00ff41"),
+        ("brightwhite", "#00ff41"),
     ]);
-    BTreeMap::from([
+    let mut all = BTreeMap::from([
         ("Dark (Default)", dark),
         ("Light", light),
         ("Solarized Dark", solarized_dark),
@@ -192,7 +265,24 @@ fn init_data() -> BTreeMap<&'static str, ColorMap> {
         ("Monokai", monokai),
         ("Nord", nord),
         ("Matrix", matrix),
-    ])
+    ]);
+    let schemes = [
+        ("Dark (Default)", "#d3d7cf", "#0a0a0a"),
+        ("Light", "#2e3436", "#ffffff"),
+        ("Solarized Dark", "#839496", "#002b36"),
+        ("Solarized Light", "#657b83", "#fdf6e3"),
+        ("Gruvbox Dark", "#ebdbb2", "#282828"),
+        ("Monokai", "#f8f8f2", "#272822"),
+        ("Nord", "#e5e9f0", "#3b4252"),
+        ("Matrix", "#00ff41", "#0d0208"),
+    ];
+    for (name, foreground, background) in schemes {
+        if let Some(palette) = all.get_mut(name) {
+            palette.insert("foreground", foreground);
+            palette.insert("background", background);
+        }
+    }
+    all
 }
 
 pub fn color_schemes() -> &'static BTreeMap<&'static str, ColorMap> {
@@ -200,11 +290,13 @@ pub fn color_schemes() -> &'static BTreeMap<&'static str, ColorMap> {
     SCHEMES.get_or_init(|| {
         let all = init_data();
         all.into_iter()
-            .map(|(k, v)| (k, {
-                v.into_iter()
-                    .filter(|(kk, _)| matches!(*kk, "foreground" | "background"))
-                    .collect()
-            }))
+            .map(|(k, v)| {
+                (k, {
+                    v.into_iter()
+                        .filter(|(kk, _)| matches!(*kk, "foreground" | "background"))
+                        .collect()
+                })
+            })
             .collect()
     })
 }
@@ -213,7 +305,16 @@ pub fn color_palettes() -> &'static BTreeMap<&'static str, ColorMap> {
     static PALETTES: OnceLock<BTreeMap<&'static str, ColorMap>> = OnceLock::new();
     PALETTES.get_or_init(|| {
         let all = init_data();
-        all.into_iter().collect()
+        all.into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    v.into_iter()
+                        .filter(|(kk, _)| !matches!(*kk, "foreground" | "background"))
+                        .collect(),
+                )
+            })
+            .collect()
     })
 }
 
@@ -237,9 +338,7 @@ mod imp {
     impl ObjectImpl for SettingsObject {
         fn signals() -> &'static [glib::subclass::Signal] {
             static SIGNALS: OnceLock<Vec<glib::subclass::Signal>> = OnceLock::new();
-            SIGNALS.get_or_init(|| {
-                vec![glib::subclass::Signal::builder("changed").build()]
-            })
+            SIGNALS.get_or_init(|| vec![glib::subclass::Signal::builder("changed").build()])
         }
     }
 }
@@ -316,6 +415,7 @@ impl Settings {
         let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
         let mut rewrite = !path.exists();
         if !rewrite {
+            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
             match fs::read_to_string(&path) {
                 Ok(content) => match serde_json::from_str::<Value>(&content) {
                     Ok(Value::Object(map)) => {
@@ -364,8 +464,7 @@ impl Settings {
         let _g = imp.save_lock.lock().unwrap();
         let _ = fs::create_dir_all(&config_dir());
         let _ = fs::set_permissions(&config_dir(), fs::Permissions::from_mode(0o700));
-        let tmp = config_dir().join(".settings_tmp");
-        let _ = fs::remove_file(&tmp);
+        let tmp = temporary_path(&config_dir(), "settings_tmp");
         let json_str = serde_json::to_string_pretty(&*imp.data.lock().unwrap());
         match json_str {
             Ok(s) => {
@@ -419,7 +518,9 @@ impl Settings {
     }
 
     pub fn get_bool(&self, key: &str) -> bool {
-        self.get_default(key, json!(false)).as_bool().unwrap_or(false)
+        self.get_default(key, json!(false))
+            .as_bool()
+            .unwrap_or(false)
     }
 
     pub fn get_obj(&self, key: &str) -> Value {
@@ -428,9 +529,7 @@ impl Settings {
 
     pub fn set(&self, key: &str, value: Value) -> Result<(), String> {
         self.ensure_loaded();
-        if defaults().as_object().unwrap().contains_key(key)
-            && !Self::valid_value(key, &value)
-        {
+        if defaults().as_object().unwrap().contains_key(key) && !Self::valid_value(key, &value) {
             return Err(format!("Invalid setting value: {}", key));
         }
         self.data_mut()
@@ -507,17 +606,19 @@ impl Settings {
     pub fn get_palette(&self) -> Value {
         self.ensure_loaded();
         let custom = self.data().get("custom_palette").cloned();
-        if let Some(Value::Object(_)) = custom {
-            return custom.unwrap();
+        if let Some(Value::Object(map)) = custom {
+            if !map.is_empty() {
+                return Value::Object(map);
+            }
         }
         let data = self.data();
         let scheme = data
             .get("color_scheme")
             .and_then(|v| v.as_str())
             .unwrap_or("Dark (Default)");
-        let pal = color_palettes().get(scheme).unwrap_or_else(|| {
-            color_palettes().get("Dark (Default)").unwrap()
-        });
+        let pal = color_palettes()
+            .get(scheme)
+            .unwrap_or_else(|| color_palettes().get("Dark (Default)").unwrap());
         Value::Object(
             pal.iter()
                 .map(|(k, v)| (k.to_string(), Value::String(v.to_string())))
@@ -603,9 +704,9 @@ impl Settings {
                     }
                     if let Value::Object(map) = value {
                         if map.len() <= 16 {
-                            return map.iter().all(|(_k, v)| {
-                                v.is_string() && is_hex_color(v.as_str().unwrap())
-                            });
+                            return map
+                                .iter()
+                                .all(|(_k, v)| v.is_string() && is_hex_color(v.as_str().unwrap()));
                         }
                     }
                     false
@@ -627,6 +728,19 @@ impl Settings {
             }
             Value::Array(_) => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn color_schemes_have_foreground_and_background() {
+        let light = color_schemes().get("Light").unwrap();
+        assert_eq!(light.get("foreground"), Some(&"#2e3436"));
+        assert_eq!(light.get("background"), Some(&"#ffffff"));
+        assert_eq!(color_palettes().get("Light").unwrap().len(), 16);
     }
 }
 

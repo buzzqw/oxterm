@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
@@ -247,8 +249,7 @@ impl HistoryManager {
 
     pub fn sql_search(&self, sql: &str) -> Result<Vec<Vec<Value>>, String> {
         let sql_stripped = sql.trim();
-        let upper = sql_stripped.to_uppercase();
-        if !(upper.starts_with("SELECT") || upper.starts_with("EXPLAIN")) {
+        if !is_read_only_sql(sql_stripped) {
             return Err("Only SELECT and EXPLAIN queries are supported".to_string());
         }
         let path = history_db_path();
@@ -257,6 +258,14 @@ impl HistoryManager {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
         )
         .map_err(|e| e.to_string())?;
+        conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
+            AuthAction::Select | AuthAction::Read { .. } | AuthAction::Function { .. } => {
+                Authorization::Allow
+            }
+            _ => Authorization::Deny,
+        }));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        conn.progress_handler(10_000, Some(move || Instant::now() >= deadline));
         let mut stmt = conn.prepare(sql_stripped).map_err(|e| e.to_string())?;
         let col_count = stmt.column_count();
         let mut rows = Vec::new();
@@ -271,7 +280,7 @@ impl HistoryManager {
                     values.push(rusqlite_value_to_json(v));
                 }
                 rows.push(values);
-                if rows.len() > 1000 {
+                if rows.len() >= 1000 {
                     break;
                 }
             }
@@ -300,13 +309,10 @@ impl HistoryManager {
             .collect();
 
         let first_term = parts[0];
-        let mut order_parts = vec![
-            "CASE WHEN command LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END".to_string(),
-        ];
-        let mut order_params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(format!(
-            "{}%",
-            Self::like_escape(first_term)
-        ))];
+        let mut order_parts =
+            vec!["CASE WHEN command LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END".to_string()];
+        let mut order_params: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(format!("{}%", Self::like_escape(first_term)))];
         if parts.len() > 1 {
             let sum = parts
                 .iter()
@@ -350,9 +356,9 @@ impl HistoryManager {
         let db_path = history_db_path();
         std::thread::spawn(move || {
             if let Ok(conn) = Connection::open(&db_path) {
-                if let Ok(count) = conn.query_row("SELECT COUNT(*) FROM commands", [], |r| {
-                    r.get::<_, i64>(0)
-                }) {
+                if let Ok(count) =
+                    conn.query_row("SELECT COUNT(*) FROM commands", [], |r| r.get::<_, i64>(0))
+                {
                     if count > TRIM_MAX_ROWS {
                         let _ = conn.execute(
                             "DELETE FROM commands WHERE id NOT IN \
@@ -411,13 +417,18 @@ impl HistoryManager {
             conn.query_row("SELECT COUNT(*) FROM commands", [], |r| r.get::<_, i64>(0))
                 .unwrap_or(0)
         };
-        let size_before = std::fs::metadata(&db_path).map(|m| m.len() as i64).unwrap_or(0);
+        let size_before = std::fs::metadata(&db_path)
+            .map(|m| m.len() as i64)
+            .unwrap_or(0);
 
-        if let Ok(conn) = Connection::open_with_flags(
-            &db_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
-        ) {
-            let _ = conn.pragma_update(None, "wal_checkpoint(TRUNCATE)", rusqlite::types::Value::Null);
+        if let Ok(conn) =
+            Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+        {
+            let _ = conn.pragma_update(
+                None,
+                "wal_checkpoint(TRUNCATE)",
+                rusqlite::types::Value::Null,
+            );
             let _ = conn.execute_batch("ANALYZE; VACUUM;");
         }
         let mut g = self.inserts_since_trim.lock().unwrap();
@@ -428,7 +439,9 @@ impl HistoryManager {
             conn.query_row("SELECT COUNT(*) FROM commands", [], |r| r.get::<_, i64>(0))
                 .unwrap_or(0)
         };
-        let size_after = std::fs::metadata(&db_path).map(|m| m.len() as i64).unwrap_or(0);
+        let size_after = std::fs::metadata(&db_path)
+            .map(|m| m.len() as i64)
+            .unwrap_or(0);
 
         stats.insert("rows_before".into(), json!(rows_before));
         stats.insert("rows_after".into(), json!(rows_after));
@@ -439,6 +452,11 @@ impl HistoryManager {
     }
 }
 
+fn is_read_only_sql(sql: &str) -> bool {
+    let upper = sql.trim().to_uppercase();
+    upper.starts_with("SELECT") || upper.starts_with("EXPLAIN")
+}
+
 fn rusqlite_value_to_json(v: rusqlite::types::Value) -> Value {
     match v {
         rusqlite::types::Value::Null => Value::Null,
@@ -446,5 +464,18 @@ fn rusqlite_value_to_json(v: rusqlite::types::Value) -> Value {
         rusqlite::types::Value::Real(f) => json!(f),
         rusqlite::types::Value::Text(s) => Value::String(s),
         rusqlite::types::Value::Blob(b) => Value::String(format!("{:?}", b)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_read_only_sql;
+
+    #[test]
+    fn sql_filter_accepts_only_select_and_explain() {
+        assert!(is_read_only_sql("SELECT * FROM commands"));
+        assert!(is_read_only_sql("EXPLAIN SELECT 1"));
+        assert!(!is_read_only_sql("PRAGMA table_info(commands)"));
+        assert!(!is_read_only_sql("DELETE FROM commands"));
     }
 }

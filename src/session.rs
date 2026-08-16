@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use serde_json::{json, Value};
 
 use crate::logging::LOGGER;
+use crate::persistence::temporary_path;
 use crate::persistence::validate_name;
 use crate::settings;
 
@@ -17,13 +18,10 @@ fn ensure_dir() {
     let _ = fs::set_permissions(&session_dir(), fs::Permissions::from_mode(0o700));
 }
 
-pub fn session_path(name: &str) -> PathBuf {
+pub fn session_path(name: &str) -> Result<PathBuf, String> {
     ensure_dir();
-    let name = validate_name(name, "Session").unwrap_or_else(|e| {
-        LOGGER.error(&e);
-        "last".to_string()
-    });
-    session_dir().join(format!("{}.json", name))
+    let name = validate_name(name, "Session")?;
+    Ok(session_dir().join(format!("{}.json", name)))
 }
 
 #[derive(Clone, Default)]
@@ -55,10 +53,18 @@ pub fn save_session(name: &str, data: &SessionData) -> bool {
             json!({"base_title": t.base_title, "title": t.title, "cwd": t.cwd})
         }).collect::<Vec<_>>(),
     });
-    let path = session_path(name);
-    let tmp = session_dir().join(".session_tmp");
-    let _ = fs::remove_file(&tmp);
-    match fs::write(&tmp, serde_json::to_string_pretty(&payload).unwrap_or_default()) {
+    let path = match session_path(name) {
+        Ok(path) => path,
+        Err(e) => {
+            LOGGER.warning(&e);
+            return false;
+        }
+    };
+    let tmp = temporary_path(&session_dir(), "session_tmp");
+    match fs::write(
+        &tmp,
+        serde_json::to_string_pretty(&payload).unwrap_or_default(),
+    ) {
         Ok(()) => {
             let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
             if fs::rename(&tmp, &path).is_ok() {
@@ -122,7 +128,10 @@ fn validate_state(data: &Value) -> Option<SessionData> {
         split_mode,
         ..Default::default()
     };
-    for (key, dst) in [("tabs_left", &mut out.tabs_left), ("tabs_right", &mut out.tabs_right)] {
+    for (key, dst) in [
+        ("tabs_left", &mut out.tabs_left),
+        ("tabs_right", &mut out.tabs_right),
+    ] {
         let arr = data.get(key);
         if !arr.map(|a| a.is_array()).unwrap_or(true) {
             return None;
@@ -146,7 +155,7 @@ fn validate_state(data: &Value) -> Option<SessionData> {
 }
 
 pub fn load_session(name: &str) -> Option<SessionData> {
-    let p = session_path(name);
+    let p = session_path(name).ok()?;
     if !p.exists() {
         return None;
     }
@@ -196,7 +205,9 @@ pub fn list_sessions() -> Vec<String> {
 }
 
 pub fn delete_session(name: &str) {
-    let p = session_path(name);
+    let Ok(p) = session_path(name) else {
+        return;
+    };
     if p.exists() {
         let _ = fs::remove_file(&p);
     }

@@ -1,12 +1,14 @@
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use glib::prelude::*;
 use gtk::gdk;
 use gtk::prelude::*;
 
 use crate::settings::{self, settings, Settings};
-use crate::window::{EUPL_LICENSE_TEXT, VERSION};
+use crate::window::{APP_NAME, EUPL_LICENSE_TEXT, VERSION};
 
 fn hex_to_rgba(hex: &str) -> gdk::RGBA {
     gdk::RGBA::parse(hex).unwrap_or_else(|_| gdk::RGBA::new(0.0, 0.0, 0.0, 1.0))
@@ -27,6 +29,8 @@ struct DialogState {
     palette_btns: RefCell<BTreeMap<String, (gtk::ColorButton, String)>>,
     _fg_btn: gtk::ColorButton,
     _bg_btn: gtk::ColorButton,
+    fg_override: Rc<Cell<bool>>,
+    bg_override: Rc<Cell<bool>>,
     // General
     entry_title: gtk::Entry,
     combo_dynamic: gtk::ComboBoxText,
@@ -82,10 +86,13 @@ struct DialogState {
 pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
     let s = settings();
     let dialog = gtk::Dialog::with_buttons(
-        Some("Preferences - TPGK"),
+        Some("Preferences - terust"),
         parent,
         gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
-        &[("Cancel", gtk::ResponseType::Cancel), ("OK", gtk::ResponseType::Ok)],
+        &[
+            ("Cancel", gtk::ResponseType::Cancel),
+            ("OK", gtk::ResponseType::Ok),
+        ],
     );
     dialog.set_default_size(880, 700);
 
@@ -106,7 +113,9 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
         0,
     );
     content_box.pack_start(&stack, true, true, 0);
-    dialog.content_area().pack_start(&content_box, true, true, 8);
+    dialog
+        .content_area()
+        .pack_start(&content_box, true, true, 8);
 
     // Build pages
     let (general_widget, general) = build_general(&s);
@@ -147,6 +156,8 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
         palette_btns: RefCell::new(colors),
         _fg_btn: appearance.4.clone(),
         _bg_btn: appearance.5.clone(),
+        fg_override: Rc::new(Cell::new(!s.get_str("foreground_color").is_empty())),
+        bg_override: Rc::new(Cell::new(!s.get_str("background_color").is_empty())),
         entry_title: general.0,
         combo_dynamic: general.1,
         chk_login: general.2,
@@ -194,6 +205,17 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
         entry_editor: notes.2,
     };
 
+    {
+        let override_flag = state.fg_override.clone();
+        state
+            .fg_color_btn
+            .connect_color_set(move |_| override_flag.set(true));
+        let override_flag = state.bg_override.clone();
+        state
+            .bg_color_btn
+            .connect_color_set(move |_| override_flag.set(true));
+    }
+
     // Live preview: switching the scheme updates fg/bg and palette buttons.
     {
         let combo = state.combo_scheme.clone();
@@ -238,7 +260,7 @@ pub fn show_about_dialog(parent: Option<&gtk::Window>) {
     let dialog = gtk::AboutDialog::new();
     dialog.set_transient_for(parent);
     dialog.set_modal(true);
-    dialog.set_program_name("TPGK");
+    dialog.set_program_name(APP_NAME);
     dialog.set_version(Some(VERSION));
     dialog.set_comments(Some(
         "Advanced terminal emulator powered by VTE\nSupports tmux-like splits (View > Split)",
@@ -333,19 +355,25 @@ fn build_general(
         .map(|(_, v)| *v)
         .unwrap_or(0);
     combo_dynamic.set_active(Some(idx));
-    combo_dynamic.set_tooltip_text(Some("How to combine a title set by the shell (OSC escape) with the initial title"));
+    combo_dynamic.set_tooltip_text(Some(
+        "How to combine a title set by the shell (OSC escape) with the initial title",
+    ));
     r = row(&grid, r, "Dynamic title:", &combo_dynamic);
 
     r += 1;
     r = section(&grid, r, "Command");
     let chk_login = gtk::CheckButton::with_label("Run as login shell");
     chk_login.set_active(s.get_bool("login_shell"));
-    chk_login.set_tooltip_text(Some("Start the shell as a login shell (loads .profile / .bash_profile)"));
+    chk_login.set_tooltip_text(Some(
+        "Start the shell as a login shell (loads .profile / .bash_profile)",
+    ));
     r = row(&grid, r, "Login shell:", &chk_login);
 
     let entry_shell = gtk::Entry::new();
     entry_shell.set_text(&s.get_str_default("shell_command", "/bin/bash"));
-    entry_shell.set_tooltip_text(Some("Custom shell command or path. Use $SHELL for the default shell"));
+    entry_shell.set_tooltip_text(Some(
+        "Custom shell command or path. Use $SHELL for the default shell",
+    ));
     r = row(&grid, r, "Shell:", &entry_shell);
 
     let size_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -382,13 +410,15 @@ fn build_general(
     let chk_scrollback_unlimited = gtk::CheckButton::new();
     chk_scrollback_unlimited.set_active(s.get_i64("scrollback_lines") == -1);
     chk_scrollback_unlimited.set_tooltip_text(Some("Unlimited scrollback buffer"));
-    let spin_scrollback = gtk::SpinButton::with_range(500.0, 100000.0, 500.0);
+    let spin_scrollback = gtk::SpinButton::with_range(1.0, 1_000_000.0, 1.0);
     {
         let val = s.get_i64("scrollback_lines");
         spin_scrollback.set_value(if val > 0 { val as f64 } else { 10000.0 });
         spin_scrollback.set_sensitive(val > 0);
     }
-    spin_scrollback.set_tooltip_text(Some("Maximum number of lines kept in the scrollback buffer"));
+    spin_scrollback.set_tooltip_text(Some(
+        "Maximum number of lines kept in the scrollback buffer",
+    ));
     {
         let spin = spin_scrollback.clone();
         chk_scrollback_unlimited.connect_toggled(move |chk| {
@@ -400,7 +430,9 @@ fn build_general(
 
     let chk_scroll_output = gtk::CheckButton::new();
     chk_scroll_output.set_active(s.get_bool("scroll_on_output"));
-    chk_scroll_output.set_tooltip_text(Some("Automatically scroll to the bottom when new output appears"));
+    chk_scroll_output.set_tooltip_text(Some(
+        "Automatically scroll to the bottom when new output appears",
+    ));
     r = row(&grid, r, "Scroll on output:", &chk_scroll_output);
 
     let chk_scroll_keystroke = gtk::CheckButton::new();
@@ -422,37 +454,48 @@ fn build_general(
 
     let chk_warn_paste = gtk::CheckButton::new();
     chk_warn_paste.set_active(s.get_bool("show_unsafe_paste_dialog"));
-    chk_warn_paste.set_tooltip_text(Some("Warn before pasting multi-line text that may contain harmful commands"));
+    chk_warn_paste.set_tooltip_text(Some(
+        "Warn before pasting multi-line text that may contain harmful commands",
+    ));
     r = row(&grid, r, "Warn multi-line paste:", &chk_warn_paste);
 
     let entry_fm = gtk::Entry::new();
     entry_fm.set_text(&s.get_str("file_manager"));
     entry_fm.set_placeholder_text(Some("auto-detect"));
-    entry_fm.set_tooltip_text(Some("Override the file manager (e.g. nemo, thunar, dolphin). Leave blank to auto-detect"));
+    entry_fm.set_tooltip_text(Some(
+        "Override the file manager (e.g. nemo, thunar, dolphin). Leave blank to auto-detect",
+    ));
     r = row(&grid, r, "File manager:", &entry_fm);
 
     r += 1;
     r = section(&grid, r, "Session");
     let chk_session_restore = gtk::CheckButton::new();
     chk_session_restore.set_active(s.get_bool("session_restore"));
-    chk_session_restore.set_tooltip_text(Some("Restore tabs and splits from last session on startup"));
+    chk_session_restore
+        .set_tooltip_text(Some("Restore tabs and splits from last session on startup"));
     r = row(&grid, r, "Restore last session:", &chk_session_restore);
 
     let chk_bell_notify = gtk::CheckButton::new();
     chk_bell_notify.set_active(s.get_bool("bell_notification"));
-    chk_bell_notify.set_tooltip_text(Some("Show desktop notification when a command completes (requires OSC 133 shell integration)"));
+    chk_bell_notify.set_tooltip_text(Some(
+        "Show desktop notification when a command completes (requires OSC 133 shell integration)",
+    ));
     r = row(&grid, r, "Notify on command completion:", &chk_bell_notify);
 
     r += 1;
     r = section(&grid, r, "Keyboard Modes");
     let chk_hint_mode = gtk::CheckButton::new();
     chk_hint_mode.set_active(s.get_bool("hint_mode_enabled"));
-    chk_hint_mode.set_tooltip_text(Some("Ctrl+Shift+H: highlight URLs, paths and git SHAs with keyboard-selectable labels"));
+    chk_hint_mode.set_tooltip_text(Some(
+        "Ctrl+Shift+H: highlight URLs, paths and git SHAs with keyboard-selectable labels",
+    ));
     r = row(&grid, r, "Hint mode:", &chk_hint_mode);
 
     let chk_vi_copy = gtk::CheckButton::new();
     chk_vi_copy.set_active(s.get_bool("vi_copy_mode_enabled"));
-    chk_vi_copy.set_tooltip_text(Some("Ctrl+Shift+Y: VI-style copy mode (hjkl scroll, v select, y yank, Esc exit)"));
+    chk_vi_copy.set_tooltip_text(Some(
+        "Ctrl+Shift+Y: VI-style copy mode (hjkl scroll, v select, y yank, Esc exit)",
+    ));
     row(&grid, r, "VI copy mode:", &chk_vi_copy);
 
     sw.add(&grid);
@@ -531,7 +574,9 @@ fn build_appearance(
 
     let chk_bold = gtk::CheckButton::new();
     chk_bold.set_active(s.get_bool("allow_bold_text"));
-    chk_bold.set_tooltip_text(Some("Render bold text as bold. Disable for uniform text weight"));
+    chk_bold.set_tooltip_text(Some(
+        "Render bold text as bold. Disable for uniform text weight",
+    ));
     r = row(&grid, r, "Allow bold text:", &chk_bold);
 
     r += 1;
@@ -545,16 +590,33 @@ fn build_appearance(
     let current = s.get_str_default("color_scheme", "Dark (Default)");
     let idx = scheme_names.iter().position(|n| *n == current).unwrap_or(0);
     combo_scheme.set_active(Some(idx as u32));
-    combo_scheme.set_tooltip_text(Some("Choose a built-in color scheme. Customize individual colors below"));
+    combo_scheme.set_tooltip_text(Some(
+        "Choose a built-in color scheme. Customize individual colors below",
+    ));
     r = row(&grid, r, "Scheme:", &combo_scheme);
 
     r += 1;
     r = section(&grid, r, "Individual Colors");
-    let fg_color_btn = make_color_button(&s.get_fg_color(), "Default text foreground color – click to change");
-    let bg_color_btn = make_color_button(&s.get_bg_color(), "Terminal background color – click to change");
-    let cursor_color_btn = make_color_button(&s.get_str_default("cursor_color", "#ffffff"), "Cursor color – click to change");
-    let highlight_btn = make_color_button(&s.get_str_default("highlight_color", "#ffffff"), "Selected text color – click to change");
-    let highlight_bg_btn = make_color_button(&s.get_str_default("highlight_bg_color", "#446688"), "Selection background color – click to change");
+    let fg_color_btn = make_color_button(
+        &s.get_fg_color(),
+        "Default text foreground color – click to change",
+    );
+    let bg_color_btn = make_color_button(
+        &s.get_bg_color(),
+        "Terminal background color – click to change",
+    );
+    let cursor_color_btn = make_color_button(
+        &s.get_str_default("cursor_color", "#ffffff"),
+        "Cursor color – click to change",
+    );
+    let highlight_btn = make_color_button(
+        &s.get_str_default("highlight_color", "#ffffff"),
+        "Selected text color – click to change",
+    );
+    let highlight_bg_btn = make_color_button(
+        &s.get_str_default("highlight_bg_color", "#446688"),
+        "Selection background color – click to change",
+    );
 
     let color_grid = gtk::Grid::new();
     color_grid.set_column_spacing(12);
@@ -573,9 +635,15 @@ fn build_appearance(
 
     r += 1;
     r = section(&grid, r, "Tab Colors");
-    let tab_title_color_btn = make_color_button(&s.get_str_default("tab_title_color", "#ffffff"), "Color for inactive tab titles – click to change");
+    let tab_title_color_btn = make_color_button(
+        &s.get_str_default("tab_title_color", "#ffffff"),
+        "Color for inactive tab titles – click to change",
+    );
     r = row(&grid, r, "Tab title:", &tab_title_color_btn);
-    let tab_active_color_btn = make_color_button(&s.get_str_default("tab_active_title_color", "#ffffff"), "Color for the active tab title – click to change");
+    let tab_active_color_btn = make_color_button(
+        &s.get_str_default("tab_active_title_color", "#ffffff"),
+        "Color for the active tab title – click to change",
+    );
     r = row(&grid, r, "Active tab:", &tab_active_color_btn);
 
     r += 1;
@@ -585,14 +653,14 @@ fn build_appearance(
     combo_cursor_shape.append_text("underline");
     combo_cursor_shape.append_text("ibeam");
     let shape = s.get_str_default("cursor_shape", "block");
-    combo_cursor_shape.set_active(Some(
-        match shape.as_str() {
-            "underline" => 1,
-            "ibeam" => 2,
-            _ => 0,
-        },
+    combo_cursor_shape.set_active(Some(match shape.as_str() {
+        "underline" => 1,
+        "ibeam" => 2,
+        _ => 0,
+    }));
+    combo_cursor_shape.set_tooltip_text(Some(
+        "Cursor appearance: block (filled rectangle), underline (_), ibeam (|)",
     ));
-    combo_cursor_shape.set_tooltip_text(Some("Cursor appearance: block (filled rectangle), underline (_), ibeam (|)"));
     r = row(&grid, r, "Cursor shape:", &combo_cursor_shape);
 
     let chk_cursor_blink = gtk::CheckButton::new();
@@ -602,24 +670,30 @@ fn build_appearance(
 
     r += 1;
     r = section(&grid, r, "Transparency");
-    let spin_opacity = gtk::SpinButton::with_range(0.3, 1.0, 0.05);
+    let spin_opacity = gtk::SpinButton::with_range(0.1, 1.0, 0.05);
     spin_opacity.set_value(s.get_f64("opacity"));
-    spin_opacity.set_tooltip_text(Some("Window opacity (1.0 = fully opaque, 0.3 = almost transparent)"));
+    spin_opacity.set_tooltip_text(Some(
+        "Window opacity (1.0 = fully opaque, 0.3 = almost transparent)",
+    ));
     r = row(&grid, r, "Opacity:", &spin_opacity);
     let chk_transparency = gtk::CheckButton::new();
     chk_transparency.set_active(s.get_bool("enable_transparency"));
-    chk_transparency.set_tooltip_text(Some("Enable RGBA compositing transparency. Requires a compositor (e.g. picom, Wayland)"));
+    chk_transparency.set_tooltip_text(Some(
+        "Enable RGBA compositing transparency. Requires a compositor (e.g. picom, Wayland)",
+    ));
     r = row(&grid, r, "Enable transparency:", &chk_transparency);
 
     r += 1;
     r = section(&grid, r, "Padding");
     let pad_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    let spin_pad_h = gtk::SpinButton::with_range(0.0, 60.0, 1.0);
+    let spin_pad_h = gtk::SpinButton::with_range(0.0, 100.0, 1.0);
     spin_pad_h.set_value(s.get_i64("window_padding_horizontal") as f64);
-    spin_pad_h.set_tooltip_text(Some("Horizontal padding inside the terminal window (pixels)"));
+    spin_pad_h.set_tooltip_text(Some(
+        "Horizontal padding inside the terminal window (pixels)",
+    ));
     pad_box.pack_start(&gtk::Label::new(Some("H:")), false, false, 0);
     pad_box.pack_start(&spin_pad_h, false, false, 0);
-    let spin_pad_v = gtk::SpinButton::with_range(0.0, 60.0, 1.0);
+    let spin_pad_v = gtk::SpinButton::with_range(0.0, 100.0, 1.0);
     spin_pad_v.set_value(s.get_i64("window_padding_vertical") as f64);
     spin_pad_v.set_tooltip_text(Some("Vertical padding inside the terminal window (pixels)"));
     pad_box.pack_start(&gtk::Label::new(Some("V:")), false, false, 0);
@@ -638,7 +712,9 @@ fn build_appearance(
         .position(|x| *x == curl_style)
         .unwrap_or(0);
     combo_undercurl.set_active(Some(idx as u32));
-    combo_undercurl.set_tooltip_text(Some("Style for underlined text (e.g. compiler errors, spelling). curly requires VTE >= 0.58"));
+    combo_undercurl.set_tooltip_text(Some(
+        "Style for underlined text (e.g. compiler errors, spelling). curly requires VTE >= 0.58",
+    ));
     row(&grid, r, "Underline style:", &combo_undercurl);
 
     sw.add(&grid);
@@ -743,7 +819,10 @@ fn build_colors(
             Some("Load Palette"),
             None::<&gtk::Window>,
             gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
-            &[("Cancel", gtk::ResponseType::Cancel), ("Load", gtk::ResponseType::Ok)],
+            &[
+                ("Cancel", gtk::ResponseType::Cancel),
+                ("Load", gtk::ResponseType::Ok),
+            ],
         );
         let combo = gtk::ComboBoxText::new();
         let presets = [
@@ -774,18 +853,17 @@ fn build_colors(
         }
         dialog.close();
     });
-    load_btn.set_tooltip_text(Some("Load a built-in color palette preset (Dark, Light, Solarized, Gruvbox, Monokai, Nord)"));
+    load_btn.set_tooltip_text(Some(
+        "Load a built-in color palette preset (Dark, Light, Solarized, Gruvbox, Monokai, Nord)",
+    ));
     let save_btn = gtk::Button::with_label("Save As Custom");
+    let btns = palette_btns.clone();
     save_btn.connect_clicked(move |_| {
-        let dialog = gtk::MessageDialog::new(
-            None::<&gtk::Window>,
-            gtk::DialogFlags::MODAL,
-            gtk::MessageType::Info,
-            gtk::ButtonsType::Ok,
-            "Set your colors in the palette fields above and click OK.\nThe custom palette will be saved with your preferences.",
-        );
-        dialog.run();
-        dialog.close();
+        let mut palette = serde_json::Map::new();
+        for (key, (btn, _)) in &btns {
+            palette.insert(key.clone(), serde_json::json!(rgba_to_hex(&btn.rgba())));
+        }
+        let _ = settings().set("custom_palette", serde_json::Value::Object(palette));
     });
     let reset_btn = gtk::Button::with_label("Reset to Default");
     let btns2 = palette_btns.clone();
@@ -811,7 +889,12 @@ fn build_compatibility(
     s: &Settings,
 ) -> (
     gtk::Grid,
-    (gtk::ComboBoxText, gtk::ComboBoxText, gtk::ComboBoxText, gtk::CheckButton),
+    (
+        gtk::ComboBoxText,
+        gtk::ComboBoxText,
+        gtk::ComboBoxText,
+        gtk::CheckButton,
+    ),
 ) {
     let grid = gtk::Grid::new();
     grid.set_margin_start(12);
@@ -828,7 +911,12 @@ fn build_compatibility(
     combo_backspace.append_text("ASCII DEL (127)");
     combo_backspace.append_text("Escape sequence");
     combo_backspace.append_text("Control-H (8)");
-    let bs_map = [("auto", 0), ("ascii-del", 1), ("escape-sequence", 2), ("control-h", 3)];
+    let bs_map = [
+        ("auto", 0),
+        ("ascii-del", 1),
+        ("escape-sequence", 2),
+        ("control-h", 3),
+    ];
     let bs = s.get_str_default("backspace_binding", "ascii-del");
     combo_backspace.set_active(Some(
         bs_map
@@ -837,7 +925,9 @@ fn build_compatibility(
             .map(|(_, v)| *v)
             .unwrap_or(1),
     ));
-    combo_backspace.set_tooltip_text(Some("The character sequence sent when Backspace is pressed."));
+    combo_backspace.set_tooltip_text(Some(
+        "The character sequence sent when Backspace is pressed.",
+    ));
     r = row(&grid, r, "Backspace key:", &combo_backspace);
 
     let combo_delete = gtk::ComboBoxText::new();
@@ -845,7 +935,12 @@ fn build_compatibility(
     combo_delete.append_text("Escape sequence");
     combo_delete.append_text("ASCII DEL (127)");
     combo_delete.append_text("Control-H (8)");
-    let del_map = [("auto", 0), ("escape-sequence", 1), ("ascii-del", 2), ("control-h", 3)];
+    let del_map = [
+        ("auto", 0),
+        ("escape-sequence", 1),
+        ("ascii-del", 2),
+        ("control-h", 3),
+    ];
     let dl = s.get_str_default("delete_binding", "escape-sequence");
     combo_delete.set_active(Some(
         del_map
@@ -861,8 +956,19 @@ fn build_compatibility(
     r = section(&grid, r, "Encoding");
     let combo_encoding = gtk::ComboBoxText::new();
     let encodings = [
-        "UTF-8", "ISO-8859-1", "ISO-8859-15", "UTF-16", "UTF-16BE", "UTF-16LE", "CP1252",
-        "CP850", "ASCII", "KOI8-R", "Shift_JIS", "EUC-JP", "GBK",
+        "UTF-8",
+        "ISO-8859-1",
+        "ISO-8859-15",
+        "UTF-16",
+        "UTF-16BE",
+        "UTF-16LE",
+        "CP1252",
+        "CP850",
+        "ASCII",
+        "KOI8-R",
+        "Shift_JIS",
+        "EUC-JP",
+        "GBK",
     ];
     for enc in encodings {
         combo_encoding.append_text(enc);
@@ -884,7 +990,9 @@ fn build_compatibility(
 
     r += 1;
     let reset_btn = gtk::Button::with_label("Reset Compatibility Options to Defaults");
-    reset_btn.set_tooltip_text(Some("Reset backspace/delete bindings, encoding, and OSC 133 to their default values"));
+    reset_btn.set_tooltip_text(Some(
+        "Reset backspace/delete bindings, encoding, and OSC 133 to their default values",
+    ));
     let bs = combo_backspace.clone();
     let dl = combo_delete.clone();
     let enc = combo_encoding.clone();
@@ -897,7 +1005,10 @@ fn build_compatibility(
     });
     grid.attach(&reset_btn, 0, r, 2, 1);
 
-    (grid, (combo_backspace, combo_delete, combo_encoding, chk_osc133))
+    (
+        grid,
+        (combo_backspace, combo_delete, combo_encoding, chk_osc133),
+    )
 }
 
 fn build_ai(
@@ -920,10 +1031,9 @@ fn build_ai(
     let urls = settings::json_to_str_map(&s.get_obj("ai_urls"));
     let sys_prompts = settings::json_to_str_map(&s.get_obj("ai_system_prompts"));
 
-    let providers = [
-        "openai", "claude", "gemini", "deepseek", "ollama", "custom",
-    ];
-    let mut ai_entries: BTreeMap<String, (gtk::Entry, gtk::Entry, gtk::TextBuffer)> = BTreeMap::new();
+    let providers = ["openai", "claude", "gemini", "deepseek", "ollama", "custom"];
+    let mut ai_entries: BTreeMap<String, (gtk::Entry, gtk::Entry, gtk::TextBuffer)> =
+        BTreeMap::new();
     let mut ai_url_entries: BTreeMap<String, gtk::Entry> = BTreeMap::new();
     let mut rr = 0;
 
@@ -954,11 +1064,18 @@ fn build_ai(
         rr = row(&grid, rr, "Model:", &model_entry);
 
         let sys_prompt_buf = gtk::TextBuffer::new(None::<&gtk::TextTagTable>);
-        sys_prompt_buf.set_text(sys_prompts.get(provider).cloned().unwrap_or_default().as_str());
+        sys_prompt_buf.set_text(
+            sys_prompts
+                .get(provider)
+                .cloned()
+                .unwrap_or_default()
+                .as_str(),
+        );
         let sys_prompt_view = gtk::TextView::with_buffer(&sys_prompt_buf);
         sys_prompt_view.set_wrap_mode(gtk::WrapMode::WordChar);
         sys_prompt_view.set_size_request(-1, 60);
-        let sys_prompt_scroll = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
+        let sys_prompt_scroll =
+            gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
         sys_prompt_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
         sys_prompt_scroll.set_min_content_height(40);
         sys_prompt_scroll.add(&sys_prompt_view);
@@ -974,7 +1091,10 @@ fn build_ai(
         grid.attach(&sys_prompt_frame, 1, rr, 1, 1);
         rr += 1;
 
-        ai_entries.insert(provider.to_string(), (key_entry, model_entry, sys_prompt_buf));
+        ai_entries.insert(
+            provider.to_string(),
+            (key_entry, model_entry, sys_prompt_buf),
+        );
 
         if provider == "ollama" || provider == "custom" {
             let url_entry = gtk::Entry::new();
@@ -996,12 +1116,7 @@ fn build_ai(
     (sw, ai_entries, ai_url_entries)
 }
 
-fn build_notes(
-    s: &Settings,
-) -> (
-    gtk::Grid,
-    (gtk::Entry, gtk::Entry, gtk::Entry),
-) {
+fn build_notes(s: &Settings) -> (gtk::Grid, (gtk::Entry, gtk::Entry, gtk::Entry)) {
     let grid = gtk::Grid::new();
     grid.set_margin_start(12);
     grid.set_margin_end(12);
@@ -1015,15 +1130,22 @@ fn build_notes(
     let entry_notes_dir = gtk::Entry::new();
     entry_notes_dir.set_text(&s.get_str("notes_dir"));
     entry_notes_dir.set_placeholder_text(Some(
-        dirs::home_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default().as_str(),
+        dirs::home_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()
+            .as_str(),
     ));
-    entry_notes_dir.set_tooltip_text(Some("Directory where note files are stored. Default: home directory"));
+    entry_notes_dir.set_tooltip_text(Some(
+        "Directory where note files are stored. Default: home directory",
+    ));
     rr = row(&grid, rr, "Notes directory:", &entry_notes_dir);
 
     let entry_notes_file = gtk::Entry::new();
     entry_notes_file.set_text(&s.get_str("notes_file"));
     entry_notes_file.set_placeholder_text(Some("notes.md"));
-    entry_notes_file.set_tooltip_text(Some("Default notes filename. Created automatically when you use /wnotes"));
+    entry_notes_file.set_tooltip_text(Some(
+        "Default notes filename. Created automatically when you use /wnotes",
+    ));
     rr = row(&grid, rr, "Default notes file:", &entry_notes_file);
 
     let entry_editor = gtk::Entry::new();
@@ -1058,7 +1180,10 @@ impl DialogState {
 
         let pos_map = ["right", "left", "disabled"];
         let idx = self.combo_scrollbar_pos.active().unwrap_or(0) as usize;
-        s.set_str("scrollbar_position", pos_map.get(idx).copied().unwrap_or("right"));
+        s.set_str(
+            "scrollbar_position",
+            pos_map.get(idx).copied().unwrap_or("right"),
+        );
         let scrollback = if self.chk_scrollback_unlimited.is_active() {
             -1
         } else {
@@ -1076,7 +1201,11 @@ impl DialogState {
         s.set_bool("hint_mode_enabled", self.chk_hint_mode.is_active());
         s.set_bool("vi_copy_mode_enabled", self.chk_vi_copy.is_active());
 
-        let font_name = self.font_btn.font().map(|f| f.to_string()).unwrap_or_default();
+        let font_name = self
+            .font_btn
+            .font()
+            .map(|f| f.to_string())
+            .unwrap_or_default();
         let mut parts = font_name.rsplitn(2, ' ');
         let size = parts.next().unwrap_or("").to_string();
         let family = parts.next().unwrap_or(font_name.as_str()).to_string();
@@ -1090,13 +1219,32 @@ impl DialogState {
             s.set_str("color_scheme", &name);
         }
 
-        s.set_str("foreground_color", &rgba_to_hex(&self.fg_color_btn.rgba()));
-        s.set_str("background_color", &rgba_to_hex(&self.bg_color_btn.rgba()));
+        let foreground = if self.fg_override.get() {
+            rgba_to_hex(&self.fg_color_btn.rgba())
+        } else {
+            String::new()
+        };
+        let background = if self.bg_override.get() {
+            rgba_to_hex(&self.bg_color_btn.rgba())
+        } else {
+            String::new()
+        };
+        s.set_str("foreground_color", &foreground);
+        s.set_str("background_color", &background);
         s.set_str("cursor_color", &rgba_to_hex(&self.cursor_color_btn.rgba()));
         s.set_str("highlight_color", &rgba_to_hex(&self.highlight_btn.rgba()));
-        s.set_str("highlight_bg_color", &rgba_to_hex(&self.highlight_bg_btn.rgba()));
-        s.set_str("tab_title_color", &rgba_to_hex(&self.tab_title_color_btn.rgba()));
-        s.set_str("tab_active_title_color", &rgba_to_hex(&self.tab_active_color_btn.rgba()));
+        s.set_str(
+            "highlight_bg_color",
+            &rgba_to_hex(&self.highlight_bg_btn.rgba()),
+        );
+        s.set_str(
+            "tab_title_color",
+            &rgba_to_hex(&self.tab_title_color_btn.rgba()),
+        );
+        s.set_str(
+            "tab_active_title_color",
+            &rgba_to_hex(&self.tab_active_color_btn.rgba()),
+        );
 
         let shapes = ["block", "underline", "ibeam"];
         let idx = self.combo_cursor_shape.active().unwrap_or(0) as usize;
@@ -1137,11 +1285,24 @@ impl DialogState {
 
         let bs_map = ["auto", "ascii-del", "escape-sequence", "control-h"];
         let idx = self.combo_backspace.active().unwrap_or(0) as usize;
-        s.set_str("backspace_binding", bs_map.get(idx).copied().unwrap_or("ascii-del"));
+        s.set_str(
+            "backspace_binding",
+            bs_map.get(idx).copied().unwrap_or("ascii-del"),
+        );
         let del_map = ["auto", "escape-sequence", "ascii-del", "control-h"];
         let idx = self.combo_delete.active().unwrap_or(0) as usize;
-        s.set_str("delete_binding", del_map.get(idx).copied().unwrap_or("escape-sequence"));
-        let _ = s.set_str("encoding", &self.combo_encoding.active_text().map(|t| t.to_string()).unwrap_or_else(|| "UTF-8".to_string()));
+        s.set_str(
+            "delete_binding",
+            del_map.get(idx).copied().unwrap_or("escape-sequence"),
+        );
+        let _ = s.set_str(
+            "encoding",
+            &self
+                .combo_encoding
+                .active_text()
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "UTF-8".to_string()),
+        );
 
         let osc133_was_enabled = s.get_bool("osc133");
         let osc133_now_enabled = self.chk_osc133.is_active();
@@ -1154,7 +1315,10 @@ impl DialogState {
         for (provider, (key_entry, model_entry, buf)) in &self.ai_entries {
             new_keys.insert(provider.clone(), key_entry.text().to_string());
             new_models.insert(provider.clone(), model_entry.text().to_string());
-            let prompt = buf.text(&buf.start_iter(), &buf.end_iter(), true).map(|t| t.trim().to_string()).unwrap_or_default();
+            let prompt = buf
+                .text(&buf.start_iter(), &buf.end_iter(), true)
+                .map(|t| t.trim().to_string())
+                .unwrap_or_default();
             if !prompt.is_empty() {
                 new_sys_prompts.insert(provider.clone(), prompt);
             }
@@ -1165,7 +1329,10 @@ impl DialogState {
         let _ = s.set("ai_keys", settings::str_map_to_json(&new_keys));
         let _ = s.set("ai_models", settings::str_map_to_json(&new_models));
         let _ = s.set("ai_urls", settings::str_map_to_json(&new_urls));
-        let _ = s.set("ai_system_prompts", settings::str_map_to_json(&new_sys_prompts));
+        let _ = s.set(
+            "ai_system_prompts",
+            settings::str_map_to_json(&new_sys_prompts),
+        );
 
         s.set_str("notes_dir", &self.entry_notes_dir.text());
         s.set_str("notes_file", &self.entry_notes_file.text());
