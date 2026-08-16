@@ -2,7 +2,7 @@
 Name=terust Terminal
 Comment=GTK3/VTE terminal emulator with AI, history and notes
 Exec=terust
-Icon=utilities-terminal
+Icon=terust
 Terminal=false
 Type=Application
 Categories=System;TerminalEmulator;
