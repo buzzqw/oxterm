@@ -223,6 +223,16 @@ open them.
 The editor preference is used as a fallback when the desktop `xdg-open` helper
 is unavailable.
 
+## Latest Development Package
+
+Every successful push to the `master` branch publishes a rolling prerelease:
+
+<https://github.com/buzzqw/terust/releases/tag/latest>
+
+It contains the current Linux executable, an AppImage, and a `SHA256SUMS` file.
+This package is for testing and is replaced by the next successful build. Use a
+versioned release for a stable installation.
+
 ## Preferences
 
 Open **Edit > Preferences**. Changes are applied live where possible.

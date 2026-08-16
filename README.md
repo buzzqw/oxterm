@@ -187,6 +187,11 @@ packaging/appimage/build-appimage.sh
 
 The resulting AppImage is written to `target/`.
 
+The `master` branch also publishes a rolling prerelease after every successful
+push: [terust latest](https://github.com/buzzqw/terust/releases/tag/latest).
+It contains the Linux executable, an AppImage, and `SHA256SUMS`. The release is
+intended for testing and is replaced by the next successful master build.
+
 ## Development
 
 Run the standard checks before submitting changes:

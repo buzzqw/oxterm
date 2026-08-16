@@ -1,0 +1,101 @@
+name: Publish latest package
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: latest-release
+  cancel-in-progress: true
+
+env:
+  APPIMAGETOOL_VERSION: 1.9.1
+  APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+
+jobs:
+  publish:
+    name: Publish rolling latest release
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install GTK/VTE build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libgtk-3-dev libvte-2.91-dev wget
+
+      - name: Build and test release
+        run: |
+          cargo fmt --check
+          cargo test --all-targets
+          cargo build --release
+
+      - name: Prepare executable package
+        run: |
+          install -m 0755 target/release/terust terust-latest-linux-x86_64
+          tar -czf terust-latest-linux-x86_64.tar.gz terust-latest-linux-x86_64
+
+      - name: Prepare AppImage directory
+        run: |
+          mkdir -p target/appimage/terust.AppDir/usr/bin
+          install -m 0755 target/release/terust target/appimage/terust.AppDir/usr/bin/terust
+          install -m 0644 packaging/appimage/terust.desktop target/appimage/terust.AppDir/terust.desktop
+          ln -s usr/bin/terust target/appimage/terust.AppDir/AppRun
+
+      - name: Download appimagetool
+        run: |
+          wget -q "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage" \
+            -O appimagetool
+          chmod +x appimagetool
+          printf '%s  appimagetool\n' "$APPIMAGETOOL_SHA256" | sha256sum --check --strict
+
+      - name: Build AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+          ARCH: x86_64
+        run: |
+          ./appimagetool target/appimage/terust.AppDir terust-latest-x86_64.AppImage
+
+      - name: Create checksums
+        run: sha256sum terust-latest-* > SHA256SUMS
+
+      - name: Update rolling tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git tag -f latest "$GITHUB_SHA"
+          git push origin refs/tags/latest --force
+
+      - name: Create or update latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NOTES="Rolling build for commit ${GITHUB_SHA}. This prerelease is replaced on every master push."
+          if gh release view latest >/dev/null 2>&1; then
+            gh release edit latest \
+              --title "terust latest" \
+              --notes "$NOTES" \
+              --prerelease
+          else
+            gh release create latest \
+              --target "$GITHUB_SHA" \
+              --title "terust latest" \
+              --notes "$NOTES" \
+              --prerelease
+          fi
+          gh release upload latest \
+            terust-latest-linux-x86_64 \
+            terust-latest-linux-x86_64.tar.gz \
+            terust-latest-x86_64.AppImage \
+            SHA256SUMS \
+            --clobber
