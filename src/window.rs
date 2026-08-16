@@ -2429,10 +2429,12 @@ impl MainWindow {
             &gtk::Image::from_icon_name(Some("window-close-symbolic"), gtk::IconSize::Menu),
         );
         let term3 = term.clone();
+        let weak = crate::SendWeak::new(self);
         btn.connect_clicked(move |_| {
-            let _ = term3;
+            if let Some(win) = weak.upgrade() {
+                win.close_tab(Some(&term3));
+            }
         });
-        // close handled via stored label close callbacks below
         box_.pack_start(&lbl, true, true, 0);
         box_.pack_start(&btn, false, false, 0);
         eb.add(&box_);
@@ -3006,7 +3008,9 @@ impl MainWindow {
 
     fn copy_all_to_notes(&self, term: &TerminalBox) {
         let vte = term.vte();
-        let (text, _) = vte.text_range_format(zoha_vte::Format::Text, 0, 0, i64::MAX, 0);
+        let max_lines = settings().get_i64("scrollback_lines");
+        let bound = if max_lines <= 0 { 1_000_000 } else { max_lines };
+        let (text, _) = vte.text_range_format(zoha_vte::Format::Text, 0, 0, bound, 0);
         let text = text.map(|t| t.to_string()).unwrap_or_default();
         if text.is_empty() {
             return;

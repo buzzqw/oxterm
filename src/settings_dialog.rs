@@ -194,6 +194,34 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
         entry_editor: notes.2,
     };
 
+    // Live preview: switching the scheme updates fg/bg and palette buttons.
+    {
+        let combo = state.combo_scheme.clone();
+        let fg_btn = state.fg_color_btn.clone();
+        let bg_btn = state.bg_color_btn.clone();
+        let palette_btns = state.palette_btns.clone();
+        combo.connect_changed(move |combo| {
+            let Some(name) = combo.active_text() else {
+                return;
+            };
+            if let Some(scheme) = settings::color_schemes().get(name.as_str()) {
+                if let Some(fg) = scheme.get("foreground") {
+                    fg_btn.set_rgba(&hex_to_rgba(fg));
+                }
+                if let Some(bg) = scheme.get("background") {
+                    bg_btn.set_rgba(&hex_to_rgba(bg));
+                }
+            }
+            if let Some(pal) = settings::color_palettes().get(name.as_str()) {
+                for (key, (btn, _)) in palette_btns.borrow().iter() {
+                    if let Some(hex) = pal.get(key.as_str()) {
+                        btn.set_rgba(&hex_to_rgba(hex));
+                    }
+                }
+            }
+        });
+    }
+
     dialog.connect_response(move |_dlg, response| {
         if response == gtk::ResponseType::Ok {
             state.apply();

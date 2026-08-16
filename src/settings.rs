@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use glib::prelude::*;
@@ -223,7 +224,7 @@ mod imp {
     pub struct SettingsObject {
         pub data: Mutex<Value>,
         pub batch: Cell<bool>,
-        pub loaded: Cell<bool>,
+        pub loaded: AtomicBool,
         pub save_lock: Mutex<()>,
     }
 
@@ -300,7 +301,7 @@ impl Settings {
 
     fn ensure_loaded(&self) {
         let imp = self.imp();
-        if imp.loaded.get() {
+        if imp.loaded.load(Ordering::SeqCst) {
             return;
         }
         {
@@ -349,7 +350,7 @@ impl Settings {
                 }
             }
         }
-        imp.loaded.set(true);
+        imp.loaded.store(true, Ordering::SeqCst);
         if rewrite {
             self.save();
         }
