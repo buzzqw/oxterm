@@ -1416,7 +1416,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             if let Some(t) = weak.upgrade() {
                 t.settle_resize_nudge();
             }
-            glib::ControlFlow::Continue
+            glib::ControlFlow::Break
         });
         *self.imp().resize_settle_source.borrow_mut() = Some(source);
     }
