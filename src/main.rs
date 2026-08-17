@@ -117,7 +117,10 @@ fn parse_geometry(s: &str) -> Result<(i32, i32), String> {
         .parse()
         .map_err(|_| format!("invalid geometry '{}': rows must be a number", s))?;
     if cols < 1 || rows < 1 {
-        return Err(format!("invalid geometry '{}': columns and rows must be positive", s));
+        return Err(format!(
+            "invalid geometry '{}': columns and rows must be positive",
+            s
+        ));
     }
     Ok((cols, rows))
 }
@@ -227,7 +230,10 @@ fn parse_cli(args: &[String]) -> Result<CliOptions, String> {
                 if i >= args.len() {
                     return Err("--font requires an argument".into());
                 }
-                options.push(("font_name".to_string(), serde_json::Value::String(args[i].clone())));
+                options.push((
+                    "font_name".to_string(),
+                    serde_json::Value::String(args[i].clone()),
+                ));
             }
             "--font-size" => {
                 i += 1;
@@ -611,8 +617,14 @@ mod tests {
         assert_eq!(o.options[0].0, "opacity");
         assert_eq!(o.options[0].1, serde_json::json!(0.9));
         assert_eq!(o.options[1].1, serde_json::Value::Bool(false));
-        assert_eq!(o.options[2], ("font_name".to_string(), serde_json::json!("Fira Code")));
-        assert_eq!(o.options[3], ("font_size".to_string(), serde_json::json!(16)));
+        assert_eq!(
+            o.options[2],
+            ("font_name".to_string(), serde_json::json!("Fira Code"))
+        );
+        assert_eq!(
+            o.options[3],
+            ("font_size".to_string(), serde_json::json!(16))
+        );
     }
 
     #[test]

@@ -599,7 +599,8 @@ impl Settings {
 
     pub fn set(&self, key: &str, value: Value) -> Result<(), String> {
         self.ensure_loaded();
-        if defaults_ref().as_object().unwrap().contains_key(key) && !Self::valid_value(key, &value) {
+        if defaults_ref().as_object().unwrap().contains_key(key) && !Self::valid_value(key, &value)
+        {
             return Err(format!("Invalid setting value: {}", key));
         }
         self.data_mut()

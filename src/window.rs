@@ -1176,9 +1176,12 @@ impl MainWindow {
             glib::set_prgname(Some(name));
         }
         let s = settings();
-        let (cols, rows) = options
-            .geometry
-            .unwrap_or_else(|| (s.get_i64("terminal_columns") as i32, s.get_i64("terminal_rows") as i32));
+        let (cols, rows) = options.geometry.unwrap_or_else(|| {
+            (
+                s.get_i64("terminal_columns") as i32,
+                s.get_i64("terminal_rows") as i32,
+            )
+        });
         let font_size = s.get_i64("font_size");
         let cw = (font_size as i32 * 6 / 10).max(5);
         let ch = (font_size as i32 * 145 / 100).max(10);
