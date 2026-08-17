@@ -24,7 +24,7 @@ cat > "${desktop_dir}/terust.desktop" <<EOF
 [Desktop Entry]
 Name=terust Terminal
 Comment=GTK3/VTE terminal emulator with AI, history and notes
-Exec=${PREFIX}/bin/terust
+Exec="${PREFIX}/bin/terust" %f
 Icon=utilities-terminal
 Terminal=false
 Type=Application
