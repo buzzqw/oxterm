@@ -117,6 +117,7 @@ mod imp {
         pub resize_settle_source: RefCell<Option<glib::SourceId>>,
         pub resize_nudge_pending: RefCell<bool>,
         pub skip_next_resize_nudge: RefCell<bool>,
+        pub last_alloc_size: RefCell<(i32, i32)>,
 
         pub input_shadow: RefCell<String>,
         pub shadow_anchor: RefCell<Option<(i64, i64)>>,
@@ -558,13 +559,12 @@ impl TerminalBox {
         }
         vte.set_allow_hyperlink(true);
 
-        // Resize nudge
-        let weak = crate::SendWeak::new(self);
-        vte.connect_size_allocate(move |_w, _a| {
-            if let Some(t) = weak.upgrade() {
-                t.on_vte_size_allocate();
-            }
-        });
+        // NOTE: the old "resize nudge" (set_size(rows-1) then set_size(rows) on
+        // every size-allocate) has been removed. It forced the child to redraw
+        // twice for every allocation change, which made full-screen apps like
+        // top/htop look like they refreshed two or more times at once (stuttering).
+        // VTE already sends the correct winsize/SIGWINCH to the child when the
+        // widget is really resized, so the nudge was both redundant and harmful.
 
         let undercurl_provider = gtk::CssProvider::new();
         let ctx = vte.style_context();
@@ -1403,57 +1403,6 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
     }
 
     // ── Scroll / resize ──────────────────────────────────────
-
-    fn on_vte_size_allocate(&self) {
-        if *self.imp().resize_nudge_pending.borrow() {
-            return;
-        }
-        if let Some(id) = self.imp().resize_settle_source.borrow_mut().take() {
-            id.remove();
-        }
-        let weak = crate::SendWeak::new(self);
-        let source = glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
-            if let Some(t) = weak.upgrade() {
-                t.settle_resize_nudge();
-            }
-            glib::ControlFlow::Break
-        });
-        *self.imp().resize_settle_source.borrow_mut() = Some(source);
-    }
-
-    fn settle_resize_nudge(&self) {
-        *self.imp().resize_settle_source.borrow_mut() = None;
-        if *self.imp().skip_next_resize_nudge.borrow() {
-            *self.imp().skip_next_resize_nudge.borrow_mut() = false;
-            return;
-        }
-        let pid = *self.imp().pid.borrow();
-        if pid <= 0 || *self.imp().resize_nudge_pending.borrow() {
-            return;
-        }
-        let vte = self.vte();
-        let cols = vte.column_count();
-        let rows = vte.row_count();
-        if cols < 2 || rows < 2 {
-            return;
-        }
-        *self.imp().resize_nudge_pending.borrow_mut() = true;
-        vte.set_size(cols, rows - 1);
-        let weak = crate::SendWeak::new(self);
-        glib::timeout_add_local(std::time::Duration::from_millis(60), move || {
-            if let Some(t) = weak.upgrade() {
-                t.vte().set_size(cols, rows);
-                let weak2 = t.downgrade();
-                glib::idle_add_local(move || {
-                    if let Some(t2) = weak2.upgrade() {
-                        *t2.imp().resize_nudge_pending.borrow_mut() = false;
-                    }
-                    glib::ControlFlow::Break
-                });
-            }
-            glib::ControlFlow::Break
-        });
-    }
 
     fn on_vadj_value_changed(&self, adj: &gtk::Adjustment) {
         if let Some(margin) = self.imp().osc133_margin.borrow().clone() {
