@@ -37,7 +37,7 @@ if [ ! -x "$BIN" ]; then
     exit 1
 fi
 
-if [ -d "$1" ]; then
+if [ "$#" -gt 0 ] && [ -d "$1" ]; then
     cd "$1" || cd "$HOME"
     shift
 fi
