@@ -51,6 +51,9 @@ sudo pacman -S base-devel rust gtk3 vte3
 
 Rust can also be installed with [rustup](https://rustup.rs/).
 
+The latest version is always available to download from the [GitHub Releases
+page](https://github.com/buzzqw/terust/releases/latest).
+
 ## Build and Run
 
 Clone the repository and build the optimized executable:
