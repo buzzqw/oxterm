@@ -245,6 +245,11 @@ Release automation is available through:
 ./versiona.sh
 ```
 
+## Support
+
+If terust is useful to you, you can support development through
+[PayPal](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=azanzani@gmail.com&item_name=Support+terust+Project).
+
 ## License
 
 terust is distributed under the [European Union Public Licence 1.2](LICENSE).
