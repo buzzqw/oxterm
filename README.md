@@ -6,11 +6,14 @@
 [![GTK3](https://img.shields.io/badge/GTK-3-blue?logo=gnome)](https://www.gtk.org/)
 [![License](https://img.shields.io/badge/License-EUPL%201.2-blue)](LICENSE)
 
-**terust** is a fast, native Linux terminal emulator written in Rust with GTK3
-and VTE.
+**terust** is a **lightweight, fast, and secure** native Linux terminal
+emulator written in Rust with GTK3 and VTE. It is a **complete and fully
+functional** terminal: light on resources and quick to start, while providing
+everything you expect from a modern terminal.
 
 The project combines a full terminal emulator with tabs, split panes, command
-history, notes, shell integration, profiles, sessions, and optional AI chat.
+history, notes, shell integration, profiles, sessions, and optional AI chat —
+all with a small memory footprint and the memory-safety guarantees of Rust.
 
 - **[English user manual](manual.md)**
 - **[Report an issue](https://github.com/buzzqw/terust/issues)**
