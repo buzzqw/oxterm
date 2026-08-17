@@ -28,7 +28,10 @@ pub fn profile_path(name: &str) -> Result<PathBuf, String> {
 const COLOR_RE: &str = "^#[0-9a-fA-F]{6}$";
 
 fn is_hex(s: &str) -> bool {
-    regex::Regex::new(COLOR_RE).unwrap().is_match(s)
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(COLOR_RE).unwrap())
+        .is_match(s)
 }
 
 const PROFILE_KEYS: &[&str] = &[

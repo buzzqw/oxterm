@@ -40,6 +40,41 @@ terust --no-restore
 terust --execute git status
 ```
 
+terust also accepts options inspired by modern terminals:
+
+```bash
+terust --title "Build server"      # fixed window title
+terust --geometry 120x40           # initial size in COLSxROWS cells
+terust --fullscreen                # or --maximize
+terust --hold --execute make       # keep the tab open after the command exits
+terust -- ~/dir-with-dashes        # everything after -- is treated as a directory
+```
+
+`--title` sets a fixed title that programs cannot override through escape
+sequences. `--geometry` expects `COLSxROWS` (columns by rows, both positive).
+`--fullscreen` and `--maximize` are mutually exclusive. `--hold` keeps the
+terminal visible after its command finishes so the final output stays on screen.
+`--version` is also available as `-V`.
+
+Further options, inspired by kitty and alacritty, tune identity and settings:
+
+```bash
+terust --class MyTerm --name floating    # WM_CLASS class / instance name
+terust --profile work                    # start with a saved profile
+terust -o opacity=0.9 -o login_shell=false  # override settings for this run
+terust --font "Fira Code" --font-size 13 # font shortcuts (same as -o)
+terust --config ~/demo-settings.json     # use an alternative settings file
+```
+
+`--class` and `--name` set the two parts of WM_CLASS, letting tiling window
+managers (i3, sway, hyprland) match the window for rules and icons. `--profile`
+loads a saved profile, and `-o/--option` (repeatable) overrides any setting for
+the current session only. `--font` and `--font-size` are convenient shortcuts
+for `-o font_name=...` / `-o font_size=...`. All of these overrides are applied
+in memory and are **never** written back to your configuration. `--config`
+points terust at a different settings file, so you can run throwaway or demo
+setups without touching your real preferences.
+
 `--execute` accepts every argument after it as part of the command. A directory
 passed both positionally and with `--working-directory` is rejected.
 
@@ -66,7 +101,15 @@ shell input, scrolling, selection, copy/paste, 256-color output, true color,
 and standard terminal escape sequences are supported.
 
 URLs are detected in terminal output. Use `Ctrl+Click` on a URL to open it with
-the desktop browser.
+the desktop browser. Explicit OSC 8 hyperlinks emitted by programs (for example
+`ls --hyperlink=auto`) are also honored.
+
+Press `Ctrl+Shift+F` to search the scrollback: type a query and use `Enter` /
+`Shift+Enter` to jump to the next / previous match, with optional case-sensitive
+and regular-expression modes. This searches the on-screen text and scrollback,
+which is different from `/history` (a database of the commands you ran).
+
+Zoom the font at any time with `Ctrl++`, `Ctrl+-`, and `Ctrl+0` to reset.
 
 ## Tabs, Windows, and Splits
 

@@ -113,6 +113,9 @@ mod imp {
         pub pid: RefCell<i32>,
         pub pty_fd: RefCell<i32>,
         pub scroll_follow: RefCell<bool>,
+        /// When true (`--hold`), keep this terminal open after its child exits
+        /// instead of asking the window to close the tab.
+        pub hold: RefCell<bool>,
 
         pub resize_settle_source: RefCell<Option<glib::SourceId>>,
         pub resize_nudge_pending: RefCell<bool>,
@@ -291,6 +294,10 @@ impl TerminalBox {
         self.apply_palette();
         vte.set_audible_bell(false);
         vte.set_allow_bold(s.get_bool("allow_bold_text"));
+        // Enable OSC 8 hyperlinks so programs (ls --hyperlink, gcc, etc.) can
+        // emit explicit clickable links, matching modern terminals. Regex-based
+        // URL detection (Ctrl+click) already works independently of this.
+        vte.set_allow_hyperlink(true);
 
         let encoding = s.get_str("encoding");
         let _ = vte.set_encoding(Some(&encoding));
@@ -790,6 +797,12 @@ impl TerminalBox {
     }
 
     // ── Launch / pty ─────────────────────────────────────────
+
+    /// Enable/disable "hold" mode: when enabled, the terminal is kept open
+    /// after its child exits instead of closing the tab (`--hold`).
+    pub fn set_hold(&self, hold: bool) {
+        *self.imp().hold.borrow_mut() = hold;
+    }
 
     pub fn launch(&self, cwd: Option<&str>, command: Option<&Vec<String>>) {
         let s = settings();
@@ -1600,6 +1613,13 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         let code = (status >> 8) & 0xff;
         self.vte()
             .feed(format!("\r\n\x1b[33m[Process exited with code {}]\x1b[0m\r\n", code).as_bytes());
+        // With `--hold`, keep the terminal on screen after the command exits so
+        // its final output stays visible (as in kitty/xterm --hold).
+        if *self.imp().hold.borrow() {
+            self.vte()
+                .feed(b"\x1b[33m[terust: --hold active, close this tab manually]\x1b[0m\r\n");
+            return;
+        }
         let weak = crate::SendWeak::new(self);
         glib::idle_add_local(move || {
             if let Some(t) = weak.upgrade() {
@@ -1906,23 +1926,32 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
     }
 
     fn redact_ai_context(text: &str) -> String {
-        let patterns: &[(&str, &str)] = &[
-            (
-                r"(?s)-----BEGIN [^-]+ PRIVATE KEY-----.*?-----END [^-]+ PRIVATE KEY-----",
-                "[REDACTED PRIVATE KEY]",
-            ),
-            (
-                r"(?i)\b(?:authorization\s*:\s*bearer|api[_-]?key|token|password|passwd)\s*[:=]\s*[^\s]+",
-                "[REDACTED SECRET]",
-            ),
-            (
-                r"\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{16,})\b",
-                "[REDACTED TOKEN]",
-            ),
-        ];
+        // Compile the redaction patterns once and reuse them; rebuilding three
+        // regexes on every /ai context invocation was pure wasted work.
+        static REDACTIONS: std::sync::OnceLock<Vec<(Regex, &'static str)>> =
+            std::sync::OnceLock::new();
+        let redactions = REDACTIONS.get_or_init(|| {
+            let patterns: &[(&str, &str)] = &[
+                (
+                    r"(?s)-----BEGIN [^-]+ PRIVATE KEY-----.*?-----END [^-]+ PRIVATE KEY-----",
+                    "[REDACTED PRIVATE KEY]",
+                ),
+                (
+                    r"(?i)\b(?:authorization\s*:\s*bearer|api[_-]?key|token|password|passwd)\s*[:=]\s*[^\s]+",
+                    "[REDACTED SECRET]",
+                ),
+                (
+                    r"\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{16,})\b",
+                    "[REDACTED TOKEN]",
+                ),
+            ];
+            patterns
+                .iter()
+                .map(|(p, r)| (Regex::new(p).unwrap(), *r))
+                .collect()
+        });
         let mut out = text.to_string();
-        for (pattern, repl) in patterns {
-            let re = regex::Regex::new(pattern).unwrap();
+        for (re, repl) in redactions {
             out = re.replace_all(&out, *repl).to_string();
         }
         out

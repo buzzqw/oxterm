@@ -1078,6 +1078,12 @@ mod main_imp {
         pub closing: RefCell<bool>,
         pub skip_close_confirm: RefCell<bool>,
         pub restoring_session: RefCell<bool>,
+        /// Fixed window title requested via `--title`; when set, title updates
+        /// coming from the running program (OSC) are ignored.
+        pub forced_title: RefCell<Option<String>>,
+        /// When true (`--hold`), the initial terminal is kept open after its
+        /// command exits instead of closing the tab/window.
+        pub hold: RefCell<bool>,
     }
 
     #[glib::object_subclass]
@@ -1105,6 +1111,23 @@ glib::wrapper! {
         @extends gtk::ApplicationWindow, gtk::Window, gtk::Bin, gtk::Container, gtk::Widget;
 }
 
+/// Extra window-level options coming from the command line, inspired by modern
+/// terminals (kitty, alacritty, gnome-terminal): a fixed title, a hold-open
+/// flag, fullscreen/maximize startup states and an initial cell geometry.
+#[derive(Default)]
+pub struct WindowOptions {
+    pub title: Option<String>,
+    pub hold: bool,
+    pub fullscreen: bool,
+    pub maximize: bool,
+    pub geometry: Option<(i32, i32)>,
+    /// WM_CLASS class part (`--class`), used by window managers for tiling
+    /// rules, icons and `.desktop` association.
+    pub wm_class: Option<String>,
+    /// WM_CLASS instance name (`--name`).
+    pub wm_name: Option<String>,
+}
+
 struct SplitGuard<'a>(&'a std::cell::RefCell<bool>);
 
 impl Drop for SplitGuard<'_> {
@@ -1119,24 +1142,53 @@ impl MainWindow {
         start_dir: Option<String>,
         command: Option<Vec<String>>,
         restore_session: bool,
+        options: WindowOptions,
     ) -> MainWindow {
         let this: MainWindow = glib::Object::new();
         if let Some(app) = app {
             this.set_application(Some(app));
         }
-        this.init(start_dir, command, restore_session);
+        this.init(start_dir, command, restore_session, options);
         this
     }
 
-    fn init(&self, start_dir: Option<String>, command: Option<Vec<String>>, restore_session: bool) {
-        self.set_title(APP_TITLE);
+    fn init(
+        &self,
+        start_dir: Option<String>,
+        command: Option<Vec<String>>,
+        restore_session: bool,
+        options: WindowOptions,
+    ) {
+        *self.imp().hold.borrow_mut() = options.hold;
+        if let Some(t) = options.title.as_ref() {
+            *self.imp().forced_title.borrow_mut() = Some(t.clone());
+        }
+        self.set_title(options.title.as_deref().unwrap_or(APP_TITLE));
+        // Set WM_CLASS (`--class` / `--name`) so tiling window managers (i3,
+        // sway, hyprland, …) can match the window for rules, icons and the
+        // `.desktop` entry. GTK3 builds WM_CLASS from the GDK program class
+        // (res_class) and the program name (res_name), so set both globally
+        // before the window is realized.
+        if let Some(class) = options.wm_class.as_ref() {
+            gdk::set_program_class(class);
+        }
+        if let Some(name) = options.wm_name.as_ref() {
+            glib::set_prgname(Some(name));
+        }
         let s = settings();
-        let cols = s.get_i64("terminal_columns") as i32;
-        let rows = s.get_i64("terminal_rows") as i32;
+        let (cols, rows) = options
+            .geometry
+            .unwrap_or_else(|| (s.get_i64("terminal_columns") as i32, s.get_i64("terminal_rows") as i32));
         let font_size = s.get_i64("font_size");
         let cw = (font_size as i32 * 6 / 10).max(5);
         let ch = (font_size as i32 * 145 / 100).max(10);
         self.set_default_size(cols * cw + 60, rows * ch + 120);
+
+        if options.fullscreen {
+            self.fullscreen();
+        } else if options.maximize {
+            self.maximize();
+        }
 
         self.apply_window_visuals();
 
@@ -1255,6 +1307,12 @@ impl MainWindow {
         self.apply_ui_visibility();
         self.apply_tab_colors();
 
+        // Apply a `--title` after the headerbar exists so the fixed title shows
+        // both in the window title (WM) and in the client-side header.
+        if let Some(forced) = self.imp().forced_title.borrow().clone() {
+            self.update_title(&forced);
+        }
+
         let h1 = settings().connect_changed({
             let w = self.downgrade();
             move || {
@@ -1322,7 +1380,10 @@ impl MainWindow {
         if restore && self.restore_session() {
             return;
         }
-        self.add_new_tab(start_dir, None, None, None, command.as_ref());
+        let term = self.add_new_tab(start_dir, None, None, None, command.as_ref());
+        if *self.imp().hold.borrow() {
+            term.set_hold(true);
+        }
     }
 
     fn fix_paned_position(&self) {
@@ -2497,7 +2558,7 @@ impl MainWindow {
         base_title: Option<&str>,
         display_title: Option<&str>,
         command: Option<&Vec<String>>,
-    ) {
+    ) -> TerminalBox {
         let term = TerminalBox::new(self);
         let base = if let Some(bt) = base_title {
             bt.to_string()
@@ -2540,6 +2601,7 @@ impl MainWindow {
             }
             glib::ControlFlow::Break
         });
+        term
     }
 
     fn make_tab_label(&self, name: &str, term: &TerminalBox) -> (gtk::EventBox, gtk::Label) {
@@ -2689,6 +2751,15 @@ impl MainWindow {
     }
 
     pub fn set_tab_title_from_terminal(&self, term: &TerminalBox, title: &str) {
+        // A fixed title requested via `--title` overrides any title the running
+        // program tries to set through OSC escapes.
+        if let Some(forced) = self.imp().forced_title.borrow().clone() {
+            self.set_tab_text(term, &forced);
+            if self.total_tabs() == 1 {
+                self.update_title(&forced);
+            }
+            return;
+        }
         let base = self
             .imp()
             .tab_base_titles

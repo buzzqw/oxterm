@@ -28,3 +28,7 @@ shell-words = "1"
 [profile.release]
 lto = true
 strip = true
+# Single codegen unit lets fat LTO optimize across the whole crate graph,
+# producing a smaller and faster binary (at the cost of longer compile time).
+codegen-units = 1
+opt-level = 3

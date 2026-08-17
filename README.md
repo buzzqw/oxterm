@@ -87,13 +87,26 @@ PREFIX=/usr/local ./setup.sh
 ## Command Line
 
 ```text
-terust [DIRECTORY] [OPTIONS]
+terust [DIRECTORY] [OPTIONS] [-e CMD...]
 
   -w, --working-directory DIR  Start in DIR
+  -T, --title TITLE            Fixed window title (apps cannot override it)
+  -g, --geometry COLSxROWS     Initial size in character cells (e.g. 120x40)
+  -F, --fullscreen             Start in fullscreen mode
+  -m, --maximize               Start maximized
+      --class CLASS            Set the WM_CLASS class part (window manager rules)
+      --name NAME             Set the WM_CLASS instance name
+  -p, --profile NAME          Start with a saved profile (session only)
+      --config FILE           Use an alternative settings file
+  -o, --option KEY=VALUE      Override a setting for this session (repeatable)
+      --font FAMILY           Override the font family for this session
+      --font-size N           Override the font size for this session
       --new-window             Open an independent window
-      --no-restore              Do not restore the last session
+      --no-restore             Do not restore the last session
+      --hold                   Keep the terminal open after the command exits
   -e, --execute CMD...         Run CMD instead of the configured shell
-      --version                Print the version
+      --                       Treat every following argument as the directory
+  -V, --version                Print the version
   -h, --help                   Print help
 ```
 
@@ -102,10 +115,22 @@ Examples:
 ```bash
 terust ~/src/project
 terust --working-directory ~/src/project
+terust --title "Build" --geometry 120x40
+terust --fullscreen
 terust --new-window
 terust --no-restore
+terust --hold --execute make
+terust --class MyTerm --name floating   # window-manager matching
+terust --profile work                   # start with a saved profile
+terust -o opacity=0.9 -o font_size=14    # ad-hoc setting overrides
+terust --font "Fira Code" --font-size 13
+terust --config ~/demo-settings.json     # throwaway configuration
 terust --execute git status
 ```
+
+`--option`, `--font`, `--font-size` and `--profile` overrides apply only to the
+launched session and are never written back to your saved settings. `--config`
+points terust at an alternative settings file (handy for demos).
 
 Without an explicit directory, terust starts in the current working directory.
 
@@ -141,6 +166,9 @@ completion.
 | `Ctrl+Shift+S` | Set tab title |
 | `Ctrl+Shift+R` | Reset terminal |
 | `Ctrl+Shift+X` | Reset and clear terminal |
+| `Ctrl+Shift+F` | Search the scrollback (Enter/Shift+Enter = next/prev) |
+| `Ctrl++` / `Ctrl+-` / `Ctrl+0` | Zoom font in / out / reset |
+| `Ctrl+click` | Open the URL under the cursor |
 | `Ctrl+R` | Interactive history search |
 | `Ctrl+PageUp` / `Ctrl+PageDown` | Previous / next tab |
 | `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` | Move tab |

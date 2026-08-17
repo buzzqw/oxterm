@@ -20,20 +20,69 @@ pub fn config_dir() -> PathBuf {
     home.join(".config").join("tpgk")
 }
 
+/// Optional alternative settings file, set via `--config FILE`. When present it
+/// replaces the default `settings.json` path so a throwaway configuration can be
+/// used without touching the user's real config.
+static CONFIG_FILE_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Point the settings file at `path` (from `--config`). Must be called before
+/// settings are first loaded to have any effect.
+pub fn set_config_file_override(path: PathBuf) {
+    let _ = CONFIG_FILE_OVERRIDE.set(path);
+}
+
 pub fn config_file() -> PathBuf {
+    if let Some(p) = CONFIG_FILE_OVERRIDE.get() {
+        return p.clone();
+    }
     config_dir().join("settings.json")
 }
 
+/// Session-only setting overrides coming from the command line (`-o key=value`,
+/// `--font`, `--font-size`, `-p/--profile`). They take precedence over the
+/// loaded configuration on every read but are **never** written back to disk, so
+/// the user's stored settings stay untouched.
+static OVERRIDES: OnceLock<Mutex<Map<String, Value>>> = OnceLock::new();
+
+fn overrides() -> &'static Mutex<Map<String, Value>> {
+    OVERRIDES.get_or_init(|| Mutex::new(Map::new()))
+}
+
+/// Register a session-only override for `key`. Applied on top of the stored
+/// settings for all subsequent reads without being persisted.
+pub fn set_override(key: &str, value: Value) {
+    overrides().lock().unwrap().insert(key.to_string(), value);
+}
+
+fn override_value(key: &str) -> Option<Value> {
+    overrides().lock().unwrap().get(key).cloned()
+}
+
 fn is_hex_color(s: &str) -> bool {
-    let re = regex::Regex::new(HEX_COLOR_RE).unwrap();
-    re.is_match(s)
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(HEX_COLOR_RE).unwrap())
+        .is_match(s)
 }
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
+/// Cached copy of the default settings. `defaults()` used to rebuild the whole
+/// JSON tree (and re-read environment variables) on *every* call, and it is hit
+/// once per key while loading/validating settings, so building it once and
+/// reusing a shared reference removes a large amount of redundant allocation on
+/// startup and on every settings write.
+fn defaults_ref() -> &'static Value {
+    static DEFAULTS: OnceLock<Value> = OnceLock::new();
+    DEFAULTS.get_or_init(build_defaults)
+}
+
 pub fn defaults() -> Value {
+    defaults_ref().clone()
+}
+
+fn build_defaults() -> Value {
     let shell = env_or("SHELL", "/bin/bash");
     let home = dirs::home_dir()
         .map(|p| p.to_string_lossy().to_string())
@@ -406,7 +455,7 @@ impl Settings {
         {
             let mut data = imp.data.lock().unwrap();
             if !data.is_object() {
-                *data = defaults();
+                *data = defaults_ref().clone();
             }
         }
         let dir = config_dir();
@@ -419,7 +468,7 @@ impl Settings {
             match fs::read_to_string(&path) {
                 Ok(content) => match serde_json::from_str::<Value>(&content) {
                     Ok(Value::Object(map)) => {
-                        let defs = defaults();
+                        let defs = defaults_ref();
                         let defs_map = defs.as_object().unwrap();
                         for (key, value) in map {
                             if defs_map.contains_key(&key) && Self::valid_value(&key, &value) {
@@ -462,9 +511,16 @@ impl Settings {
             return;
         }
         let _g = imp.save_lock.lock().unwrap();
-        let _ = fs::create_dir_all(&config_dir());
-        let _ = fs::set_permissions(&config_dir(), fs::Permissions::from_mode(0o700));
-        let tmp = temporary_path(&config_dir(), "settings_tmp");
+        let target = config_file();
+        // Write the temp file next to the final target so the atomic rename never
+        // has to cross filesystems (relevant when `--config` points elsewhere).
+        let target_dir = target
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(config_dir);
+        let _ = fs::create_dir_all(&target_dir);
+        let _ = fs::set_permissions(&target_dir, fs::Permissions::from_mode(0o700));
+        let tmp = temporary_path(&target_dir, "settings_tmp");
         let json_str = serde_json::to_string_pretty(&*imp.data.lock().unwrap());
         match json_str {
             Ok(s) => {
@@ -473,7 +529,6 @@ impl Settings {
                     return;
                 }
                 let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
-                let target = config_file();
                 if target.exists() {
                     let backup = target.with_extension("json.bak");
                     if let Err(e) = fs::copy(&target, &backup) {
@@ -495,11 +550,17 @@ impl Settings {
     }
 
     pub fn get(&self, key: &str) -> Value {
+        if let Some(v) = override_value(key) {
+            return v;
+        }
         self.ensure_loaded();
         self.data().get(key).cloned().unwrap_or(Value::Null)
     }
 
     pub fn get_default(&self, key: &str, default: Value) -> Value {
+        if let Some(v) = override_value(key) {
+            return v;
+        }
         self.ensure_loaded();
         self.data().get(key).cloned().unwrap_or(default)
     }
@@ -538,7 +599,7 @@ impl Settings {
 
     pub fn set(&self, key: &str, value: Value) -> Result<(), String> {
         self.ensure_loaded();
-        if defaults().as_object().unwrap().contains_key(key) && !Self::valid_value(key, &value) {
+        if defaults_ref().as_object().unwrap().contains_key(key) && !Self::valid_value(key, &value) {
             return Err(format!("Invalid setting value: {}", key));
         }
         self.data_mut()
@@ -563,7 +624,7 @@ impl Settings {
 
     pub fn set_many(&self, updates: BTreeMap<String, Value>) -> Result<(), String> {
         self.ensure_loaded();
-        let defs = defaults();
+        let defs = defaults_ref();
         for (key, value) in &updates {
             if defs.as_object().unwrap().contains_key(key) && !Self::valid_value(key, value) {
                 return Err(format!("Invalid setting value: {}", key));
@@ -654,7 +715,7 @@ impl Settings {
     }
 
     fn valid_value(key: &str, value: &Value) -> bool {
-        let default = defaults().get(key).cloned().unwrap_or(Value::Null);
+        let default = defaults_ref().get(key).cloned().unwrap_or(Value::Null);
         match &default {
             Value::Bool(_) => value.is_boolean(),
             Value::Number(n) => {
