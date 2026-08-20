@@ -11,6 +11,7 @@
 # IDE and editor files
 .idea/
 .vscode/
+.junie/
 *.swp
 *.swo
 *~
