@@ -1074,6 +1074,7 @@ mod main_imp {
         pub profiles_menu: RefCell<Option<gtk::Menu>>,
         pub sessions_menu: RefCell<Option<gtk::Menu>>,
         pub tabs_menu: RefCell<Option<gtk::Menu>>,
+        pub tab_list_button: RefCell<Option<gtk::MenuButton>>,
         pub splitting: RefCell<bool>,
         pub closing: RefCell<bool>,
         pub skip_close_confirm: RefCell<bool>,
@@ -1499,6 +1500,12 @@ impl MainWindow {
         nb.n_pages() + nb2.n_pages()
     }
 
+    fn update_tab_list_button(&self) {
+        if let Some(button) = self.imp().tab_list_button.borrow().clone() {
+            button.set_sensitive(self.total_tabs() > 1);
+        }
+    }
+
     fn get_tab_text(&self, term: &TerminalBox) -> String {
         if let Some((_box, lbl)) = self.imp().tab_labels.borrow().get(term) {
             return lbl.text().to_string();
@@ -1764,6 +1771,7 @@ impl MainWindow {
         *self.imp().menu_buttons.borrow_mut() = buttons;
 
         let tab_list_btn = self.make_tab_list_button();
+        *self.imp().tab_list_button.borrow_mut() = Some(tab_list_btn.clone());
         header.pack_end(&tab_list_btn);
 
         self.set_titlebar(Some(&header));
@@ -1776,6 +1784,7 @@ impl MainWindow {
         btn.set_size_request(32, 32);
         btn.set_margin_start(8);
         btn.set_tooltip_text(Some("Show all open tabs"));
+        btn.set_sensitive(self.total_tabs() > 1);
         let menu = gtk::Menu::new();
         menu.style_context().add_class("tpgk-tab-menu");
         menu.set_reserve_toggle_size(false);
@@ -1784,7 +1793,9 @@ impl MainWindow {
         btn.connect_toggled(move |b| {
             if b.is_active() {
                 if let Some(w) = weak.upgrade() {
-                    w.populate_tab_menu(&menu);
+                    if w.total_tabs() > 1 {
+                        w.populate_tab_menu(&menu);
+                    }
                 }
             }
         });
@@ -2805,6 +2816,7 @@ impl MainWindow {
     }
 
     fn update_tabs_menu(&self) {
+        self.update_tab_list_button();
         let tabs_menu = self.imp().tabs_menu.borrow().clone();
         if let Some(menu) = tabs_menu {
             self.populate_tab_menu(&menu);
