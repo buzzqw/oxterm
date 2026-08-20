@@ -75,7 +75,8 @@ binary:
 The repository includes a local `post-commit` hook. Configure it once with
 `./setup.sh` or `git config core.hooksPath .githooks`; after each commit it
 builds `terust-linux-x86-64` in the project root. The generated file is ignored
-by Git.
+by Git. The displayed terust version uses the Cargo version plus the total Git
+commit count as its fourth component, for example `1.1.0.20`.
 
 Install the binary and desktop entry under `~/.local`:
 

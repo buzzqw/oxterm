@@ -50,7 +50,7 @@ pub const ENCODINGS: &[&str] = &[
 
 pub const EUPL_LICENSE_TEXT: &str = "Licensed under the European Union Public Licence (EUPL) v. 1.2.\n\nCopyright (c) 2026 Andres Zanzani.\n\nThe complete licence text is distributed in the LICENSE file and is available at:\nhttps://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12\n";
 
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), ".", env!("TERUST_COMMIT_COUNT"));
 pub const APP_NAME: &str = "terust";
 pub const APP_TITLE: &str = "terust Terminal";
 

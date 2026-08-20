@@ -12,3 +12,8 @@
 - After every compilation, always copy the definitive release binary to
   `/home/azanzani/terust/terust-linux-x86-64` (see `build.sh` and
   `.githooks/post-commit`).
+
+## Versioning
+
+- The displayed terust version is `MAJOR.MINOR.PATCH.COMMIT_COUNT`; keep the
+  fourth component derived from the total Git commit count at build time.
