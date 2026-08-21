@@ -174,7 +174,7 @@ completion.
 | `Ctrl+Shift+X` | Reset and clear terminal |
 | `Ctrl+Shift+F` | Search the scrollback (Enter/Shift+Enter = next/prev) |
 | `Ctrl++` / `Ctrl+-` / `Ctrl+0` | Zoom font in / out / reset |
-| `Ctrl+click` | Open the URL under the cursor |
+| `click` | Open the URL under the cursor |
 | `Ctrl+R` | Interactive history search |
 | `Ctrl+PageUp` / `Ctrl+PageDown` | Previous / next tab |
 | `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` | Move tab |

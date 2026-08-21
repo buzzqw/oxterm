@@ -100,7 +100,7 @@ terust uses VTE, the same terminal widget family used by GNOME Terminal. Normal
 shell input, scrolling, selection, copy/paste, 256-color output, true color,
 and standard terminal escape sequences are supported.
 
-URLs are detected in terminal output. Use `Ctrl+Click` on a URL to open it with
+URLs are detected in terminal output. Click a URL to open it with
 the desktop browser. Explicit OSC 8 hyperlinks emitted by programs (for example
 `ls --hyperlink=auto`) are also honored.
 
@@ -357,7 +357,7 @@ The integration supports Bash and Zsh. Use `Ctrl+Shift+Up` and
 | `Ctrl+Shift+P` | Command palette |
 | `Alt+1` ... `Alt+9` | Replay history entry |
 | `F11` | Fullscreen |
-| `Ctrl+Click` | Open a detected URL |
+| `Click` | Open a detected URL |
 
 ## Configuration Files
 
