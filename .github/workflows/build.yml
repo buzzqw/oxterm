@@ -1,4 +1,4 @@
-name: Build terust executable
+name: Build TRust executable
 
 on:
   push:
@@ -40,13 +40,13 @@ jobs:
       - name: Package executable
         run: |
           mkdir -p dist
-          install -m 0755 target/release/terust terust-linux-x86-64
-          install -m 0755 terust-linux-x86-64 dist/terust-linux-x86-64
-          tar -C dist -czf dist/terust-linux-x86-64.tar.gz terust-linux-x86-64
+          install -m 0755 target/release/TRust TRust-linux-x86-64
+          install -m 0755 TRust-linux-x86-64 dist/TRust-linux-x86-64
+          tar -C dist -czf dist/TRust-linux-x86-64.tar.gz TRust-linux-x86-64
 
       - name: Upload executable artifact
         uses: actions/upload-artifact@v4
         with:
-          name: terust-linux-x86-64
-          path: dist/terust-linux-x86-64.tar.gz
+          name: TRust-linux-x86-64
+          path: dist/TRust-linux-x86-64.tar.gz
           if-no-files-found: error

@@ -1,9 +1,9 @@
 [Desktop Entry]
-Name=terust Terminal
+Name=TRust Terminal
 Comment=GTK3/VTE terminal emulator with AI, history and notes
-Exec=terust
-Icon=terust
+Exec=TRust
+Icon=TRust
 Terminal=false
 Type=Application
 Categories=System;TerminalEmulator;
-StartupWMClass=terust
+StartupWMClass=TRust

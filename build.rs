@@ -23,5 +23,5 @@ fn main() {
     }
 
     let commit_count = git(&["rev-list", "--count", "HEAD"]).unwrap_or_else(|| "0".into());
-    println!("cargo:rustc-env=TERUST_COMMIT_COUNT={commit_count}");
+    println!("cargo:rustc-env=TRUST_COMMIT_COUNT={commit_count}");
 }

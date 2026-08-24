@@ -50,9 +50,9 @@ pub const ENCODINGS: &[&str] = &[
 
 pub const EUPL_LICENSE_TEXT: &str = "Licensed under the European Union Public Licence (EUPL) v. 1.2.\n\nCopyright (c) 2026 Andres Zanzani.\n\nThe complete licence text is distributed in the LICENSE file and is available at:\nhttps://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12\n";
 
-pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), ".", env!("TERUST_COMMIT_COUNT"));
-pub const APP_NAME: &str = "terust";
-pub const APP_TITLE: &str = "terust Terminal";
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), ".", env!("TRUST_COMMIT_COUNT"));
+pub const APP_NAME: &str = "TRust";
+pub const APP_TITLE: &str = "TRust Terminal";
 
 pub fn detect_file_manager() -> Option<String> {
     let s = settings();
@@ -426,7 +426,7 @@ impl DetachedWindow {
                 }
             }),
             Some("<Primary><Shift>N"),
-            Some("Open a new terust terminal window"),
+            Some("Open a new TRust terminal window"),
         );
         file_menu.append(&gtk::SeparatorMenuItem::new());
         let weak = crate::SendWeak::new(self);
@@ -538,7 +538,7 @@ impl DetachedWindow {
                 }
             }),
             None,
-            Some("Open the terust settings dialog"),
+            Some("Open the TRust settings dialog"),
         );
         menus.push(("Edit".into(), edit_menu));
 
@@ -766,7 +766,7 @@ impl DetachedWindow {
                 }
             }),
             None,
-            Some("Show information about terust"),
+            Some("Show information about TRust"),
         );
         menus.push(("Help".into(), help_menu));
 
@@ -1879,7 +1879,7 @@ impl MainWindow {
                 }
             }),
             Some("<Primary><Shift>N"),
-            Some("Open a new terust terminal window"),
+            Some("Open a new TRust terminal window"),
         );
         file_menu.append(&gtk::SeparatorMenuItem::new());
         let weak = crate::SendWeak::new(self);
@@ -1930,7 +1930,7 @@ impl MainWindow {
                 }
             }),
             Some("<Primary>Q"),
-            Some("Quit terust (close all windows)"),
+            Some("Quit TRust (close all windows)"),
         );
         menus.push(("File".into(), file_menu));
 
@@ -2004,7 +2004,7 @@ impl MainWindow {
                 }
             }),
             None,
-            Some("Open the terust settings dialog"),
+            Some("Open the TRust settings dialog"),
         );
         menus.push(("Edit".into(), edit_menu));
 
@@ -2426,7 +2426,7 @@ impl MainWindow {
                 }
             }),
             None,
-            Some("Show information about terust"),
+            Some("Show information about TRust"),
         );
         menus.push(("Help".into(), help_menu));
 

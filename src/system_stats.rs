@@ -119,7 +119,7 @@ pub fn collect_self() -> String {
     let pid = std::process::id();
     let rss = proc_rss(pid);
     let cpu = process_cpu_percent(pid);
-    format!("terust  CPU {:5.1}%  RAM {}  ", cpu, mb(rss))
+    format!("TRust  CPU {:5.1}%  RAM {}  ", cpu, mb(rss))
 }
 
 fn proc_rss(pid: u32) -> u64 {

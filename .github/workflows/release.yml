@@ -66,11 +66,11 @@ jobs:
 
       - name: Create AppImage directory
         run: |
-          mkdir -p target/appimage/terust.AppDir/usr/bin
-          install -m 0755 target/release/terust target/appimage/terust.AppDir/usr/bin/terust
-          install -m 0644 packaging/appimage/terust.desktop target/appimage/terust.AppDir/terust.desktop
-          install -m 0644 packaging/appimage/terust.svg target/appimage/terust.AppDir/terust.svg
-          ln -s usr/bin/terust target/appimage/terust.AppDir/AppRun
+          mkdir -p target/appimage/TRust.AppDir/usr/bin
+          install -m 0755 target/release/TRust target/appimage/TRust.AppDir/usr/bin/TRust
+          install -m 0644 packaging/appimage/TRust.desktop target/appimage/TRust.AppDir/TRust.desktop
+          install -m 0644 packaging/appimage/TRust.svg target/appimage/TRust.AppDir/TRust.svg
+          ln -s usr/bin/TRust target/appimage/TRust.AppDir/AppRun
 
       - name: Download appimagetool
         run: |
@@ -86,15 +86,15 @@ jobs:
         run: |
           VERSION="${{ steps.tag.outputs.value }}"
           VERSION="${VERSION#v}"
-          ./appimagetool target/appimage/terust.AppDir "terust-${VERSION}-x86_64.AppImage"
+          ./appimagetool target/appimage/TRust.AppDir "TRust-${VERSION}-x86_64.AppImage"
 
       - name: Create executable archive and checksums
         run: |
           VERSION="${{ steps.tag.outputs.value }}"
           VERSION="${VERSION#v}"
-          install -m 0755 target/release/terust "terust-${VERSION}-linux-x86_64"
-          tar -czf "terust-${VERSION}-linux-x86_64.tar.gz" "terust-${VERSION}-linux-x86_64"
-          sha256sum terust-* > SHA256SUMS
+          install -m 0755 target/release/TRust "TRust-${VERSION}-linux-x86_64"
+          tar -czf "TRust-${VERSION}-linux-x86_64.tar.gz" "TRust-${VERSION}-linux-x86_64"
+          sha256sum TRust-* > SHA256SUMS
 
       - name: Create or update GitHub release
         env:
@@ -102,7 +102,7 @@ jobs:
           RELEASE_TAG: ${{ steps.tag.outputs.value }}
         run: |
           gh release view "$RELEASE_TAG" >/dev/null 2>&1 || \
-            gh release create "$RELEASE_TAG" --generate-notes --title "terust ${RELEASE_TAG#v}"
+            gh release create "$RELEASE_TAG" --generate-notes --title "TRust ${RELEASE_TAG#v}"
           gh release upload "$RELEASE_TAG" \
-            terust-*.AppImage terust-*.tar.gz terust-*-linux-x86_64 SHA256SUMS \
+            TRust-*.AppImage TRust-*.tar.gz TRust-*-linux-x86_64 SHA256SUMS \
             --clobber

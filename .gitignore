@@ -1,5 +1,8 @@
 # Rust build output
 /target/
+/TRust-linux-x86-64
+/TRust-linux-x86_64
+# Previous local artifact name
 /terust-linux-x86-64
 /terust-linux-x86_64
 

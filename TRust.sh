@@ -1,13 +1,13 @@
 #!/bin/bash
-# TPGK (Rust port) launcher — always runs a binary built from the current source.
+# TRust launcher — always runs a binary built from the current source.
 # If the sources are newer than the available binary, it rebuilds before launching,
 # so every new instance picks up the latest source and configuration changes.
 set -u
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-BIN="$SCRIPT_DIR/target/release/terust"
+BIN="$SCRIPT_DIR/target/release/TRust"
 if [ ! -x "$BIN" ]; then
-    BIN="$SCRIPT_DIR/target/debug/terust"
+    BIN="$SCRIPT_DIR/target/debug/TRust"
 fi
 
 needs_rebuild() {
@@ -22,18 +22,18 @@ needs_rebuild() {
 }
 
 if needs_rebuild; then
-    echo "terust: rebuilding from source..." >&2
+    echo "TRust: rebuilding from source..." >&2
     if ! cargo build --release --manifest-path "$SCRIPT_DIR/Cargo.toml" 2>&1; then
-        echo "terust: build failed, running existing binary" >&2
+        echo "TRust: build failed, running existing binary" >&2
     fi
-    BIN="$SCRIPT_DIR/target/release/terust"
+    BIN="$SCRIPT_DIR/target/release/TRust"
     if [ ! -x "$BIN" ]; then
-        BIN="$SCRIPT_DIR/target/debug/terust"
+        BIN="$SCRIPT_DIR/target/debug/TRust"
     fi
 fi
 
 if [ ! -x "$BIN" ]; then
-    echo "terust: binary not found, run 'cargo build --release' first" >&2
+    echo "TRust: binary not found, run 'cargo build --release' first" >&2
     exit 1
 fi
 

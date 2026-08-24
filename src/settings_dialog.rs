@@ -86,7 +86,7 @@ struct DialogState {
 pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
     let s = settings();
     let dialog = gtk::Dialog::with_buttons(
-        Some("Preferences - terust"),
+        Some("Preferences - TRust"),
         parent,
         gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
         &[

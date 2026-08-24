@@ -1,8 +1,8 @@
 [package]
-name = "terust"
+name = "TRust"
 version = "1.1.0"
 edition = "2021"
-description = "TPGK ported to Rust - a GTK3/VTE terminal emulator with AI integration"
+description = "TRust - a GTK3/VTE terminal emulator with AI integration"
 license = "EUPL-1.2"
 
 [dependencies]

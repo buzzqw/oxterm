@@ -1,12 +1,12 @@
-# terust
+# TRust
 
-[![CI](https://github.com/buzzqw/terust/actions/workflows/ci.yml/badge.svg)](https://github.com/buzzqw/terust/actions/workflows/ci.yml)
-[![Build](https://github.com/buzzqw/terust/actions/workflows/build.yml/badge.svg)](https://github.com/buzzqw/terust/actions/workflows/build.yml)
+[![CI](https://github.com/buzzqw/TRust/actions/workflows/ci.yml/badge.svg)](https://github.com/buzzqw/TRust/actions/workflows/ci.yml)
+[![Build](https://github.com/buzzqw/TRust/actions/workflows/build.yml/badge.svg)](https://github.com/buzzqw/TRust/actions/workflows/build.yml)
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)](https://www.rust-lang.org/)
 [![GTK3](https://img.shields.io/badge/GTK-3-blue?logo=gnome)](https://www.gtk.org/)
 [![License](https://img.shields.io/badge/License-EUPL%201.2-blue)](LICENSE)
 
-**terust** is a **lightweight, fast, and secure** native Linux terminal
+**TRust** is a **lightweight, fast, and secure** native Linux terminal
 emulator written in Rust with GTK3 and VTE. It is a **complete and fully
 functional** terminal: light on resources and quick to start, while providing
 everything you expect from a modern terminal.
@@ -16,7 +16,7 @@ history, notes, shell integration, profiles, sessions, and optional AI chat —
 all with a small memory footprint and the memory-safety guarantees of Rust.
 
 - **[English user manual](manual.md)**
-- **[Report an issue](https://github.com/buzzqw/terust/issues)**
+- **[Report an issue](https://github.com/buzzqw/TRust/issues)**
 
 ## Highlights
 
@@ -34,7 +34,7 @@ all with a small memory footprint and the memory-safety guarantees of Rust.
 
 ## Requirements
 
-terust currently targets Linux with GTK3 and VTE 2.91 development libraries.
+TRust currently targets Linux with GTK3 and VTE 2.91 development libraries.
 
 ### Debian or Ubuntu
 
@@ -52,30 +52,30 @@ sudo pacman -S base-devel rust gtk3 vte3
 Rust can also be installed with [rustup](https://rustup.rs/).
 
 The latest version is always available to download from the [GitHub Releases
-page](https://github.com/buzzqw/terust/releases/latest).
+page](https://github.com/buzzqw/TRust/releases/latest).
 
 ## Build and Run
 
 Clone the repository and build the optimized executable:
 
 ```bash
-git clone https://github.com/buzzqw/terust.git
-cd terust
+git clone https://github.com/buzzqw/TRust.git
+cd TRust
 cargo build --release
-./target/release/terust
+./target/release/TRust
 ```
 
 The launcher uses the release binary when available and falls back to the debug
 binary:
 
 ```bash
-./terust.sh
+./TRust.sh
 ```
 
-The repository includes a local `post-commit` hook. Configure it once with
+The repository includes local build hooks. Configure them once with
 `./setup.sh` or `git config core.hooksPath .githooks`; after each commit it
-builds `terust-linux-x86-64` in the project root. The generated file is ignored
-by Git. The displayed terust version uses the Cargo version plus the total Git
+builds `TRust-linux-x86-64` in the project root. The generated file is ignored
+by Git. The displayed TRust version uses the Cargo version plus the total Git
 commit count as its fourth component, for example `1.1.0.20`.
 
 Install the binary and desktop entry under `~/.local`:
@@ -93,7 +93,7 @@ PREFIX=/usr/local ./setup.sh
 ## Command Line
 
 ```text
-terust [DIRECTORY] [OPTIONS] [-e CMD...]
+TRust [DIRECTORY] [OPTIONS] [-e CMD...]
 
   -w, --working-directory DIR  Start in DIR
   -T, --title TITLE            Fixed window title (apps cannot override it)
@@ -119,30 +119,30 @@ terust [DIRECTORY] [OPTIONS] [-e CMD...]
 Examples:
 
 ```bash
-terust ~/src/project
-terust --working-directory ~/src/project
-terust --title "Build" --geometry 120x40
-terust --fullscreen
-terust --new-window
-terust --no-restore
-terust --hold --execute make
-terust --class MyTerm --name floating   # window-manager matching
-terust --profile work                   # start with a saved profile
-terust -o opacity=0.9 -o font_size=14    # ad-hoc setting overrides
-terust --font "Fira Code" --font-size 13
-terust --config ~/demo-settings.json     # throwaway configuration
-terust --execute git status
+TRust ~/src/project
+TRust --working-directory ~/src/project
+TRust --title "Build" --geometry 120x40
+TRust --fullscreen
+TRust --new-window
+TRust --no-restore
+TRust --hold --execute make
+TRust --class MyTerm --name floating   # window-manager matching
+TRust --profile work                   # start with a saved profile
+TRust -o opacity=0.9 -o font_size=14    # ad-hoc setting overrides
+TRust --font "Fira Code" --font-size 13
+TRust --config ~/demo-settings.json     # throwaway configuration
+TRust --execute git status
 ```
 
 `--option`, `--font`, `--font-size` and `--profile` overrides apply only to the
 launched session and are never written back to your saved settings. `--config`
-points terust at an alternative settings file (handy for demos).
+points TRust at an alternative settings file (handy for demos).
 
-Without an explicit directory, terust starts in the current working directory.
+Without an explicit directory, TRust starts in the current working directory.
 
 ## Built-in Commands
 
-Commands beginning with `/` are handled by terust:
+Commands beginning with `/` are handled by TRust:
 
 | Command | Purpose |
 | --- | --- |
@@ -186,7 +186,7 @@ completion.
 
 ## Configuration and Data
 
-terust intentionally uses the existing shared data directory:
+TRust intentionally uses the existing shared data directory:
 
 ```text
 ~/.config/tpgk/settings.json   Preferences and provider configuration
@@ -227,7 +227,7 @@ packaging/appimage/build-appimage.sh
 The resulting AppImage is written to `target/`.
 
 The `master` branch also publishes a rolling prerelease after every successful
-push: [terust latest](https://github.com/buzzqw/terust/releases/tag/latest).
+push: [TRust latest](https://github.com/buzzqw/TRust/releases/tag/latest).
 It contains the Linux executable, an AppImage, and `SHA256SUMS`. The release is
 intended for testing and is replaced by the next successful master build.
 
@@ -254,11 +254,11 @@ Release automation is available through:
 
 ## Support
 
-If terust is useful to you, you can support development through
-[PayPal](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=azanzani@gmail.com&item_name=Support+terust+Project).
+If TRust is useful to you, you can support development through
+[PayPal](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=azanzani@gmail.com&item_name=Support+TRust+Project).
 
 ## License
 
-terust is distributed under the [European Union Public Licence 1.2](LICENSE).
+TRust is distributed under the [European Union Public Licence 1.2](LICENSE).
 
 Copyright 2026 Andres Zanzani.

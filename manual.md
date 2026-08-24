@@ -1,8 +1,8 @@
-# terust User Manual
+# TRust User Manual
 
 ## Contents
 
-1. [Starting terust](#starting-terust)
+1. [Starting TRust](#starting-trust)
 2. [The interface](#the-interface)
 3. [Tabs, windows, and splits](#tabs-windows-and-splits)
 4. [Built-in commands](#built-in-commands)
@@ -15,39 +15,39 @@
 11. [Configuration files](#configuration-files)
 12. [Troubleshooting](#troubleshooting)
 
-## Starting terust
+## Starting TRust
 
 From a source checkout:
 
 ```bash
-./terust.sh
+./TRust.sh
 ```
 
 If no compiled binary exists, build it first:
 
 ```bash
 cargo build --release
-./target/release/terust
+./target/release/TRust
 ```
 
 You can start in a directory, open a new window, skip session restoration, or
 execute a command directly:
 
 ```bash
-terust ~/projects/demo
-terust --new-window
-terust --no-restore
-terust --execute git status
+TRust ~/projects/demo
+TRust --new-window
+TRust --no-restore
+TRust --execute git status
 ```
 
-terust also accepts options inspired by modern terminals:
+TRust also accepts options inspired by modern terminals:
 
 ```bash
-terust --title "Build server"      # fixed window title
-terust --geometry 120x40           # initial size in COLSxROWS cells
-terust --fullscreen                # or --maximize
-terust --hold --execute make       # keep the tab open after the command exits
-terust -- ~/dir-with-dashes        # everything after -- is treated as a directory
+TRust --title "Build server"      # fixed window title
+TRust --geometry 120x40           # initial size in COLSxROWS cells
+TRust --fullscreen                # or --maximize
+TRust --hold --execute make       # keep the tab open after the command exits
+TRust -- ~/dir-with-dashes        # everything after -- is treated as a directory
 ```
 
 `--title` sets a fixed title that programs cannot override through escape
@@ -59,11 +59,11 @@ terminal visible after its command finishes so the final output stays on screen.
 Further options, inspired by kitty and alacritty, tune identity and settings:
 
 ```bash
-terust --class MyTerm --name floating    # WM_CLASS class / instance name
-terust --profile work                    # start with a saved profile
-terust -o opacity=0.9 -o login_shell=false  # override settings for this run
-terust --font "Fira Code" --font-size 13 # font shortcuts (same as -o)
-terust --config ~/demo-settings.json     # use an alternative settings file
+TRust --class MyTerm --name floating    # WM_CLASS class / instance name
+TRust --profile work                    # start with a saved profile
+TRust -o opacity=0.9 -o login_shell=false  # override settings for this run
+TRust --font "Fira Code" --font-size 13 # font shortcuts (same as -o)
+TRust --config ~/demo-settings.json     # use an alternative settings file
 ```
 
 `--class` and `--name` set the two parts of WM_CLASS, letting tiling window
@@ -72,7 +72,7 @@ loads a saved profile, and `-o/--option` (repeatable) overrides any setting for
 the current session only. `--font` and `--font-size` are convenient shortcuts
 for `-o font_name=...` / `-o font_size=...`. All of these overrides are applied
 in memory and are **never** written back to your configuration. `--config`
-points terust at a different settings file, so you can run throwaway or demo
+points TRust at a different settings file, so you can run throwaway or demo
 setups without touching your real preferences.
 
 `--execute` accepts every argument after it as part of the command. A directory
@@ -96,7 +96,7 @@ paste. It can be shown or hidden from **View** or **Preferences**.
 
 ### Terminal interaction
 
-terust uses VTE, the same terminal widget family used by GNOME Terminal. Normal
+TRust uses VTE, the same terminal widget family used by GNOME Terminal. Normal
 shell input, scrolling, selection, copy/paste, 256-color output, true color,
 and standard terminal escape sequences are supported.
 
@@ -138,7 +138,7 @@ Use `Ctrl+Alt+PageUp` or the Terminal menu to switch the active pane.
 
 ## Built-in Commands
 
-Built-in commands start with `/` and are processed by terust instead of the
+Built-in commands start with `/` and are processed by TRust instead of the
 shell. Press `Ctrl+Shift+P` to search them in the command palette.
 
 ### `/help`
@@ -186,7 +186,7 @@ Selects and tests an AI provider:
 /connect openai
 ```
 
-With no provider, terust displays configured providers and their availability.
+With no provider, TRust displays configured providers and their availability.
 For Ollama and custom endpoints, available models can be detected automatically.
 
 ### `/wnotes` and `/onotes`
@@ -222,7 +222,7 @@ pairs, checkpoints the WAL, updates query statistics, and vacuums the database.
 
 ## History
 
-terust records the command, working directory, timestamp, and exit status in
+TRust records the command, working directory, timestamp, and exit status in
 `~/.config/tpgk/history.db`.
 
 Press `Ctrl+R` for reverse interactive search:
@@ -270,7 +270,7 @@ is unavailable.
 
 Every successful push to the `master` branch publishes a rolling prerelease:
 
-<https://github.com/buzzqw/terust/releases/tag/latest>
+<https://github.com/buzzqw/TRust/releases/tag/latest>
 
 It contains the current Linux executable, an AppImage, and a `SHA256SUMS` file.
 This package is for testing and is replaced by the next successful build. Use a
@@ -316,10 +316,10 @@ Configure the notes directory, default Markdown filename, and fallback editor.
 
 ## Shell Integration
 
-OSC 133 lets terust identify prompt start, command start, command output, and
+OSC 133 lets TRust identify prompt start, command start, command output, and
 exit status. It enables prompt navigation and command-output-aware features.
 
-Enable **Preferences > Compatibility > OSC 133**. terust creates a setup script
+Enable **Preferences > Compatibility > OSC 133**. TRust creates a setup script
 under `~/.config/tpgk/`; run it for the shell you use and restart the shell:
 
 ```bash
@@ -369,7 +369,7 @@ The integration supports Bash and Zsh. Use `Ctrl+Shift+Up` and
 ~/.config/tpgk/profiles/
 ```
 
-The directory is shared with the original application by design. terust keeps
+The directory is shared with the original application by design. TRust keeps
 the previous valid settings file as `settings.json.bak` when replacing
 Preferences. Back up the whole directory before manually editing settings or
 migrating between versions.
@@ -403,7 +403,7 @@ shell configuration, and start a new terminal tab.
 
 ### Reset all settings
 
-Close terust and back up or remove the configuration directory:
+Close TRust and back up or remove the configuration directory:
 
 ```bash
 mv ~/.config/tpgk ~/.config/tpgk.backup
@@ -414,4 +414,4 @@ history database, so keep the backup if you want to restore history later.
 
 ## License
 
-terust is licensed under the European Union Public Licence 1.2. See [LICENSE](LICENSE).
+TRust is licensed under the European Union Public Licence 1.2. See [LICENSE](LICENSE).

@@ -307,7 +307,7 @@ fn parse_cli(args: &[String]) -> Result<CliOptions, String> {
 
 fn usage() -> &'static str {
     concat!(
-        "Usage: terust [DIRECTORY] [OPTIONS] [-e CMD...]\n\n",
+        "Usage: TRust [DIRECTORY] [OPTIONS] [-e CMD...]\n\n",
         "Options:\n",
         "  -w, --working-directory DIR  Working directory for the new terminal\n",
         "  -T, --title TITLE            Set a fixed window title (apps cannot override it)\n",
@@ -326,7 +326,7 @@ fn usage() -> &'static str {
         "      --hold                   Keep the terminal open after the command exits\n",
         "  -e, --execute CMD...         Run a command instead of the configured shell\n",
         "      --                       Treat every following argument as the directory\n",
-        "  -V, --version                Show the terust version\n",
+        "  -V, --version                Show the TRust version\n",
         "  -h, --help                   Show this help\n",
     )
 }
@@ -339,7 +339,7 @@ struct App {
 impl App {
     fn new() -> App {
         let app = gtk::Application::new(
-            Some("com.buzzqw.terust"),
+            Some("com.buzzqw.trust"),
             gio::ApplicationFlags::HANDLES_COMMAND_LINE | gio::ApplicationFlags::NON_UNIQUE,
         );
         let _ = glib::set_prgname(Some(window::APP_NAME));

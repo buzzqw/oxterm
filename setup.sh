@@ -9,28 +9,28 @@ if git -C "${ROOT_DIR}" rev-parse --git-dir >/dev/null 2>&1; then
 fi
 
 if ! command -v cargo >/dev/null 2>&1; then
-    printf '%s\n' "terust: cargo is required (install Rust from https://rustup.rs/)" >&2
+    printf '%s\n' "TRust: cargo is required (install Rust from https://rustup.rs/)" >&2
     exit 1
 fi
 
-printf '%s\n' "Building terust..."
+printf '%s\n' "Building TRust..."
 cargo build --release --manifest-path "${ROOT_DIR}/Cargo.toml"
 
-install -Dm755 "${ROOT_DIR}/target/release/terust" "${PREFIX}/bin/terust"
+install -Dm755 "${ROOT_DIR}/target/release/TRust" "${PREFIX}/bin/TRust"
 
 desktop_dir="${PREFIX}/share/applications"
 install -d "${desktop_dir}"
-cat > "${desktop_dir}/terust.desktop" <<EOF
+cat > "${desktop_dir}/TRust.desktop" <<EOF
 [Desktop Entry]
-Name=terust Terminal
+Name=TRust Terminal
 Comment=GTK3/VTE terminal emulator with AI, history and notes
-Exec="${PREFIX}/bin/terust" %f
+Exec="${PREFIX}/bin/TRust" %f
 Icon=utilities-terminal
 Terminal=false
 Type=Application
 Categories=System;TerminalEmulator;
-StartupWMClass=terust
+StartupWMClass=TRust
 MimeType=inode/directory;
 EOF
 
-printf '%s\n' "Installed terust to ${PREFIX}/bin/terust"
+printf '%s\n' "Installed TRust to ${PREFIX}/bin/TRust"
