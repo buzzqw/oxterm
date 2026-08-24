@@ -34,24 +34,28 @@ all with a small memory footprint and the memory-safety guarantees of Rust.
 
 ## Requirements
 
-TRust currently targets Linux with GTK3 and VTE 2.91 development libraries.
+TRust runs on Linux and needs:
 
-### Debian or Ubuntu
+- Rust stable and Cargo
+- GTK3 development files
+- VTE 2.91 development files
+- `pkg-config`
+
+On Debian or Ubuntu:
 
 ```bash
 sudo apt update
 sudo apt install build-essential pkg-config libgtk-3-dev libvte-2.91-dev
 ```
 
-### Arch Linux
+On Arch Linux:
 
 ```bash
 sudo pacman -S base-devel rust gtk3 vte3
 ```
 
-Rust can also be installed with [rustup](https://rustup.rs/).
-
-The latest version is always available to download from the [GitHub Releases
+Install Rust with [rustup](https://rustup.rs/) if it is not already available.
+Prebuilt Linux executables are published on the [GitHub Releases
 page](https://github.com/buzzqw/TRust/releases/latest).
 
 ## Build and Run
@@ -226,20 +230,10 @@ must not leave the machine.
 URLs opened from terminal output are restricted to `http://` and `https://`.
 Links using other schemes are not passed to desktop URL handlers.
 
-## AppImage
-
-If `appimagetool` is installed locally:
-
-```bash
-packaging/appimage/build-appimage.sh
-```
-
-The resulting AppImage is written to `target/`.
-
 The `master` branch also publishes a rolling prerelease after every successful
 push: [TRust latest](https://github.com/buzzqw/TRust/releases/tag/latest).
-It contains the Linux executable, an AppImage, and `SHA256SUMS`. The release is
-intended for testing and is replaced by the next successful master build.
+It contains the Linux executable and `SHA256SUMS`. The release is intended for
+testing and is replaced by the next successful master build.
 
 ## Development
 
@@ -253,7 +247,8 @@ cargo build --release --locked
 
 The GitHub Actions workflows run the same checks and build an x86_64 release
 artifact on every commit push, pull request, and manual workflow dispatch on any
-branch. Version tags also trigger AppImage and SHA256 checksum generation.
+branch. Version tags also trigger versioned release artifacts and checksum
+generation.
 
 Release automation is available through:
 
