@@ -15,5 +15,5 @@ jobs:
       - name: Install GTK/VTE development packages
         run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libvte-2.91-dev
       - run: cargo fmt --check
-       - run: cargo test --all-targets --locked
-       - run: cargo build --release --locked
+      - run: cargo test --all-targets --locked
+      - run: cargo build --release --locked

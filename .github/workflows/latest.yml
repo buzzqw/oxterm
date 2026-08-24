@@ -12,10 +12,6 @@ concurrency:
   group: latest-release
   cancel-in-progress: true
 
-env:
-  APPIMAGETOOL_VERSION: 1.9.1
-  APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
-
 jobs:
   publish:
     name: Publish rolling latest release
@@ -32,40 +28,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config libgtk-3-dev libvte-2.91-dev wget
+            pkg-config libgtk-3-dev libvte-2.91-dev
 
       - name: Build and test release
         run: |
           cargo fmt --check
-           cargo test --all-targets --locked
-           cargo build --release --locked
+          cargo test --all-targets --locked
+          cargo build --release --locked
 
       - name: Prepare executable package
         run: |
           install -m 0755 target/release/TRust TRust-latest-linux-x86_64
           tar -czf TRust-latest-linux-x86_64.tar.gz TRust-latest-linux-x86_64
-
-      - name: Prepare AppImage directory
-        run: |
-          mkdir -p target/appimage/TRust.AppDir/usr/bin
-          install -m 0755 target/release/TRust target/appimage/TRust.AppDir/usr/bin/TRust
-          install -m 0644 packaging/appimage/TRust.desktop target/appimage/TRust.AppDir/TRust.desktop
-          install -m 0644 packaging/appimage/TRust.svg target/appimage/TRust.AppDir/TRust.svg
-          ln -s usr/bin/TRust target/appimage/TRust.AppDir/AppRun
-
-      - name: Download appimagetool
-        run: |
-          wget -q "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage" \
-            -O appimagetool
-          chmod +x appimagetool
-          printf '%s  appimagetool\n' "$APPIMAGETOOL_SHA256" | sha256sum --check --strict
-
-      - name: Build AppImage
-        env:
-          APPIMAGE_EXTRACT_AND_RUN: 1
-          ARCH: x86_64
-        run: |
-          ./appimagetool target/appimage/TRust.AppDir TRust-latest-x86_64.AppImage
 
       - name: Create checksums
         run: sha256sum TRust-latest-* > SHA256SUMS
@@ -97,6 +71,5 @@ jobs:
           gh release upload latest \
             TRust-latest-linux-x86_64 \
             TRust-latest-linux-x86_64.tar.gz \
-            TRust-latest-x86_64.AppImage \
             SHA256SUMS \
             --clobber

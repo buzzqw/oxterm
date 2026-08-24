@@ -14,13 +14,9 @@ on:
 permissions:
   contents: write
 
-env:
-  APPIMAGETOOL_VERSION: 1.9.1
-  APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
-
 jobs:
   release:
-    name: AppImage and checksums
+    name: Executable and checksums
     runs-on: ubuntu-24.04
 
     steps:
@@ -56,37 +52,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config libgtk-3-dev libvte-2.91-dev wget
+            pkg-config libgtk-3-dev libvte-2.91-dev
 
       - name: Build release executable
         run: |
           cargo fmt --check
-           cargo test --all-targets --locked
-           cargo build --release --locked
-
-      - name: Create AppImage directory
-        run: |
-          mkdir -p target/appimage/TRust.AppDir/usr/bin
-          install -m 0755 target/release/TRust target/appimage/TRust.AppDir/usr/bin/TRust
-          install -m 0644 packaging/appimage/TRust.desktop target/appimage/TRust.AppDir/TRust.desktop
-          install -m 0644 packaging/appimage/TRust.svg target/appimage/TRust.AppDir/TRust.svg
-          ln -s usr/bin/TRust target/appimage/TRust.AppDir/AppRun
-
-      - name: Download appimagetool
-        run: |
-          wget -q "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage" \
-            -O appimagetool
-          chmod +x appimagetool
-          printf '%s  appimagetool\n' "$APPIMAGETOOL_SHA256" | sha256sum --check --strict
-
-      - name: Build AppImage
-        env:
-          ARCH: x86_64
-          APPIMAGE_EXTRACT_AND_RUN: 1
-        run: |
-          VERSION="${{ steps.tag.outputs.value }}"
-          VERSION="${VERSION#v}"
-          ./appimagetool target/appimage/TRust.AppDir "TRust-${VERSION}-x86_64.AppImage"
+          cargo test --all-targets --locked
+          cargo build --release --locked
 
       - name: Create executable archive and checksums
         run: |
@@ -104,5 +76,5 @@ jobs:
           gh release view "$RELEASE_TAG" >/dev/null 2>&1 || \
             gh release create "$RELEASE_TAG" --generate-notes --title "TRust ${RELEASE_TAG#v}"
           gh release upload "$RELEASE_TAG" \
-            TRust-*.AppImage TRust-*.tar.gz TRust-*-linux-x86_64 SHA256SUMS \
+            TRust-*.tar.gz TRust-*-linux-x86_64 SHA256SUMS \
             --clobber
