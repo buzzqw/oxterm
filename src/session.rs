@@ -82,6 +82,26 @@ pub fn save_session(name: &str, data: &SessionData) -> bool {
     }
 }
 
+pub fn export_session(name: &str, destination: &str) -> Result<(), String> {
+    let source = session_path(name)?;
+    let content = fs::read(&source).map_err(|e| format!("could not read session: {}", e))?;
+    let destination = PathBuf::from(destination);
+    let parent = destination
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    if !parent.is_dir() {
+        return Err("export destination directory does not exist".to_string());
+    }
+    let temp = write_private_temp(parent, "session_export", &content)
+        .map_err(|e| format!("could not write session export: {}", e))?;
+    if fs::rename(&temp, &destination).is_err() {
+        let _ = fs::remove_file(&temp);
+        return Err("could not finalize session export".to_string());
+    }
+    let _ = fs::set_permissions(&destination, fs::Permissions::from_mode(0o600));
+    Ok(())
+}
+
 fn validate_tab(v: &Value) -> Option<TabEntry> {
     if !v.is_object() {
         return None;

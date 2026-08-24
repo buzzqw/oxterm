@@ -46,11 +46,18 @@ impl HistoryManager {
                 command TEXT NOT NULL,
                 cwd TEXT,
                 exit_code INTEGER,
-                timestamp TEXT NOT NULL
+                timestamp TEXT NOT NULL,
+                duration_ms INTEGER,
+                git_branch TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_commands_ts ON commands(timestamp);",
         )
         .expect("create history tables");
+        // Existing installations predate command duration and branch metadata.
+        // SQLite has no IF NOT EXISTS form for ADD COLUMN, so ignore duplicate
+        // column errors while keeping other initialization failures visible.
+        let _ = conn.execute("ALTER TABLE commands ADD COLUMN duration_ms INTEGER", []);
+        let _ = conn.execute("ALTER TABLE commands ADD COLUMN git_branch TEXT", []);
         HistoryManager {
             conn: Mutex::new(conn),
             inserts_since_trim: Mutex::new(0),
@@ -71,12 +78,25 @@ impl HistoryManager {
     }
 
     pub fn add(&self, command: &str, cwd: &str, exit_code: i64) -> i64 {
+        self.add_with_context(command, cwd, exit_code, None, None)
+    }
+
+    pub fn add_with_context(
+        &self,
+        command: &str,
+        cwd: &str,
+        exit_code: i64,
+        duration_ms: Option<i64>,
+        git_branch: Option<&str>,
+    ) -> i64 {
         let conn = self.conn.lock().unwrap();
         let ts = Self::now_ts();
         let id = conn
             .execute(
-                "INSERT INTO commands (command, cwd, exit_code, timestamp) VALUES (?1,?2,?3,?4)",
-                params![command, cwd, exit_code, ts],
+                "INSERT INTO commands
+                 (command, cwd, exit_code, timestamp, duration_ms, git_branch)
+                 VALUES (?1,?2,?3,?4,?5,?6)",
+                params![command, cwd, exit_code, ts, duration_ms, git_branch],
             )
             .map(|_| conn.last_insert_rowid())
             .unwrap_or(0);
@@ -110,13 +130,44 @@ impl HistoryManager {
     }
 
     pub fn set_exit_code(&self, row_id: Option<i64>, exit_code: i64) {
+        self.set_command_result(row_id, exit_code, None);
+    }
+
+    pub fn set_command_result(
+        &self,
+        row_id: Option<i64>,
+        exit_code: i64,
+        duration_ms: Option<i64>,
+    ) {
         if let Some(id) = row_id {
             let conn = self.conn.lock().unwrap();
             let _ = conn.execute(
-                "UPDATE commands SET exit_code = ?1 WHERE id = ?2",
-                params![exit_code, id],
+                "UPDATE commands SET exit_code = ?1, duration_ms = ?2 WHERE id = ?3",
+                params![exit_code, duration_ms, id],
             );
         }
+    }
+
+    pub fn latest_failed(&self, cwd: &str) -> Option<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let sql = if cwd.is_empty() {
+            "SELECT id, command, cwd, timestamp, exit_code, duration_ms, git_branch
+             FROM commands
+             WHERE exit_code IS NOT NULL AND exit_code != 0 AND exit_code >= 0
+             ORDER BY id DESC LIMIT 1"
+        } else {
+            "SELECT id, command, cwd, timestamp, exit_code, duration_ms, git_branch
+             FROM commands
+             WHERE cwd = ?1 AND exit_code IS NOT NULL AND exit_code != 0 AND exit_code >= 0
+             ORDER BY id DESC LIMIT 1"
+        };
+        let mut stmt = conn.prepare(sql).ok()?;
+        let row = if cwd.is_empty() {
+            stmt.query_row([], Self::map_row_7)
+        } else {
+            stmt.query_row(params![cwd], Self::map_row_7)
+        };
+        row.ok()
     }
 
     fn like_escape(term: &str) -> String {
@@ -131,24 +182,24 @@ impl HistoryManager {
             let rows = if !cwd.is_empty() {
                 let mut stmt = conn
                     .prepare(
-                        "SELECT MAX(id) AS id, command, cwd, timestamp FROM commands \
+                        "SELECT MAX(id) AS id, command, cwd, timestamp, exit_code, duration_ms, git_branch FROM commands \
                          WHERE command NOT LIKE '/%' ESCAPE '\\' GROUP BY command \
                          ORDER BY CASE WHEN cwd = ?1 THEN 0 ELSE 1 END, id DESC LIMIT ?2",
                     )
                     .unwrap();
                 let iter = stmt
-                    .query_map(params![cwd, limit], Self::map_row_4)
+                    .query_map(params![cwd, limit], Self::map_row_7)
                     .unwrap();
                 iter.filter_map(|r| r.ok()).collect::<Vec<_>>()
             } else {
                 let mut stmt = conn
                     .prepare(
-                        "SELECT MAX(id) AS id, command, cwd, timestamp FROM commands \
+                        "SELECT MAX(id) AS id, command, cwd, timestamp, exit_code, duration_ms, git_branch FROM commands \
                          WHERE command NOT LIKE '/%' ESCAPE '\\' GROUP BY command \
                          ORDER BY id DESC LIMIT ?1",
                     )
                     .unwrap();
-                let iter = stmt.query_map(params![limit], Self::map_row_4).unwrap();
+                let iter = stmt.query_map(params![limit], Self::map_row_7).unwrap();
                 iter.filter_map(|r| r.ok()).collect::<Vec<_>>()
             };
             return rows;
@@ -216,7 +267,7 @@ impl HistoryManager {
         let order_sql = order_parts.join(", ");
 
         let sql = format!(
-            "SELECT MAX(id) AS id, command, cwd, timestamp FROM commands \
+            "SELECT MAX(id) AS id, command, cwd, timestamp, exit_code, duration_ms, git_branch FROM commands \
              WHERE {} GROUP BY command ORDER BY {} LIMIT ?",
             where_sql, order_sql
         );
@@ -228,18 +279,24 @@ impl HistoryManager {
         all.push(Box::new(limit));
         let iter = stmt
             .query_map(rusqlite::params_from_iter(all.into_iter()), |row| {
-                Self::map_row_4(row)
+                Self::map_row_7(row)
             })
             .unwrap();
         iter.filter_map(|r| r.ok()).collect()
     }
 
-    fn map_row_4(row: &rusqlite::Row) -> rusqlite::Result<Vec<Value>> {
+    fn map_row_7(row: &rusqlite::Row) -> rusqlite::Result<Vec<Value>> {
         Ok(vec![
             Value::Number(serde_json::Number::from(row.get::<_, i64>(0)?)),
             Value::String(row.get::<_, String>(1)?),
             Value::String(row.get::<_, Option<String>>(2)?.unwrap_or_default()),
             Value::String(row.get::<_, String>(3)?),
+            row.get::<_, Option<i64>>(4)?
+                .map_or(Value::Null, |value| Value::Number(value.into())),
+            row.get::<_, Option<i64>>(5)?
+                .map_or(Value::Null, |value| Value::Number(value.into())),
+            row.get::<_, Option<String>>(6)?
+                .map_or(Value::Null, Value::String),
         ])
     }
 

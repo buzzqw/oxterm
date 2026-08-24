@@ -30,11 +30,13 @@ all with a small memory footprint and the memory-safety guarantees of Rust.
 - tmux-like single, vertical, and horizontal split layouts
 - Configurable font, colors, 16-color palettes, cursor, opacity, padding, and encoding
 - Live Preferences reload without restarting the application
-- SQLite command history with reverse search, filters, read-only SQL, and replay
+- SQLite command history with reverse search, filters, read-only SQL, replay, command duration, and Git branch metadata
 - AI chat through OpenAI, Anthropic Claude, Google Gemini, DeepSeek, Ollama, and custom APIs
+- AI failure diagnosis with `/ai explain` and safe repair suggestions with `/ai repair`
 - Timestamped Markdown notes and configurable editor integration
 - OSC 133 shell integration for prompts, command boundaries, and exit status
 - Session restore, named sessions, profiles, command palette, quickmarks, and hints
+- Parameterized snippets and JSON export for saved sessions
 - System statistics and SSH-aware status information
 
 ## Requirements
@@ -166,6 +168,8 @@ Commands beginning with `/` are handled by TRust:
 | `/history [terms]` | Search command history using AND filters |
 | `/history :sql SELECT ...` | Run a read-only history query |
 | `/ai` | Enter AI chat mode |
+| `/ai explain` | Explain the latest failed command in the current directory |
+| `/ai repair` | Suggest a safe repair for the latest failed command |
 | `/ai context N <question>` | Ask AI about the last N terminal lines |
 | `/ai off` | Leave AI chat mode |
 | `/connect [provider]` | Select an AI provider and model |
@@ -173,6 +177,11 @@ Commands beginning with `/` are handled by TRust:
 | `/onotes [-file.md]` | Open a notes file in the configured editor |
 | `/learn <file>` | Import commands into history without executing them |
 | `/optimize history` | Deduplicate and optimize the history database |
+| `/session export NAME [FILE]` | Export a saved session as private JSON |
+| `/session list` | List saved sessions |
+| `/snippet add NAME COMMAND` | Save a parameterized command snippet |
+| `/snippet NAME [ARGS...]` | Expand a snippet into the prompt without executing it |
+| `/snippet list` | List saved snippets |
 
 Press `Ctrl+Shift+P` for the command palette and `Tab` after `/` for command
 completion.

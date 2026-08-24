@@ -120,6 +120,7 @@ fn build_defaults() -> Value {
         },
         "ai_last_provider": "",
         "ai_system_prompts": {},
+        "snippets": {},
         "osc133": false,
         "enable_transparency": false,
         "confirm_close": true,

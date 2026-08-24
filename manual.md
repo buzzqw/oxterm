@@ -159,7 +159,10 @@ Searches the SQLite history database:
 ```
 
 Terms are combined with AND logic. Prefix a term with `-` to exclude it. The
-`:sql` form accepts read-only `SELECT`, `PRAGMA`, and `EXPLAIN` queries.
+`:sql` form accepts read-only `SELECT` and `EXPLAIN` queries.
+
+When OSC 133 shell integration is enabled, each tracked command also records its
+duration and the current Git branch when the working directory is a repository.
 
 Results are numbered. Press `Alt+1` through `Alt+9` to replay a result, or use
 the interactive picker to fill or execute it.
@@ -178,6 +181,50 @@ Starts AI chat with the configured provider:
 basic secret redaction. The resulting context is sent to the configured
 provider, so do not use it with sensitive output that must remain local. Use
 `Ctrl+C` to cancel an in-progress response.
+
+### `/ai explain` and `/ai repair`
+
+These commands use the latest failed command in the current directory, its exit
+code, duration, Git branch, and recent redacted terminal output:
+
+```text
+/ai explain
+/ai repair
+/ai repair the failure only happens in CI
+```
+
+`/ai explain` focuses on the likely cause and next checks. `/ai repair` asks for
+the smallest safe fix and displays commands for review; TRust never executes the
+suggested repair automatically.
+
+### `/session`
+
+Named sessions are saved from the **File > Sessions** menu. Export one for
+backup or sharing with:
+
+```text
+/session list
+/session export work
+/session export work ~/backups/trust-work.json
+```
+
+Exports contain session layout and tab working directories, not terminal output.
+The destination is written atomically with private file permissions.
+
+### `/snippet`
+
+Snippets are persistent parameterized command templates. Positional placeholders
+use `{1}` through `{9}`; `{*}` expands to all arguments:
+
+```text
+/snippet add deploy docker compose -f {1} up -d {2}
+/snippet deploy compose.yml api
+/snippet list
+/snippet delete deploy
+```
+
+Expansion fills the shell prompt but does not press Enter, so the command can be
+reviewed or edited before execution.
 
 ### `/connect`
 
