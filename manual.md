@@ -26,7 +26,7 @@ From a source checkout:
 If no compiled binary exists, build it first:
 
 ```bash
-cargo build --release
+cargo build --release --locked
 ./target/release/TRust
 ```
 
@@ -100,9 +100,10 @@ TRust uses VTE, the same terminal widget family used by GNOME Terminal. Normal
 shell input, scrolling, selection, copy/paste, 256-color output, true color,
 and standard terminal escape sequences are supported.
 
-URLs are detected in terminal output. Click a URL to open it with
-the desktop browser. Explicit OSC 8 hyperlinks emitted by programs (for example
-`ls --hyperlink=auto`) are also honored.
+URLs are detected in terminal output. Click an `http://` or `https://` URL to
+open it with the desktop browser. Explicit OSC 8 hyperlinks emitted by
+programs (for example `ls --hyperlink=auto`) are also honored when they target
+one of those two schemes; other schemes are blocked.
 
 Press `Ctrl+Shift+F` to search the scrollback: type a query and use `Enter` /
 `Shift+Enter` to jump to the next / previous match, with optional case-sensitive
@@ -173,7 +174,9 @@ Starts AI chat with the configured provider:
 /ai off
 ```
 
-`/ai context N` includes the last N visible terminal lines in the request. Use
+`/ai context N` includes the last N visible terminal lines in the request after
+basic secret redaction. The resulting context is sent to the configured
+provider, so do not use it with sensitive output that must remain local. Use
 `Ctrl+C` to cancel an in-progress response.
 
 ### `/connect`
@@ -251,7 +254,8 @@ Configure AI providers under **Edit > Preferences > AI**. Supported providers:
 
 Each provider can have its own model, endpoint, and system prompt. Cloud API
 keys are stored in `~/.config/tpgk/settings.json`; protect the file and do not
-share it.
+share it. Custom endpoints must use HTTPS, except for local HTTP services on
+`localhost`, `127.0.0.1`, or `::1`.
 
 For Ollama, start the local server before connecting. Custom endpoints should
 provide an OpenAI-compatible chat API; local servers such as llama.cpp, vLLM,

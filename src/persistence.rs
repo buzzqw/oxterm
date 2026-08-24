@@ -1,3 +1,6 @@
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -30,6 +33,35 @@ pub fn temporary_path(dir: &Path, prefix: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     dir.join(format!(".{}_{}_{}", prefix, std::process::id(), n))
+}
+
+/// Create a private temporary file without following a pre-existing symlink.
+/// Retry on a name collision so the predictable process-local counter cannot
+/// be used to force a write failure or redirect the write target.
+pub fn write_private_temp(dir: &Path, prefix: &str, contents: &[u8]) -> std::io::Result<PathBuf> {
+    for _ in 0..32 {
+        let path = temporary_path(dir, prefix);
+        let mut file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        };
+        if let Err(e) = file.write_all(contents).and_then(|_| file.sync_all()) {
+            let _ = std::fs::remove_file(&path);
+            return Err(e);
+        }
+        return Ok(path);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate a unique temporary file",
+    ))
 }
 
 #[cfg(test)]

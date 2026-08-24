@@ -14,7 +14,7 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 printf '%s\n' 'TRust post-commit: building release executable...'
-if ! cargo build --release --manifest-path "$ROOT_DIR/Cargo.toml" --quiet; then
+if ! cargo build --release --locked --manifest-path "$ROOT_DIR/Cargo.toml" --quiet; then
     printf '%s\n' 'TRust post-commit: release build failed' >&2
     exit 0
 fi

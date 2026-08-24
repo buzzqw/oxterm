@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use serde_json::{json, Value};
 
 use crate::logging::LOGGER;
-use crate::persistence::temporary_path;
 use crate::persistence::validate_name;
+use crate::persistence::write_private_temp;
 use crate::settings;
 
 fn session_dir() -> PathBuf {
@@ -60,12 +60,14 @@ pub fn save_session(name: &str, data: &SessionData) -> bool {
             return false;
         }
     };
-    let tmp = temporary_path(&session_dir(), "session_tmp");
-    match fs::write(
-        &tmp,
-        serde_json::to_string_pretty(&payload).unwrap_or_default(),
+    match write_private_temp(
+        &session_dir(),
+        "session_tmp",
+        serde_json::to_string_pretty(&payload)
+            .unwrap_or_default()
+            .as_bytes(),
     ) {
-        Ok(()) => {
+        Ok(tmp) => {
             let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
             if fs::rename(&tmp, &path).is_ok() {
                 return true;

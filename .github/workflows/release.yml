@@ -61,8 +61,8 @@ jobs:
       - name: Build release executable
         run: |
           cargo fmt --check
-          cargo test --all-targets
-          cargo build --release
+           cargo test --all-targets --locked
+           cargo build --release --locked
 
       - name: Create AppImage directory
         run: |

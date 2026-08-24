@@ -12,7 +12,7 @@ command -v appimagetool >/dev/null 2>&1 || {
     exit 1
 }
 
-cargo build --release --manifest-path "${ROOT_DIR}/Cargo.toml"
+cargo build --release --locked --manifest-path "${ROOT_DIR}/Cargo.toml"
 rm -rf "${APPDIR}"
 install -Dm755 "${ROOT_DIR}/target/release/TRust" "${APPDIR}/usr/bin/TRust"
 install -Dm644 "${ROOT_DIR}/packaging/appimage/TRust.desktop" "${APPDIR}/TRust.desktop"

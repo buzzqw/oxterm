@@ -61,7 +61,7 @@ Clone the repository and build the optimized executable:
 ```bash
 git clone https://github.com/buzzqw/TRust.git
 cd TRust
-cargo build --release
+cargo build --release --locked
 ./target/release/TRust
 ```
 
@@ -200,7 +200,8 @@ Open **Edit > Preferences** to configure the terminal, appearance, colors,
 compatibility, AI providers, and notes. Most changes are applied immediately.
 
 API keys are stored in the settings file. Protect that file appropriately and
-never commit it to a repository.
+never commit it to a repository. The file and its backup are written with
+restrictive permissions, but they are not encrypted.
 
 ## AI Providers
 
@@ -214,7 +215,16 @@ The AI page supports:
 - Custom OpenAI-compatible endpoints
 
 Cloud providers require their API key. Ollama requires a running local Ollama
-server. AI chat is optional and does not affect normal terminal operation.
+server. Custom endpoints must use HTTPS; plain HTTP is accepted only for local
+services such as `localhost`, `127.0.0.1`, and `::1`. AI chat is optional and
+does not affect normal terminal operation.
+
+`/ai context` sends the selected recent terminal lines to the configured
+provider after basic secret redaction. Do not use it with sensitive output that
+must not leave the machine.
+
+URLs opened from terminal output are restricted to `http://` and `https://`.
+Links using other schemes are not passed to desktop URL handlers.
 
 ## AppImage
 
@@ -237,8 +247,8 @@ Run the standard checks before submitting changes:
 
 ```bash
 cargo fmt --check
-cargo test --all-targets
-cargo build --release
+cargo test --all-targets --locked
+cargo build --release --locked
 ```
 
 The GitHub Actions workflows run the same checks and build an x86_64 release

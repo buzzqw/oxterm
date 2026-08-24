@@ -14,7 +14,7 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 printf '%s\n' "Building TRust..."
-cargo build --release --manifest-path "${ROOT_DIR}/Cargo.toml"
+cargo build --release --locked --manifest-path "${ROOT_DIR}/Cargo.toml"
 
 install -Dm755 "${ROOT_DIR}/target/release/TRust" "${PREFIX}/bin/TRust"
 

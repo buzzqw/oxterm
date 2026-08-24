@@ -11,7 +11,7 @@ use glib::subclass::prelude::*;
 use serde_json::{json, Map, Value};
 
 use crate::logging::LOGGER;
-use crate::persistence::temporary_path;
+use crate::persistence::write_private_temp;
 
 const HEX_COLOR_RE: &str = "^#[0-9a-fA-F]{6}$";
 
@@ -520,18 +520,29 @@ impl Settings {
             .unwrap_or_else(config_dir);
         let _ = fs::create_dir_all(&target_dir);
         let _ = fs::set_permissions(&target_dir, fs::Permissions::from_mode(0o700));
-        let tmp = temporary_path(&target_dir, "settings_tmp");
         let json_str = serde_json::to_string_pretty(&*imp.data.lock().unwrap());
         match json_str {
             Ok(s) => {
-                if let Err(e) = fs::write(&tmp, s) {
+                let tmp = match write_private_temp(&target_dir, "settings_tmp", s.as_bytes()) {
+                    Ok(tmp) => tmp,
+                    Err(e) => {
+                        LOGGER.error(&format!("settings_save_failed error={}", e));
+                        return;
+                    }
+                };
+                if let Err(e) = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600)) {
                     LOGGER.error(&format!("settings_save_failed error={}", e));
                     return;
                 }
-                let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
                 if target.exists() {
                     let backup = target.with_extension("json.bak");
-                    if let Err(e) = fs::copy(&target, &backup) {
+                    if backup
+                        .symlink_metadata()
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false)
+                    {
+                        LOGGER.warning("settings_backup_failed error=backup is a symbolic link");
+                    } else if let Err(e) = fs::copy(&target, &backup) {
                         LOGGER.warning(&format!("settings_backup_failed error={}", e));
                     } else {
                         let _ = fs::set_permissions(&backup, fs::Permissions::from_mode(0o600));

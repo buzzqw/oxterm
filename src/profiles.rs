@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use serde_json::Value;
 
 use crate::logging::LOGGER;
-use crate::persistence::temporary_path;
 use crate::persistence::validate_name;
+use crate::persistence::write_private_temp;
 use crate::settings::{self, Settings};
 
 fn profile_dir() -> PathBuf {
@@ -162,12 +162,14 @@ pub fn save_profile(name: &str, settings_data: &Value) -> bool {
             return false;
         }
     };
-    let tmp = temporary_path(&profile_dir(), "profile_tmp");
-    match fs::write(
-        &tmp,
-        serde_json::to_string_pretty(&validated).unwrap_or_default(),
+    match write_private_temp(
+        &profile_dir(),
+        "profile_tmp",
+        serde_json::to_string_pretty(&validated)
+            .unwrap_or_default()
+            .as_bytes(),
     ) {
-        Ok(()) => {
+        Ok(tmp) => {
             let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
             if fs::rename(&tmp, &path).is_ok() {
                 return true;

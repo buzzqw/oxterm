@@ -68,6 +68,28 @@ pub fn provider_keys() -> Vec<&'static str> {
     PROVIDERS.iter().map(|p| p.0).collect()
 }
 
+fn endpoint_is_allowed(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("https://") {
+        return true;
+    }
+    let Some(authority) = lower
+        .strip_prefix("http://")
+        .and_then(|v| v.split('/').next())
+    else {
+        return false;
+    };
+    if authority.is_empty() || authority.contains('@') {
+        return false;
+    }
+    let host = if let Some(host) = authority.strip_prefix('[') {
+        host.split(']').next().unwrap_or("")
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
 #[derive(Debug)]
 pub enum AiError {
     Cancelled,
@@ -135,6 +157,9 @@ impl AIClient {
         } else {
             base_url.to_string()
         };
+        if !endpoint_is_allowed(&base_url) {
+            return Err("AI endpoints must use HTTPS unless they are local HTTP services".into());
+        }
         Ok(AIClient {
             provider: provider.to_string(),
             api_key: api_key.to_string(),
@@ -765,9 +790,19 @@ mod tests {
         client.cancel();
         assert!(client.is_cancelled(&external));
     }
+
+    #[test]
+    fn remote_http_endpoints_are_rejected() {
+        assert!(AIClient::new("custom", "", None, "http://example.test/chat").is_err());
+        assert!(AIClient::new("custom", "", None, "http://127.0.0.1:8080/chat").is_ok());
+        assert!(AIClient::new("custom", "", None, "https://example.test/chat").is_ok());
+    }
 }
 
 pub fn ping_provider(provider: &str, url: &str) -> bool {
+    if !url.is_empty() && !endpoint_is_allowed(url) {
+        return false;
+    }
     let result = if provider == "ollama" {
         let u = if url.is_empty() {
             "http://localhost:11434".to_string()
