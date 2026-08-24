@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="$(git rev-parse --show-toplevel)"
+source_changed=false
+
+while IFS= read -r path; do
+    case "$path" in
+        src/*|build.rs|build.sh|Cargo.toml|Cargo.lock|setup.sh)
+            source_changed=true
+            break
+            ;;
+    esac
+done < <(git diff --cached --name-only --diff-filter=ACMRD)
+
+if [[ "$source_changed" != true ]]; then
+    exit 0
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+    printf '%s\n' 'terust pre-commit: cargo not found; commit aborted' >&2
+    exit 1
+fi
+
+printf '%s\n' 'terust pre-commit: building release executable...'
+cargo build --release --manifest-path "$ROOT_DIR/Cargo.toml"
