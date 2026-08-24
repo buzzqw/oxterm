@@ -15,6 +15,11 @@ The project combines a full terminal emulator with tabs, split panes, command
 history, notes, shell integration, profiles, sessions, and optional AI chat —
 all with a small memory footprint and the memory-safety guarantees of Rust.
 
+> **Quick start:** prebuilt Linux executables are already available on the
+> [GitHub Releases page](https://github.com/buzzqw/TRust/releases/latest). This
+> is the easiest way to use TRust; you do not need Rust or development packages
+> if you download a release binary.
+
 - **[English user manual](manual.md)**
 - **[Report an issue](https://github.com/buzzqw/TRust/issues)**
 
@@ -34,7 +39,16 @@ all with a small memory footprint and the memory-safety guarantees of Rust.
 
 ## Requirements
 
-TRust runs on Linux and needs:
+### Using a release binary
+
+You only need a Linux system with GTK3 and VTE 2.91 runtime libraries. Download
+the latest executable from the [GitHub Releases
+page](https://github.com/buzzqw/TRust/releases/latest), make it executable, and
+run it.
+
+### Building from source
+
+Source builds need:
 
 - Rust stable and Cargo
 - GTK3 development files
@@ -55,8 +69,6 @@ sudo pacman -S base-devel rust gtk3 vte3
 ```
 
 Install Rust with [rustup](https://rustup.rs/) if it is not already available.
-Prebuilt Linux executables are published on the [GitHub Releases
-page](https://github.com/buzzqw/TRust/releases/latest).
 
 ## Build and Run
 
