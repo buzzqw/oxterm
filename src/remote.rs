@@ -512,6 +512,7 @@ fn relay_terminal(path: &Path, session_id: &str) -> i32 {
     }
     let mut input_buffer = Vec::new();
     let mut tmux_prefix = false;
+    let mut detached = false;
     let result = 'relay: loop {
         let mut poll_fds = [
             libc::pollfd {
@@ -536,28 +537,7 @@ fn relay_terminal(path: &Path, session_id: &str) -> i32 {
                 let _ = write_frame(&mut stream, &[FRAME_DETACH]);
                 break 0;
             }
-            let mut forwarded = Vec::with_capacity(count as usize);
-            let mut detach = false;
-            for byte in &bytes[..count as usize] {
-                if tmux_prefix {
-                    tmux_prefix = false;
-                    if *byte == b'd' || *byte == b'D' || *byte == 0x04 {
-                        detach = true;
-                        break;
-                    }
-                    if *byte == 0x02 || *byte == b'b' || *byte == b'B' {
-                        forwarded.push(0x02);
-                    }
-                } else if *byte == 0x02 {
-                    tmux_prefix = true;
-                } else {
-                    forwarded.push(*byte);
-                }
-            }
-            if detach {
-                let _ = write_frame(&mut stream, &[FRAME_DETACH]);
-                break 0;
-            }
+            let (forwarded, detach) = relay_input(&bytes[..count as usize], &mut tmux_prefix);
             if !forwarded.is_empty() {
                 let mut frame = Vec::with_capacity(forwarded.len() + 1);
                 frame.push(FRAME_INPUT);
@@ -565,6 +545,11 @@ fn relay_terminal(path: &Path, session_id: &str) -> i32 {
                 if write_frame(&mut stream, &frame).is_err() {
                     break 0;
                 }
+            }
+            if detach {
+                let _ = write_frame(&mut stream, &[FRAME_DETACH]);
+                detached = true;
+                break 0;
             }
             if let Some(size) = terminal_size(stdin_fd) {
                 let _ = write_frame(
@@ -597,15 +582,39 @@ fn relay_terminal(path: &Path, session_id: &str) -> i32 {
                         break 'relay 1;
                     }
                 } else if frame.first() == Some(&FRAME_DETACH) {
+                    detached = true;
                     break 'relay 0;
                 }
             }
         }
     };
     unsafe {
-        libc::tcsetattr(stdin_fd, libc::TCSANOW, &original);
+        libc::tcsetattr(stdin_fd, libc::TCSAFLUSH, &original);
+    }
+    if detached {
+        let _ = write_all_fd(stdout_fd, b"\r\n");
     }
     result
+}
+
+fn relay_input(bytes: &[u8], prefix: &mut bool) -> (Vec<u8>, bool) {
+    let mut forwarded = Vec::with_capacity(bytes.len());
+    for byte in bytes {
+        if *prefix {
+            *prefix = false;
+            if *byte == b'd' || *byte == b'D' || *byte == 0x04 {
+                return (forwarded, true);
+            }
+            if *byte == 0x02 || *byte == b'b' || *byte == b'B' {
+                forwarded.push(0x02);
+            }
+        } else if *byte == 0x02 {
+            *prefix = true;
+        } else {
+            forwarded.push(*byte);
+        }
+    }
+    (forwarded, false)
 }
 
 fn terminal_size(fd: RawFd) -> Option<libc::winsize> {
@@ -703,6 +712,8 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         child_closed: false,
         child_pid,
         kill_requested: false,
+        child_input: VecDeque::new(),
+        child_input_offset: 0,
     };
     let mut clients: Vec<Client> = Vec::new();
     let mut gui_output = VecDeque::new();
@@ -720,7 +731,16 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         });
         poll_fds.push(libc::pollfd {
             fd: CHILD_FD,
-            events: if state.child_closed { 0 } else { libc::POLLIN },
+            events: if state.child_closed {
+                0
+            } else {
+                libc::POLLIN
+                    | if state.child_input.is_empty() {
+                        0
+                    } else {
+                        libc::POLLOUT
+                    }
+            },
             revents: 0,
         });
         poll_fds.push(libc::pollfd {
@@ -799,7 +819,7 @@ fn run_broker(path: &Path, id: &str) -> i32 {
                     unsafe { libc::read(GUI_FD, bytes.as_mut_ptr() as *mut _, bytes.len()) };
                 if count > 0 {
                     if state.local_on {
-                        write_fd_nonblocking(CHILD_FD, &bytes[..count as usize]);
+                        queue_child_input(&mut state, &bytes[..count as usize]);
                     }
                 } else if count == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EIO)
                 {
@@ -812,6 +832,9 @@ fn run_broker(path: &Path, id: &str) -> i32 {
                     break;
                 }
             }
+        }
+        if !state.child_closed && !flush_child_input(&mut state) {
+            state.child_closed = true;
         }
         if !flush_gui(&mut gui_output, &mut gui_offset) {
             state.local_on = false;
@@ -861,6 +884,8 @@ struct BrokerState {
     child_closed: bool,
     child_pid: i32,
     kill_requested: bool,
+    child_input: VecDeque<Vec<u8>>,
+    child_input_offset: usize,
 }
 
 fn bind_broker_socket(path: &Path) -> Result<UnixListener, String> {
@@ -923,7 +948,9 @@ fn read_client(index: usize, clients: &mut [Client], state: &mut BrokerState) ->
                 return false;
             }
         } else if frame.first() == Some(&FRAME_INPUT) {
-            write_fd_nonblocking(CHILD_FD, &frame[1..]);
+            if !queue_child_input(state, &frame[1..]) {
+                return false;
+            }
         } else if frame.first() == Some(&FRAME_RESIZE) && frame.len() == 5 {
             let columns = u16::from_be_bytes([frame[1], frame[2]]);
             let rows = u16::from_be_bytes([frame[3], frame[4]]);
@@ -1054,12 +1081,54 @@ fn signal_child(pid: i32, signal: i32) {
     }
 }
 
-fn write_fd_nonblocking(fd: RawFd, data: &[u8]) {
+fn queue_child_input(state: &mut BrokerState, data: &[u8]) -> bool {
     if data.is_empty() {
-        return;
+        return true;
     }
-    unsafe {
-        let _ = libc::write(fd, data.as_ptr() as *const _, data.len());
+    let pending = state
+        .child_input
+        .iter()
+        .map(Vec::len)
+        .sum::<usize>()
+        .saturating_sub(state.child_input_offset);
+    if pending.saturating_add(data.len()) > MAX_PENDING {
+        return false;
+    }
+    state.child_input.push_back(data.to_vec());
+    true
+}
+
+fn flush_child_input(state: &mut BrokerState) -> bool {
+    loop {
+        let Some(data) = state.child_input.front() else {
+            state.child_input_offset = 0;
+            return true;
+        };
+        let offset = state.child_input_offset;
+        let written = unsafe {
+            libc::write(
+                CHILD_FD,
+                data[offset..].as_ptr() as *const _,
+                data.len() - offset,
+            )
+        };
+        if written > 0 {
+            state.child_input_offset += written as usize;
+            if state.child_input_offset == data.len() {
+                state.child_input.pop_front();
+                state.child_input_offset = 0;
+            }
+            continue;
+        }
+        if written < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::WouldBlock
+                || error.kind() == io::ErrorKind::Interrupted
+            {
+                return true;
+            }
+        }
+        return false;
     }
 }
 
@@ -1214,5 +1283,20 @@ mod tests {
         };
         assert!(client.queue(&vec![0; MAX_PENDING - 4]));
         assert!(!client.queue(b"overflow"));
+    }
+
+    #[test]
+    fn relay_input_forwards_keys_and_handles_detach_prefix() {
+        let mut prefix = false;
+        assert_eq!(relay_input(b"nano", &mut prefix), (b"nano".to_vec(), false));
+        assert!(!prefix);
+
+        assert_eq!(relay_input(&[0x02], &mut prefix), (Vec::new(), false));
+        assert!(prefix);
+        assert_eq!(relay_input(b"d", &mut prefix), (Vec::new(), true));
+        assert!(!prefix);
+
+        assert_eq!(relay_input(&[0x02, 0x02], &mut prefix), (vec![0x02], false));
+        assert!(!prefix);
     }
 }
