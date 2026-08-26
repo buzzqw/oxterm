@@ -3,6 +3,7 @@ use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::settings;
@@ -11,6 +12,12 @@ const CHILD_FD: RawFd = 3;
 const GUI_FD: RawFd = 4;
 const MAX_FRAME: usize = 1024 * 1024;
 const MAX_PENDING: usize = 4 * 1024 * 1024;
+
+/// Last winsize applied to the child PTY, packed as `(columns << 32) | rows`.
+/// `set_child_size` becomes a no-op when the size is unchanged so that the
+/// broker does not emit a `SIGWINCH` (and, for `ssh`, a window-change message)
+/// on every loop iteration.
+static LAST_CHILD_SIZE: AtomicU64 = AtomicU64::new(u64::MAX);
 
 // Frames sent after ATTACH contain one of these tags followed by terminal data.
 pub const FRAME_OUTPUT: u8 = 0;
@@ -504,12 +511,8 @@ fn relay_terminal(path: &Path, session_id: &str) -> i32 {
         return 1;
     }
     let _ = stream.set_nonblocking(true);
-    if let Some(size) = terminal_size(stdin_fd) {
-        let _ = write_frame(
-            &mut stream,
-            &resize_frame(size.ws_col as u16, size.ws_row as u16),
-        );
-    }
+    let mut last_size: Option<(u16, u16)> = None;
+    forward_resize(&mut stream, stdin_fd, &mut last_size);
     let mut input_buffer = Vec::new();
     let mut tmux_prefix = false;
     let mut detached = false;
@@ -551,12 +554,6 @@ fn relay_terminal(path: &Path, session_id: &str) -> i32 {
                 detached = true;
                 break 0;
             }
-            if let Some(size) = terminal_size(stdin_fd) {
-                let _ = write_frame(
-                    &mut stream,
-                    &resize_frame(size.ws_col as u16, size.ws_row as u16),
-                );
-            }
         }
         if poll_fds[1].revents & (libc::POLLIN | libc::POLLHUP) != 0 {
             let mut bytes = [0u8; 8192];
@@ -587,6 +584,7 @@ fn relay_terminal(path: &Path, session_id: &str) -> i32 {
                 }
             }
         }
+        forward_resize(&mut stream, stdin_fd, &mut last_size);
     };
     unsafe {
         libc::tcsetattr(stdin_fd, libc::TCSAFLUSH, &original);
@@ -631,6 +629,22 @@ fn resize_frame(columns: u16, rows: u16) -> [u8; 5] {
     frame[1..3].copy_from_slice(&columns.to_be_bytes());
     frame[3..5].copy_from_slice(&rows.to_be_bytes());
     frame
+}
+
+/// Forward the attach terminal's size to the broker, but only when it has
+/// actually changed since the last time. Sending a resize frame after every
+/// keystroke used to spam the child with `SIGWINCH`, which made full-screen
+/// programs redraw on every key press.
+fn forward_resize(stream: &mut UnixStream, fd: RawFd, last: &mut Option<(u16, u16)>) {
+    let Some(size) = terminal_size(fd) else {
+        return;
+    };
+    let current = (size.ws_col as u16, size.ws_row as u16);
+    if *last == Some(current) {
+        return;
+    }
+    *last = Some(current);
+    let _ = write_frame(stream, &resize_frame(current.0, current.1));
 }
 
 fn write_all_fd(fd: RawFd, mut data: &[u8]) -> io::Result<()> {
@@ -722,7 +736,13 @@ fn run_broker(path: &Path, id: &str) -> i32 {
     set_nonblocking(GUI_FD);
 
     loop {
-        sync_gui_size();
+        // Only the GUI drives the child size while no remote client is
+        // attached. Once a remote client attaches it sends its own
+        // FRAME_RESIZE frames, which would otherwise be reverted on the next
+        // iteration by the GUI's size.
+        if !clients.iter().any(|client| client.attached) {
+            sync_gui_size();
+        }
         let mut poll_fds = Vec::with_capacity(3 + clients.len());
         poll_fds.push(libc::pollfd {
             fd: listener.as_raw_fd(),
@@ -1015,6 +1035,11 @@ fn handle_command(
         "LIST" | "INFO" => clients[index].queue(format!("OK\n{}", line).as_bytes()),
         "ATTACH" => {
             clients[index].attached = true;
+            // A new client starts from an empty screen (the broker does not
+            // replay scrollback). Nudge the child with SIGWINCH so full-screen
+            // programs redraw and shells re-print their prompt, otherwise the
+            // freshly attached client looks frozen until new output arrives.
+            signal_child(state.child_pid, libc::SIGWINCH);
             clients[index].queue(b"OK\nATTACH")
         }
         "DETACH" => {
@@ -1133,6 +1158,10 @@ fn flush_child_input(state: &mut BrokerState) -> bool {
 }
 
 fn set_child_size(columns: u16, rows: u16) {
+    let packed = ((columns as u64) << 32) | rows as u64;
+    if LAST_CHILD_SIZE.swap(packed, Ordering::Relaxed) == packed {
+        return;
+    }
     let size = libc::winsize {
         ws_row: rows,
         ws_col: columns,
