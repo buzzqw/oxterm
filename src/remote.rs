@@ -540,19 +540,35 @@ fn relay_terminal(path: &Path, session_id: &str) -> i32 {
                 let _ = write_frame(&mut stream, &[FRAME_DETACH]);
                 break 0;
             }
-            let (forwarded, detach) = relay_input(&bytes[..count as usize], &mut tmux_prefix);
-            if !forwarded.is_empty() {
-                let mut frame = Vec::with_capacity(forwarded.len() + 1);
-                frame.push(FRAME_INPUT);
-                frame.extend_from_slice(&forwarded);
-                if write_frame(&mut stream, &frame).is_err() {
+            match relay_input(&bytes[..count as usize], &mut tmux_prefix) {
+                RelayAction::Forward(forwarded) => {
+                    if !forwarded.is_empty() && send_input(&mut stream, &forwarded).is_err() {
+                        break 0;
+                    }
+                }
+                RelayAction::Detach(forwarded) => {
+                    if !forwarded.is_empty() {
+                        let _ = send_input(&mut stream, &forwarded);
+                    }
+                    let _ = write_frame(&mut stream, &[FRAME_DETACH]);
+                    detached = true;
                     break 0;
                 }
-            }
-            if detach {
-                let _ = write_frame(&mut stream, &[FRAME_DETACH]);
-                detached = true;
-                break 0;
+                RelayAction::PrefixDetach { upper, forwarded } => {
+                    if !forwarded.is_empty() && send_input(&mut stream, &forwarded).is_err() {
+                        break 0;
+                    }
+                    if is_child_ssh(path, session_id) {
+                        let seq = if upper { b"\x02D" } else { b"\x02d" };
+                        if send_input(&mut stream, seq).is_err() {
+                            break 0;
+                        }
+                    } else {
+                        let _ = write_frame(&mut stream, &[FRAME_DETACH]);
+                        detached = true;
+                        break 0;
+                    }
+                }
             }
         }
         if poll_fds[1].revents & (libc::POLLIN | libc::POLLHUP) != 0 {
@@ -595,13 +611,37 @@ fn relay_terminal(path: &Path, session_id: &str) -> i32 {
     result
 }
 
-fn relay_input(bytes: &[u8], prefix: &mut bool) -> (Vec<u8>, bool) {
+enum RelayAction {
+    Forward(Vec<u8>),
+    Detach(Vec<u8>),
+    /// The user pressed `Ctrl+B` then `d`/`D`. Pass the sequence through to
+    /// the child when it is an `ssh` session (so a remote tmux detaches),
+    /// otherwise detach the local client.
+    PrefixDetach {
+        upper: bool,
+        forwarded: Vec<u8>,
+    },
+}
+
+fn relay_input(bytes: &[u8], prefix: &mut bool) -> RelayAction {
     let mut forwarded = Vec::with_capacity(bytes.len());
     for byte in bytes {
         if *prefix {
             *prefix = false;
-            if *byte == b'd' || *byte == b'D' || *byte == 0x04 {
-                return (forwarded, true);
+            if *byte == b'd' {
+                return RelayAction::PrefixDetach {
+                    upper: false,
+                    forwarded,
+                };
+            }
+            if *byte == b'D' {
+                return RelayAction::PrefixDetach {
+                    upper: true,
+                    forwarded,
+                };
+            }
+            if *byte == 0x04 {
+                return RelayAction::Detach(forwarded);
             }
             if *byte == 0x02 || *byte == b'b' || *byte == b'B' {
                 forwarded.push(0x02);
@@ -612,7 +652,24 @@ fn relay_input(bytes: &[u8], prefix: &mut bool) -> (Vec<u8>, bool) {
             forwarded.push(*byte);
         }
     }
-    (forwarded, false)
+    RelayAction::Forward(forwarded)
+}
+
+/// Ask the broker whether the session's child is currently `ssh`, so the relay
+/// can decide whether to detach or pass `Ctrl+B`/`d` through.
+fn is_child_ssh(path: &Path, session_id: &str) -> bool {
+    matches!(
+        control_request(path, &format!("IS_SSH {}", session_id)),
+        Ok(response) if response == "1"
+    )
+}
+
+/// Wrap `data` in a `FRAME_INPUT` frame and write it to the broker.
+fn send_input(stream: &mut UnixStream, data: &[u8]) -> Result<(), String> {
+    let mut frame = Vec::with_capacity(data.len() + 1);
+    frame.push(FRAME_INPUT);
+    frame.extend_from_slice(data);
+    write_frame(stream, &frame)
 }
 
 fn terminal_size(fd: RawFd) -> Option<libc::winsize> {
@@ -1025,6 +1082,7 @@ fn handle_command(
             | "COMMAND"
             | "SIGNAL"
             | "KILL"
+            | "IS_SSH"
     ) && id != state.id
         && verb != "LIST"
     {
@@ -1033,6 +1091,11 @@ fn handle_command(
     let line = state.line();
     match verb {
         "LIST" | "INFO" => clients[index].queue(format!("OK\n{}", line).as_bytes()),
+        "IS_SSH" => clients[index].queue(if child_foreground_is_ssh() {
+            b"OK\n1"
+        } else {
+            b"OK\n0"
+        }),
         "ATTACH" => {
             clients[index].attached = true;
             // A new client starts from an empty screen (the broker does not
@@ -1104,6 +1167,19 @@ fn signal_child(pid: i32, signal: i32) {
             }
         }
     }
+}
+
+/// Whether the child's foreground process group is `ssh`, used to pass the
+/// `Ctrl+B`/`d` detach sequence through to a remote tmux instead of detaching
+/// the local client.
+fn child_foreground_is_ssh() -> bool {
+    let foreground = unsafe { libc::tcgetpgrp(CHILD_FD) };
+    if foreground <= 0 {
+        return false;
+    }
+    std::fs::read_to_string(format!("/proc/{foreground}/comm"))
+        .map(|name| name.trim() == "ssh")
+        .unwrap_or(false)
 }
 
 fn queue_child_input(state: &mut BrokerState, data: &[u8]) -> bool {
@@ -1317,15 +1393,47 @@ mod tests {
     #[test]
     fn relay_input_forwards_keys_and_handles_detach_prefix() {
         let mut prefix = false;
-        assert_eq!(relay_input(b"nano", &mut prefix), (b"nano".to_vec(), false));
+        assert!(matches!(
+            relay_input(b"nano", &mut prefix),
+            RelayAction::Forward(ref v) if v == b"nano"
+        ));
         assert!(!prefix);
 
-        assert_eq!(relay_input(&[0x02], &mut prefix), (Vec::new(), false));
+        assert!(matches!(
+            relay_input(&[0x02], &mut prefix),
+            RelayAction::Forward(ref v) if v.is_empty()
+        ));
         assert!(prefix);
-        assert_eq!(relay_input(b"d", &mut prefix), (Vec::new(), true));
+        assert!(matches!(
+            relay_input(b"d", &mut prefix),
+            RelayAction::PrefixDetach { upper: false, ref forwarded } if forwarded.is_empty()
+        ));
         assert!(!prefix);
 
-        assert_eq!(relay_input(&[0x02, 0x02], &mut prefix), (vec![0x02], false));
+        relay_input(&[0x02], &mut prefix);
+        assert!(prefix);
+        assert!(matches!(
+            relay_input(b"D", &mut prefix),
+            RelayAction::PrefixDetach { upper: true, ref forwarded } if forwarded.is_empty()
+        ));
         assert!(!prefix);
+
+        assert!(matches!(
+            relay_input(&[0x02, 0x02], &mut prefix),
+            RelayAction::Forward(ref v) if v == &[0x02]
+        ));
+        assert!(!prefix);
+
+        relay_input(&[0x02], &mut prefix);
+        assert!(matches!(
+            relay_input(&[0x04], &mut prefix),
+            RelayAction::Detach(ref v) if v.is_empty()
+        ));
+
+        // Bytes typed before the Ctrl+B prefix are preserved and forwarded.
+        assert!(matches!(
+            relay_input(b"ls\x02d", &mut prefix),
+            RelayAction::PrefixDetach { upper: false, ref forwarded } if forwarded == b"ls"
+        ));
     }
 }

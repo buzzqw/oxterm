@@ -107,6 +107,15 @@ fn attach_forwards_input_and_detaches_cleanly() -> io::Result<()> {
         assert_eq!(attach, format!("ATTACH {}", server_session_id).as_bytes());
         write_frame(&mut stream, b"OK\nATTACH")?;
         attached_tx.send(()).unwrap();
+
+        // The relay queries the broker before deciding whether `Ctrl+B`/`d`
+        // should be passed through to an ssh child or detach. Report a plain
+        // shell here so the relay detaches.
+        let (mut query, _) = listener.accept()?;
+        let query_frame = read_frame(&mut query)?;
+        assert!(String::from_utf8_lossy(&query_frame).starts_with("IS_SSH"));
+        write_frame(&mut query, b"OK\n0")?;
+
         let mut input = Vec::new();
         loop {
             let frame = read_frame(&mut stream)?;
@@ -152,6 +161,95 @@ fn attach_forwards_input_and_detaches_cleanly() -> io::Result<()> {
     wait_for_exit(&mut child)?;
     assert_eq!(input, b"x");
 
+    unsafe { libc::close(master) };
+    let _ = std::fs::remove_file(socket);
+    Ok(())
+}
+
+#[test]
+fn attach_passes_ctrl_b_d_through_to_ssh() -> io::Result<()> {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let home = dirs::home_dir().expect("home directory");
+    let remote_dir = home.join(".config/tpgk/remote");
+    std::fs::create_dir_all(&remote_dir)?;
+    let session_id = format!("attach-ssh-{}-{}", std::process::id(), unique);
+    let socket = remote_dir.join(format!("trust-{}.sock", session_id));
+    let listener = UnixListener::bind(&socket)?;
+    let (attached_tx, attached_rx) = mpsc::channel();
+    let server_session_id = session_id.clone();
+    let server = thread::spawn(move || -> io::Result<Vec<u8>> {
+        let (mut stream, attach) = loop {
+            let (mut stream, _) = listener.accept()?;
+            match read_frame(&mut stream) {
+                Ok(attach) => break (stream, attach),
+                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => continue,
+                Err(error) => return Err(error),
+            }
+        };
+        assert_eq!(attach, format!("ATTACH {}", server_session_id).as_bytes());
+        write_frame(&mut stream, b"OK\nATTACH")?;
+        attached_tx.send(()).unwrap();
+
+        // Report an ssh foreground so the relay passes `Ctrl+B`/`d` through.
+        let (mut query, _) = listener.accept()?;
+        let query_frame = read_frame(&mut query)?;
+        assert!(String::from_utf8_lossy(&query_frame).starts_with("IS_SSH"));
+        write_frame(&mut query, b"OK\n1")?;
+
+        let mut input = Vec::new();
+        loop {
+            let frame = read_frame(&mut stream)?;
+            if frame.first() == Some(&FRAME_INPUT) {
+                input.extend_from_slice(&frame[1..]);
+                if input == b"x\x02d" {
+                    return Ok(input);
+                }
+            } else if frame.first() == Some(&FRAME_DETACH) {
+                return Err(io::Error::other(
+                    "relay detached instead of passing through to ssh",
+                ));
+            }
+        }
+    });
+
+    let (master, slave) = open_pty()?;
+    let slave_for_child = slave;
+    let mut child = unsafe {
+        let mut command = Command::new(binary_path());
+        command
+            .args(["--attach", &session_id])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .pre_exec(move || {
+                if libc::dup2(slave_for_child, 0) < 0
+                    || libc::dup2(slave_for_child, 1) < 0
+                    || libc::dup2(slave_for_child, 2) < 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                libc::close(slave_for_child);
+                Ok(())
+            })
+            .spawn()?
+    };
+    unsafe { libc::close(slave) };
+
+    attached_rx
+        .recv_timeout(Duration::from_secs(2))
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "attach handshake timed out"))?;
+    write_fd(master, b"x")?;
+    write_fd(master, &[0x02, b'd'])?;
+    let input = server
+        .join()
+        .map_err(|_| io::Error::other("attach server panicked"))??;
+    assert_eq!(input, b"x\x02d");
+
+    let _ = child.kill();
+    let _ = child.wait();
     unsafe { libc::close(master) };
     let _ = std::fs::remove_file(socket);
     Ok(())
