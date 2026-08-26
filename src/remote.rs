@@ -90,7 +90,7 @@ pub fn parse_cli_mode(args: &[String]) -> Option<Result<CliMode, String>> {
     match first {
         "--broker" => {
             if args.len() != 4 {
-                Some(Err("usage: TRust --broker SOCKET SESSION_ID".to_string()))
+                Some(Err("usage: oxterm --broker SOCKET SESSION_ID".to_string()))
             } else if args[2].is_empty() || invalid_id(&args[3]) {
                 Some(Err("broker socket and session ID are required".to_string()))
             } else {
@@ -109,7 +109,7 @@ pub fn parse_cli_mode(args: &[String]) -> Option<Result<CliMode, String>> {
         }
         "-a" | "--attach" => {
             if args.len() > 3 {
-                Some(Err("usage: TRust -a [SESSION_ID]".to_string()))
+                Some(Err("usage: oxterm -a [SESSION_ID]".to_string()))
             } else if args.len() == 2 {
                 Some(Ok(CliMode::Attach(None)))
             } else if invalid_id(&args[2]) {
@@ -120,7 +120,7 @@ pub fn parse_cli_mode(args: &[String]) -> Option<Result<CliMode, String>> {
         }
         "--info" | "--detach" => {
             if args.len() != 3 {
-                Some(Err(format!("usage: TRust {} SESSION_ID", first)))
+                Some(Err(format!("usage: oxterm {} SESSION_ID", first)))
             } else if invalid_id(&args[2]) {
                 Some(Err("invalid session ID".to_string()))
             } else if first == "--info" {
@@ -207,7 +207,7 @@ pub fn spawn_broker(
     clear_cloexec(GUI_FD);
 
     let exe =
-        std::env::current_exe().map_err(|e| format!("cannot find TRust executable: {}", e))?;
+        std::env::current_exe().map_err(|e| format!("cannot find oxterm executable: {}", e))?;
     let child = std::process::Command::new(exe)
         .arg("--broker")
         .arg(&path)
@@ -274,7 +274,7 @@ pub fn run_cli(mode: CliMode) -> i32 {
         CliMode::List => {
             let sessions = list_sessions();
             if sessions.is_empty() {
-                println!("No active TRust terminals.");
+                println!("No active Oxterm terminals.");
             } else {
                 println!("ID\tNAME\tTITLE\tDIRECTORY\tSTATUS\tAPPLICATION\tAPP_STATUS");
                 for session in sessions {
@@ -287,12 +287,12 @@ pub fn run_cli(mode: CliMode) -> i32 {
             Ok(id) => match find_socket(&id) {
                 Ok(path) => relay_terminal(&path, &id),
                 Err(error) => {
-                    eprintln!("TRust attach: {}", error);
+                    eprintln!("oxterm attach: {}", error);
                     1
                 }
             },
             Err(error) => {
-                eprintln!("TRust attach: {}", error);
+                eprintln!("oxterm attach: {}", error);
                 1
             }
         },
@@ -305,7 +305,7 @@ pub fn run_cli(mode: CliMode) -> i32 {
                 0
             }
             Err(error) => {
-                eprintln!("TRust info: {}", error);
+                eprintln!("oxterm info: {}", error);
                 1
             }
         },
@@ -314,7 +314,7 @@ pub fn run_cli(mode: CliMode) -> i32 {
         {
             Ok(_) => 0,
             Err(error) => {
-                eprintln!("TRust detach: {}", error);
+                eprintln!("oxterm detach: {}", error);
                 1
             }
         },
@@ -375,14 +375,14 @@ fn choose_session(requested: Option<String>) -> Result<String, String> {
     }
     let sessions = list_sessions();
     match sessions.len() {
-        0 => Err("no active TRust terminals".to_string()),
+        0 => Err("no active Oxterm terminals".to_string()),
         1 => sessions[0]
             .split('\t')
             .next()
             .map(str::to_string)
-            .ok_or_else(|| "invalid TRust session listing".to_string()),
+            .ok_or_else(|| "invalid Oxterm session listing".to_string()),
         _ => {
-            println!("Active TRust terminals:");
+            println!("Active Oxterm terminals:");
             for (index, session) in sessions.iter().enumerate() {
                 let fields: Vec<&str> = session.split('\t').collect();
                 println!(
@@ -420,7 +420,7 @@ fn choose_session(requested: Option<String>) -> Result<String, String> {
                 .split('\t')
                 .next()
                 .map(str::to_string)
-                .ok_or_else(|| "invalid TRust session listing".to_string())
+                .ok_or_else(|| "invalid Oxterm session listing".to_string())
         }
     }
 }
@@ -475,17 +475,17 @@ fn relay_terminal(path: &Path, session_id: &str) -> i32 {
         }
     };
     if let Err(error) = write_frame(&mut stream, format!("ATTACH {}", session_id).as_bytes()) {
-        eprintln!("TRust attach: {}", error);
+        eprintln!("oxterm attach: {}", error);
         return 1;
     }
     match read_frame(&mut stream) {
         Ok(response) if response == b"OK\nATTACH" => {}
         Ok(response) => {
-            eprintln!("TRust attach: {}", String::from_utf8_lossy(&response));
+            eprintln!("oxterm attach: {}", String::from_utf8_lossy(&response));
             return 1;
         }
         Err(error) => {
-            eprintln!("TRust attach: {}", error);
+            eprintln!("oxterm attach: {}", error);
             return 1;
         }
     }
@@ -494,7 +494,7 @@ fn relay_terminal(path: &Path, session_id: &str) -> i32 {
     let stdout_fd = libc::STDOUT_FILENO;
     let mut original = std::mem::MaybeUninit::<libc::termios>::uninit();
     if unsafe { libc::tcgetattr(stdin_fd, original.as_mut_ptr()) } != 0 {
-        eprintln!("TRust attach: stdin is not a terminal");
+        eprintln!("oxterm attach: stdin is not a terminal");
         return 1;
     }
     let original = unsafe { original.assume_init() };
@@ -683,7 +683,7 @@ fn run_broker(path: &Path, id: &str) -> i32 {
     let listener = match bind_broker_socket(path) {
         Ok(listener) => listener,
         Err(error) => {
-            eprintln!("TRust broker: {}", error);
+            eprintln!("oxterm broker: {}", error);
             return 1;
         }
     };
@@ -1147,18 +1147,18 @@ mod tests {
 
     #[test]
     fn parses_headless_and_broker_modes() {
-        let args = vec!["TRust".into(), "--list".into()];
+        let args = vec!["oxterm".into(), "--list".into()];
         assert!(matches!(parse_cli_mode(&args), Some(Ok(CliMode::List))));
-        let args = vec!["TRust".into(), "-a".into(), "1234-2".into()];
+        let args = vec!["oxterm".into(), "-a".into(), "1234-2".into()];
         assert!(
             matches!(parse_cli_mode(&args), Some(Ok(CliMode::Attach(Some(id)))) if id == "1234-2")
         );
-        let args = vec!["TRust".into(), "--info".into(), "1234-2".into()];
+        let args = vec!["oxterm".into(), "--info".into(), "1234-2".into()];
         assert!(matches!(parse_cli_mode(&args), Some(Ok(CliMode::Info(id))) if id == "1234-2"));
-        let args = vec!["TRust".into(), "--detach".into(), "1234-2".into()];
+        let args = vec!["oxterm".into(), "--detach".into(), "1234-2".into()];
         assert!(matches!(parse_cli_mode(&args), Some(Ok(CliMode::Detach(id))) if id == "1234-2"));
         let args = vec![
-            "TRust".into(),
+            "oxterm".into(),
             "--broker".into(),
             "/tmp/x.sock".into(),
             "1234-2".into(),
@@ -1183,9 +1183,9 @@ mod tests {
 
     #[test]
     fn rejects_invalid_headless_arguments() {
-        let args = vec!["TRust".into(), "--list".into(), "extra".into()];
+        let args = vec!["oxterm".into(), "--list".into(), "extra".into()];
         assert!(parse_cli_mode(&args).unwrap().is_err());
-        let args = vec!["TRust".into(), "--attach".into(), "bad id".into()];
+        let args = vec!["oxterm".into(), "--attach".into(), "bad id".into()];
         assert!(parse_cli_mode(&args).unwrap().is_err());
     }
 

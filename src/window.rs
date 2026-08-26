@@ -51,8 +51,8 @@ pub const ENCODINGS: &[&str] = &[
 pub const EUPL_LICENSE_TEXT: &str = "Licensed under the European Union Public Licence (EUPL) v. 1.2.\n\nCopyright (c) 2026 Andres Zanzani.\n\nThe complete licence text is distributed in the LICENSE file and is available at:\nhttps://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12\n";
 
 pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), ".", env!("TRUST_COMMIT_COUNT"));
-pub const APP_NAME: &str = "TRust";
-pub const APP_TITLE: &str = "TRust Terminal";
+pub const APP_NAME: &str = "Oxterm";
+pub const APP_TITLE: &str = "Oxterm Terminal";
 
 pub fn detect_file_manager() -> Option<String> {
     let s = settings();
@@ -429,7 +429,7 @@ impl DetachedWindow {
                 }
             }),
             Some("<Primary><Shift>N"),
-            Some("Open a new TRust terminal window"),
+            Some("Open a new Oxterm terminal window"),
         );
         file_menu.append(&gtk::SeparatorMenuItem::new());
         let weak = crate::SendWeak::new(self);
@@ -541,7 +541,7 @@ impl DetachedWindow {
                 }
             }),
             None,
-            Some("Open the TRust settings dialog"),
+            Some("Open the Oxterm settings dialog"),
         );
         menus.push(("Edit".into(), edit_menu));
 
@@ -769,7 +769,7 @@ impl DetachedWindow {
                 }
             }),
             None,
-            Some("Show information about TRust"),
+            Some("Show information about Oxterm"),
         );
         menus.push(("Help".into(), help_menu));
 
@@ -1885,7 +1885,7 @@ impl MainWindow {
                 }
             }),
             Some("<Primary><Shift>N"),
-            Some("Open a new TRust terminal window"),
+            Some("Open a new Oxterm terminal window"),
         );
         file_menu.append(&gtk::SeparatorMenuItem::new());
         let weak = crate::SendWeak::new(self);
@@ -1936,7 +1936,7 @@ impl MainWindow {
                 }
             }),
             Some("<Primary>Q"),
-            Some("Quit TRust (close all windows)"),
+            Some("Quit Oxterm (close all windows)"),
         );
         menus.push(("File".into(), file_menu));
 
@@ -2010,7 +2010,7 @@ impl MainWindow {
                 }
             }),
             None,
-            Some("Open the TRust settings dialog"),
+            Some("Open the Oxterm settings dialog"),
         );
         menus.push(("Edit".into(), edit_menu));
 
@@ -2432,7 +2432,7 @@ impl MainWindow {
                 }
             }),
             None,
-            Some("Show information about TRust"),
+            Some("Show information about Oxterm"),
         );
         menus.push(("Help".into(), help_menu));
 
@@ -2984,7 +2984,7 @@ impl MainWindow {
 
     fn show_tmux_session_list(&self) {
         let dialog = gtk::Dialog::with_buttons(
-            Some("TRust Sessions"),
+            Some("Oxterm Sessions"),
             Some(self),
             gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
             &[("Close", gtk::ResponseType::Close)],
@@ -3027,7 +3027,7 @@ impl MainWindow {
             }
         }
         if choices.is_empty() {
-            let label = gtk::Label::new(Some("No active TRust terminals."));
+            let label = gtk::Label::new(Some("No active Oxterm terminals."));
             label.set_margin_top(12);
             label.set_margin_bottom(12);
             list.add(&label);

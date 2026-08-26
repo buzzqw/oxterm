@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# versiona.sh - Release automation for TRust.
+# versiona.sh - Release automation for Oxterm.
 #
 # Flow:
 #   1. Calculate or accept the next Cargo semver version.
@@ -113,7 +113,7 @@ generate_release_notes() {
 CHANGELOG="$(generate_release_notes "$FILTERED_COMMITS")"
 [[ -n "${CHANGELOG//[$' \t\n']/}" ]] || CHANGELOG="- No user-facing changes listed."
 
-printf '\n%b\n' "${BOLD}=== TRust release ${VERSION} ===${RESET}"
+printf '\n%b\n' "${BOLD}=== Oxterm release ${VERSION} ===${RESET}"
 $DRY_RUN && printf '%b\n' "${YELLOW}[DRY RUN - no files or Git refs will be changed]${RESET}"
 info "Current version: ${CURRENT_VERSION} -> ${VERSION}"
 info "Release tag: ${TAG_VERSION}"
@@ -137,7 +137,7 @@ fi
 
 git add Cargo.toml
 git commit -m "chore: release ${VERSION}"
-git tag -a "$TAG_VERSION" -m "TRust ${VERSION}" -m "$CHANGELOG"
+git tag -a "$TAG_VERSION" -m "Oxterm ${VERSION}" -m "$CHANGELOG"
 git push origin "$MAIN_BRANCH"
 git push origin "$TAG_VERSION"
 
@@ -145,7 +145,7 @@ NOTES_FILE="$(mktemp)"
 trap 'rm -f "$NOTES_FILE"' EXIT
 printf '%s\n' "$CHANGELOG" > "$NOTES_FILE"
 gh release create "$TAG_VERSION" \
-    --title "TRust ${VERSION}" \
+    --title "Oxterm ${VERSION}" \
     --notes-file "$NOTES_FILE"
 
-ok "TRust ${VERSION} released as ${TAG_VERSION}."
+ok "Oxterm ${VERSION} released as ${TAG_VERSION}."

@@ -9,28 +9,30 @@ if git -C "${ROOT_DIR}" rev-parse --git-dir >/dev/null 2>&1; then
 fi
 
 if ! command -v cargo >/dev/null 2>&1; then
-    printf '%s\n' "TRust: cargo is required (install Rust from https://rustup.rs/)" >&2
+    printf '%s\n' "Oxterm: cargo is required (install Rust from https://rustup.rs/)" >&2
     exit 1
 fi
 
-printf '%s\n' "Building TRust..."
+printf '%s\n' "Building Oxterm..."
 cargo build --release --locked --manifest-path "${ROOT_DIR}/Cargo.toml"
 
-install -Dm755 "${ROOT_DIR}/target/release/TRust" "${PREFIX}/bin/TRust"
+install -Dm755 "${ROOT_DIR}/target/release/oxterm" "${PREFIX}/bin/oxterm"
 
 desktop_dir="${PREFIX}/share/applications"
 install -d "${desktop_dir}"
-cat > "${desktop_dir}/TRust.desktop" <<EOF
+cat > "${desktop_dir}/oxterm.desktop" <<EOF
 [Desktop Entry]
-Name=TRust Terminal
+Name=Oxterm Terminal
 Comment=GTK3/VTE terminal emulator with AI, history and notes
-Exec="${PREFIX}/bin/TRust" %f
+Exec="${PREFIX}/bin/oxterm" %f
 Icon=utilities-terminal
 Terminal=false
 Type=Application
 Categories=System;TerminalEmulator;
-StartupWMClass=TRust
+StartupWMClass=Oxterm
 MimeType=inode/directory;
 EOF
 
-printf '%s\n' "Installed TRust to ${PREFIX}/bin/TRust"
+rm -f "${PREFIX}/bin/TRust" "${desktop_dir}/TRust.desktop"
+
+printf '%s\n' "Installed Oxterm to ${PREFIX}/bin/oxterm"

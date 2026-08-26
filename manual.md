@@ -1,8 +1,8 @@
-# TRust User Manual
+# Oxterm User Manual
 
 ## Contents
 
-1. [Starting TRust](#starting-trust)
+1. [Starting Oxterm](#starting-oxterm)
 2. [The interface](#the-interface)
 3. [Tabs, windows, and splits](#tabs-windows-and-splits)
 4. [Built-in commands](#built-in-commands)
@@ -15,19 +15,19 @@
 11. [Configuration files](#configuration-files)
 12. [Troubleshooting](#troubleshooting)
 
-## Starting TRust
+## Starting Oxterm
 
 From a source checkout:
 
 ```bash
-./TRust.sh
+./oxterm.sh
 ```
 
 If no compiled binary exists, build it first:
 
 ```bash
 cargo build --release --locked
-./target/release/TRust
+./target/release/oxterm
 ```
 
 To build and install the current release as a system command, use the repository
@@ -35,33 +35,35 @@ installer:
 
 ```bash
 ./install.sh
-TRust
+oxterm
 ```
 
 `install.sh` always rebuilds the release binary and copies it to
-`/usr/bin/TRust`. It uses `sudo` only for the final installation step when
+`/usr/bin/oxterm`. It uses `sudo` only for the final installation step when
 needed. Run it again after compiling a newer version to update the installed
-command. For a per-user installation with a desktop entry, use `./setup.sh`
+command. The installer removes the legacy `/usr/bin/TRust` when present, but
+never touches lowercase `trust`, which is the unrelated `p11-kit` certificate
+utility. For a per-user installation with a desktop entry, use `./setup.sh`
 instead.
 
 You can start in a directory, open a new window, skip session restoration, or
 execute a command directly:
 
 ```bash
-TRust ~/projects/demo
-TRust --new-window
-TRust --no-restore
-TRust --execute git status
+oxterm ~/projects/demo
+oxterm --new-window
+oxterm --no-restore
+oxterm --execute git status
 ```
 
-TRust also accepts options inspired by modern terminals:
+Oxterm also accepts options inspired by modern terminals:
 
 ```bash
-TRust --title "Build server"      # fixed window title
-TRust --geometry 120x40           # initial size in COLSxROWS cells
-TRust --fullscreen                # or --maximize
-TRust --hold --execute make       # keep the tab open after the command exits
-TRust -- ~/dir-with-dashes        # everything after -- is treated as a directory
+oxterm --title "Build server"      # fixed window title
+oxterm --geometry 120x40           # initial size in COLSxROWS cells
+oxterm --fullscreen                # or --maximize
+oxterm --hold --execute make       # keep the tab open after the command exits
+oxterm -- ~/dir-with-dashes        # everything after -- is treated as a directory
 ```
 
 `--title` sets a fixed title that programs cannot override through escape
@@ -73,11 +75,11 @@ terminal visible after its command finishes so the final output stays on screen.
 Further options, inspired by kitty and alacritty, tune identity and settings:
 
 ```bash
-TRust --class MyTerm --name floating    # WM_CLASS class / instance name
-TRust --profile work                    # start with a saved profile
-TRust -o opacity=0.9 -o login_shell=false  # override settings for this run
-TRust --font "Fira Code" --font-size 13 # font shortcuts (same as -o)
-TRust --config ~/demo-settings.json     # use an alternative settings file
+oxterm --class MyTerm --name floating    # WM_CLASS class / instance name
+oxterm --profile work                    # start with a saved profile
+oxterm -o opacity=0.9 -o login_shell=false  # override settings for this run
+oxterm --font "Fira Code" --font-size 13 # font shortcuts (same as -o)
+oxterm --config ~/demo-settings.json     # use an alternative settings file
 ```
 
 `--class` and `--name` set the two parts of WM_CLASS, letting tiling window
@@ -86,7 +88,7 @@ loads a saved profile, and `-o/--option` (repeatable) overrides any setting for
 the current session only. `--font` and `--font-size` are convenient shortcuts
 for `-o font_name=...` / `-o font_size=...`. All of these overrides are applied
 in memory and are **never** written back to your configuration. `--config`
-points TRust at a different settings file, so you can run throwaway or demo
+points Oxterm at a different settings file, so you can run throwaway or demo
 setups without touching your real preferences.
 
 `--execute` accepts every argument after it as part of the command. A directory
@@ -94,43 +96,43 @@ passed both positionally and with `--working-directory` is rejected.
 
 ### Remote attach
 
-TRust starts a persistent PTY broker for each terminal and publishes it through
+Oxterm starts a persistent PTY broker for each terminal and publishes it through
 a private Unix socket. From another computer, connect with SSH and run the same
-TRust binary on the host running the GUI:
+Oxterm binary on the host running the GUI:
 
 ```text
 ssh andres@192.168.1.122
-TRust --list
-TRust --info 12345-2
-TRust -a
+oxterm --list
+oxterm --info 12345-2
+oxterm -a
 ```
 
-`--list` displays one row per live TRust terminal with its ID, title, current
+`--list` displays one row per live Oxterm terminal with its ID, title, current
 directory, and the last command/application. `-a` attaches a framed client to
 the broker, so input and output
-continue from the remote computer without tmux. The local TRust window remains
+continue from the remote computer without tmux. The local Oxterm window remains
 usable, and more than one remote client can attach to the same session. Client
 disconnects do not stop the shell or broker, so a later `-a SESSION_ID` can
 reconnect. An unexpected GUI crash also leaves the broker and shell running;
 an intentional GUI close follows the normal tab cleanup path and terminates
 its shell.
 
-With one active terminal, `TRust -a` attaches immediately. With multiple active
-terminals it displays a numbered chooser. Use `TRust -a SESSION_ID` to bypass
+With one active terminal, `oxterm -a` attaches immediately. With multiple active
+terminals it displays a numbered chooser. Use `oxterm -a SESSION_ID` to bypass
 the chooser.
 
 Use `/session name NAME` in a live terminal to assign a readable name. Use
-`TRust --detach SESSION_ID` from another SSH shell to detach all remote clients
+`oxterm --detach SESSION_ID` from another SSH shell to detach all remote clients
 without stopping the broker. `Ctrl+B`, then `d` turns local forwarding off;
 `Ctrl+B`, then `s` or `w` and selecting the terminal turns it on again.
 
 The broker socket uses a `0700` directory and `0600` socket under
-`~/.config/tpgk/remote/`. The internal `TRust --broker SOCKET SESSION_ID` mode
+`~/.config/tpgk/remote/`. The internal `oxterm --broker SOCKET SESSION_ID` mode
 owns the child PTY and accepts length-prefixed Unix-socket frames for
 `LIST`, `INFO`, `ATTACH`, `DETACH`, `RENAME`, `COMMAND`, `LOCAL_ON`, `LOCAL_OFF`,
 and `KILL`. The GUI PTY is a separate endpoint, allowing its local forwarding
 to be disabled without releasing the shell session. A reconnect receives output
-from that point onward; TRust does not persist or replay terminal scrollback.
+from that point onward; Oxterm does not persist or replay terminal scrollback.
 When the shell exits, the broker removes the session socket.
 
 The listing columns are `ID`, `NAME`, `TITLE`, `DIRECTORY`, `STATUS`,
@@ -138,7 +140,7 @@ The listing columns are `ID`, `NAME`, `TITLE`, `DIRECTORY`, `STATUS`,
 shell command; `APP_STATUS` is `running` while it is active and `last` after it
 has completed.
 
-The TRust binary running the GUI must already include this feature. A TRust
+The Oxterm binary running the GUI must already include this feature. An Oxterm
 process started with an older binary cannot be discovered retroactively because
 it never created the private session socket.
 
@@ -160,7 +162,7 @@ paste. It can be shown or hidden from **View** or **Preferences**.
 
 ### Terminal interaction
 
-TRust uses VTE, the same terminal widget family used by GNOME Terminal. Normal
+Oxterm uses VTE, the same terminal widget family used by GNOME Terminal. Normal
 shell input, scrolling, selection, copy/paste, 256-color output, true color,
 and standard terminal escape sequences are supported.
 
@@ -203,7 +205,7 @@ Use `Ctrl+Alt+PageUp` or the Terminal menu to switch the active pane.
 
 ## Built-in Commands
 
-Built-in commands start with `/` and are processed by TRust instead of the
+Built-in commands start with `/` and are processed by Oxterm instead of the
 shell. Press `Ctrl+Shift+P` to search them in the command palette.
 
 ### `/help`
@@ -258,7 +260,7 @@ code, duration, Git branch, and recent redacted terminal output:
 ```
 
 `/ai explain` focuses on the likely cause and next checks. `/ai repair` asks for
-the smallest safe fix and displays commands for review; TRust never executes the
+the smallest safe fix and displays commands for review; Oxterm never executes the
 suggested repair automatically.
 
 ### `/session`
@@ -269,7 +271,7 @@ backup or sharing with:
 ```text
 /session list
 /session export work
-/session export work ~/backups/trust-work.json
+/session export work ~/backups/oxterm-work.json
 ```
 
 Name a live remote terminal with:
@@ -306,7 +308,7 @@ Selects and tests an AI provider:
 /connect openai
 ```
 
-With no provider, TRust displays configured providers and their availability.
+With no provider, Oxterm displays configured providers and their availability.
 For Ollama and custom endpoints, available models can be detected automatically.
 
 ### `/wnotes` and `/onotes`
@@ -342,7 +344,7 @@ pairs, checkpoints the WAL, updates query statistics, and vacuums the database.
 
 ## History
 
-TRust records the command, working directory, timestamp, and exit status in
+Oxterm records the command, working directory, timestamp, and exit status in
 `~/.config/tpgk/history.db`.
 
 Press `Ctrl+R` for reverse interactive search:
@@ -437,10 +439,10 @@ Configure the notes directory, default Markdown filename, and fallback editor.
 
 ## Shell Integration
 
-OSC 133 lets TRust identify prompt start, command start, command output, and
+OSC 133 lets Oxterm identify prompt start, command start, command output, and
 exit status. It enables prompt navigation and command-output-aware features.
 
-Enable **Preferences > Compatibility > OSC 133**. TRust creates a setup script
+Enable **Preferences > Compatibility > OSC 133**. Oxterm creates a setup script
 under `~/.config/tpgk/`; run it for the shell you use and restart the shell:
 
 ```bash
@@ -498,7 +500,7 @@ The integration supports Bash and Zsh. Use `Ctrl+Shift+Up` and
 ~/.config/tpgk/remote/
 ```
 
-The directory is shared with the original application by design. TRust keeps
+The directory is shared with the original application by design. Oxterm keeps
 the previous valid settings file as `settings.json.bak` when replacing
 Preferences. Back up the whole directory before manually editing settings or
 migrating between versions.
@@ -549,7 +551,7 @@ shell configuration, and start a new terminal tab.
 
 ### Reset all settings
 
-Close TRust and back up or remove the configuration directory:
+Close Oxterm and back up or remove the configuration directory:
 
 ```bash
 mv ~/.config/tpgk ~/.config/tpgk.backup
@@ -560,4 +562,4 @@ history database, so keep the backup if you want to restore history later.
 
 ## License
 
-TRust is licensed under the European Union Public Licence 1.2. See [LICENSE](LICENSE).
+Oxterm is licensed under the European Union Public Licence 1.2. See [LICENSE](LICENSE).

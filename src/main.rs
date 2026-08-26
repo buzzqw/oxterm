@@ -308,7 +308,7 @@ fn parse_cli(args: &[String]) -> Result<CliOptions, String> {
 
 fn usage() -> &'static str {
     concat!(
-        "Usage: TRust [DIRECTORY] [OPTIONS] [-e CMD...]\n\n",
+        "Usage: oxterm [DIRECTORY] [OPTIONS] [-e CMD...]\n\n",
         "Options:\n",
         "  -w, --working-directory DIR  Working directory for the new terminal\n",
         "  -T, --title TITLE            Set a fixed window title (apps cannot override it)\n",
@@ -326,13 +326,13 @@ fn usage() -> &'static str {
         "      --no-restore             Do not restore the last session\n",
         "      --hold                   Keep the terminal open after the command exits\n",
         "  -e, --execute CMD...         Run a command instead of the configured shell\n",
-        "      --list                   List active TRust terminals\n",
+        "      --list                   List active Oxterm terminals\n",
         "      --info SESSION_ID        Show one active terminal\n",
-        "  -a, --attach [SESSION_ID]    Attach to one or choose a TRust terminal\n",
+        "  -a, --attach [SESSION_ID]    Attach to one or choose an Oxterm terminal\n",
         "      --detach SESSION_ID      Detach its remote controller\n",
         "      --broker SOCKET ID       Run the persistent PTY broker (internal)\n",
         "      --                       Treat every following argument as the directory\n",
-        "  -V, --version                Show the TRust version\n",
+        "  -V, --version                Show the Oxterm version\n",
         "  -h, --help                   Show this help\n",
     )
 }
@@ -345,7 +345,7 @@ struct App {
 impl App {
     fn new() -> App {
         let app = gtk::Application::new(
-            Some("com.buzzqw.trust"),
+            Some("com.buzzqw.oxterm"),
             gio::ApplicationFlags::HANDLES_COMMAND_LINE | gio::ApplicationFlags::NON_UNIQUE,
         );
         let _ = glib::set_prgname(Some(window::APP_NAME));
@@ -653,7 +653,7 @@ fn main() {
         let code = match mode {
             Ok(mode) => remote::run_cli(mode),
             Err(error) => {
-                eprintln!("TRust: {}", error);
+                eprintln!("oxterm: {}", error);
                 2
             }
         };

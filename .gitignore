@@ -1,5 +1,8 @@
 # Rust build output
 /target/
+/oxterm-linux-x86-64
+/oxterm-linux-x86_64
+# Legacy artifact name from pre-Oxterm builds.
 /TRust-linux-x86-64
 /TRust-linux-x86_64
 # Previous local artifact name

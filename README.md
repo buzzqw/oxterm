@@ -1,4 +1,4 @@
-# TRust
+# Oxterm
 
 [![CI](https://github.com/buzzqw/TRust/actions/workflows/ci.yml/badge.svg)](https://github.com/buzzqw/TRust/actions/workflows/ci.yml)
 [![Build](https://github.com/buzzqw/TRust/actions/workflows/build.yml/badge.svg)](https://github.com/buzzqw/TRust/actions/workflows/build.yml)
@@ -6,7 +6,7 @@
 [![GTK3](https://img.shields.io/badge/GTK-3-blue?logo=gnome)](https://www.gtk.org/)
 [![License](https://img.shields.io/badge/License-EUPL%201.2-blue)](LICENSE)
 
-**TRust** is a **lightweight, fast, and secure** native Linux terminal
+**Oxterm** is a **lightweight, fast, and secure** native Linux terminal
 emulator written in Rust with GTK3 and VTE. It is a **complete and fully
 functional** terminal: light on resources and quick to start, while providing
 everything you expect from a modern terminal.
@@ -17,7 +17,7 @@ all with a small memory footprint and the memory-safety guarantees of Rust.
 
 > **Quick start:** prebuilt Linux executables are already available on the
 > [GitHub Releases page](https://github.com/buzzqw/TRust/releases/latest). This
-> is the easiest way to use TRust; you do not need Rust or development packages
+> is the easiest way to use Oxterm; you do not need Rust or development packages
 > if you download a release binary.
 
 - **[English user manual](manual.md)**
@@ -80,20 +80,20 @@ Clone the repository and build the optimized executable:
 git clone https://github.com/buzzqw/TRust.git
 cd TRust
 cargo build --release --locked
-./target/release/TRust
+./target/release/oxterm
 ```
 
 The launcher uses the release binary when available and falls back to the debug
 binary:
 
 ```bash
-./TRust.sh
+./oxterm.sh
 ```
 
 The repository includes local build hooks. Configure them once with
 `./setup.sh` or `git config core.hooksPath .githooks`; after each commit it
-builds `TRust-linux-x86-64` in the project root. The generated file is ignored
-by Git. The displayed TRust version uses the Cargo version plus the total Git
+builds `oxterm-linux-x86-64` in the project root. The generated file is ignored
+by Git. The displayed Oxterm version uses the Cargo version plus the total Git
 commit count as its fourth component, for example `1.1.0.20`.
 
 Install the binary and desktop entry under `~/.local`:
@@ -108,7 +108,7 @@ The installation prefix can be changed with `PREFIX`:
 PREFIX=/usr/local ./setup.sh
 ```
 
-To install the latest release build system-wide as `/usr/bin/TRust`, run:
+To install the latest release build system-wide as `/usr/bin/oxterm`, run:
 
 ```bash
 ./install.sh
@@ -118,12 +118,16 @@ The script always rebuilds the release binary before installing it and asks for
 `sudo` only when it needs permission to write `/usr/bin`. Run it again after
 building a newer version so the system command points to the new binary. This
 installs the executable only; use `setup.sh` when you also want the per-user
-desktop entry.
+desktop entry. Both installers remove the legacy `TRust` executable and desktop
+entry when present; they never remove the unrelated lowercase `trust` command.
+
+The command is `oxterm` in lowercase. This avoids the unrelated `/usr/bin/trust`
+`p11-kit` certificate utility.
 
 ## Command Line
 
 ```text
-TRust [DIRECTORY] [OPTIONS] [-e CMD...]
+oxterm [DIRECTORY] [OPTIONS] [-e CMD...]
 
   -w, --working-directory DIR  Start in DIR
   -T, --title TITLE            Fixed window title (apps cannot override it)
@@ -141,9 +145,9 @@ TRust [DIRECTORY] [OPTIONS] [-e CMD...]
       --no-restore             Do not restore the last session
       --hold                   Keep the terminal open after the command exits
   -e, --execute CMD...         Run CMD instead of the configured shell
-      --list                    List active TRust terminals
+      --list                    List active Oxterm terminals
       --info SESSION_ID          Show one active terminal
-  -a, --attach [SESSION_ID]    Attach to one or choose a TRust terminal
+  -a, --attach [SESSION_ID]    Attach to one or choose an Oxterm terminal
       --detach SESSION_ID       Detach its remote controller
       --broker SOCKET ID        Run the persistent PTY broker (internal)
       --                       Treat every following argument as the directory
@@ -154,35 +158,35 @@ TRust [DIRECTORY] [OPTIONS] [-e CMD...]
 Examples:
 
 ```bash
-TRust ~/src/project
-TRust --working-directory ~/src/project
-TRust --title "Build" --geometry 120x40
-TRust --fullscreen
-TRust --new-window
-TRust --no-restore
-TRust --hold --execute make
-TRust --class MyTerm --name floating   # window-manager matching
-TRust --profile work                   # start with a saved profile
-TRust -o opacity=0.9 -o font_size=14    # ad-hoc setting overrides
-TRust --font "Fira Code" --font-size 13
-TRust --config ~/demo-settings.json     # throwaway configuration
-TRust --execute git status
-TRust --list                             # list terminals on this host
-TRust --info 12345-2                      # inspect one terminal
-TRust -a                                  # attach automatically or choose one
-TRust -a 12345-2                          # attach to one terminal
-TRust --detach 12345-2                   # release a remote attach
+oxterm ~/src/project
+oxterm --working-directory ~/src/project
+oxterm --title "Build" --geometry 120x40
+oxterm --fullscreen
+oxterm --new-window
+oxterm --no-restore
+oxterm --hold --execute make
+oxterm --class MyTerm --name floating   # window-manager matching
+oxterm --profile work                   # start with a saved profile
+oxterm -o opacity=0.9 -o font_size=14    # ad-hoc setting overrides
+oxterm --font "Fira Code" --font-size 13
+oxterm --config ~/demo-settings.json     # throwaway configuration
+oxterm --execute git status
+oxterm --list                             # list terminals on this host
+oxterm --info 12345-2                      # inspect one terminal
+oxterm -a                                  # attach automatically or choose one
+oxterm -a 12345-2                          # attach to one terminal
+oxterm --detach 12345-2                   # release a remote attach
 ```
 
 `--option`, `--font`, `--font-size` and `--profile` overrides apply only to the
 launched session and are never written back to your saved settings. `--config`
-points TRust at an alternative settings file (handy for demos).
+points Oxterm at an alternative settings file (handy for demos).
 
-Without an explicit directory, TRust starts in the current working directory.
+Without an explicit directory, Oxterm starts in the current working directory.
 
-`TRust --list` and `TRust -a [SESSION_ID]` are headless commands. They do
+`oxterm --list` and `oxterm -a [SESSION_ID]` are headless commands. They do
 not open a GTK window: they inspect or attach to the live broker session of a
-running TRust terminal on the same host. This makes them suitable for use
+running Oxterm terminal on the same host. This makes them suitable for use
 through SSH. Broker sockets are private (`0700` directory, `0600` socket) and
 the broker process owns the child PTY, so an unexpected GUI crash does not
 terminate the shell. An intentional GUI close still terminates its tabs through
@@ -191,7 +195,7 @@ input is forwarded to the same shell and output is broadcast to each client.
 The listing includes the last command/application received from the shell, with
 `running` while OSC 133 reports that command as active and `last` otherwise.
 
-The internal `TRust --broker SOCKET SESSION_ID` mode is started by the GUI and
+The internal `oxterm --broker SOCKET SESSION_ID` mode is started by the GUI and
 is not normally invoked manually. Its framed Unix-socket protocol supports
 `LIST`, `INFO`, `ATTACH`, `DETACH`, `RENAME`, `COMMAND`, `LOCAL_ON`, `LOCAL_OFF`,
 and `KILL`. Attached clients exchange length-prefixed frames containing terminal
@@ -205,7 +209,7 @@ active and `last` after completion.
 
 ## Built-in Commands
 
-Commands beginning with `/` are handled by TRust:
+Commands beginning with `/` are handled by Oxterm:
 
 | Command | Purpose |
 | --- | --- |
@@ -264,7 +268,7 @@ completion.
 
 ## Configuration and Data
 
-TRust intentionally uses the existing shared data directory:
+Oxterm intentionally uses the existing shared data directory:
 
 ```text
 ~/.config/tpgk/settings.json   Preferences and provider configuration
@@ -306,7 +310,7 @@ URLs opened from terminal output are restricted to `http://` and `https://`.
 Links using other schemes are not passed to desktop URL handlers.
 
 The `master` branch also publishes a rolling prerelease after every successful
-push: [TRust latest](https://github.com/buzzqw/TRust/releases/tag/latest).
+push: [Oxterm latest](https://github.com/buzzqw/TRust/releases/tag/latest).
 It contains the Linux executable and `SHA256SUMS`. The release is intended for
 testing and is replaced by the next successful master build.
 
@@ -344,11 +348,11 @@ Release automation is available through:
 
 ## Support
 
-If TRust is useful to you, you can support development through
-[PayPal](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=azanzani@gmail.com&item_name=Support+TRust+Project).
+If Oxterm is useful to you, you can support development through
+[PayPal](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=azanzani@gmail.com&item_name=Support+Oxterm+Project).
 
 ## License
 
-TRust is distributed under the [European Union Public Licence 1.2](LICENSE).
+Oxterm is distributed under the [European Union Public Licence 1.2](LICENSE).
 
 Copyright 2026 Andres Zanzani.

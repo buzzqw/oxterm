@@ -54,7 +54,7 @@ impl Logger {
 static LOGGER_NAME: OnceLock<&'static str> = OnceLock::new();
 
 pub fn configure_logging() {
-    let _ = LOGGER_NAME.set("TRust");
+    let _ = LOGGER_NAME.set("Oxterm");
 }
 
 #[inline]
@@ -73,7 +73,7 @@ pub fn log_warning(event: &str) {
 }
 
 fn logger_name() -> &'static str {
-    LOGGER_NAME.get().copied().unwrap_or("TRust")
+    LOGGER_NAME.get().copied().unwrap_or("Oxterm")
 }
 
 /// RFC3339 UTC timestamp without external dependencies (libc `gmtime_r`).
@@ -127,4 +127,4 @@ impl ScopedLogger {
 }
 
 /// Static used by sub-modules to keep a single logger handle alive.
-pub static LOGGER: Lazy<ScopedLogger> = Lazy::new(|| scoped("TRust"));
+pub static LOGGER: Lazy<ScopedLogger> = Lazy::new(|| scoped("Oxterm"));

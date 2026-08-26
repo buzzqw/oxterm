@@ -1,9 +1,9 @@
 [Desktop Entry]
-Name=TRust Terminal
+Name=Oxterm Terminal
 Comment=GTK3/VTE terminal emulator with AI, history and notes
-Exec=TRust
-Icon=TRust
+Exec=oxterm
+Icon=oxterm
 Terminal=false
 Type=Application
 Categories=System;TerminalEmulator;
-StartupWMClass=TRust
+StartupWMClass=Oxterm

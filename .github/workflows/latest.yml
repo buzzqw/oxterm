@@ -38,11 +38,11 @@ jobs:
 
       - name: Prepare executable package
         run: |
-          install -m 0755 target/release/TRust TRust-latest-linux-x86_64
-          tar -czf TRust-latest-linux-x86_64.tar.gz TRust-latest-linux-x86_64
+          install -m 0755 target/release/oxterm oxterm-latest-linux-x86_64
+          tar -czf oxterm-latest-linux-x86_64.tar.gz oxterm-latest-linux-x86_64
 
       - name: Create checksums
-        run: sha256sum TRust-latest-* > SHA256SUMS
+        run: sha256sum oxterm-latest-* > SHA256SUMS
 
       - name: Update rolling tag
         env:
@@ -58,18 +58,18 @@ jobs:
           NOTES="Rolling build for commit ${GITHUB_SHA}. This prerelease is replaced on every master push."
           if gh release view latest >/dev/null 2>&1; then
             gh release edit latest \
-              --title "TRust latest" \
+              --title "Oxterm latest" \
               --notes "$NOTES" \
               --prerelease
           else
             gh release create latest \
               --target "$GITHUB_SHA" \
-              --title "TRust latest" \
+              --title "Oxterm latest" \
               --notes "$NOTES" \
               --prerelease
           fi
           gh release upload latest \
-            TRust-latest-linux-x86_64 \
-            TRust-latest-linux-x86_64.tar.gz \
+          oxterm-latest-linux-x86_64 \
+          oxterm-latest-linux-x86_64.tar.gz \
             SHA256SUMS \
             --clobber

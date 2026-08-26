@@ -1,4 +1,4 @@
-name: Build TRust executable
+name: Build Oxterm executable
 
 on:
   push:
@@ -40,13 +40,13 @@ jobs:
       - name: Package executable
         run: |
           mkdir -p dist
-          install -m 0755 target/release/TRust TRust-linux-x86-64
-          install -m 0755 TRust-linux-x86-64 dist/TRust-linux-x86-64
-          tar -C dist -czf dist/TRust-linux-x86-64.tar.gz TRust-linux-x86-64
+          install -m 0755 target/release/oxterm oxterm-linux-x86-64
+          install -m 0755 oxterm-linux-x86-64 dist/oxterm-linux-x86-64
+          tar -C dist -czf dist/oxterm-linux-x86-64.tar.gz oxterm-linux-x86-64
 
       - name: Upload executable artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TRust-linux-x86-64
-          path: dist/TRust-linux-x86-64.tar.gz
+          name: oxterm-linux-x86-64
+          path: dist/oxterm-linux-x86-64.tar.gz
           if-no-files-found: error

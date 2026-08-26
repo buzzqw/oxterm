@@ -1,8 +1,8 @@
 [package]
-name = "TRust"
+name = "oxterm"
 version = "1.1.0"
 edition = "2021"
-description = "TRust - a GTK3/VTE terminal emulator with AI integration"
+description = "Oxterm - a GTK3/VTE terminal emulator with AI integration"
 license = "EUPL-1.2"
 
 [dependencies]
