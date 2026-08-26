@@ -38,13 +38,13 @@ installer:
 oxterm
 ```
 
-`install.sh` always rebuilds the release binary and copies it to
-`/usr/bin/oxterm`. It uses `sudo` only for the final installation step when
+`install.sh` always rebuilds the release binary and installs `/usr/bin/oxterm`,
+the system desktop launcher, and the Oxterm otter icon. It uses `sudo` only when
 needed. Run it again after compiling a newer version to update the installed
-command. The installer removes the legacy `/usr/bin/TRust` when present, but
-never touches lowercase `trust`, which is the unrelated `p11-kit` certificate
-utility. For a per-user installation with a desktop entry, use `./setup.sh`
-instead.
+command and launcher. The installer removes the legacy `/usr/bin/TRust`, its
+desktop entry, and its icon when present, but never touches lowercase `trust`,
+which is the unrelated `p11-kit` certificate utility. For a per-user
+installation, use `./setup.sh` instead.
 
 You can start in a directory, open a new window, skip session restoration, or
 execute a command directly:

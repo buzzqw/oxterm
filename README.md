@@ -116,11 +116,12 @@ To install the latest release build system-wide as `/usr/bin/oxterm`, run:
 ```
 
 The script always rebuilds the release binary before installing it and asks for
-`sudo` only when it needs permission to write `/usr/bin`. Run it again after
-building a newer version so the system command points to the new binary. This
-installs the executable only; use `setup.sh` when you also want the per-user
-desktop entry. Both installers remove the legacy `TRust` executable and desktop
-entry when present; they never remove the unrelated lowercase `trust` command.
+`sudo` only when it needs permission to write the system installation
+directories. It installs the executable, desktop launcher, and Oxterm otter
+icon system-wide. Run it again after building a newer version so the system
+command and launcher point to the new binary. Both installers remove the legacy
+`TRust` executable, desktop entry, and icon when present; they never remove the
+unrelated lowercase `trust` command.
 
 The command is `oxterm` in lowercase. This avoids the unrelated `/usr/bin/trust`
 `p11-kit` certificate utility.
