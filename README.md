@@ -1,7 +1,7 @@
 # Oxterm
 
-[![CI](https://github.com/buzzqw/TRust/actions/workflows/ci.yml/badge.svg)](https://github.com/buzzqw/TRust/actions/workflows/ci.yml)
-[![Build](https://github.com/buzzqw/TRust/actions/workflows/build.yml/badge.svg)](https://github.com/buzzqw/TRust/actions/workflows/build.yml)
+[![CI](https://github.com/buzzqw/oxterm/actions/workflows/ci.yml/badge.svg)](https://github.com/buzzqw/oxterm/actions/workflows/ci.yml)
+[![Build](https://github.com/buzzqw/oxterm/actions/workflows/build.yml/badge.svg)](https://github.com/buzzqw/oxterm/actions/workflows/build.yml)
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)](https://www.rust-lang.org/)
 [![GTK3](https://img.shields.io/badge/GTK-3-blue?logo=gnome)](https://www.gtk.org/)
 [![License](https://img.shields.io/badge/License-EUPL%201.2-blue)](LICENSE)
@@ -16,12 +16,12 @@ history, notes, shell integration, profiles, sessions, and optional AI chat —
 all with a small memory footprint and the memory-safety guarantees of Rust.
 
 > **Quick start:** prebuilt Linux executables are already available on the
-> [GitHub Releases page](https://github.com/buzzqw/TRust/releases/latest). This
+> [GitHub Releases page](https://github.com/buzzqw/oxterm/releases/latest). This
 > is the easiest way to use Oxterm; you do not need Rust or development packages
 > if you download a release binary.
 
 - **[English user manual](manual.md)**
-- **[Report an issue](https://github.com/buzzqw/TRust/issues)**
+- **[Report an issue](https://github.com/buzzqw/oxterm/issues)**
 
 ## Highlights
 
@@ -45,7 +45,7 @@ all with a small memory footprint and the memory-safety guarantees of Rust.
 
 You only need a Linux system with GTK3 and VTE 2.91 runtime libraries. Download
 the latest executable from the [GitHub Releases
-page](https://github.com/buzzqw/TRust/releases/latest), make it executable, and
+page](https://github.com/buzzqw/oxterm/releases/latest), make it executable, and
 run it.
 
 ### Building from source
@@ -77,8 +77,8 @@ Install Rust with [rustup](https://rustup.rs/) if it is not already available.
 Clone the repository and build the optimized executable:
 
 ```bash
-git clone https://github.com/buzzqw/TRust.git
-cd TRust
+git clone https://github.com/buzzqw/oxterm.git
+cd oxterm
 cargo build --release --locked
 ./target/release/oxterm
 ```
@@ -310,7 +310,7 @@ URLs opened from terminal output are restricted to `http://` and `https://`.
 Links using other schemes are not passed to desktop URL handlers.
 
 The `master` branch also publishes a rolling prerelease after every successful
-push: [Oxterm latest](https://github.com/buzzqw/TRust/releases/tag/latest).
+push: [Oxterm latest](https://github.com/buzzqw/oxterm/releases/tag/latest).
 It contains the Linux executable and `SHA256SUMS`. The release is intended for
 testing and is replaced by the next successful master build.
 

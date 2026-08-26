@@ -393,7 +393,7 @@ is unavailable.
 
 Every successful push to the `master` branch publishes a rolling prerelease:
 
-<https://github.com/buzzqw/TRust/releases/tag/latest>
+<https://github.com/buzzqw/oxterm/releases/tag/latest>
 
 It contains the current Linux executable, an AppImage, and a `SHA256SUMS` file.
 This package is for testing and is replaced by the next successful build. Use a
