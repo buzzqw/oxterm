@@ -483,7 +483,7 @@ The integration supports Bash and Zsh. Use `Ctrl+Shift+Up` and
 | `Ctrl+B`, then `%` / `"` | Vertical / horizontal split |
 | `Ctrl+B`, then `o` | Switch split pane |
 | `Ctrl+B`, then `s` / `w` | Show the interactive terminal list |
-| `Ctrl+B`, then `d` | Detach the local terminal PTY |
+| `Ctrl+B`, then `d` | Detach the local terminal PTY; passed through when `ssh` is foreground |
 | `Ctrl+B`, then `x` | Close tab |
 | `Alt+1` ... `Alt+9` | Replay history entry |
 | `F11` | Fullscreen |
