@@ -129,6 +129,11 @@ TRust [DIRECTORY] [OPTIONS] [-e CMD...]
       --no-restore             Do not restore the last session
       --hold                   Keep the terminal open after the command exits
   -e, --execute CMD...         Run CMD instead of the configured shell
+      --list                    List active TRust terminals
+      --info SESSION_ID          Show one active terminal
+  -a, --attach [SESSION_ID]    Attach to one or choose a TRust terminal
+      --detach SESSION_ID       Detach its remote controller
+      --broker SOCKET ID        Run the persistent PTY broker (internal)
       --                       Treat every following argument as the directory
   -V, --version                Print the version
   -h, --help                   Print help
@@ -150,6 +155,11 @@ TRust -o opacity=0.9 -o font_size=14    # ad-hoc setting overrides
 TRust --font "Fira Code" --font-size 13
 TRust --config ~/demo-settings.json     # throwaway configuration
 TRust --execute git status
+TRust --list                             # list terminals on this host
+TRust --info 12345-2                      # inspect one terminal
+TRust -a                                  # attach automatically or choose one
+TRust -a 12345-2                          # attach to one terminal
+TRust --detach 12345-2                   # release a remote attach
 ```
 
 `--option`, `--font`, `--font-size` and `--profile` overrides apply only to the
@@ -157,6 +167,23 @@ launched session and are never written back to your saved settings. `--config`
 points TRust at an alternative settings file (handy for demos).
 
 Without an explicit directory, TRust starts in the current working directory.
+
+`TRust --list` and `TRust -a [SESSION_ID]` are headless commands. They do
+not open a GTK window: they inspect or attach to the live broker session of a
+running TRust terminal on the same host. This makes them suitable for use
+through SSH. Broker sockets are private (`0700` directory, `0600` socket) and
+the broker process owns the child PTY, so an unexpected GUI crash does not
+terminate the shell. An intentional GUI close still terminates its tabs through
+the normal cleanup path. Multiple `-a` clients may be connected at once; their
+input is forwarded to the same shell and output is broadcast to each client.
+
+The internal `TRust --broker SOCKET SESSION_ID` mode is started by the GUI and
+is not normally invoked manually. Its framed Unix-socket protocol supports
+`LIST`, `INFO`, `ATTACH`, `DETACH`, `RENAME`, `LOCAL_ON`, `LOCAL_OFF`, and
+`KILL`. Attached clients exchange length-prefixed frames containing terminal
+input/output, and can detach without stopping the broker. Reconnecting does not
+replay output produced before the new client attached; it receives subsequent
+terminal output only. The broker removes its socket after the shell exits.
 
 ## Built-in Commands
 
@@ -178,6 +205,7 @@ Commands beginning with `/` are handled by TRust:
 | `/learn <file>` | Import commands into history without executing them |
 | `/optimize history` | Deduplicate and optimize the history database |
 | `/session export NAME [FILE]` | Export a saved session as private JSON |
+| `/session name NAME` | Assign a stable name shown by remote listing |
 | `/session list` | List saved sessions |
 | `/snippet add NAME COMMAND` | Save a parameterized command snippet |
 | `/snippet NAME [ARGS...]` | Expand a snippet into the prompt without executing it |
@@ -206,6 +234,13 @@ completion.
 | `Ctrl+Alt+PageUp` | Switch split pane |
 | `Ctrl+Shift+Up` / `Ctrl+Shift+Down` | Previous / next OSC 133 prompt |
 | `Ctrl+Shift+P` | Command palette |
+| `Ctrl+B`, then `c` | New tab (tmux-compatible) |
+| `Ctrl+B`, then `n` / `p` | Next / previous tab |
+| `Ctrl+B`, then `%` / `"` | Vertical / horizontal split |
+| `Ctrl+B`, then `o` | Switch split pane |
+| `Ctrl+B`, then `s` / `w` | Show the interactive terminal list |
+| `Ctrl+B`, then `d` | Detach the local terminal PTY |
+| `Ctrl+B`, then `x` | Close tab |
 | `Alt+1` ... `Alt+9` | Replay a history result |
 | `F11` | Fullscreen |
 
@@ -219,6 +254,7 @@ TRust intentionally uses the existing shared data directory:
 ~/.config/tpgk/history.db      SQLite command history
 ~/.config/tpgk/sessions/       Saved sessions
 ~/.config/tpgk/profiles/       Named profiles
+~/.config/tpgk/remote/         Private broker sockets
 ```
 
 Open **Edit > Preferences** to configure the terminal, appearance, colors,
@@ -264,6 +300,16 @@ Run the standard checks before submitting changes:
 cargo fmt --check
 cargo test --all-targets --locked
 cargo build --release --locked
+```
+
+The suite includes unit tests for CLI parsing, frame bounds, metadata
+sanitization, and client buffering. `tests/remote_broker.rs` also starts the
+release binary as a real broker with two PTYs and verifies control commands,
+multi-client input/output, local forwarding toggles, detach, socket
+permissions, and cleanup. Run that integration test alone with:
+
+```bash
+cargo test --test remote_broker -- --nocapture
 ```
 
 The GitHub Actions workflows run the same checks and build an x86_64 release

@@ -78,6 +78,50 @@ setups without touching your real preferences.
 `--execute` accepts every argument after it as part of the command. A directory
 passed both positionally and with `--working-directory` is rejected.
 
+### Remote attach
+
+TRust starts a persistent PTY broker for each terminal and publishes it through
+a private Unix socket. From another computer, connect with SSH and run the same
+TRust binary on the host running the GUI:
+
+```text
+ssh andres@192.168.1.122
+TRust --list
+TRust --info 12345-2
+TRust -a
+```
+
+`--list` displays one row per live TRust terminal with its ID, title and current
+directory. `-a` attaches a framed client to the broker, so input and output
+continue from the remote computer without tmux. The local TRust window remains
+usable, and more than one remote client can attach to the same session. Client
+disconnects do not stop the shell or broker, so a later `-a SESSION_ID` can
+reconnect. An unexpected GUI crash also leaves the broker and shell running;
+an intentional GUI close follows the normal tab cleanup path and terminates
+its shell.
+
+With one active terminal, `TRust -a` attaches immediately. With multiple active
+terminals it displays a numbered chooser. Use `TRust -a SESSION_ID` to bypass
+the chooser.
+
+Use `/session name NAME` in a live terminal to assign a readable name. Use
+`TRust --detach SESSION_ID` from another SSH shell to detach all remote clients
+without stopping the broker. `Ctrl+B`, then `d` turns local forwarding off;
+`Ctrl+B`, then `s` or `w` and selecting the terminal turns it on again.
+
+The broker socket uses a `0700` directory and `0600` socket under
+`~/.config/tpgk/remote/`. The internal `TRust --broker SOCKET SESSION_ID` mode
+owns the child PTY and accepts length-prefixed Unix-socket frames for
+`LIST`, `INFO`, `ATTACH`, `DETACH`, `RENAME`, `LOCAL_ON`, `LOCAL_OFF`, and
+`KILL`. The GUI PTY is a separate endpoint, allowing its local forwarding to
+be disabled without releasing the shell session. A reconnect receives output
+from that point onward; TRust does not persist or replay terminal scrollback.
+When the shell exits, the broker removes the session socket.
+
+The TRust binary running the GUI must already include this feature. A TRust
+process started with an older binary cannot be discovered retroactively because
+it never created the private session socket.
+
 ## The Interface
 
 ### Menu bar
@@ -206,6 +250,12 @@ backup or sharing with:
 /session list
 /session export work
 /session export work ~/backups/trust-work.json
+```
+
+Name a live remote terminal with:
+
+```text
+/session name build-server
 ```
 
 Exports contain session layout and tab working directories, not terminal output.
@@ -406,6 +456,13 @@ The integration supports Bash and Zsh. Use `Ctrl+Shift+Up` and
 | `Ctrl+Alt+PageUp` | Switch split pane |
 | `Ctrl+Shift+Up` / `Ctrl+Shift+Down` | Previous / next prompt |
 | `Ctrl+Shift+P` | Command palette |
+| `Ctrl+B`, then `c` | New tab (tmux-compatible) |
+| `Ctrl+B`, then `n` / `p` | Next / previous tab |
+| `Ctrl+B`, then `%` / `"` | Vertical / horizontal split |
+| `Ctrl+B`, then `o` | Switch split pane |
+| `Ctrl+B`, then `s` / `w` | Show the interactive terminal list |
+| `Ctrl+B`, then `d` | Detach the local terminal PTY |
+| `Ctrl+B`, then `x` | Close tab |
 | `Alt+1` ... `Alt+9` | Replay history entry |
 | `F11` | Fullscreen |
 | `Click` | Open a detected URL |
@@ -418,6 +475,7 @@ The integration supports Bash and Zsh. Use `Ctrl+Shift+Up` and
 ~/.config/tpgk/history.db
 ~/.config/tpgk/sessions/
 ~/.config/tpgk/profiles/
+~/.config/tpgk/remote/
 ```
 
 The directory is shared with the original application by design. TRust keeps
@@ -435,6 +493,23 @@ Verify that Rust, `pkg-config`, GTK3, and VTE development packages are installed
 pkg-config --modversion gtk+-3.0
 pkg-config --modversion vte-2.91
 cargo --version
+```
+
+For development, run the complete verification suite from the repository root:
+
+```bash
+cargo fmt --check
+cargo test --all-targets --locked
+cargo build --release --locked
+```
+
+The integration test `tests/remote_broker.rs` starts a real broker process with
+two PTYs and verifies socket permissions, metadata commands, multiple attached
+clients, input/output forwarding, local forwarding toggles, detach, and broker
+cleanup. Run it directly with:
+
+```bash
+cargo test --test remote_broker -- --nocapture
 ```
 
 ### The application starts with the wrong colors or encoding

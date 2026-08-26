@@ -7,6 +7,7 @@ mod logging;
 mod notes;
 mod persistence;
 mod profiles;
+mod remote;
 mod session;
 mod settings;
 mod settings_dialog;
@@ -325,6 +326,11 @@ fn usage() -> &'static str {
         "      --no-restore             Do not restore the last session\n",
         "      --hold                   Keep the terminal open after the command exits\n",
         "  -e, --execute CMD...         Run a command instead of the configured shell\n",
+        "      --list                   List active TRust terminals\n",
+        "      --info SESSION_ID        Show one active terminal\n",
+        "  -a, --attach [SESSION_ID]    Attach to one or choose a TRust terminal\n",
+        "      --detach SESSION_ID      Detach its remote controller\n",
+        "      --broker SOCKET ID       Run the persistent PTY broker (internal)\n",
         "      --                       Treat every following argument as the directory\n",
         "  -V, --version                Show the TRust version\n",
         "  -h, --help                   Show this help\n",
@@ -641,8 +647,18 @@ mod tests {
     }
 }
 fn main() {
-    logging::configure_logging();
     let args: Vec<String> = std::env::args().collect();
+    logging::configure_logging();
+    if let Some(mode) = remote::parse_cli_mode(&args) {
+        let code = match mode {
+            Ok(mode) => remote::run_cli(mode),
+            Err(error) => {
+                eprintln!("TRust: {}", error);
+                2
+            }
+        };
+        std::process::exit(code);
+    }
     let mut app = App::new();
     let code = app.run(args);
     std::process::exit(code);

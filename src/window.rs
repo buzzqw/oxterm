@@ -88,6 +88,9 @@ pub trait TerminalWindow {
     fn reset_and_clear(&self);
     fn split_signal(&self, mode: &str);
     fn focus_other_pane_signal(&self);
+    fn prev_tab_signal(&self);
+    fn next_tab_signal(&self);
+    fn session_list_signal(&self);
     fn set_tab_title_from_terminal(&self, term: &TerminalBox, title: &str);
     fn broadcast_feed(&self, source: &TerminalBox, data: &[u8]);
 }
@@ -1031,6 +1034,9 @@ impl TerminalWindow for DetachedWindow {
     }
     fn split_signal(&self, _mode: &str) {}
     fn focus_other_pane_signal(&self) {}
+    fn prev_tab_signal(&self) {}
+    fn next_tab_signal(&self) {}
+    fn session_list_signal(&self) {}
     fn set_tab_title_from_terminal(&self, _term: &TerminalBox, title: &str) {
         self.update_title(&format!("{} - {}", APP_NAME, title));
     }
@@ -2607,6 +2613,7 @@ impl MainWindow {
         self.update_tabs_menu();
 
         term.launch(cwd, command);
+        term.set_remote_info(&base, &term.get_cwd());
         term.show_all();
         let weak = crate::SendWeak::new(&term);
         glib::idle_add_local(move || {
@@ -2973,6 +2980,75 @@ impl MainWindow {
                 term.vte().grab_focus();
             }
         }
+    }
+
+    fn show_tmux_session_list(&self) {
+        let dialog = gtk::Dialog::with_buttons(
+            Some("TRust Sessions"),
+            Some(self),
+            gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+            &[("Close", gtk::ResponseType::Close)],
+        );
+        let list = gtk::ListBox::new();
+        list.set_selection_mode(gtk::SelectionMode::Single);
+        let mut choices = Vec::new();
+        let nb = self.imp().notebook.borrow().clone().unwrap();
+        let nb2 = self.imp().notebook2.borrow().clone().unwrap();
+        for notebook in [&nb, &nb2] {
+            for i in 0..notebook.n_pages() {
+                let Some(page) = notebook.nth_page(Some(i)) else {
+                    continue;
+                };
+                let Ok(term) = page.downcast::<TerminalBox>() else {
+                    continue;
+                };
+                let label = gtk::Label::new(Some(&format!(
+                    "{}  |  {}  |  {}  |  {}",
+                    self.get_tab_text(&term),
+                    term.remote_id(),
+                    term.remote_status(),
+                    term.get_cwd()
+                )));
+                label.set_xalign(0.0);
+                label.set_margin_start(8);
+                label.set_margin_end(8);
+                label.set_margin_top(6);
+                label.set_margin_bottom(6);
+                let row = gtk::ListBoxRow::new();
+                row.add(&label);
+                list.add(&row);
+                choices.push(term);
+            }
+        }
+        if choices.is_empty() {
+            let label = gtk::Label::new(Some("No active TRust terminals."));
+            label.set_margin_top(12);
+            label.set_margin_bottom(12);
+            list.add(&label);
+        }
+        let weak = crate::SendWeak::new(self);
+        let dialog_for_rows = dialog.clone();
+        list.connect_row_activated(move |_list, row| {
+            let index = row.index();
+            if index < 0 {
+                return;
+            }
+            if let Some(term) = choices.get(index as usize) {
+                term.reattach_local();
+                if let Some(w) = weak.upgrade() {
+                    if let Some((notebook, page)) = w.find_terminal(term) {
+                        w.jump_to_tab(&notebook, page);
+                    }
+                }
+                dialog_for_rows.close();
+            }
+        });
+        list.show_all();
+        dialog.content_area().pack_start(&list, true, true, 0);
+        dialog.set_default_size(760, 320);
+        dialog.show_all();
+        dialog.run();
+        dialog.close();
     }
 
     fn on_switch_tab(&self, page: &gtk::Widget, page_num: u32) {
@@ -3389,6 +3465,18 @@ impl MainWindow {
         }
     }
 
+    pub fn prev_tab_signal(&self) {
+        self.prev_tab();
+    }
+
+    pub fn next_tab_signal(&self) {
+        self.next_tab();
+    }
+
+    pub fn session_list_signal(&self) {
+        self.show_tmux_session_list();
+    }
+
     pub fn broadcast_feed(&self, source: &TerminalBox, data: &[u8]) {
         let nb = self.imp().notebook.borrow().clone().unwrap();
         let nb2 = self.imp().notebook2.borrow().clone().unwrap();
@@ -3658,6 +3746,15 @@ impl TerminalWindow for MainWindow {
     }
     fn focus_other_pane_signal(&self) {
         MainWindow::focus_other_pane_signal(self);
+    }
+    fn prev_tab_signal(&self) {
+        MainWindow::prev_tab_signal(self);
+    }
+    fn next_tab_signal(&self) {
+        MainWindow::next_tab_signal(self);
+    }
+    fn session_list_signal(&self) {
+        MainWindow::session_list_signal(self);
     }
     fn set_tab_title_from_terminal(&self, term: &TerminalBox, title: &str) {
         MainWindow::set_tab_title_from_terminal(self, term, title);
