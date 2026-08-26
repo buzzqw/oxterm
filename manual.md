@@ -30,6 +30,20 @@ cargo build --release --locked
 ./target/release/TRust
 ```
 
+To build and install the current release as a system command, use the repository
+installer:
+
+```bash
+./install.sh
+TRust
+```
+
+`install.sh` always rebuilds the release binary and copies it to
+`/usr/bin/TRust`. It uses `sudo` only for the final installation step when
+needed. Run it again after compiling a newer version to update the installed
+command. For a per-user installation with a desktop entry, use `./setup.sh`
+instead.
+
 You can start in a directory, open a new window, skip session restoration, or
 execute a command directly:
 
@@ -91,8 +105,9 @@ TRust --info 12345-2
 TRust -a
 ```
 
-`--list` displays one row per live TRust terminal with its ID, title and current
-directory. `-a` attaches a framed client to the broker, so input and output
+`--list` displays one row per live TRust terminal with its ID, title, current
+directory, and the last command/application. `-a` attaches a framed client to
+the broker, so input and output
 continue from the remote computer without tmux. The local TRust window remains
 usable, and more than one remote client can attach to the same session. Client
 disconnects do not stop the shell or broker, so a later `-a SESSION_ID` can
@@ -112,11 +127,16 @@ without stopping the broker. `Ctrl+B`, then `d` turns local forwarding off;
 The broker socket uses a `0700` directory and `0600` socket under
 `~/.config/tpgk/remote/`. The internal `TRust --broker SOCKET SESSION_ID` mode
 owns the child PTY and accepts length-prefixed Unix-socket frames for
-`LIST`, `INFO`, `ATTACH`, `DETACH`, `RENAME`, `LOCAL_ON`, `LOCAL_OFF`, and
-`KILL`. The GUI PTY is a separate endpoint, allowing its local forwarding to
-be disabled without releasing the shell session. A reconnect receives output
+`LIST`, `INFO`, `ATTACH`, `DETACH`, `RENAME`, `COMMAND`, `LOCAL_ON`, `LOCAL_OFF`,
+and `KILL`. The GUI PTY is a separate endpoint, allowing its local forwarding
+to be disabled without releasing the shell session. A reconnect receives output
 from that point onward; TRust does not persist or replay terminal scrollback.
 When the shell exits, the broker removes the session socket.
+
+The listing columns are `ID`, `NAME`, `TITLE`, `DIRECTORY`, `STATUS`,
+`APPLICATION`, and `APP_STATUS`. The application column contains the latest
+shell command; `APP_STATUS` is `running` while it is active and `last` after it
+has completed.
 
 The TRust binary running the GUI must already include this feature. A TRust
 process started with an older binary cannot be discovered retroactively because

@@ -3003,11 +3003,17 @@ impl MainWindow {
                     continue;
                 };
                 let label = gtk::Label::new(Some(&format!(
-                    "{}  |  {}  |  {}  |  {}",
+                    "{}  |  {}  |  {}  |  {}  |  {} [{}]",
                     self.get_tab_text(&term),
                     term.remote_id(),
                     term.remote_status(),
-                    term.get_cwd()
+                    term.get_cwd(),
+                    if term.remote_command().is_empty() {
+                        "-".to_string()
+                    } else {
+                        term.remote_command()
+                    },
+                    term.remote_command_status()
                 )));
                 label.set_xalign(0.0);
                 label.set_margin_start(8);

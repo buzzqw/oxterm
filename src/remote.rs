@@ -43,6 +43,18 @@ impl BrokerHandle {
         let _ = control_request(&self.path, &format!("RENAME {} {}", self.id, field(name)));
     }
 
+    pub fn update_command(&self, command: &str, running: bool) {
+        let _ = control_request(
+            &self.path,
+            &format!(
+                "COMMAND\t{}\t{}\t{}",
+                self.id,
+                if running { "running" } else { "last" },
+                field(command)
+            ),
+        );
+    }
+
     pub fn local_off(&self) {
         let _ = control_request(&self.path, &format!("LOCAL_OFF {}", self.id));
     }
@@ -264,7 +276,7 @@ pub fn run_cli(mode: CliMode) -> i32 {
             if sessions.is_empty() {
                 println!("No active TRust terminals.");
             } else {
-                println!("ID\tNAME\tTITLE\tDIRECTORY\tSTATUS");
+                println!("ID\tNAME\tTITLE\tDIRECTORY\tSTATUS\tAPPLICATION\tAPP_STATUS");
                 for session in sessions {
                     println!("{}", session);
                 }
@@ -288,7 +300,7 @@ pub fn run_cli(mode: CliMode) -> i32 {
             .and_then(|path| control_request(&path, &format!("INFO {}", session_id)))
         {
             Ok(info) => {
-                println!("ID\tNAME\tTITLE\tDIRECTORY\tSTATUS");
+                println!("ID\tNAME\tTITLE\tDIRECTORY\tSTATUS\tAPPLICATION\tAPP_STATUS");
                 println!("{}", info);
                 0
             }
@@ -374,7 +386,7 @@ fn choose_session(requested: Option<String>) -> Result<String, String> {
             for (index, session) in sessions.iter().enumerate() {
                 let fields: Vec<&str> = session.split('\t').collect();
                 println!(
-                    "  {:>2}) {}  {}  {}  {} [{}]",
+                    "  {:>2}) {}  {}  {}  {} [{}]  |  {} [{}]",
                     index + 1,
                     fields.first().copied().unwrap_or(""),
                     fields
@@ -384,7 +396,9 @@ fn choose_session(requested: Option<String>) -> Result<String, String> {
                         .unwrap_or("-"),
                     fields.get(2).copied().unwrap_or(""),
                     fields.get(3).copied().unwrap_or(""),
-                    fields.get(4).copied().unwrap_or("")
+                    fields.get(4).copied().unwrap_or(""),
+                    fields.get(5).copied().unwrap_or(""),
+                    fields.get(6).copied().unwrap_or("")
                 );
             }
             print!("Select terminal [1-{}]: ", sessions.len());
@@ -683,6 +697,8 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         name: std::env::var("TRUST_BROKER_NAME").unwrap_or_default(),
         title: std::env::var("TRUST_BROKER_TITLE").unwrap_or_else(|_| "Terminal".to_string()),
         cwd: std::env::var("TRUST_BROKER_CWD").unwrap_or_default(),
+        last_command: String::new(),
+        command_running: false,
         local_on: true,
         child_closed: false,
         child_pid,
@@ -839,6 +855,8 @@ struct BrokerState {
     name: String,
     title: String,
     cwd: String,
+    last_command: String,
+    command_running: bool,
     local_on: bool,
     child_closed: bool,
     child_pid: i32,
@@ -935,6 +953,15 @@ fn handle_command(
         state.cwd = field(fields.next().unwrap_or(""));
         return clients[index].queue(b"OK");
     }
+    if let Some(update) = command.strip_prefix("COMMAND\t") {
+        let mut fields = update.splitn(3, '\t');
+        if fields.next() != Some(state.id.as_str()) {
+            return clients[index].queue(b"ERR session not found");
+        }
+        state.command_running = fields.next() == Some("running");
+        state.last_command = field(fields.next().unwrap_or(""));
+        return clients[index].queue(b"OK");
+    }
     let mut parts = command.splitn(4, ' ');
     let verb = parts.next().unwrap_or("");
     let id = parts.next().unwrap_or("");
@@ -948,6 +975,7 @@ fn handle_command(
             | "LOCAL_ON"
             | "LOCAL_OFF"
             | "UPDATE"
+            | "COMMAND"
             | "SIGNAL"
             | "KILL"
     ) && id != state.id
@@ -1000,12 +1028,18 @@ fn handle_command(
 impl BrokerState {
     fn line(&self) -> String {
         format!(
-            "{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
             self.id,
             self.name,
             self.title,
             self.cwd,
-            if self.local_on { "local" } else { "local-off" }
+            if self.local_on { "local" } else { "local-off" },
+            self.last_command,
+            if self.command_running {
+                "running"
+            } else {
+                "last"
+            }
         )
     }
 }

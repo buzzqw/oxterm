@@ -258,6 +258,22 @@ fn broker_round_trips_control_and_terminal_traffic() -> io::Result<()> {
     );
     let info = control_request(&fixture.socket, "INFO test-session")?;
     assert!(String::from_utf8_lossy(&info).contains("test-session\trenamed\t"));
+    assert_eq!(
+        control_request(
+            &fixture.socket,
+            "COMMAND\ttest-session\trunning\tvim src/main.rs"
+        )?,
+        b"OK"
+    );
+    let info = control_request(&fixture.socket, "INFO test-session")?;
+    assert!(String::from_utf8_lossy(&info).contains("\tvim src/main.rs\trunning"));
+    assert_eq!(
+        control_request(
+            &fixture.socket,
+            "COMMAND\ttest-session\tlast\tvim src/main.rs"
+        )?,
+        b"OK"
+    );
 
     let mut first = UnixStream::connect(&fixture.socket)?;
     first.set_read_timeout(Some(Duration::from_secs(2)))?;

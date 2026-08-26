@@ -108,6 +108,18 @@ The installation prefix can be changed with `PREFIX`:
 PREFIX=/usr/local ./setup.sh
 ```
 
+To install the latest release build system-wide as `/usr/bin/TRust`, run:
+
+```bash
+./install.sh
+```
+
+The script always rebuilds the release binary before installing it and asks for
+`sudo` only when it needs permission to write `/usr/bin`. Run it again after
+building a newer version so the system command points to the new binary. This
+installs the executable only; use `setup.sh` when you also want the per-user
+desktop entry.
+
 ## Command Line
 
 ```text
@@ -176,14 +188,20 @@ the broker process owns the child PTY, so an unexpected GUI crash does not
 terminate the shell. An intentional GUI close still terminates its tabs through
 the normal cleanup path. Multiple `-a` clients may be connected at once; their
 input is forwarded to the same shell and output is broadcast to each client.
+The listing includes the last command/application received from the shell, with
+`running` while OSC 133 reports that command as active and `last` otherwise.
 
 The internal `TRust --broker SOCKET SESSION_ID` mode is started by the GUI and
 is not normally invoked manually. Its framed Unix-socket protocol supports
-`LIST`, `INFO`, `ATTACH`, `DETACH`, `RENAME`, `LOCAL_ON`, `LOCAL_OFF`, and
-`KILL`. Attached clients exchange length-prefixed frames containing terminal
+`LIST`, `INFO`, `ATTACH`, `DETACH`, `RENAME`, `COMMAND`, `LOCAL_ON`, `LOCAL_OFF`,
+and `KILL`. Attached clients exchange length-prefixed frames containing terminal
 input/output, and can detach without stopping the broker. Reconnecting does not
 replay output produced before the new client attached; it receives subsequent
 terminal output only. The broker removes its socket after the shell exits.
+
+The listing columns are `ID`, `NAME`, `TITLE`, `DIRECTORY`, `STATUS`,
+`APPLICATION`, and `APP_STATUS`. `APP_STATUS` is `running` while the command is
+active and `last` after completion.
 
 ## Built-in Commands
 
