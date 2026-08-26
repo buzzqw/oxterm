@@ -1171,6 +1171,7 @@ impl MainWindow {
             *self.imp().forced_title.borrow_mut() = Some(t.clone());
         }
         self.set_title(options.title.as_deref().unwrap_or(APP_TITLE));
+        self.set_icon_name(Some("oxterm"));
         // Set WM_CLASS (`--class` / `--name`) so tiling window managers (i3,
         // sway, hyprland, …) can match the window for rules, icons and the
         // `.desktop` entry. GTK3 builds WM_CLASS from the GDK program class
