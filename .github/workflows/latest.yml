@@ -68,6 +68,14 @@ jobs:
               --notes "$NOTES" \
               --prerelease
           fi
+          gh release view latest --json assets --jq '.assets[].name' |
+            while IFS= read -r asset; do
+              case "$asset" in
+                TRust-*|terust-*|trust-*)
+                  gh release delete-asset latest "$asset" --yes
+                  ;;
+              esac
+            done
           gh release upload latest \
           oxterm-latest-linux-x86_64 \
           oxterm-latest-linux-x86_64.tar.gz \
