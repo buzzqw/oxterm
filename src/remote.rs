@@ -62,6 +62,13 @@ impl BrokerHandle {
         );
     }
 
+    pub fn foreground_is_ssh(&self) -> bool {
+        matches!(
+            control_request(&self.path, &format!("IS_SSH {}", self.id)),
+            Ok(response) if response == "1"
+        )
+    }
+
     pub fn local_off(&self) {
         let _ = control_request(&self.path, &format!("LOCAL_OFF {}", self.id));
     }

@@ -1274,6 +1274,9 @@ impl TerminalBox {
     }
 
     fn foreground_process_is_ssh(&self) -> bool {
+        if let Some(handle) = self.imp().remote_handle.borrow().as_ref() {
+            return handle.foreground_is_ssh();
+        }
         let fd = *self.imp().pty_fd.borrow();
         if fd < 0 {
             return false;
