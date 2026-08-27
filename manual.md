@@ -39,7 +39,7 @@ oxterm
 ```
 
 `install.sh` always rebuilds the release binary and installs `/usr/bin/oxterm`,
-the system desktop launcher, and the Oxterm otter icon. It uses `sudo` only when
+the system desktop launcher, and the Oxterm bull icon. It uses `sudo` only when
 needed. Run it again after compiling a newer version to update the installed
 command and launcher. The installer removes the legacy `/usr/bin/TRust`, its
 desktop entry, and its icon when present, but never touches lowercase `trust`,
