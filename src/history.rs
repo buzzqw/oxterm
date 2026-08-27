@@ -346,67 +346,21 @@ impl HistoryManager {
     }
 
     pub fn interactive_search(&self, query: &str, limit: i64) -> Vec<Value> {
-        let conn = self.conn.lock().unwrap();
         if query.trim().is_empty() {
+            let conn = self.conn.lock().unwrap();
             let mut stmt = conn
                 .prepare("SELECT DISTINCT command FROM commands ORDER BY id DESC LIMIT ?1")
                 .unwrap();
             let iter = stmt.query_map(params![limit], Self::map_row_1).unwrap();
             return iter.filter_map(|r| r.ok()).collect();
         }
-        let parts: Vec<&str> = query.trim().split_whitespace().collect();
-        let where_sql = parts
-            .iter()
-            .map(|_| "command LIKE ? ESCAPE '\\'")
-            .collect::<Vec<_>>()
-            .join(" AND ");
-        let where_params: Vec<String> = parts
-            .iter()
-            .map(|p| format!("%{}%", Self::like_escape(p)))
-            .collect();
 
-        let first_term = parts[0];
-        let mut order_parts =
-            vec!["CASE WHEN command LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END".to_string()];
-        let mut order_params: Vec<Box<dyn rusqlite::ToSql>> =
-            vec![Box::new(format!("{}%", Self::like_escape(first_term)))];
-        if parts.len() > 1 {
-            let sum = parts
-                .iter()
-                .map(|_| "INSTR(LOWER(command), ?)".to_string())
-                .collect::<Vec<_>>()
-                .join(" + ");
-            order_parts.push(format!("({})", sum));
-            for p in &parts {
-                order_params.push(Box::new(p.to_lowercase()));
-            }
-        }
-        order_parts.push("LENGTH(command)".to_string());
-        order_parts.push("max_id DESC".to_string());
-        let order_sql = order_parts.join(", ");
-
-        let sql = format!(
-            "SELECT command FROM (
-                SELECT command, MAX(id) as max_id FROM commands WHERE {}
-                GROUP BY command LIMIT ?)
-             ORDER BY {} LIMIT ?",
-            where_sql, order_sql
-        );
-
-        let mut stmt = conn.prepare(&sql).unwrap();
-        let mut all: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        for p in where_params {
-            all.push(Box::new(p));
-        }
-        all.push(Box::new(limit));
-        all.extend(order_params.into_iter().map(|b| b));
-        all.push(Box::new(limit));
-        let iter = stmt
-            .query_map(rusqlite::params_from_iter(all.into_iter()), |row| {
-                Self::map_row_1(row)
-            })
-            .unwrap();
-        iter.filter_map(|r| r.ok()).collect()
+        // Keep interactive search aligned with the normal history picker. The
+        // two paths must see the same commands and apply the same term rules.
+        self.search(query, limit, "")
+            .into_iter()
+            .filter_map(|row| row.get(1).cloned())
+            .collect()
     }
 
     fn trim(&self) {
