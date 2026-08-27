@@ -345,24 +345,6 @@ impl HistoryManager {
         Ok(rows)
     }
 
-    pub fn interactive_search(&self, query: &str, limit: i64) -> Vec<Value> {
-        if query.trim().is_empty() {
-            let conn = self.conn.lock().unwrap();
-            let mut stmt = conn
-                .prepare("SELECT DISTINCT command FROM commands ORDER BY id DESC LIMIT ?1")
-                .unwrap();
-            let iter = stmt.query_map(params![limit], Self::map_row_1).unwrap();
-            return iter.filter_map(|r| r.ok()).collect();
-        }
-
-        // Keep interactive search aligned with the normal history picker. The
-        // two paths must see the same commands and apply the same term rules.
-        self.search(query, limit, "")
-            .into_iter()
-            .filter_map(|row| row.get(1).cloned())
-            .collect()
-    }
-
     fn trim(&self) {
         let db_path = history_db_path();
         std::thread::spawn(move || {
@@ -480,7 +462,29 @@ fn rusqlite_value_to_json(v: rusqlite::types::Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::is_read_only_sql;
+    use super::{is_read_only_sql, HistoryManager};
+    use rusqlite::Connection;
+    use std::sync::Mutex;
+
+    fn test_history() -> HistoryManager {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE commands (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                command TEXT NOT NULL,
+                cwd TEXT,
+                exit_code INTEGER,
+                timestamp TEXT NOT NULL,
+                duration_ms INTEGER,
+                git_branch TEXT
+            );",
+        )
+        .unwrap();
+        HistoryManager {
+            conn: Mutex::new(conn),
+            inserts_since_trim: Mutex::new(0),
+        }
+    }
 
     #[test]
     fn sql_filter_accepts_only_select_and_explain() {
@@ -488,5 +492,20 @@ mod tests {
         assert!(is_read_only_sql("EXPLAIN SELECT 1"));
         assert!(!is_read_only_sql("PRAGMA table_info(commands)"));
         assert!(!is_read_only_sql("DELETE FROM commands"));
+    }
+
+    #[test]
+    fn search_matches_every_positive_term() {
+        let history = test_history();
+        history.add("ssh andres@example.test", "/workspace", 0);
+        history.add("ssh other@example.test", "/workspace", 0);
+
+        let commands: Vec<_> = history
+            .search("ssh andres", 50, "/workspace")
+            .into_iter()
+            .map(|row| row[1].as_str().unwrap().to_string())
+            .collect();
+
+        assert_eq!(commands, ["ssh andres@example.test"]);
     }
 }
