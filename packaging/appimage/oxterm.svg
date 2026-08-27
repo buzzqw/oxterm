@@ -26,8 +26,6 @@
   <circle cx="95" cy="120" r="4" fill="#fff2d5"/>
   <circle cx="169" cy="120" r="4" fill="#fff2d5"/>
   <path d="M76 165c0-27 23-43 52-43s52 16 52 43v20c0 27-22 43-52 43s-52-16-52-43z" fill="url(#muzzle)" stroke="#4b2925" stroke-width="5"/>
-  <ellipse cx="101" cy="169" rx="13" ry="10" fill="#342022"/>
-  <ellipse cx="155" cy="169" rx="13" ry="10" fill="#342022"/>
-  <path d="M128 177v13c0 9-8 14-18 14M128 190c0 9 8 14 18 14" fill="none" stroke="#4b2925" stroke-width="5" stroke-linecap="round"/>
-  <path d="M82 190c11 12 26 18 46 18s35-6 46-18" fill="none" stroke="#e2b38a" stroke-width="4" stroke-linecap="round" opacity=".8"/>
+  <path d="M91 170c4-4 10-5 15-2" fill="none" stroke="#342022" stroke-width="6" stroke-linecap="round"/>
+  <path d="M165 170c-4-4-10-5-15-2" fill="none" stroke="#342022" stroke-width="6" stroke-linecap="round"/>
 </svg>
