@@ -732,18 +732,19 @@ struct Client {
     input: Vec<u8>,
     output: VecDeque<Vec<u8>>,
     output_offset: usize,
+    output_pending: usize,
 }
 
 impl Client {
     fn queue(&mut self, payload: &[u8]) -> bool {
-        let mut frame = Vec::with_capacity(payload.len() + 4);
-        frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-        frame.extend_from_slice(payload);
-        let pending: usize =
-            self.output.iter().map(Vec::len).sum::<usize>() - self.output_offset + frame.len();
-        if pending > MAX_PENDING {
+        let frame_len = payload.len().saturating_add(4);
+        if self.output_pending.saturating_add(frame_len) > MAX_PENDING {
             return false;
         }
+        let mut frame = Vec::with_capacity(frame_len);
+        frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        frame.extend_from_slice(payload);
+        self.output_pending += frame_len;
         self.output.push_back(frame);
         true
     }
@@ -752,7 +753,10 @@ impl Client {
         while let Some(frame) = self.output.front() {
             match self.stream.write(&frame[self.output_offset..]) {
                 Ok(0) => return false,
-                Ok(count) => self.output_offset += count,
+                Ok(count) => {
+                    self.output_offset += count;
+                    self.output_pending = self.output_pending.saturating_sub(count);
+                }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return true,
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(_) => return false,
@@ -792,10 +796,13 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         kill_requested: false,
         child_input: VecDeque::new(),
         child_input_offset: 0,
+        child_input_pending: 0,
     };
     let mut clients: Vec<Client> = Vec::new();
     let mut gui_output = VecDeque::new();
     let mut gui_offset = 0usize;
+    let mut gui_pending = 0usize;
+    let mut poll_fds = Vec::with_capacity(3);
     set_nonblocking(CHILD_FD);
     set_nonblocking(GUI_FD);
 
@@ -807,7 +814,8 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         if !clients.iter().any(|client| client.attached) {
             sync_gui_size();
         }
-        let mut poll_fds = Vec::with_capacity(3 + clients.len());
+        poll_fds.clear();
+        poll_fds.reserve(3 + clients.len());
         poll_fds.push(libc::pollfd {
             fd: listener.as_raw_fd(),
             events: libc::POLLIN,
@@ -849,7 +857,9 @@ fn run_broker(path: &Path, id: &str) -> i32 {
                 revents: 0,
             });
         }
-        let status = unsafe { libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as _, 100) };
+        // Every broker input is represented by a file descriptor. Sleeping
+        // until readiness avoids ten needless wakeups per second when idle.
+        let status = unsafe { libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as _, -1) };
         if status < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
             break;
         }
@@ -864,6 +874,7 @@ fn run_broker(path: &Path, id: &str) -> i32 {
                         input: Vec::new(),
                         output: VecDeque::new(),
                         output_offset: 0,
+                        output_pending: 0,
                     });
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
@@ -880,6 +891,8 @@ fn run_broker(path: &Path, id: &str) -> i32 {
                     broadcast_output(
                         &mut clients,
                         &mut gui_output,
+                        &mut gui_offset,
+                        &mut gui_pending,
                         state.local_on,
                         &bytes[..count as usize],
                     );
@@ -920,7 +933,7 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         if !state.child_closed && !flush_child_input(&mut state) {
             state.child_closed = true;
         }
-        if !flush_gui(&mut gui_output, &mut gui_offset) {
+        if !flush_gui(&mut gui_output, &mut gui_offset, &mut gui_pending) {
             state.local_on = false;
         }
 
@@ -970,6 +983,7 @@ struct BrokerState {
     kill_requested: bool,
     child_input: VecDeque<Vec<u8>>,
     child_input_offset: usize,
+    child_input_pending: usize,
 }
 
 fn bind_broker_socket(path: &Path) -> Result<UnixListener, String> {
@@ -1193,15 +1207,10 @@ fn queue_child_input(state: &mut BrokerState, data: &[u8]) -> bool {
     if data.is_empty() {
         return true;
     }
-    let pending = state
-        .child_input
-        .iter()
-        .map(Vec::len)
-        .sum::<usize>()
-        .saturating_sub(state.child_input_offset);
-    if pending.saturating_add(data.len()) > MAX_PENDING {
+    if state.child_input_pending.saturating_add(data.len()) > MAX_PENDING {
         return false;
     }
+    state.child_input_pending += data.len();
     state.child_input.push_back(data.to_vec());
     true
 }
@@ -1222,6 +1231,7 @@ fn flush_child_input(state: &mut BrokerState) -> bool {
         };
         if written > 0 {
             state.child_input_offset += written as usize;
+            state.child_input_pending = state.child_input_pending.saturating_sub(written as usize);
             if state.child_input_offset == data.len() {
                 state.child_input.pop_front();
                 state.child_input_offset = 0;
@@ -1267,15 +1277,19 @@ fn sync_gui_size() {
 fn broadcast_output(
     clients: &mut [Client],
     gui_output: &mut VecDeque<Vec<u8>>,
+    gui_offset: &mut usize,
+    gui_pending: &mut usize,
     local_on: bool,
     data: &[u8],
 ) {
     if local_on {
+        *gui_pending = gui_pending.saturating_add(data.len());
         gui_output.push_back(data.to_vec());
-        let mut pending: usize = gui_output.iter().map(Vec::len).sum();
-        while pending > MAX_PENDING {
+        while *gui_pending > MAX_PENDING {
             if let Some(old) = gui_output.pop_front() {
-                pending -= old.len();
+                let remaining = old.len().saturating_sub(*gui_offset);
+                *gui_pending = gui_pending.saturating_sub(remaining);
+                *gui_offset = 0;
             } else {
                 break;
             }
@@ -1295,7 +1309,7 @@ fn broadcast_output(
     }
 }
 
-fn flush_gui(queue: &mut VecDeque<Vec<u8>>, offset: &mut usize) -> bool {
+fn flush_gui(queue: &mut VecDeque<Vec<u8>>, offset: &mut usize, pending: &mut usize) -> bool {
     while let Some(data) = queue.front() {
         let written = unsafe {
             libc::write(
@@ -1310,8 +1324,10 @@ fn flush_gui(queue: &mut VecDeque<Vec<u8>>, offset: &mut usize) -> bool {
             }
             queue.clear();
             *offset = 0;
+            *pending = 0;
             return false;
         }
+        *pending = pending.saturating_sub(written as usize);
         *offset += written as usize;
         if *offset == data.len() {
             queue.pop_front();
@@ -1392,6 +1408,7 @@ mod tests {
             input: Vec::new(),
             output: VecDeque::new(),
             output_offset: 0,
+            output_pending: 0,
         };
         assert!(client.queue(&vec![0; MAX_PENDING - 4]));
         assert!(!client.queue(b"overflow"));
