@@ -791,6 +791,7 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         last_command: String::new(),
         command_running: false,
         local_on: true,
+        gui_closed: false,
         child_closed: false,
         child_pid,
         kill_requested: false,
@@ -811,7 +812,7 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         // attached. Once a remote client attaches it sends its own
         // FRAME_RESIZE frames, which would otherwise be reverted on the next
         // iteration by the GUI's size.
-        if !clients.iter().any(|client| client.attached) {
+        if !state.gui_closed && !clients.iter().any(|client| client.attached) {
             sync_gui_size();
         }
         poll_fds.clear();
@@ -837,12 +838,16 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         });
         poll_fds.push(libc::pollfd {
             fd: GUI_FD,
-            events: libc::POLLIN
-                | if gui_output.is_empty() {
-                    0
-                } else {
-                    libc::POLLOUT
-                },
+            events: if state.gui_closed {
+                0
+            } else {
+                libc::POLLIN
+                    | if gui_output.is_empty() {
+                        0
+                    } else {
+                        libc::POLLOUT
+                    }
+            },
             revents: 0,
         });
         for client in &clients {
@@ -929,6 +934,15 @@ fn run_broker(path: &Path, id: &str) -> i32 {
                     break;
                 }
             }
+            if poll_fds[2].revents & (libc::POLLHUP | libc::POLLERR) != 0 {
+                // A closed GUI PTY reports HUP forever. Remove it from poll;
+                // remote clients may still keep this broker alive.
+                state.gui_closed = true;
+                state.local_on = false;
+                gui_output.clear();
+                gui_offset = 0;
+                gui_pending = 0;
+            }
         }
         if !state.child_closed && !flush_child_input(&mut state) {
             state.child_closed = true;
@@ -978,6 +992,7 @@ struct BrokerState {
     last_command: String,
     command_running: bool,
     local_on: bool,
+    gui_closed: bool,
     child_closed: bool,
     child_pid: i32,
     kill_requested: bool,
