@@ -762,6 +762,19 @@ impl DetachedWindow {
         let weak = crate::SendWeak::new(self);
         self.menu_item(
             &help_menu,
+            "Quick Help",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    crate::settings_dialog::show_help_dialog(Some(w.upcast_ref::<gtk::Window>()));
+                }
+            }),
+            None,
+            Some("Show Oxterm commands, shortcuts and remote session help"),
+        );
+        help_menu.append(&gtk::SeparatorMenuItem::new());
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &help_menu,
             "About",
             Box::new(move || {
                 if let Some(w) = weak.upgrade() {
@@ -2423,6 +2436,19 @@ impl MainWindow {
 
         // Help
         let help_menu = gtk::Menu::new();
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &help_menu,
+            "Quick Help",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    crate::settings_dialog::show_help_dialog(Some(w.upcast_ref::<gtk::Window>()));
+                }
+            }),
+            None,
+            Some("Show Oxterm commands, shortcuts and remote session help"),
+        );
+        help_menu.append(&gtk::SeparatorMenuItem::new());
         let weak = crate::SendWeak::new(self);
         self.menu_item(
             &help_menu,

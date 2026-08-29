@@ -10,6 +10,9 @@ use gtk::prelude::*;
 use crate::settings::{self, settings, Settings};
 use crate::window::{APP_NAME, EUPL_LICENSE_TEXT, VERSION};
 
+const PROJECT_URL: &str = "https://github.com/buzzqw/oxterm";
+const MANUAL_URL: &str = "https://github.com/buzzqw/oxterm/blob/master/manual.md";
+
 fn hex_to_rgba(hex: &str) -> gdk::RGBA {
     gdk::RGBA::parse(hex).unwrap_or_else(|_| gdk::RGBA::new(0.0, 0.0, 0.0, 1.0))
 }
@@ -263,10 +266,81 @@ pub fn show_about_dialog(parent: Option<&gtk::Window>) {
     dialog.set_program_name(APP_NAME);
     dialog.set_version(Some(VERSION));
     dialog.set_comments(Some(
-        "Advanced terminal emulator powered by VTE\nSupports tmux-like splits (View > Split)",
+        "Native Linux terminal emulator built with Rust, GTK 3 and VTE.\n\nTabs, split panes, command history, shell integration, notes, profiles, named sessions, optional AI chat, and SSH-friendly remote attach/detach.\n\nSee the project page for the user manual, releases, and issue tracker.",
     ));
-    dialog.set_copyright(Some("Andres Zanzani"));
+    dialog.set_authors(&["Andres Zanzani"]);
+    dialog.set_copyright(Some("Copyright (C) 2026 Andres Zanzani"));
+    dialog.set_website(Some(PROJECT_URL));
+    dialog.set_website_label(Some("Oxterm project and documentation"));
     dialog.set_license(Some(EUPL_LICENSE_TEXT));
+    dialog.set_wrap_license(true);
+    let _ = dialog.run();
+    dialog.close();
+}
+
+pub fn show_help_dialog(parent: Option<&gtk::Window>) {
+    let dialog = gtk::Dialog::with_buttons(
+        Some("Quick Help - Oxterm"),
+        parent,
+        gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+        &[("Close", gtk::ResponseType::Close)],
+    );
+    dialog.set_default_size(760, 560);
+
+    let text = format!(
+        "OXTERM QUICK HELP\n\n\
+Terminal workflow\n\
+  Ctrl+Shift+T       New tab\n\
+  Ctrl+Shift+N       New window\n\
+  Ctrl+Shift+W       Close tab\n\
+  Ctrl+PageUp/Down   Previous / next tab\n\
+  Ctrl+Alt+PageUp    Switch split pane\n\
+  Ctrl+Shift+F       Search terminal scrollback\n\
+  Ctrl+Shift+P       Open command palette\n\
+  Ctrl+Shift+C/V     Copy / paste\n\
+  Ctrl+Plus/Minus    Zoom in / out\n\
+  Ctrl+0             Reset zoom\n\
+\nBuilt-in commands\n\
+  /help              Show the in-terminal command reference\n\
+  /history [terms]   Search command history (use -term to exclude)\n\
+  /ai                Start optional AI chat\n\
+  /ai explain        Explain the latest failed command\n\
+  /ai repair         Suggest a safe repair for the latest failure\n\
+  /connect           Select and test an AI provider\n\
+  /wnotes TEXT       Save a timestamped Markdown note\n\
+  /onotes            Open the configured notes file\n\
+  /session list      List saved sessions\n\
+  /session export    Export a saved session as private JSON\n\
+  /snippet list      List saved command snippets\n\
+  /clear             Clear the terminal screen\n\
+\nRemote sessions\n\
+  oxterm --list      List live terminal sessions\n\
+  oxterm --info ID   Inspect one live session\n\
+  oxterm -a ID       Attach from another terminal or over SSH\n\
+  Ctrl+B, then d     Detach local forwarding\n\
+\nVersion {VERSION}\n\
+Manual: {MANUAL_URL}\n\
+Project: {PROJECT_URL}\n"
+    );
+
+    let text_view = gtk::TextView::new();
+    text_view.set_editable(false);
+    text_view.set_cursor_visible(false);
+    text_view.set_monospace(true);
+    text_view.set_wrap_mode(gtk::WrapMode::WordChar);
+    text_view.set_left_margin(14);
+    text_view.set_right_margin(14);
+    text_view.set_top_margin(12);
+    text_view.set_bottom_margin(12);
+    if let Some(buffer) = text_view.buffer() {
+        buffer.set_text(&text);
+    }
+
+    let scroll = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
+    scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
+    scroll.add(&text_view);
+    dialog.content_area().pack_start(&scroll, true, true, 0);
+    dialog.show_all();
     let _ = dialog.run();
     dialog.close();
 }
