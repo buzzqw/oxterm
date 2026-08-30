@@ -3,30 +3,6 @@
 version = 4
 
 [[package]]
-name = "oxterm"
-version = "1.1.0"
-dependencies = [
- "cairo-rs",
- "dirs",
- "gdk",
- "gdk-pixbuf",
- "gio",
- "glib",
- "gtk",
- "libc",
- "nix",
- "once_cell",
- "pango",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "shell-words",
- "ureq",
- "zoha-vte",
-]
-
-[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -766,6 +742,30 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
+name = "oxterm"
+version = "1.1.0"
+dependencies = [
+ "cairo-rs",
+ "dirs",
+ "gdk",
+ "gdk-pixbuf",
+ "gio",
+ "glib",
+ "gtk",
+ "libc",
+ "nix",
+ "once_cell",
+ "pango",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "shell-words",
+ "ureq",
+ "zoha-vte",
+]
 
 [[package]]
 name = "pango"

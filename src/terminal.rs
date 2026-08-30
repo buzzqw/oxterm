@@ -992,29 +992,12 @@ impl TerminalBox {
             ));
             let fd = unsafe {
                 let cpath = std::ffi::CString::new(fifo_path.to_string_lossy().as_bytes()).unwrap();
-                libc::open(cpath.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK)
+                libc::open(
+                    cpath.as_ptr(),
+                    libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC,
+                )
             };
             *self.imp().osc133_rfd.borrow_mut() = fd;
-            if fd >= 0 {
-                let weak = crate::SendWeak::new(self);
-                let source = glib::source::unix_fd_add_local(
-                    fd,
-                    glib::IOCondition::IN | glib::IOCondition::HUP,
-                    move |_fd, condition| {
-                        if let Some(t) = weak.upgrade() {
-                            t.on_osc133_pipe_data();
-                        }
-                        if condition.contains(glib::IOCondition::HUP)
-                            && !condition.contains(glib::IOCondition::IN)
-                        {
-                            glib::ControlFlow::Break
-                        } else {
-                            glib::ControlFlow::Continue
-                        }
-                    },
-                );
-                *self.imp().osc133_source_id.borrow_mut() = Some(source);
-            }
         }
 
         let wd = if let Some(c) = cwd {
@@ -1038,16 +1021,46 @@ impl TerminalBox {
                 if let Some(pty) = vte.pty() {
                     *self.imp().pty_fd.borrow_mut() = pty.fd();
                 }
+                self.watch_osc133_fifo();
                 vte.watch_child(glib::Pid(pid));
             }
             Err(e) => {
                 self.cleanup_shell_integration();
+                self.close_osc133_fifo();
                 LOGGER.error(&format!("shell_spawn_failed error={}", e));
                 self.vte().feed(
                     format!("\r\n\x1b[31m[Failed to start shell: {}]\x1b[0m\r\n", e).as_bytes(),
                 );
             }
         }
+    }
+
+    fn watch_osc133_fifo(&self) {
+        let fd = *self.imp().osc133_rfd.borrow();
+        if fd < 0 || self.imp().osc133_source_id.borrow().is_some() {
+            return;
+        }
+        let weak = crate::SendWeak::new(self);
+        let source = glib::source::unix_fd_add_local(
+            fd,
+            glib::IOCondition::IN | glib::IOCondition::HUP | glib::IOCondition::ERR,
+            move |_fd, condition| {
+                let Some(t) = weak.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                if !t.on_osc133_pipe_data() {
+                    return glib::ControlFlow::Break;
+                }
+                if condition.contains(glib::IOCondition::HUP)
+                    && !condition.contains(glib::IOCondition::IN)
+                {
+                    glib::ControlFlow::Break
+                } else {
+                    glib::ControlFlow::Continue
+                }
+            },
+        );
+        *self.imp().osc133_source_id.borrow_mut() = Some(source);
     }
 
     fn prepare_shell_integration(&self, argv: &mut Vec<String>, env: &mut Vec<(String, String)>) {
@@ -1153,6 +1166,21 @@ impl TerminalBox {
             let _ = std::fs::remove_dir_all(path);
         } else {
             let _ = std::fs::remove_file(path);
+        }
+    }
+
+    fn close_osc133_fifo(&self) {
+        if let Some(source) = self.imp().osc133_source_id.borrow_mut().take() {
+            source.remove();
+        }
+        if *self.imp().osc133_rfd.borrow() >= 0 {
+            unsafe { libc::close(*self.imp().osc133_rfd.borrow()) };
+            *self.imp().osc133_rfd.borrow_mut() = -1;
+        }
+        let fifo = self.imp().osc133_fifo_path.borrow().clone();
+        if !fifo.is_empty() {
+            let _ = std::fs::remove_file(&fifo);
+            *self.imp().osc133_fifo_path.borrow_mut() = String::new();
         }
     }
 
@@ -1286,15 +1314,7 @@ impl TerminalBox {
     pub fn terminate(&self) {
         self.cancel_ai_stream(true);
         self.cleanup_shell_integration();
-        if *self.imp().osc133_rfd.borrow() >= 0 {
-            unsafe { libc::close(*self.imp().osc133_rfd.borrow()) };
-            *self.imp().osc133_rfd.borrow_mut() = -1;
-        }
-        let fifo = self.imp().osc133_fifo_path.borrow().clone();
-        if !fifo.is_empty() {
-            let _ = std::fs::remove_file(&fifo);
-            *self.imp().osc133_fifo_path.borrow_mut() = String::new();
-        }
+        self.close_osc133_fifo();
         if let Some(handler) = self.imp().settings_handler.borrow_mut().take() {
             settings().disconnect_changed(handler);
         }
@@ -1855,7 +1875,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
 
     // ── OSC 133 ──────────────────────────────────────────────
 
-    fn on_osc133_pipe_data(&self) {
+    fn on_osc133_pipe_data(&self) -> bool {
         let mut data = vec![0u8; 4096];
         let n = unsafe {
             libc::read(
@@ -1877,6 +1897,14 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 buf.clear();
                 LOGGER.warning("osc133_buffer_limit_reached");
             }
+            true
+        } else if n == 0 {
+            // No writer remains. Keeping a GLib source on this FIFO would make
+            // the main loop spin forever on repeated HUP/IN notifications.
+            false
+        } else {
+            let error = std::io::Error::last_os_error();
+            error.kind() == std::io::ErrorKind::WouldBlock
         }
     }
 
