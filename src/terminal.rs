@@ -1048,16 +1048,17 @@ impl TerminalBox {
                 let Some(t) = weak.upgrade() else {
                     return glib::ControlFlow::Break;
                 };
-                if !t.on_osc133_pipe_data() {
+                let keep_source = t.on_osc133_pipe_data()
+                    && !(condition.contains(glib::IOCondition::HUP)
+                        && !condition.contains(glib::IOCondition::IN));
+                if !keep_source {
+                    // Returning Break removes the source in GLib. Clear the
+                    // handle without calling SourceId::remove(), which would
+                    // panic because the source is already gone.
+                    t.imp().osc133_source_id.borrow_mut().take();
                     return glib::ControlFlow::Break;
                 }
-                if condition.contains(glib::IOCondition::HUP)
-                    && !condition.contains(glib::IOCondition::IN)
-                {
-                    glib::ControlFlow::Break
-                } else {
-                    glib::ControlFlow::Continue
-                }
+                glib::ControlFlow::Continue
             },
         );
         *self.imp().osc133_source_id.borrow_mut() = Some(source);

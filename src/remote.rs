@@ -925,23 +925,34 @@ fn run_broker(path: &Path, id: &str) -> i32 {
                     }
                 } else if count == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EIO)
                 {
-                    state.local_on = false;
+                    close_gui(
+                        &mut state,
+                        &mut gui_output,
+                        &mut gui_offset,
+                        &mut gui_pending,
+                    );
                     break;
                 } else if io::Error::last_os_error().kind() == io::ErrorKind::WouldBlock {
                     break;
                 } else {
-                    state.local_on = false;
+                    close_gui(
+                        &mut state,
+                        &mut gui_output,
+                        &mut gui_offset,
+                        &mut gui_pending,
+                    );
                     break;
                 }
             }
             if poll_fds[2].revents & (libc::POLLHUP | libc::POLLERR) != 0 {
                 // A closed GUI PTY reports HUP forever. Remove it from poll;
                 // remote clients may still keep this broker alive.
-                state.gui_closed = true;
-                state.local_on = false;
-                gui_output.clear();
-                gui_offset = 0;
-                gui_pending = 0;
+                close_gui(
+                    &mut state,
+                    &mut gui_output,
+                    &mut gui_offset,
+                    &mut gui_pending,
+                );
             }
         }
         if !state.child_closed && !flush_child_input(&mut state) {
@@ -1205,6 +1216,19 @@ fn signal_child(pid: i32, signal: i32) {
     }
 }
 
+fn close_gui(
+    state: &mut BrokerState,
+    gui_output: &mut VecDeque<Vec<u8>>,
+    gui_offset: &mut usize,
+    gui_pending: &mut usize,
+) {
+    state.gui_closed = true;
+    state.local_on = false;
+    gui_output.clear();
+    *gui_offset = 0;
+    *gui_pending = 0;
+}
+
 /// Whether the child's foreground process group is `ssh`, used to pass the
 /// `Ctrl+B`/`d` detach sequence through to a remote tmux instead of detaching
 /// the local client.
@@ -1427,6 +1451,37 @@ mod tests {
         };
         assert!(client.queue(&vec![0; MAX_PENDING - 4]));
         assert!(!client.queue(b"overflow"));
+    }
+
+    #[test]
+    fn gui_disconnect_disables_local_polling_and_drops_pending_output() {
+        let mut state = BrokerState {
+            id: "test".to_string(),
+            name: String::new(),
+            title: String::new(),
+            cwd: String::new(),
+            last_command: String::new(),
+            command_running: false,
+            local_on: true,
+            gui_closed: false,
+            child_closed: false,
+            child_pid: 0,
+            kill_requested: false,
+            child_input: VecDeque::new(),
+            child_input_offset: 0,
+            child_input_pending: 0,
+        };
+        let mut output = VecDeque::from([b"pending".to_vec()]);
+        let mut offset = 2;
+        let mut pending = 5;
+
+        close_gui(&mut state, &mut output, &mut offset, &mut pending);
+
+        assert!(state.gui_closed);
+        assert!(!state.local_on);
+        assert!(output.is_empty());
+        assert_eq!(offset, 0);
+        assert_eq!(pending, 0);
     }
 
     #[test]
