@@ -245,6 +245,7 @@ mod imp {
 
         pub pid: RefCell<i32>,
         pub pty_fd: RefCell<i32>,
+        pub shell_integration_path: RefCell<Option<std::path::PathBuf>>,
         pub remote_id: RefCell<String>,
         pub remote_command: RefCell<String>,
         pub remote_command_running: RefCell<bool>,
@@ -949,7 +950,7 @@ impl TerminalBox {
 
     pub fn launch(&self, cwd: Option<&str>, command: Option<&Vec<String>>) {
         let s = settings();
-        let argv: Vec<String> = if let Some(cmd) = command {
+        let mut argv: Vec<String> = if let Some(cmd) = command {
             cmd.clone()
         } else {
             let shell = s.get_str("shell_command");
@@ -964,11 +965,15 @@ impl TerminalBox {
         }
 
         let mut env: Vec<(String, String)> = std::env::vars().collect();
+        if command.is_none() && s.get_bool("osc133") {
+            self.write_osc133_script();
+            self.write_osc133_fish_script();
+            self.prepare_shell_integration(&mut argv, &mut env);
+        }
         env.push(("TERM".to_string(), "xterm-256color".to_string()));
         env.push(("COLORTERM".to_string(), "truecolor".to_string()));
         if s.get_bool("osc133") {
             env.push(("OXTERM_SHELL_INTEGRATION".to_string(), "1".to_string()));
-            self.write_osc133_script();
             let fifo_path = settings::config_dir().join(format!(
                 "osc133_{}_{}.fifo",
                 std::process::id(),
@@ -1036,11 +1041,118 @@ impl TerminalBox {
                 vte.watch_child(glib::Pid(pid));
             }
             Err(e) => {
+                self.cleanup_shell_integration();
                 LOGGER.error(&format!("shell_spawn_failed error={}", e));
                 self.vte().feed(
                     format!("\r\n\x1b[31m[Failed to start shell: {}]\x1b[0m\r\n", e).as_bytes(),
                 );
             }
+        }
+    }
+
+    fn prepare_shell_integration(&self, argv: &mut Vec<String>, env: &mut Vec<(String, String)>) {
+        let Some(shell) = argv
+            .first()
+            .and_then(|path| std::path::Path::new(path).file_name())
+            .and_then(|name| name.to_str())
+        else {
+            return;
+        };
+        let dir = settings::config_dir();
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let id = format!("{}-{}", std::process::id(), self.as_ptr() as usize);
+        let osc_path = dir.join("osc133.sh");
+
+        if shell == "bash" {
+            let path = dir.join(format!("session-{}.bashrc", id));
+            let login = argv.iter().any(|arg| arg == "-l" || arg == "--login");
+            let startup = if login {
+                format!(
+                    "[ -r /etc/profile ] && . /etc/profile\nif [ -r \"$HOME/.bash_profile\" ]; then . \"$HOME/.bash_profile\"; elif [ -r \"$HOME/.bash_login\" ]; then . \"$HOME/.bash_login\"; elif [ -r \"$HOME/.profile\" ]; then . \"$HOME/.profile\"; fi\n[ -r \"$OXTERM_OSC133_SCRIPT\" ] && . \"$OXTERM_OSC133_SCRIPT\"\n"
+                )
+            } else {
+                "[ -r \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\"\n[ -r \"$OXTERM_OSC133_SCRIPT\" ] && . \"$OXTERM_OSC133_SCRIPT\"\n"
+                    .to_string()
+            };
+            if std::fs::write(&path, startup).is_err() {
+                return;
+            }
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            let original = std::mem::take(argv);
+            argv.push(original[0].clone());
+            for arg in &original[1..] {
+                if arg != "-l" && arg != "--login" {
+                    argv.push(arg.clone());
+                }
+            }
+            argv.push("--rcfile".to_string());
+            argv.push(path.to_string_lossy().to_string());
+            argv.push("-i".to_string());
+            env.push((
+                "OXTERM_OSC133_SCRIPT".to_string(),
+                osc_path.to_string_lossy().to_string(),
+            ));
+            *self.imp().shell_integration_path.borrow_mut() = Some(path);
+        } else if shell == "zsh" {
+            let path = dir.join(format!("session-{}-zsh", id));
+            if std::fs::create_dir_all(&path).is_err() {
+                return;
+            }
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700));
+            let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
+            let original_zdotdir = std::env::var_os("ZDOTDIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or(home);
+            for name in [".zshenv", ".zprofile", ".zshrc", ".zlogin"] {
+                let original = original_zdotdir.join(name);
+                let original = shell_quote(&original);
+                let mut startup =
+                    format!("if [[ -r {} ]]; then source {}; fi\n", original, original);
+                if name == ".zshrc" {
+                    startup.push_str(
+                        "[[ -r \"$OXTERM_OSC133_SCRIPT\" ]] && source \"$OXTERM_OSC133_SCRIPT\"\n",
+                    );
+                }
+                let _ = std::fs::write(path.join(name), startup);
+                let _ = std::fs::set_permissions(
+                    path.join(name),
+                    std::fs::Permissions::from_mode(0o600),
+                );
+            }
+            env.push(("ZDOTDIR".to_string(), path.to_string_lossy().to_string()));
+            env.push((
+                "OXTERM_OSC133_SCRIPT".to_string(),
+                osc_path.to_string_lossy().to_string(),
+            ));
+            *self.imp().shell_integration_path.borrow_mut() = Some(path);
+        } else if shell == "fish" {
+            let path = dir.join(format!("session-{}-fish", id));
+            let fish_path = dir.join("osc133.fish");
+            let startup = format!("source {}\n", shell_quote(&fish_path));
+            if std::fs::write(&path, startup).is_err() {
+                return;
+            }
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            argv.push("--init-command".to_string());
+            argv.push(format!("source {}", shell_quote(&path)));
+            env.push((
+                "OXTERM_OSC133_SCRIPT".to_string(),
+                fish_path.to_string_lossy().to_string(),
+            ));
+            *self.imp().shell_integration_path.borrow_mut() = Some(path);
+        }
+    }
+
+    fn cleanup_shell_integration(&self) {
+        let Some(path) = self.imp().shell_integration_path.borrow_mut().take() else {
+            return;
+        };
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(path);
+        } else {
+            let _ = std::fs::remove_file(path);
         }
     }
 
@@ -1161,8 +1273,19 @@ impl TerminalBox {
         }
     }
 
+    fn write_osc133_fish_script(&self) {
+        let dir = settings::config_dir();
+        let path = dir.join("osc133.fish");
+        if let Err(e) = std::fs::write(&path, OSC133_FISH_SCRIPT) {
+            LOGGER.error(&format!("osc133_fish_write_failed error={}", e));
+            return;
+        }
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+
     pub fn terminate(&self) {
         self.cancel_ai_stream(true);
+        self.cleanup_shell_integration();
         if *self.imp().osc133_rfd.borrow() >= 0 {
             unsafe { libc::close(*self.imp().osc133_rfd.borrow()) };
             *self.imp().osc133_rfd.borrow_mut() = -1;
@@ -1401,11 +1524,15 @@ impl TerminalBox {
         let children_path = format!("/proc/{}/task/{}/children", pid, pid);
         let content = std::fs::read_to_string(&children_path).ok()?;
         for child in content.split_whitespace() {
-            let comm = std::fs::read_to_string(format!("/proc/{}/comm", child)).ok()?;
+            let Ok(comm) = std::fs::read_to_string(format!("/proc/{}/comm", child)) else {
+                continue;
+            };
             if comm.trim() != "ssh" {
                 continue;
             }
-            let raw = std::fs::read(format!("/proc/{}/cmdline", child)).ok()?;
+            let Ok(raw) = std::fs::read(format!("/proc/{}/cmdline", child)) else {
+                continue;
+            };
             if raw.is_empty() {
                 continue;
             }
@@ -1430,9 +1557,19 @@ impl TerminalBox {
 
     fn find_ssh_control_socket(&self) -> Option<String> {
         let target = self.get_ssh_target()?;
-        let oxterm_socket = format!("/tmp/oxterm-ssh-{}", *self.imp().pid.borrow());
-        if std::path::Path::new(&oxterm_socket).exists() {
-            return Some(oxterm_socket);
+        let pid = *self.imp().pid.borrow();
+        let mut socket_dirs = Vec::new();
+        if let Some(dir) = std::env::var_os("OXTERM_CONFIG_DIR") {
+            socket_dirs.push(std::path::PathBuf::from(dir));
+        }
+        socket_dirs.push(settings::config_dir());
+        // Keep finding sockets created by older Oxterm versions.
+        socket_dirs.push(std::path::PathBuf::from("/tmp"));
+        for dir in socket_dirs {
+            let socket = dir.join(format!("oxterm-ssh-{}", pid));
+            if socket.exists() {
+                return Some(socket.to_string_lossy().to_string());
+            }
         }
         let config_path = dirs::home_dir().map(|p| p.join(".ssh").join("config"))?;
         if !config_path.exists() {
@@ -1481,7 +1618,10 @@ impl TerminalBox {
         if !cache.is_empty() && now - cached_at < 15.0 {
             return cache;
         }
-        let cmd = "cat /proc/loadavg 2>/dev/null; \
+        let cmd = "cpu1=$(awk '/^cpu /{idle=$5+$6; total=$2+$3+$4+$5+$6+$7+$8+$9; printf \"%s %s\",idle,total; exit}' /proc/stat 2>/dev/null); \
+sleep 0.2; \
+cpu2=$(awk '/^cpu /{idle=$5+$6; total=$2+$3+$4+$5+$6+$7+$8+$9; printf \"%s %s\",idle,total; exit}' /proc/stat 2>/dev/null); \
+awk -v first=\"$cpu1\" -v second=\"$cpu2\" 'BEGIN{split(first,a);split(second,b);d=b[2]-a[2];u=d>0?(1-(b[1]-a[1])/d)*100:0;if(u<0)u=0;if(u>100)u=100;printf \"%.1f\\n\",u}'; \
 awk '/^MemTotal/{t=$2}/^MemAvailable/{a=$2}END{printf \"%d %d\\n\",(t-a)*1024,t*1024}' /proc/meminfo 2>/dev/null; \
 df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         let target = self.get_ssh_target().unwrap_or_default();
@@ -1529,11 +1669,9 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         if lines.len() < 3 {
             return String::new();
         }
-        let load: Vec<&str> = lines[0].split_whitespace().collect();
-        if load.is_empty() {
+        let Ok(cpu) = lines[0].parse::<f64>() else {
             return String::new();
-        }
-        let cpu = load[0].parse::<f64>().unwrap_or(0.0) * 100.0;
+        };
         let mem: Vec<&str> = lines[1].split_whitespace().collect();
         if mem.len() < 2 {
             return String::new();
@@ -5367,6 +5505,10 @@ fn common_prefix(strings: &[&str]) -> String {
     prefix
 }
 
+fn shell_quote(path: &std::path::Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
 fn mono_us() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -5375,8 +5517,7 @@ fn mono_us() -> i64 {
 }
 
 pub const OSC133_SCRIPT: &str = r#"# Oxterm OSC 133 Shell Integration
-# Source this in your ~/.bashrc to enable shell integration:
-#   [ -f ~/.config/oxterm/osc133.sh ] && source ~/.config/oxterm/osc133.sh
+# Oxterm loads this file only in shells started by Oxterm.
 
 if [ -n "$OXTERM_OSC133_FIFO" ] && [ -p "$OXTERM_OSC133_FIFO" ]; then
     exec 3>>"$OXTERM_OSC133_FIFO"
@@ -5477,4 +5618,65 @@ elif [ -n "$ZSH_VERSION" ]; then
     __oxterm_osc133_notify A
     printf '\033]7;%s\007' "file://$PWD"
 fi
+"#;
+
+pub const OSC133_FISH_SCRIPT: &str = r#"# Oxterm OSC 133 Fish Integration
+
+if set -q OXTERM_OSC133_FIFO; and test -p "$OXTERM_OSC133_FIFO"
+    exec 3>>"$OXTERM_OSC133_FIFO"
+end
+
+function __oxterm_osc133_notify
+    if set -q OXTERM_OSC133_FIFO
+        printf '%s\n' "$argv[1]" >&3 2>/dev/null
+    end
+end
+
+function __oxterm_osc133_stats
+    set -l load (cat /proc/loadavg 2>/dev/null | string collect)
+    test -n "$load"; or return 0
+    set -l mem_used (awk '/^MemTotal/{t=$2}/^MemAvailable/{a=$2}END{printf "%d",(t-a)*1024}' /proc/meminfo 2>/dev/null | string collect)
+    set -l mem_total (awk '/^MemTotal/{printf "%d",$2*1024; exit}' /proc/meminfo 2>/dev/null | string collect)
+    set -l disk_used (df -B1 / 2>/dev/null | awk 'NR==2{printf "%d",$3}' | string collect)
+    set -l disk_total (df -B1 / 2>/dev/null | awk 'NR==2{printf "%d",$2}' | string collect)
+    printf 'S%s|%s|%s|%s|%s\n' "$load" "$mem_used" "$mem_total" "$disk_used" "$disk_total" >&3 2>/dev/null
+end
+
+function __oxterm_osc133_preexec --on-event fish_preexec
+    printf '\e]133;C\a'
+    __oxterm_osc133_notify "C$argv[1]"
+end
+
+function __oxterm_osc133_postexec --on-event fish_postexec
+    set -l _exit $status
+    printf '\e]133;D;%s\a' "$_exit"
+    __oxterm_osc133_notify "D$_exit"
+end
+
+function __oxterm_osc133_prompt --on-event fish_prompt
+    printf '\e]133;A\a'
+    __oxterm_osc133_notify A
+    printf '\e]7;file://%s\a' "$PWD"
+    __oxterm_osc133_stats
+end
+
+function __oxterm_ssh
+    set -l socket_dir "$OXTERM_CONFIG_DIR"
+    if test -z "$socket_dir"
+        set socket_dir "$HOME/.config/oxterm"
+    end
+    if not test -d "$socket_dir"
+        mkdir -p "$socket_dir" 2>/dev/null
+        chmod 700 "$socket_dir" 2>/dev/null
+    end
+    if test -d "$socket_dir"
+        command ssh -o ControlMaster=auto -o "ControlPath=$socket_dir/oxterm-ssh-$fish_pid" $argv
+    else
+        command ssh $argv
+    end
+end
+
+function ssh
+    __oxterm_ssh $argv
+end
 "#;

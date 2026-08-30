@@ -442,15 +442,12 @@ Configure the notes directory, default Markdown filename, and fallback editor.
 OSC 133 lets Oxterm identify prompt start, command start, command output, and
 exit status. It enables prompt navigation and command-output-aware features.
 
-Enable **Preferences > Compatibility > OSC 133**. Oxterm creates a setup script
-under `~/.config/oxterm/`; run it for the shell you use and restart the shell:
+Enable **Preferences > Compatibility > OSC 133**. Oxterm loads the integration
+automatically in new Bash, Zsh, and Fish shells started by the application. It
+creates temporary startup files and removes them when the session ends; `.bashrc`,
+`.bash_profile`, `.zshrc`, and `.zprofile` are not modified.
 
-```bash
-bash ~/.config/oxterm/osc-setup.sh
-source ~/.bashrc
-```
-
-The integration supports Bash and Zsh. Use `Ctrl+Shift+Up` and
+The integration supports Bash, Zsh, and Fish. Use `Ctrl+Shift+Up` and
 `Ctrl+Shift+Down` to move between detected prompts.
 
 ## Keyboard Shortcuts
@@ -546,8 +543,8 @@ verify that its service is running and that at least one model is installed.
 
 ### Shell integration is not visible
 
-Confirm that OSC 133 is enabled, run the generated setup script, reload the
-shell configuration, and start a new terminal tab.
+Confirm that OSC 133 is enabled and start a new terminal tab. Existing tabs do
+not receive the integration retroactively.
 
 ### Reset all settings
 

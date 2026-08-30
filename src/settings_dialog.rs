@@ -1058,7 +1058,7 @@ fn build_compatibility(
     let chk_osc133 = gtk::CheckButton::with_label("Enable shell integration (OSC 133)");
     chk_osc133.set_active(s.get_bool("osc133"));
     chk_osc133.set_tooltip_text(Some(
-        "Enables OSC 133 escape sequences for shell integration (bash/zsh).",
+        "Enables OSC 133 only in shells started by Oxterm (bash/zsh/fish); user shell configs are not modified.",
     ));
     r = row(&grid, r, "OSC 133:", &chk_osc133);
 
@@ -1378,7 +1378,6 @@ impl DialogState {
                 .unwrap_or_else(|| "UTF-8".to_string()),
         );
 
-        let osc133_was_enabled = s.get_bool("osc133");
         let osc133_now_enabled = self.chk_osc133.is_active();
         s.set_bool("osc133", osc133_now_enabled);
 
@@ -1414,38 +1413,5 @@ impl DialogState {
 
         s.end_batch();
         s.notify_changed();
-
-        if osc133_now_enabled && !osc133_was_enabled {
-            write_osc_setup_script();
-        }
     }
-}
-
-fn write_osc_setup_script() {
-    let dir = settings::config_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join("osc-setup.sh");
-    let script = r#"#!/bin/bash
-# Oxterm OSC 133 Shell Integration Setup
-# Run this script to add OSC 133 integration to your shell config.
-#   bash ~/.config/oxterm/osc-setup.sh
-
-OSC133_LINE='[ -f ~/.config/oxterm/osc133.sh ] && source ~/.config/oxterm/osc133.sh'
-
-for rc in ~/.bashrc ~/.zshrc; do
-    if [ -f "$rc" ]; then
-        if ! grep -qF "osc133.sh" "$rc" 2>/dev/null; then
-            printf '\n# Oxterm OSC 133 Shell Integration\n%s\n' "$OSC133_LINE" >> "$rc"
-            echo "Added OSC 133 integration to $rc"
-        else
-            echo "OSC 133 already configured in $rc"
-        fi
-    fi
-done
-
-echo "Done. Restart your shell or run: source ~/.bashrc"
-"#;
-    let _ = std::fs::write(&path, script);
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
 }
