@@ -357,18 +357,18 @@ impl App {
             let css_provider = gtk::CssProvider::new();
             let css = b"
                 vte-terminal { padding-left: 8px; padding-right: 4px; }
-                .tpgk-menu-row { background: alpha(@theme_fg_color, 0.05); padding: 1px 4px; }
-                .tpgk-menu-row button { padding: 3px 10px; }
+                .oxterm-menu-row { background: alpha(@theme_fg_color, 0.05); padding: 1px 4px; }
+                .oxterm-menu-row button { padding: 3px 10px; }
                 .command-bar-frame { border: 1px solid alpha(currentColor, 0.3); background: alpha(@theme_bg_color, 0.95); }
                 .command-bar-frame entry { padding: 6px 10px; font-family: Monospace; }
                 .command-bar-frame list row { padding: 2px 10px; }
                 .command-bar-frame list row:selected { background: @theme_selected_bg_color; }
                 popover { background-color: @theme_bg_color; }
                 popover contents modelbutton { color: @theme_fg_color; padding: 8px 12px; min-height: 24px; }
-                .tpgk-tab-menu { min-width: 220px; }
-                .tpgk-tab-menu menuitem { padding: 6px 12px; min-height: 24px; }
-                .tpgk-stats-label { font-size: 0.85em; font-family: Monospace; color: alpha(@theme_fg_color, 0.6); background: alpha(@theme_bg_color, 0.5); padding: 2px 12px; }
-                .tpgk-hint-label { background: #fce94f; color: #000000; font-family: Monospace; font-weight: bold; font-size: 0.85em; padding: 1px 3px; border-radius: 2px; }
+                .oxterm-tab-menu { min-width: 220px; }
+                .oxterm-tab-menu menuitem { padding: 6px 12px; min-height: 24px; }
+                .oxterm-stats-label { font-size: 0.85em; font-family: Monospace; color: alpha(@theme_fg_color, 0.6); background: alpha(@theme_bg_color, 0.5); padding: 2px 12px; }
+                .oxterm-hint-label { background: #fce94f; color: #000000; font-family: Monospace; font-weight: bold; font-size: 0.85em; padding: 1px 3px; border-radius: 2px; }
             ";
             let _ = css_provider.load_from_data(css);
             if let Some(screen) = gdk::Screen::default() {

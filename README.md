@@ -273,12 +273,12 @@ completion.
 Oxterm intentionally uses the existing shared data directory:
 
 ```text
-~/.config/tpgk/settings.json   Preferences and provider configuration
-~/.config/tpgk/settings.json.bak Previous valid Preferences snapshot
-~/.config/tpgk/history.db      SQLite command history
-~/.config/tpgk/sessions/       Saved sessions
-~/.config/tpgk/profiles/       Named profiles
-~/.config/tpgk/remote/         Private broker sockets
+~/.config/oxterm/settings.json   Preferences and provider configuration
+~/.config/oxterm/settings.json.bak Previous valid Preferences snapshot
+~/.config/oxterm/history.db      SQLite command history
+~/.config/oxterm/sessions/       Saved sessions
+~/.config/oxterm/profiles/       Named profiles
+~/.config/oxterm/remote/         Private broker sockets
 ```
 
 Open **Edit > Preferences** to configure the terminal, appearance, colors,

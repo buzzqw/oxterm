@@ -1426,16 +1426,16 @@ fn write_osc_setup_script() {
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("osc-setup.sh");
     let script = r#"#!/bin/bash
-# TPGK OSC 133 Shell Integration Setup
+# Oxterm OSC 133 Shell Integration Setup
 # Run this script to add OSC 133 integration to your shell config.
-#   bash ~/.config/tpgk/osc-setup.sh
+#   bash ~/.config/oxterm/osc-setup.sh
 
-OSC133_LINE='[ -f ~/.config/tpgk/osc133.sh ] && source ~/.config/tpgk/osc133.sh'
+OSC133_LINE='[ -f ~/.config/oxterm/osc133.sh ] && source ~/.config/oxterm/osc133.sh'
 
 for rc in ~/.bashrc ~/.zshrc; do
     if [ -f "$rc" ]; then
         if ! grep -qF "osc133.sh" "$rc" 2>/dev/null; then
-            printf '\n# TPGK OSC 133 Shell Integration\n%s\n' "$OSC133_LINE" >> "$rc"
+            printf '\n# Oxterm OSC 133 Shell Integration\n%s\n' "$OSC133_LINE" >> "$rc"
             echo "Added OSC 133 integration to $rc"
         else
             echo "OSC 133 already configured in $rc"

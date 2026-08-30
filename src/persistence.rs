@@ -4,7 +4,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Mirrors `tpgk/persistence.py::validate_name`.
+/// Validates names used by Oxterm persistence.
 pub fn validate_name(name: &str, kind: &str) -> Result<String, String> {
     let name = name.trim();
     if name.is_empty() || name == "." || name == ".." {

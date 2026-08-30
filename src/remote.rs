@@ -180,7 +180,7 @@ fn monotonic_id() -> u64 {
 }
 
 fn session_socket(session_id: &str) -> PathBuf {
-    remote_dir().join(format!("trust-{}.sock", session_id))
+    remote_dir().join(format!("oxterm-{}.sock", session_id))
 }
 
 /// Start the broker with the PTY ends that it must own. The GUI keeps the master
@@ -226,9 +226,9 @@ pub fn spawn_broker(
         .arg("--broker")
         .arg(&path)
         .arg(session_id)
-        .env("TRUST_BROKER_CHILD_PID", child_pid.to_string())
-        .env("TRUST_BROKER_TITLE", field(title))
-        .env("TRUST_BROKER_CWD", field(cwd))
+        .env("OXTERM_BROKER_CHILD_PID", child_pid.to_string())
+        .env("OXTERM_BROKER_TITLE", field(title))
+        .env("OXTERM_BROKER_CWD", field(cwd))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -344,7 +344,7 @@ fn socket_paths() -> Vec<PathBuf> {
         .map(|entry| entry.path())
         .filter(|path| {
             path.file_name().is_some_and(|name| {
-                name.to_string_lossy().starts_with("trust-")
+                name.to_string_lossy().starts_with("oxterm-")
                     && path.extension().is_some_and(|e| e == "sock")
             })
         })
@@ -779,15 +779,15 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         }
     };
     let _ = listener.set_nonblocking(true);
-    let child_pid = std::env::var("TRUST_BROKER_CHILD_PID")
+    let child_pid = std::env::var("OXTERM_BROKER_CHILD_PID")
         .ok()
         .and_then(|value| value.parse::<i32>().ok())
         .unwrap_or(0);
     let mut state = BrokerState {
         id: id.to_string(),
-        name: std::env::var("TRUST_BROKER_NAME").unwrap_or_default(),
-        title: std::env::var("TRUST_BROKER_TITLE").unwrap_or_else(|_| "Terminal".to_string()),
-        cwd: std::env::var("TRUST_BROKER_CWD").unwrap_or_default(),
+        name: std::env::var("OXTERM_BROKER_NAME").unwrap_or_default(),
+        title: std::env::var("OXTERM_BROKER_TITLE").unwrap_or_else(|_| "Terminal".to_string()),
+        cwd: std::env::var("OXTERM_BROKER_CWD").unwrap_or_default(),
         last_command: String::new(),
         command_running: false,
         local_on: true,

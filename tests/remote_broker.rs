@@ -191,7 +191,7 @@ fn broker_round_trips_control_and_terminal_traffic() -> io::Result<()> {
         .expect("system clock")
         .as_nanos();
     let directory = std::env::temp_dir().join(format!(
-        "trust-broker-test-{}-{}.sock",
+        "oxterm-broker-test-{}-{}.sock",
         std::process::id(),
         unique
     ));
@@ -209,8 +209,8 @@ fn broker_round_trips_control_and_terminal_traffic() -> io::Result<()> {
             .arg("--broker")
             .arg(&broker_socket)
             .arg("test-session")
-            .env("TRUST_BROKER_TITLE", "Integration test")
-            .env("TRUST_BROKER_CWD", "/tmp")
+            .env("OXTERM_BROKER_TITLE", "Integration test")
+            .env("OXTERM_BROKER_CWD", "/tmp")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

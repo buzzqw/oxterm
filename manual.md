@@ -127,7 +127,7 @@ without stopping the broker. `Ctrl+B`, then `d` turns local forwarding off;
 `Ctrl+B`, then `s` or `w` and selecting the terminal turns it on again.
 
 The broker socket uses a `0700` directory and `0600` socket under
-`~/.config/tpgk/remote/`. The internal `oxterm --broker SOCKET SESSION_ID` mode
+`~/.config/oxterm/remote/`. The internal `oxterm --broker SOCKET SESSION_ID` mode
 owns the child PTY and accepts length-prefixed Unix-socket frames for
 `LIST`, `INFO`, `ATTACH`, `DETACH`, `RENAME`, `COMMAND`, `LOCAL_ON`, `LOCAL_OFF`,
 and `KILL`. The GUI PTY is a separate endpoint, allowing its local forwarding
@@ -345,7 +345,7 @@ pairs, checkpoints the WAL, updates query statistics, and vacuums the database.
 ## History
 
 Oxterm records the command, working directory, timestamp, and exit status in
-`~/.config/tpgk/history.db`.
+`~/.config/oxterm/history.db`.
 
 Press `Ctrl+R` for reverse interactive search:
 
@@ -372,7 +372,7 @@ Configure AI providers under **Edit > Preferences > AI**. Supported providers:
 | Custom | Optional | OpenAI-compatible servers |
 
 Each provider can have its own model, endpoint, and system prompt. Cloud API
-keys are stored in `~/.config/tpgk/settings.json`; protect the file and do not
+keys are stored in `~/.config/oxterm/settings.json`; protect the file and do not
 share it. Custom endpoints must use HTTPS, except for local HTTP services on
 `localhost`, `127.0.0.1`, or `::1`.
 
@@ -443,10 +443,10 @@ OSC 133 lets Oxterm identify prompt start, command start, command output, and
 exit status. It enables prompt navigation and command-output-aware features.
 
 Enable **Preferences > Compatibility > OSC 133**. Oxterm creates a setup script
-under `~/.config/tpgk/`; run it for the shell you use and restart the shell:
+under `~/.config/oxterm/`; run it for the shell you use and restart the shell:
 
 ```bash
-bash ~/.config/tpgk/osc-setup.sh
+bash ~/.config/oxterm/osc-setup.sh
 source ~/.bashrc
 ```
 
@@ -492,12 +492,12 @@ The integration supports Bash and Zsh. Use `Ctrl+Shift+Up` and
 ## Configuration Files
 
 ```text
-~/.config/tpgk/settings.json
-~/.config/tpgk/settings.json.bak
-~/.config/tpgk/history.db
-~/.config/tpgk/sessions/
-~/.config/tpgk/profiles/
-~/.config/tpgk/remote/
+~/.config/oxterm/settings.json
+~/.config/oxterm/settings.json.bak
+~/.config/oxterm/history.db
+~/.config/oxterm/sessions/
+~/.config/oxterm/profiles/
+~/.config/oxterm/remote/
 ```
 
 The directory is shared with the original application by design. Oxterm keeps
@@ -554,7 +554,7 @@ shell configuration, and start a new terminal tab.
 Close Oxterm and back up or remove the configuration directory:
 
 ```bash
-mv ~/.config/tpgk ~/.config/tpgk.backup
+mv ~/.config/oxterm ~/.config/oxterm.backup
 ```
 
 The next launch creates a fresh configuration. The same directory contains the

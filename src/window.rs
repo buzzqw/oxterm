@@ -50,7 +50,7 @@ pub const ENCODINGS: &[&str] = &[
 
 pub const EUPL_LICENSE_TEXT: &str = "Licensed under the European Union Public Licence (EUPL) v. 1.2.\n\nCopyright (c) 2026 Andres Zanzani.\n\nThe complete licence text is distributed in the LICENSE file and is available at:\nhttps://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12\n";
 
-pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), ".", env!("TRUST_COMMIT_COUNT"));
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), ".", env!("OXTERM_COMMIT_COUNT"));
 pub const APP_NAME: &str = "Oxterm";
 pub const APP_TITLE: &str = "Oxterm Terminal";
 
@@ -155,12 +155,12 @@ impl DetachedWindow {
         stats_sys_label.set_halign(gtk::Align::Start);
         stats_sys_label
             .style_context()
-            .add_class("tpgk-stats-label");
+            .add_class("oxterm-stats-label");
         let stats_self_label = gtk::Label::new(Some(""));
         stats_self_label.set_halign(gtk::Align::End);
         stats_self_label
             .style_context()
-            .add_class("tpgk-stats-label");
+            .add_class("oxterm-stats-label");
         let stats_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         stats_box.pack_start(&stats_sys_label, true, true, 0);
         stats_box.pack_end(&stats_self_label, false, false, 0);
@@ -352,7 +352,7 @@ impl DetachedWindow {
         header.pack_start(&toolbar);
 
         let menubar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        menubar.style_context().add_class("tpgk-menu-row");
+        menubar.style_context().add_class("oxterm-menu-row");
         let mut buttons = Vec::new();
         for label in ["File", "Edit", "View", "Terminal", "Help"] {
             let btn = gtk::MenuButton::new();
@@ -1277,12 +1277,12 @@ impl MainWindow {
         stats_sys_label.set_halign(gtk::Align::Start);
         stats_sys_label
             .style_context()
-            .add_class("tpgk-stats-label");
+            .add_class("oxterm-stats-label");
         let stats_self_label = gtk::Label::new(Some(""));
         stats_self_label.set_halign(gtk::Align::End);
         stats_self_label
             .style_context()
-            .add_class("tpgk-stats-label");
+            .add_class("oxterm-stats-label");
         let stats_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         stats_box.pack_start(&stats_sys_label, true, true, 0);
         stats_box.pack_end(&stats_self_label, false, false, 0);
@@ -1778,7 +1778,7 @@ impl MainWindow {
         header.pack_start(&toolbar);
 
         let menubar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        menubar.style_context().add_class("tpgk-menu-row");
+        menubar.style_context().add_class("oxterm-menu-row");
         let mut buttons = Vec::new();
         for label in ["File", "Edit", "View", "Terminal", "Tabs", "Help"] {
             let btn = gtk::MenuButton::new();
@@ -1806,7 +1806,7 @@ impl MainWindow {
         btn.set_tooltip_text(Some("Show all open tabs"));
         btn.set_sensitive(self.total_tabs() > 1);
         let menu = gtk::Menu::new();
-        menu.style_context().add_class("tpgk-tab-menu");
+        menu.style_context().add_class("oxterm-tab-menu");
         menu.set_reserve_toggle_size(false);
         btn.set_popup(Some(&menu));
         let weak = crate::SendWeak::new(self);
@@ -3810,6 +3810,6 @@ fn spawn_new_process(_new_window: bool) {
     if _new_window {
         cmd.arg("--new-window");
     }
-    cmd.env("TPGK_RELOAD_MODULES", "1");
+    cmd.env("OXTERM_RELOAD_MODULES", "1");
     let _ = cmd.spawn();
 }

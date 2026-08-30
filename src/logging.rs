@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 
 use once_cell::sync::Lazy;
 
-/// Minimal JSON-lines logger mirroring tpgk's `logging_utils`.
+/// Minimal JSON-lines logger used by Oxterm.
 ///
 /// Events are emitted on stderr as single-line JSON objects:
 /// `{"timestamp": "...", "level": "INFO", "logger": "...", "event": "..."}`.

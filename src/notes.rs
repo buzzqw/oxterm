@@ -117,7 +117,7 @@ impl NotesManager {
                 .custom_flags(libc::O_NOFOLLOW);
             let mut f = opts.open(&path).map_err(|e| e.to_string())?;
             use std::io::Write;
-            f.write_all(b"# TPGK Notes\n\n")
+            f.write_all(b"# Oxterm Notes\n\n")
                 .map_err(|e| e.to_string())?;
             let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
         }

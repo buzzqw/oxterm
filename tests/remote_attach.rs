@@ -88,10 +88,10 @@ fn attach_forwards_input_and_detaches_cleanly() -> io::Result<()> {
         .expect("system clock")
         .as_nanos();
     let home = dirs::home_dir().expect("home directory");
-    let remote_dir = home.join(".config/tpgk/remote");
+    let remote_dir = home.join(".config/oxterm/remote");
     std::fs::create_dir_all(&remote_dir)?;
     let session_id = format!("attach-test-{}-{}", std::process::id(), unique);
-    let socket = remote_dir.join(format!("trust-{}.sock", session_id));
+    let socket = remote_dir.join(format!("oxterm-{}.sock", session_id));
     let listener = UnixListener::bind(&socket)?;
     let (attached_tx, attached_rx) = mpsc::channel();
     let server_session_id = session_id.clone();
@@ -173,10 +173,10 @@ fn attach_passes_ctrl_b_d_through_to_ssh() -> io::Result<()> {
         .expect("system clock")
         .as_nanos();
     let home = dirs::home_dir().expect("home directory");
-    let remote_dir = home.join(".config/tpgk/remote");
+    let remote_dir = home.join(".config/oxterm/remote");
     std::fs::create_dir_all(&remote_dir)?;
     let session_id = format!("attach-ssh-{}-{}", std::process::id(), unique);
-    let socket = remote_dir.join(format!("trust-{}.sock", session_id));
+    let socket = remote_dir.join(format!("oxterm-{}.sock", session_id));
     let listener = UnixListener::bind(&socket)?;
     let (attached_tx, attached_rx) = mpsc::channel();
     let server_session_id = session_id.clone();

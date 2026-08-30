@@ -17,7 +17,7 @@ const HEX_COLOR_RE: &str = "^#[0-9a-fA-F]{6}$";
 
 pub fn config_dir() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-    home.join(".config").join("tpgk")
+    home.join(".config").join("oxterm")
 }
 
 /// Optional alternative settings file, set via `--config FILE`. When present it
