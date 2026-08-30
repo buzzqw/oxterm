@@ -202,40 +202,49 @@ pub fn spawn_broker(
         let _ = std::fs::remove_file(&path);
     }
 
-    let child_dup = duplicate_fd(child_master)?;
-    let gui_dup = duplicate_fd(gui_slave)?;
-    if unsafe { libc::dup2(child_dup, CHILD_FD) } < 0 {
-        close_fd(child_dup);
-        close_fd(gui_dup);
-        return Err(io::Error::last_os_error().to_string());
-    }
-    if unsafe { libc::dup2(gui_dup, GUI_FD) } < 0 {
-        close_fd(child_dup);
-        close_fd(gui_dup);
-        close_fd(CHILD_FD);
-        return Err(io::Error::last_os_error().to_string());
-    }
-    close_fd(child_dup);
-    close_fd(gui_dup);
-    clear_cloexec(CHILD_FD);
-    clear_cloexec(GUI_FD);
-
     let exe =
         std::env::current_exe().map_err(|e| format!("cannot find oxterm executable: {}", e))?;
-    let child = std::process::Command::new(exe)
-        .arg("--broker")
-        .arg(&path)
-        .arg(session_id)
-        .env("OXTERM_BROKER_CHILD_PID", child_pid.to_string())
-        .env("OXTERM_BROKER_TITLE", field(title))
-        .env("OXTERM_BROKER_CWD", field(cwd))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| format!("cannot start PTY broker: {}", e));
-    close_fd(CHILD_FD);
-    close_fd(GUI_FD);
+    let child_dup = duplicate_fd(child_master)?;
+    let gui_dup = match duplicate_fd(gui_slave) {
+        Ok(fd) => fd,
+        Err(error) => {
+            close_fd(child_dup);
+            return Err(error);
+        }
+    };
+    use std::os::unix::process::CommandExt;
+    let child_dup_for_child = child_dup;
+    let gui_dup_for_child = gui_dup;
+    let child = unsafe {
+        std::process::Command::new(exe)
+            .arg("--broker")
+            .arg(&path)
+            .arg(session_id)
+            .env("OXTERM_BROKER_CHILD_PID", child_pid.to_string())
+            .env("OXTERM_BROKER_TITLE", field(title))
+            .env("OXTERM_BROKER_CWD", field(cwd))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .pre_exec(move || {
+                // Reserve the broker's well-known descriptors only in the child.
+                // Doing this in the GUI process can overwrite GLib's pidfds and
+                // break child watches for already open terminals.
+                if libc::dup2(child_dup_for_child, CHILD_FD) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if libc::dup2(gui_dup_for_child, GUI_FD) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                libc::close(child_dup_for_child);
+                libc::close(gui_dup_for_child);
+                Ok(())
+            })
+            .spawn()
+            .map_err(|e| format!("cannot start PTY broker: {}", e))
+    };
+    close_fd(child_dup);
+    close_fd(gui_dup);
     let child = child?;
     let mut ready = false;
     for _ in 0..200 {
@@ -264,15 +273,6 @@ fn duplicate_fd(fd: RawFd) -> Result<RawFd, String> {
         Err(io::Error::last_os_error().to_string())
     } else {
         Ok(result)
-    }
-}
-
-fn clear_cloexec(fd: RawFd) {
-    unsafe {
-        let flags = libc::fcntl(fd, libc::F_GETFD);
-        if flags >= 0 {
-            libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
-        }
     }
 }
 
