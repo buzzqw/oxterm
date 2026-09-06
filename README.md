@@ -95,7 +95,7 @@ The repository includes local build hooks. Configure them once with
 `./setup.sh` or `git config core.hooksPath .githooks`; after each commit it
 builds `oxterm-linux-x86-64` in the project root. The generated file is ignored
 by Git. The displayed Oxterm version uses the Cargo version plus the total Git
-commit count as its fourth component, for example `1.1.0.20`.
+commit count as its fourth component, for example `1.1.1.<commit-count>`.
 
 Install the binary and desktop entry under `~/.local`:
 
@@ -109,7 +109,7 @@ The installation prefix can be changed with `PREFIX`:
 PREFIX=/usr/local ./setup.sh
 ```
 
-To install the latest release build system-wide as `/usr/bin/oxterm`, run:
+To build and install the current source version system-wide as `/usr/bin/oxterm`, run:
 
 ```bash
 ./install.sh
