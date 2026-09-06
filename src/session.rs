@@ -42,6 +42,10 @@ const SPLIT_MODES: [&str; 3] = ["single", "vertical", "horizontal"];
 const MAX_TABS: usize = 100;
 
 pub fn save_session(name: &str, data: &SessionData) -> bool {
+    if data.tabs_left.len() > MAX_TABS || data.tabs_right.len() > MAX_TABS {
+        LOGGER.warning("session_save_too_many_tabs");
+        return false;
+    }
     ensure_dir();
     let payload = json!({
         "timestamp": crate::logging::utc_iso_now(),
@@ -70,8 +74,13 @@ pub fn save_session(name: &str, data: &SessionData) -> bool {
         Ok(tmp) => {
             let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
             if fs::rename(&tmp, &path).is_ok() {
-                return true;
+                if crate::persistence::sync_parent_directory(&path).is_ok() {
+                    return true;
+                }
+                LOGGER.error("session_save_failed_to_sync_directory");
+                return false;
             }
+            let _ = fs::remove_file(&tmp);
             LOGGER.error("session_save_failed");
             false
         }

@@ -180,7 +180,7 @@ impl Drop for Fixture {
             libc::close(self.gui_master);
         }
         let _ = std::fs::remove_file(&self.socket);
-        let _ = std::fs::remove_dir(&self.directory);
+        let _ = std::fs::remove_dir_all(&self.directory);
     }
 }
 
@@ -191,12 +191,14 @@ fn broker_round_trips_control_and_terminal_traffic() -> io::Result<()> {
         .expect("system clock")
         .as_nanos();
     let directory = std::env::temp_dir().join(format!(
-        "oxterm-broker-test-{}-{}.sock",
+        "oxterm-broker-test-{}-{}",
         std::process::id(),
         unique
     ));
     std::fs::create_dir(&directory)?;
-    let socket = directory.join("session.sock");
+    let socket = directory
+        .join(".config/oxterm/remote")
+        .join("oxterm-test-session.sock");
     let (child_master, child_slave) = open_pty()?;
     let (gui_master, gui_slave) = open_pty()?;
     set_raw(child_slave)?;
@@ -209,6 +211,7 @@ fn broker_round_trips_control_and_terminal_traffic() -> io::Result<()> {
             .arg("--broker")
             .arg(&broker_socket)
             .arg("test-session")
+            .env("HOME", &directory)
             .env("OXTERM_BROKER_TITLE", "Integration test")
             .env("OXTERM_BROKER_CWD", "/tmp")
             .stdin(Stdio::null())
@@ -324,6 +327,8 @@ fn broker_round_trips_control_and_terminal_traffic() -> io::Result<()> {
         read_fd(fixture.gui_master, Duration::from_secs(2))?,
         b"local-again"
     );
+    let output = read_frame(&mut second)?;
+    assert_eq!(&output[1..], b"local-again");
 
     write_frame(&mut first, &[FRAME_DETACH])?;
     assert_eq!(read_frame(&mut first)?, b"OK\nDETACH");
@@ -331,6 +336,7 @@ fn broker_round_trips_control_and_terminal_traffic() -> io::Result<()> {
         control_request(&fixture.socket, "DETACH test-session")?,
         b"OK\nDETACH"
     );
+    assert_eq!(read_frame(&mut second)?, &[FRAME_DETACH]);
     assert_eq!(
         control_request(&fixture.socket, "KILL test-session")?,
         b"OK"

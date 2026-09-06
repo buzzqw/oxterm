@@ -37,9 +37,32 @@ impl HistoryManager {
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
         let db_path = history_db_path();
-        let conn = Connection::open(&db_path).expect("open history db");
+        let conn = Self::open_and_initialize(&db_path).unwrap_or_else(|error| {
+            crate::logging::Logger::log(
+                "WARNING",
+                "history",
+                "using temporary in-memory history",
+                Some(&error.to_string()),
+            );
+            Self::initialize_connection(
+                Connection::open_in_memory().expect("open in-memory history database"),
+            )
+            .expect("initialize in-memory history database")
+        });
         let _ = std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o600));
-        conn.pragma_update(None, "journal_mode", "WAL").ok();
+        HistoryManager {
+            conn: Mutex::new(conn),
+            inserts_since_trim: Mutex::new(0),
+        }
+    }
+
+    fn open_and_initialize(path: &std::path::Path) -> rusqlite::Result<Connection> {
+        let conn = Connection::open(path)?;
+        Self::initialize_connection(conn)
+    }
+
+    fn initialize_connection(conn: Connection) -> rusqlite::Result<Connection> {
+        conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS commands (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,17 +73,26 @@ impl HistoryManager {
                 duration_ms INTEGER,
                 git_branch TEXT
             );
-            CREATE INDEX IF NOT EXISTS idx_commands_ts ON commands(timestamp);",
-        )
-        .expect("create history tables");
+            CREATE INDEX IF NOT EXISTS idx_commands_ts ON commands(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_commands_command_cwd ON commands(command, cwd);",
+        )?;
         // Existing installations predate command duration and branch metadata.
-        // SQLite has no IF NOT EXISTS form for ADD COLUMN, so ignore duplicate
-        // column errors while keeping other initialization failures visible.
-        let _ = conn.execute("ALTER TABLE commands ADD COLUMN duration_ms INTEGER", []);
-        let _ = conn.execute("ALTER TABLE commands ADD COLUMN git_branch TEXT", []);
-        HistoryManager {
-            conn: Mutex::new(conn),
-            inserts_since_trim: Mutex::new(0),
+        // SQLite has no IF NOT EXISTS form for ADD COLUMN, so only ignore the
+        // expected duplicate-column error from an already migrated database.
+        Self::add_column_if_missing(&conn, "ALTER TABLE commands ADD COLUMN duration_ms INTEGER")?;
+        Self::add_column_if_missing(&conn, "ALTER TABLE commands ADD COLUMN git_branch TEXT")?;
+        Ok(conn)
+    }
+
+    fn add_column_if_missing(conn: &Connection, sql: &str) -> rusqlite::Result<()> {
+        match conn.execute(sql, []) {
+            Ok(_) => Ok(()),
+            Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+                if message.contains("duplicate column name") =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(error),
         }
     }
 
@@ -89,19 +121,32 @@ impl HistoryManager {
         duration_ms: Option<i64>,
         git_branch: Option<&str>,
     ) -> i64 {
-        let conn = self.conn.lock().unwrap();
+        let Ok(conn) = self.conn.lock() else {
+            crate::logging::log_warning("history database lock is unavailable");
+            return 0;
+        };
         let ts = Self::now_ts();
-        let id = conn
-            .execute(
-                "INSERT INTO commands
+        let id = match conn.execute(
+            "INSERT INTO commands
                  (command, cwd, exit_code, timestamp, duration_ms, git_branch)
                  VALUES (?1,?2,?3,?4,?5,?6)",
-                params![command, cwd, exit_code, ts, duration_ms, git_branch],
-            )
-            .map(|_| conn.last_insert_rowid())
-            .unwrap_or(0);
+            params![command, cwd, exit_code, ts, duration_ms, git_branch],
+        ) {
+            Ok(_) => conn.last_insert_rowid(),
+            Err(error) => {
+                crate::logging::Logger::log(
+                    "WARNING",
+                    "history",
+                    "could not add history entry",
+                    Some(&error.to_string()),
+                );
+                0
+            }
+        };
         drop(conn);
-        self.bump_inserts(1);
+        if id != 0 {
+            self.bump_inserts(1);
+        }
         id
     }
 
@@ -109,19 +154,29 @@ impl HistoryManager {
         if commands.is_empty() {
             return 0;
         }
-        let conn = self.conn.lock().unwrap();
+        let Ok(conn) = self.conn.lock() else {
+            crate::logging::log_warning("history database lock is unavailable");
+            return 0;
+        };
         let mut n = 0usize;
         {
-            let mut stmt = conn
-                .prepare(
-                    "INSERT INTO commands (command, cwd, exit_code, timestamp) VALUES (?1,?2,?3,?4)",
-                )
-                .unwrap();
+            let Ok(mut stmt) = conn.prepare(
+                "INSERT INTO commands (command, cwd, exit_code, timestamp) VALUES (?1,?2,?3,?4)",
+            ) else {
+                crate::logging::log_warning("could not prepare history import");
+                return 0;
+            };
             let ts = Self::now_ts();
+            let mut failed = false;
             for cmd in commands {
                 if stmt.execute(params![cmd, cwd, exit_code, ts]).is_ok() {
                     n += 1;
+                } else {
+                    failed = true;
                 }
+            }
+            if failed {
+                crate::logging::log_warning("some history import entries could not be written");
             }
         }
         drop(conn);
@@ -140,16 +195,29 @@ impl HistoryManager {
         duration_ms: Option<i64>,
     ) {
         if let Some(id) = row_id {
-            let conn = self.conn.lock().unwrap();
-            let _ = conn.execute(
+            let Ok(conn) = self.conn.lock() else {
+                crate::logging::log_warning("history database lock is unavailable");
+                return;
+            };
+            if let Err(error) = conn.execute(
                 "UPDATE commands SET exit_code = ?1, duration_ms = ?2 WHERE id = ?3",
                 params![exit_code, duration_ms, id],
-            );
+            ) {
+                crate::logging::Logger::log(
+                    "WARNING",
+                    "history",
+                    "could not update history entry",
+                    Some(&error.to_string()),
+                );
+            }
         }
     }
 
     pub fn latest_failed(&self, cwd: &str) -> Option<Vec<Value>> {
-        let conn = self.conn.lock().unwrap();
+        let Ok(conn) = self.conn.lock() else {
+            crate::logging::log_warning("history database lock is unavailable");
+            return None;
+        };
         let sql = if cwd.is_empty() {
             "SELECT id, command, cwd, timestamp, exit_code, duration_ms, git_branch
              FROM commands
@@ -177,32 +245,33 @@ impl HistoryManager {
     }
 
     pub fn search(&self, terms: &str, limit: i64, cwd: &str) -> Vec<Vec<Value>> {
-        let conn = self.conn.lock().unwrap();
+        let Ok(conn) = self.conn.lock() else {
+            crate::logging::log_warning("history database lock is unavailable");
+            return Vec::new();
+        };
         if terms.trim().is_empty() {
-            let rows = if !cwd.is_empty() {
-                let mut stmt = conn
-                    .prepare(
+            let result = if !cwd.is_empty() {
+                (|| -> rusqlite::Result<Vec<Vec<Value>>> {
+                    let mut stmt = conn.prepare(
                         "SELECT MAX(id) AS id, command, cwd, timestamp, exit_code, duration_ms, git_branch FROM commands \
                          WHERE command NOT LIKE '/%' ESCAPE '\\' GROUP BY command \
                          ORDER BY CASE WHEN cwd = ?1 THEN 0 ELSE 1 END, id DESC LIMIT ?2",
-                    )
-                    .unwrap();
-                let iter = stmt
-                    .query_map(params![cwd, limit], Self::map_row_7)
-                    .unwrap();
-                iter.filter_map(|r| r.ok()).collect::<Vec<_>>()
+                    )?;
+                    let iter = stmt.query_map(params![cwd, limit], Self::map_row_7)?;
+                    iter.collect()
+                })()
             } else {
-                let mut stmt = conn
-                    .prepare(
+                (|| -> rusqlite::Result<Vec<Vec<Value>>> {
+                    let mut stmt = conn.prepare(
                         "SELECT MAX(id) AS id, command, cwd, timestamp, exit_code, duration_ms, git_branch FROM commands \
                          WHERE command NOT LIKE '/%' ESCAPE '\\' GROUP BY command \
                          ORDER BY id DESC LIMIT ?1",
-                    )
-                    .unwrap();
-                let iter = stmt.query_map(params![limit], Self::map_row_7).unwrap();
-                iter.filter_map(|r| r.ok()).collect::<Vec<_>>()
+                    )?;
+                    let iter = stmt.query_map(params![limit], Self::map_row_7)?;
+                    iter.collect()
+                })()
             };
-            return rows;
+            return Self::search_result(result);
         }
 
         let parts: Vec<&str> = terms.trim().split_whitespace().collect();
@@ -272,17 +341,28 @@ impl HistoryManager {
             where_sql, order_sql
         );
 
-        let mut stmt = conn.prepare(&sql).unwrap();
         let mut all: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        all.extend(where_params.into_iter().map(|b| b));
-        all.extend(order_params.into_iter().map(|b| b));
+        all.extend(where_params);
+        all.extend(order_params);
         all.push(Box::new(limit));
-        let iter = stmt
-            .query_map(rusqlite::params_from_iter(all.into_iter()), |row| {
-                Self::map_row_7(row)
-            })
-            .unwrap();
-        iter.filter_map(|r| r.ok()).collect()
+        let result = (|| -> rusqlite::Result<Vec<Vec<Value>>> {
+            let mut stmt = conn.prepare(&sql)?;
+            let iter = stmt.query_map(rusqlite::params_from_iter(all), Self::map_row_7)?;
+            iter.collect()
+        })();
+        Self::search_result(result)
+    }
+
+    fn search_result(result: rusqlite::Result<Vec<Vec<Value>>>) -> Vec<Vec<Value>> {
+        result.unwrap_or_else(|error| {
+            crate::logging::Logger::log(
+                "WARNING",
+                "history",
+                "history search failed",
+                Some(&error.to_string()),
+            );
+            Vec::new()
+        })
     }
 
     fn map_row_7(row: &rusqlite::Row) -> rusqlite::Result<Vec<Value>> {
@@ -328,7 +408,10 @@ impl HistoryManager {
         let mut rows = Vec::new();
         {
             let mut query = stmt.query([]).map_err(|e| e.to_string())?;
-            while let Ok(Some(row)) = query.next() {
+            loop {
+                let Some(row) = query.next().map_err(|e| e.to_string())? else {
+                    break;
+                };
                 let mut values = Vec::new();
                 for i in 0..col_count {
                     let v = row
@@ -365,73 +448,94 @@ impl HistoryManager {
     }
 
     pub fn search_latest(&self, prefix: &str, limit: i64) -> Vec<Value> {
-        let conn = self.conn.lock().unwrap();
+        let Ok(conn) = self.conn.lock() else {
+            crate::logging::log_warning("history database lock is unavailable");
+            return Vec::new();
+        };
         if !prefix.is_empty() {
-            let mut stmt = conn
-                .prepare(
+            let result = (|| -> rusqlite::Result<Vec<Value>> {
+                let mut stmt = conn.prepare(
                     "SELECT command FROM commands WHERE command LIKE ?1 \
                      GROUP BY command ORDER BY MAX(id) DESC LIMIT ?2",
-                )
-                .unwrap();
-            let iter = stmt
-                .query_map(params![format!("{}%", prefix), limit], Self::map_row_1)
-                .unwrap();
-            iter.filter_map(|r| r.ok()).collect()
+                )?;
+                let iter =
+                    stmt.query_map(params![format!("{}%", prefix), limit], Self::map_row_1)?;
+                iter.collect()
+            })();
+            Self::search_latest_result(result)
         } else {
-            let mut stmt = conn
-                .prepare(
+            let result = (|| -> rusqlite::Result<Vec<Value>> {
+                let mut stmt = conn.prepare(
                     "SELECT command FROM commands GROUP BY command ORDER BY MAX(id) DESC LIMIT ?1",
-                )
-                .unwrap();
-            let iter = stmt.query_map(params![limit], Self::map_row_1).unwrap();
-            iter.filter_map(|r| r.ok()).collect()
+                )?;
+                let iter = stmt.query_map(params![limit], Self::map_row_1)?;
+                iter.collect()
+            })();
+            Self::search_latest_result(result)
         }
     }
 
     pub fn get_all(&self, limit: i64) -> Vec<Value> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare("SELECT command FROM commands ORDER BY id DESC LIMIT ?1")
-            .unwrap();
-        let iter = stmt.query_map(params![limit], Self::map_row_1).unwrap();
-        iter.filter_map(|r| r.ok()).collect()
+        let Ok(conn) = self.conn.lock() else {
+            crate::logging::log_warning("history database lock is unavailable");
+            return Vec::new();
+        };
+        let result = (|| -> rusqlite::Result<Vec<Value>> {
+            let mut stmt =
+                conn.prepare("SELECT command FROM commands ORDER BY id DESC LIMIT ?1")?;
+            let iter = stmt.query_map(params![limit], Self::map_row_1)?;
+            iter.collect()
+        })();
+        Self::search_latest_result(result)
     }
 
     pub fn clear(&self) {
-        let conn = self.conn.lock().unwrap();
-        let _ = conn.execute("DELETE FROM commands", []);
+        if let Ok(conn) = self.conn.lock() {
+            if let Err(error) = conn.execute("DELETE FROM commands", []) {
+                crate::logging::Logger::log(
+                    "WARNING",
+                    "history",
+                    "could not clear history",
+                    Some(&error.to_string()),
+                );
+            }
+        } else {
+            crate::logging::log_warning("history database lock is unavailable");
+        }
     }
 
-    pub fn optimize(&self) -> BTreeMap<String, Value> {
+    pub fn optimize(&self) -> Result<BTreeMap<String, Value>, String> {
         let db_path = history_db_path();
         let mut stats = BTreeMap::new();
-        let rows_before = {
-            let conn = self.conn.lock().unwrap();
-            conn.query_row("SELECT COUNT(*) FROM commands", [], |r| r.get::<_, i64>(0))
-                .unwrap_or(0)
-        };
+        // Use the same connection as normal history writes so SQLite maintenance
+        // cannot race an insert or command-result update.
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| "history database lock is unavailable".to_string())?;
+        let rows_before = conn
+            .query_row("SELECT COUNT(*) FROM commands", [], |r| r.get::<_, i64>(0))
+            .map_err(|error| error.to_string())?;
         let size_before = std::fs::metadata(&db_path)
             .map(|m| m.len() as i64)
             .unwrap_or(0);
 
-        if let Ok(conn) =
-            Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
         {
-            let _ = conn.pragma_update(
-                None,
-                "wal_checkpoint(TRUNCATE)",
-                rusqlite::types::Value::Null,
-            );
-            let _ = conn.execute_batch("ANALYZE; VACUUM;");
+            let tx = conn.transaction().map_err(|error| error.to_string())?;
+            Self::remove_duplicates(&tx).map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())?;
         }
-        let mut g = self.inserts_since_trim.lock().unwrap();
-        *g = 0;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .map_err(|error| error.to_string())?;
+        conn.execute_batch("ANALYZE; VACUUM;")
+            .map_err(|error| error.to_string())?;
+        if let Ok(mut inserts_since_trim) = self.inserts_since_trim.lock() {
+            *inserts_since_trim = 0;
+        }
 
-        let rows_after = {
-            let conn = self.conn.lock().unwrap();
-            conn.query_row("SELECT COUNT(*) FROM commands", [], |r| r.get::<_, i64>(0))
-                .unwrap_or(0)
-        };
+        let rows_after = conn
+            .query_row("SELECT COUNT(*) FROM commands", [], |r| r.get::<_, i64>(0))
+            .map_err(|error| error.to_string())?;
         let size_after = std::fs::metadata(&db_path)
             .map(|m| m.len() as i64)
             .unwrap_or(0);
@@ -441,7 +545,29 @@ impl HistoryManager {
         stats.insert("duplicates_removed".into(), json!(rows_before - rows_after));
         stats.insert("size_before".into(), json!(size_before));
         stats.insert("size_after".into(), json!(size_after));
-        stats
+        Ok(stats)
+    }
+
+    fn remove_duplicates(conn: &rusqlite::Transaction<'_>) -> rusqlite::Result<usize> {
+        conn.execute(
+            "DELETE FROM commands
+             WHERE id NOT IN (
+                 SELECT MAX(id) FROM commands GROUP BY command, cwd
+             )",
+            [],
+        )
+    }
+
+    fn search_latest_result(result: rusqlite::Result<Vec<Value>>) -> Vec<Value> {
+        result.unwrap_or_else(|error| {
+            crate::logging::Logger::log(
+                "WARNING",
+                "history",
+                "history lookup failed",
+                Some(&error.to_string()),
+            );
+            Vec::new()
+        })
     }
 }
 
@@ -507,5 +633,23 @@ mod tests {
             .collect();
 
         assert_eq!(commands, ["ssh andres@example.test"]);
+    }
+
+    #[test]
+    fn deduplicate_keeps_the_latest_command_per_directory() {
+        let history = test_history();
+        history.add("git status", "/workspace/a", 0);
+        history.add("git status", "/workspace/b", 0);
+        history.add("git status", "/workspace/a", 0);
+
+        let mut conn = history.conn.lock().unwrap();
+        let tx = conn.transaction().unwrap();
+        assert_eq!(HistoryManager::remove_duplicates(&tx).unwrap(), 1);
+        tx.commit().unwrap();
+
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM commands", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 2);
     }
 }

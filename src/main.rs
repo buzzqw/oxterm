@@ -105,6 +105,7 @@ fn parse_option_kv(s: &str) -> Result<(String, serde_json::Value), String> {
 /// Parse a `COLSxROWS` geometry string (e.g. `120x40`), as used by many
 /// modern terminals. Columns and rows must both be positive integers.
 fn parse_geometry(s: &str) -> Result<(i32, i32), String> {
+    const MAX_GEOMETRY: i32 = 1_000;
     let lower = s.to_ascii_lowercase();
     let (c, r) = lower
         .split_once('x')
@@ -117,10 +118,10 @@ fn parse_geometry(s: &str) -> Result<(i32, i32), String> {
         .trim()
         .parse()
         .map_err(|_| format!("invalid geometry '{}': rows must be a number", s))?;
-    if cols < 1 || rows < 1 {
+    if cols < 1 || rows < 1 || cols > MAX_GEOMETRY || rows > MAX_GEOMETRY {
         return Err(format!(
-            "invalid geometry '{}': columns and rows must be positive",
-            s
+            "invalid geometry '{}': columns and rows must be between 1 and {}",
+            s, MAX_GEOMETRY
         ));
     }
     Ok((cols, rows))
@@ -244,6 +245,12 @@ fn parse_cli(args: &[String]) -> Result<CliOptions, String> {
                 let sz: i64 = args[i]
                     .parse()
                     .map_err(|_| format!("invalid --font-size '{}': expected a number", args[i]))?;
+                if !(4..=128).contains(&sz) {
+                    return Err(format!(
+                        "invalid --font-size '{}': must be between 4 and 128",
+                        args[i]
+                    ));
+                }
                 options.push(("font_size".to_string(), serde_json::json!(sz)));
             }
             "-e" | "--execute" => {
@@ -433,13 +440,24 @@ impl App {
                 settings::set_config_file_override(std::path::PathBuf::from(cfg));
             }
             for (k, v) in &opts.options {
-                settings::set_override(k, v.clone());
+                if let Err(error) = settings::set_override(k, v.clone()) {
+                    eprintln!("{}: {}", window::APP_NAME, error);
+                    return 2;
+                }
             }
             if let Some(name) = opts.profile.as_ref() {
                 match crate::profiles::load_profile(name) {
                     Some(serde_json::Value::Object(map)) => {
                         for (k, v) in map {
-                            settings::set_override(&k, v);
+                            if let Err(error) = settings::set_override(&k, v) {
+                                eprintln!(
+                                    "{}: invalid profile {}: {}",
+                                    window::APP_NAME,
+                                    name,
+                                    error
+                                );
+                                return 2;
+                            }
                         }
                     }
                     _ => eprintln!("{}: profile not found: {}", window::APP_NAME, name),
@@ -571,6 +589,7 @@ mod tests {
     fn cli_geometry_validation() {
         assert!(parse_cli(&args(&["--geometry", "abc"])).is_err());
         assert!(parse_cli(&args(&["--geometry", "0x10"])).is_err());
+        assert!(parse_cli(&args(&["--geometry", "1001x40"])).is_err());
         assert!(parse_cli(&args(&["--geometry", "80"])).is_err());
         assert_eq!(parse_geometry("100X30").unwrap(), (100, 30));
     }
@@ -638,6 +657,8 @@ mod tests {
         assert!(parse_cli(&args(&["-o", "noequals"])).is_err());
         assert!(parse_cli(&args(&["-o", "=novalue"])).is_err());
         assert!(parse_cli(&args(&["--font-size", "big"])).is_err());
+        assert!(parse_cli(&args(&["--font-size", "3"])).is_err());
+        assert!(parse_cli(&args(&["--font-size", "129"])).is_err());
         assert_eq!(parse_override_value("42"), serde_json::json!(42));
         assert_eq!(parse_override_value("true"), serde_json::Value::Bool(true));
         assert_eq!(

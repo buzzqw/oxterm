@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, RawFd};
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,6 +13,7 @@ const CHILD_FD: RawFd = 3;
 const GUI_FD: RawFd = 4;
 const MAX_FRAME: usize = 1024 * 1024;
 const MAX_PENDING: usize = 4 * 1024 * 1024;
+const MAX_CLIENTS: usize = 32;
 
 /// Last winsize applied to the child PTY, packed as `(columns << 32) | rows`.
 /// `set_child_size` becomes a no-op when the size is unchanged so that the
@@ -108,10 +110,11 @@ pub fn parse_cli_mode(args: &[String]) -> Option<Result<CliMode, String>> {
             } else if args[2].is_empty() || invalid_id(&args[3]) {
                 Some(Err("broker socket and session ID are required".to_string()))
             } else {
-                Some(Ok(CliMode::Broker(
-                    PathBuf::from(&args[2]),
-                    args[3].clone(),
-                )))
+                let path = PathBuf::from(&args[2]);
+                match validate_broker_socket(&path, &args[3]) {
+                    Ok(()) => Some(Ok(CliMode::Broker(path, args[3].clone()))),
+                    Err(error) => Some(Err(error)),
+                }
             }
         }
         "--list" => {
@@ -170,7 +173,11 @@ fn field(value: &str) -> String {
 }
 
 pub fn new_session_id() -> String {
-    format!("{}-{}", std::process::id(), monotonic_id())
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("{}-{}-{}", std::process::id(), nonce, monotonic_id())
 }
 
 fn monotonic_id() -> u64 {
@@ -183,6 +190,27 @@ fn session_socket(session_id: &str) -> PathBuf {
     remote_dir().join(format!("oxterm-{}.sock", session_id))
 }
 
+/// The broker is internal-only: accepting a caller-selected path would let it
+/// chmod or remove arbitrary filesystem entries during startup and cleanup.
+fn validate_broker_socket(path: &Path, session_id: &str) -> Result<(), String> {
+    if invalid_id(session_id) || session_id.contains('/') || path != session_socket(session_id) {
+        return Err("broker socket must be the generated remote session socket".to_string());
+    }
+    Ok(())
+}
+
+fn remove_existing_socket_file(path: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_socket() => std::fs::remove_file(path),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "broker socket path exists but is not a socket",
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// Start the broker with the PTY ends that it must own. The GUI keeps the master
 /// of the GUI PTY; the broker owns its slave and the child PTY master.
 pub fn spawn_broker(
@@ -193,14 +221,16 @@ pub fn spawn_broker(
     title: &str,
     cwd: &str,
 ) -> Result<BrokerHandle, String> {
+    if invalid_id(session_id) || session_id.contains('/') {
+        return Err("invalid remote session ID".to_string());
+    }
     ensure_remote_dir().map_err(|e| format!("cannot create remote session directory: {}", e))?;
     let path = session_socket(session_id);
-    if path.exists() {
-        if UnixStream::connect(&path).is_ok() {
-            return Err("remote session socket is already in use".to_string());
-        }
-        let _ = std::fs::remove_file(&path);
+    if UnixStream::connect(&path).is_ok() {
+        return Err("remote session socket is already in use".to_string());
     }
+    remove_existing_socket_file(&path)
+        .map_err(|e| format!("cannot replace remote session socket: {}", e))?;
 
     let exe =
         std::env::current_exe().map_err(|e| format!("cannot find oxterm executable: {}", e))?;
@@ -246,6 +276,13 @@ pub fn spawn_broker(
     close_fd(child_dup);
     close_fd(gui_dup);
     let child = child?;
+    let pid = child.id() as i32;
+    // Child handles do not reap on drop. Keep one in a detached waiter so a
+    // persistent broker is reaped even after its terminal handle is dropped.
+    std::thread::spawn(move || {
+        let mut child = child;
+        let _ = child.wait();
+    });
     let mut ready = false;
     for _ in 0..200 {
         if UnixStream::connect(&path).is_ok() {
@@ -256,14 +293,14 @@ pub fn spawn_broker(
     }
     if !ready {
         unsafe {
-            libc::kill(child.id() as i32, libc::SIGTERM);
+            libc::kill(pid, libc::SIGTERM);
         }
         return Err("PTY broker did not create its session socket".to_string());
     }
     Ok(BrokerHandle {
         path,
         id: session_id.to_string(),
-        pid: child.id() as i32,
+        pid,
     })
 }
 
@@ -771,7 +808,7 @@ impl Client {
 }
 
 fn run_broker(path: &Path, id: &str) -> i32 {
-    let listener = match bind_broker_socket(path) {
+    let listener = match bind_broker_socket(path, id) {
         Ok(listener) => listener,
         Err(error) => {
             eprintln!("oxterm broker: {}", error);
@@ -872,6 +909,10 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         while poll_fds[0].revents & libc::POLLIN != 0 {
             match listener.accept() {
                 Ok((stream, _)) => {
+                    if clients.len() >= MAX_CLIENTS {
+                        drop(stream);
+                        continue;
+                    }
                     let _ = stream.set_nonblocking(true);
                     clients.push(Client {
                         stream,
@@ -991,7 +1032,7 @@ fn run_broker(path: &Path, id: &str) -> i32 {
     }
     close_fd(CHILD_FD);
     close_fd(GUI_FD);
-    let _ = std::fs::remove_file(path);
+    let _ = remove_existing_socket_file(path);
     0
 }
 
@@ -1012,16 +1053,10 @@ struct BrokerState {
     child_input_pending: usize,
 }
 
-fn bind_broker_socket(path: &Path) -> Result<UnixListener, String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-            .map_err(|e| e.to_string())?;
-    }
-    if path.exists() {
-        let _ = std::fs::remove_file(path);
-    }
+fn bind_broker_socket(path: &Path, id: &str) -> Result<UnixListener, String> {
+    validate_broker_socket(path, id)?;
+    ensure_remote_dir().map_err(|e| e.to_string())?;
+    remove_existing_socket_file(path).map_err(|e| e.to_string())?;
     let listener = UnixListener::bind(path).map_err(|e| e.to_string())?;
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
@@ -1154,7 +1189,14 @@ fn handle_command(
         }
         "DETACH" => {
             for client in clients.iter_mut() {
-                client.attached = false;
+                if client.attached {
+                    // Discard pending terminal output before notifying the relay.
+                    client.attached = false;
+                    client.output.clear();
+                    client.output_offset = 0;
+                    client.output_pending = 0;
+                    let _ = client.queue(&[FRAME_DETACH]);
+                }
             }
             clients[index].queue(b"OK\nDETACH")
         }
@@ -1393,15 +1435,31 @@ mod tests {
         assert!(matches!(parse_cli_mode(&args), Some(Ok(CliMode::Info(id))) if id == "1234-2"));
         let args = vec!["oxterm".into(), "--detach".into(), "1234-2".into()];
         assert!(matches!(parse_cli_mode(&args), Some(Ok(CliMode::Detach(id))) if id == "1234-2"));
+        let socket = session_socket("1234-2");
+        let args = vec![
+            "oxterm".into(),
+            "--broker".into(),
+            socket.to_string_lossy().into_owned(),
+            "1234-2".into(),
+        ];
+        assert!(
+            matches!(parse_cli_mode(&args), Some(Ok(CliMode::Broker(path, id))) if path == socket && id == "1234-2")
+        );
         let args = vec![
             "oxterm".into(),
             "--broker".into(),
             "/tmp/x.sock".into(),
             "1234-2".into(),
         ];
-        assert!(
-            matches!(parse_cli_mode(&args), Some(Ok(CliMode::Broker(path, id))) if path == PathBuf::from("/tmp/x.sock") && id == "1234-2")
-        );
+        assert!(parse_cli_mode(&args).unwrap().is_err());
+        let socket = session_socket("path/component");
+        let args = vec![
+            "oxterm".into(),
+            "--broker".into(),
+            socket.to_string_lossy().into_owned(),
+            "path/component".into(),
+        ];
+        assert!(parse_cli_mode(&args).unwrap().is_err());
     }
 
     #[test]
@@ -1436,6 +1494,24 @@ mod tests {
         let sanitized = field(&metadata);
         assert!(!sanitized.chars().any(|c| matches!(c, '\t' | '\n' | '\r')));
         assert_eq!(sanitized.chars().count(), 200);
+    }
+
+    #[test]
+    fn only_removes_existing_socket_files() {
+        let path = std::env::temp_dir().join(format!(
+            "oxterm-remote-test-{}-{}",
+            std::process::id(),
+            monotonic_id()
+        ));
+        std::fs::write(&path, b"do not remove").unwrap();
+        assert!(remove_existing_socket_file(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"do not remove");
+        std::fs::remove_file(&path).unwrap();
+
+        let listener = UnixListener::bind(&path).unwrap();
+        assert!(remove_existing_socket_file(&path).is_ok());
+        assert!(!path.exists());
+        drop(listener);
     }
 
     #[test]

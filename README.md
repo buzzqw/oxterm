@@ -227,7 +227,7 @@ Commands beginning with `/` are handled by Oxterm:
 | `/wnotes [-file.md] <text>` | Save a timestamped note |
 | `/onotes [-file.md]` | Open a notes file in the configured editor |
 | `/learn <file>` | Import commands into history without executing them |
-| `/optimize history` | Deduplicate and optimize the history database |
+| `/optimize history` | Keep latest command/directory entries and optimize history in background |
 | `/session export NAME [FILE]` | Export a saved session as private JSON |
 | `/session name NAME` | Assign a stable name shown by remote listing |
 | `/session list` | List saved sessions |
@@ -252,7 +252,7 @@ completion.
 | `Ctrl+Shift+F` | Search the scrollback (Enter/Shift+Enter = next/prev) |
 | `Ctrl++` / `Ctrl+-` / `Ctrl+0` | Zoom font in / out / reset |
 | `click` | Open the URL under the cursor |
-| `Ctrl+R` | Interactive history search |
+| `Ctrl+R` | Interactive history search; repeat to cycle matches |
 | `Ctrl+PageUp` / `Ctrl+PageDown` | Previous / next tab |
 | `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` | Move tab |
 | `Ctrl+Alt+PageUp` | Switch split pane |

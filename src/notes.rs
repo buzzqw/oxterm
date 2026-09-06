@@ -1,6 +1,8 @@
+use std::ffi::CString;
 use std::fs;
-use std::fs::OpenOptions;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::io::Write;
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -18,7 +20,7 @@ impl NotesManager {
         }
     }
 
-    fn get_notes_path(&self, filename: Option<&str>) -> Result<PathBuf, String> {
+    fn note_target(&self, filename: Option<&str>) -> Result<NoteTarget, String> {
         let s = settings();
         let notes_dir_raw = s.get_str_default("notes_dir", "");
         let notes_dir = if notes_dir_raw.is_empty() {
@@ -26,7 +28,6 @@ impl NotesManager {
         } else {
             expand_user(&notes_dir_raw)
         };
-        let notes_dir_abs = std::fs::canonicalize(&notes_dir).unwrap_or_else(|_| notes_dir.clone());
         let configured = s.get_str("notes_file");
         let name = filename.map(|f| f.to_string()).unwrap_or_else(|| {
             if !configured.is_empty() {
@@ -35,96 +36,59 @@ impl NotesManager {
                 "notes.md".to_string()
             }
         });
+        let configured_external = filename.is_none() && Path::new(&name).is_absolute();
+        if configured_external {
+            let path = expand_user(&name);
+            let (parent, file_name) = split_absolute_note_path(&path)?;
+            let parent_fd = open_directory_tree(&parent, true)?;
+            return Ok(NoteTarget {
+                path,
+                parent: parent_fd,
+                file_name,
+            });
+        }
         if Path::new(&name).is_absolute() {
             if filename.is_some() {
                 return Err("Note filename must be relative to the notes directory".to_string());
             }
-            return Ok(
-                std::fs::canonicalize(expand_user(&name)).unwrap_or_else(|_| expand_user(&name))
-            );
         }
         let mut name = name;
         if !name.ends_with(".md") {
             name.push_str(".md");
         }
-        let path = notes_dir_abs.join(&name);
-        let parent = std::fs::canonicalize(path.parent().unwrap_or(Path::new(".")))
-            .unwrap_or_else(|_| notes_dir_abs.clone());
-        if parent.starts_with(&notes_dir_abs) {
-            Ok(path)
-        } else {
-            Err("Note filename must stay inside the notes directory".to_string())
-        }
-    }
-
-    fn ensure_parent(&self, path: &Path, allow_configured_external: bool) -> Result<(), String> {
-        let s = settings();
-        let notes_dir_raw = s.get_str_default("notes_dir", "");
-        let notes_dir = if notes_dir_raw.is_empty() {
-            dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
-        } else {
-            expand_user(&notes_dir_raw)
-        };
-        let notes_dir = std::fs::canonicalize(&notes_dir).unwrap_or(notes_dir);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            let parent_canon =
-                std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
-            if !allow_configured_external && !parent_canon.starts_with(&notes_dir) {
-                return Err("Note path escapes the notes directory".to_string());
-            }
-        }
-        Ok(())
+        let components = relative_note_components(Path::new(&name))?;
+        let notes_dir = absolute_path(&notes_dir)?;
+        let root = open_directory_tree(&notes_dir, true)?;
+        let (parent, file_name) = open_relative_parent(root, &components)?;
+        Ok(NoteTarget {
+            path: notes_dir.join(&name),
+            parent,
+            file_name,
+        })
     }
 
     pub fn write_note(&self, text: &str, filename: Option<&str>) -> Result<PathBuf, String> {
-        let path = self.get_notes_path(filename)?;
-        let configured = settings().get_str("notes_file");
-        let allow_external = filename.is_none() && Path::new(&configured).is_absolute();
-        self.ensure_parent(&path, allow_external)?;
+        let target = self.note_target(filename)?;
         let ts = human_now();
         let entry = format!("\n## {}\n\n{}\n", ts, text);
-        let mut opts = OpenOptions::new();
-        opts.create(true)
-            .append(true)
-            .write(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW);
-        let mut f = opts.open(&path).map_err(|e| e.to_string())?;
-        use std::io::Write;
+        let (mut f, _) = open_note_file(&target)?;
         f.write_all(entry.as_bytes()).map_err(|e| e.to_string())?;
-        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
-        Ok(path)
+        f.sync_all().map_err(|e| e.to_string())?;
+        Ok(target.path)
     }
 
     pub fn open_notes(&self, filename: Option<&str>) -> Result<PathBuf, String> {
-        let path = self.get_notes_path(filename)?;
-        let configured = settings().get_str("notes_file");
-        let allow_external = filename.is_none() && Path::new(&configured).is_absolute();
-        self.ensure_parent(&path, allow_external)?;
-        if fs::symlink_metadata(&path)
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false)
-        {
-            return Err("Note path must not be a symbolic link".to_string());
-        }
-        if !path.is_file() {
-            let mut opts = OpenOptions::new();
-            opts.create(true)
-                .write(true)
-                .append(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW);
-            let mut f = opts.open(&path).map_err(|e| e.to_string())?;
-            use std::io::Write;
+        let target = self.note_target(filename)?;
+        let (mut f, created) = open_note_file(&target)?;
+        if created {
             f.write_all(b"# Oxterm Notes\n\n")
                 .map_err(|e| e.to_string())?;
-            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+            f.sync_all().map_err(|e| e.to_string())?;
         }
 
         if let Some(opener) = find_in_path("xdg-open") {
-            spawn_detached(&opener, &[&path.to_string_lossy()]);
-            return Ok(path);
+            spawn_detached(&opener, &[&target.path.to_string_lossy()]);
+            return Ok(target.path);
         }
         let editor = settings().get_str_default("editor_command", "nano");
         let parts = if editor.is_empty() {
@@ -134,10 +98,190 @@ impl NotesManager {
         };
         if let Some(first) = parts.first() {
             let mut args = parts[1..].to_vec();
-            args.push(path.to_string_lossy().to_string());
+            args.push(target.path.to_string_lossy().to_string());
             spawn_detached(first, &args.iter().map(|s| s.as_str()).collect::<Vec<_>>());
         }
-        Ok(path)
+        Ok(target.path)
+    }
+}
+
+struct NoteTarget {
+    path: PathBuf,
+    parent: fs::File,
+    file_name: CString,
+}
+
+fn relative_note_components(path: &Path) -> Result<Vec<CString>, String> {
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(name) => components.push(os_string(name)?),
+            _ => return Err("Note filename must not contain traversal".to_string()),
+        }
+    }
+    if components.is_empty() {
+        return Err("Note filename cannot be empty".to_string());
+    }
+    Ok(components)
+}
+
+fn absolute_path(path: &Path) -> Result<PathBuf, String> {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| e.to_string())?
+            .join(path)
+    };
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err("Notes directory must not contain traversal".to_string());
+    }
+    Ok(path)
+}
+
+fn split_absolute_note_path(path: &Path) -> Result<(PathBuf, CString), String> {
+    let path = absolute_path(path)?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| "Note filename cannot be empty".to_string())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Note path must have a parent directory".to_string())?
+        .to_path_buf();
+    Ok((parent, os_string(file_name)?))
+}
+
+fn os_string(value: &std::ffi::OsStr) -> Result<CString, String> {
+    CString::new(value.as_bytes())
+        .map_err(|_| "Note path contains an invalid character".to_string())
+}
+
+fn open_directory_tree(path: &Path, create: bool) -> Result<fs::File, String> {
+    let mut current = open_directory(Path::new("/"))?;
+    for component in path.components() {
+        match component {
+            std::path::Component::RootDir => continue,
+            std::path::Component::Normal(name) => {
+                let name = os_string(name)?;
+                current = open_directory_at(&current, &name, create)?;
+            }
+            _ => return Err("Note path must not contain traversal".to_string()),
+        }
+    }
+    Ok(current)
+}
+
+fn open_relative_parent(
+    mut current: fs::File,
+    components: &[CString],
+) -> Result<(fs::File, CString), String> {
+    let (file_name, parents) = components
+        .split_last()
+        .ok_or_else(|| "Note filename cannot be empty".to_string())?;
+    for parent in parents {
+        current = open_directory_at(&current, parent, true)?;
+    }
+    Ok((current, file_name.clone()))
+}
+
+fn open_directory(path: &Path) -> Result<fs::File, String> {
+    let path = os_string(path.as_os_str())?;
+    open_fd(unsafe {
+        libc::open(
+            path.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    })
+}
+
+fn open_directory_at(parent: &fs::File, name: &CString, create: bool) -> Result<fs::File, String> {
+    if create {
+        let result = unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) };
+        if result != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+    }
+    open_fd(unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    })
+}
+
+fn open_note_file(target: &NoteTarget) -> Result<(fs::File, bool), String> {
+    let flags =
+        libc::O_WRONLY | libc::O_APPEND | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK;
+    let created = unsafe {
+        libc::openat(
+            target.parent.as_raw_fd(),
+            target.file_name.as_ptr(),
+            flags | libc::O_CREAT | libc::O_EXCL,
+            0o600,
+        )
+    };
+    let (fd, created) = if created >= 0 {
+        (created, true)
+    } else if std::io::Error::last_os_error().kind() == std::io::ErrorKind::AlreadyExists {
+        (
+            unsafe { libc::openat(target.parent.as_raw_fd(), target.file_name.as_ptr(), flags) },
+            false,
+        )
+    } else {
+        return Err(std::io::Error::last_os_error().to_string());
+    };
+    let file = open_fd(fd)?;
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    if unsafe { stat.assume_init().st_mode } & libc::S_IFMT != libc::S_IFREG {
+        return Err("Note path must be a regular file".to_string());
+    }
+    if unsafe { libc::fchmod(file.as_raw_fd(), 0o600) } != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok((file, created))
+}
+
+fn open_fd(fd: libc::c_int) -> Result<fs::File, String> {
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(unsafe { fs::File::from_raw_fd(fd) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_traversal_before_creating_directories() {
+        assert!(relative_note_components(Path::new("../outside.md")).is_err());
+        assert!(relative_note_components(Path::new("notes/../outside.md")).is_err());
+        assert!(relative_note_components(Path::new("/outside.md")).is_err());
+    }
+
+    #[test]
+    fn rejects_symlinked_parent_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "oxterm-notes-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        std::os::unix::fs::symlink("/tmp", root.join("linked")).unwrap();
+        let root_fd = open_directory_tree(&root, false).unwrap();
+        let name = CString::new("linked").unwrap();
+        assert!(open_directory_at(&root_fd, &name, false).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 }
 

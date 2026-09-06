@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -11,7 +11,7 @@ use glib::subclass::prelude::*;
 use serde_json::{json, Map, Value};
 
 use crate::logging::LOGGER;
-use crate::persistence::write_private_temp;
+use crate::persistence::{sync_parent_directory, write_private_temp};
 
 const HEX_COLOR_RE: &str = "^#[0-9a-fA-F]{6}$";
 
@@ -50,8 +50,16 @@ fn overrides() -> &'static Mutex<Map<String, Value>> {
 
 /// Register a session-only override for `key`. Applied on top of the stored
 /// settings for all subsequent reads without being persisted.
-pub fn set_override(key: &str, value: Value) {
-    overrides().lock().unwrap().insert(key.to_string(), value);
+pub fn set_override(key: &str, value: Value) -> Result<(), String> {
+    if defaults_ref().as_object().unwrap().contains_key(key) && !Settings::valid_value(key, &value)
+    {
+        return Err(format!("Invalid setting value: {}", key));
+    }
+    overrides()
+        .lock()
+        .map_err(|_| "settings overrides lock is unavailable".to_string())?
+        .insert(key.to_string(), value);
+    Ok(())
 }
 
 fn override_value(key: &str) -> Option<Value> {
@@ -403,16 +411,16 @@ impl Default for Settings {
     }
 }
 
-// The GObject is only ever created and destroyed on the main thread; worker
-// threads read snapshots under a lock. Refcounting is atomic in GObject, so
-// sharing the wrapper across threads is safe.
-unsafe impl Send for Settings {}
-unsafe impl Sync for Settings {}
+thread_local! {
+    // GObjects are thread-affine. Each thread gets its own settings facade, so
+    // GTK state is never sent across threads; disk writes remain serialized.
+    static SETTINGS: OnceCell<Settings> = const { OnceCell::new() };
+}
 
-pub static SETTINGS: std::sync::OnceLock<Settings> = std::sync::OnceLock::new();
+static SAVE_LOCK: Mutex<()> = Mutex::new(());
 
-pub fn settings() -> &'static Settings {
-    SETTINGS.get_or_init(Settings::default)
+pub fn settings() -> Settings {
+    SETTINGS.with(|slot| slot.get_or_init(Settings::default).clone())
 }
 
 impl Settings {
@@ -428,16 +436,15 @@ impl Settings {
     }
 
     pub fn notify_changed(&self) {
-        if glib::MainContext::default().is_owner() {
-            self.emit_by_name::<()>("changed", &[]);
-        } else {
+        // Signals and their GTK listeners must run on the owning main context.
+        glib::MainContext::default().invoke_local({
             let weak = self.downgrade();
-            glib::MainContext::default().invoke(move || {
+            move || {
                 if let Some(s) = weak.upgrade() {
                     s.emit_by_name::<()>("changed", &[]);
                 }
-            });
-        }
+            }
+        });
     }
 
     fn data(&self) -> std::sync::MutexGuard<'_, Value> {
@@ -502,16 +509,18 @@ impl Settings {
         }
         imp.loaded.store(true, Ordering::SeqCst);
         if rewrite {
-            self.save();
+            if let Err(e) = self.save() {
+                LOGGER.error(&format!("settings_save_failed error={}", e));
+            }
         }
     }
 
-    pub fn save(&self) {
+    pub fn save(&self) -> Result<(), String> {
         let imp = self.imp();
         if imp.batch.get() {
-            return;
+            return Ok(());
         }
-        let _g = imp.save_lock.lock().unwrap();
+        let _g = SAVE_LOCK.lock().unwrap();
         let target = config_file();
         // Write the temp file next to the final target so the atomic rename never
         // has to cross filesystems (relevant when `--config` points elsewhere).
@@ -519,21 +528,19 @@ impl Settings {
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(config_dir);
-        let _ = fs::create_dir_all(&target_dir);
-        let _ = fs::set_permissions(&target_dir, fs::Permissions::from_mode(0o700));
+        fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
+        fs::set_permissions(&target_dir, fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
         let json_str = serde_json::to_string_pretty(&*imp.data.lock().unwrap());
         match json_str {
             Ok(s) => {
                 let tmp = match write_private_temp(&target_dir, "settings_tmp", s.as_bytes()) {
                     Ok(tmp) => tmp,
-                    Err(e) => {
-                        LOGGER.error(&format!("settings_save_failed error={}", e));
-                        return;
-                    }
+                    Err(e) => return Err(e.to_string()),
                 };
                 if let Err(e) = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600)) {
-                    LOGGER.error(&format!("settings_save_failed error={}", e));
-                    return;
+                    let _ = fs::remove_file(&tmp);
+                    return Err(e.to_string());
                 }
                 if target.exists() {
                     let backup = target.with_extension("json.bak");
@@ -550,10 +557,12 @@ impl Settings {
                     }
                 }
                 if let Err(e) = fs::rename(&tmp, &target) {
-                    LOGGER.error(&format!("settings_save_failed error={}", e));
+                    let _ = fs::remove_file(&tmp);
+                    return Err(e.to_string());
                 }
+                sync_parent_directory(&target).map_err(|e| e.to_string())
             }
-            Err(e) => LOGGER.error(&format!("settings_save_failed error={}", e)),
+            Err(e) => Err(e.to_string()),
         }
     }
 
@@ -619,20 +628,25 @@ impl Settings {
             .as_object_mut()
             .unwrap()
             .insert(key.to_string(), value);
-        self.save();
-        Ok(())
+        self.save()
     }
 
     pub fn set_bool(&self, key: &str, value: bool) {
-        let _ = self.set(key, Value::Bool(value));
+        if let Err(e) = self.set(key, Value::Bool(value)) {
+            LOGGER.error(&format!("settings_save_failed error={}", e));
+        }
     }
 
     pub fn set_str(&self, key: &str, value: &str) {
-        let _ = self.set(key, Value::String(value.to_string()));
+        if let Err(e) = self.set(key, Value::String(value.to_string())) {
+            LOGGER.error(&format!("settings_save_failed error={}", e));
+        }
     }
 
     pub fn set_i64(&self, key: &str, value: i64) {
-        let _ = self.set(key, json!(value));
+        if let Err(e) = self.set(key, json!(value)) {
+            LOGGER.error(&format!("settings_save_failed error={}", e));
+        }
     }
 
     pub fn set_many(&self, updates: BTreeMap<String, Value>) -> Result<(), String> {
@@ -650,8 +664,7 @@ impl Settings {
                 obj.insert(key, value);
             }
         }
-        self.save();
-        Ok(())
+        self.save()
     }
 
     pub fn begin_batch(&self) {
@@ -661,7 +674,9 @@ impl Settings {
 
     pub fn end_batch(&self) {
         self.imp().batch.set(false);
-        self.save();
+        if let Err(e) = self.save() {
+            LOGGER.error(&format!("settings_save_failed error={}", e));
+        }
     }
 
     pub fn raw_data(&self) -> Value {
@@ -727,7 +742,7 @@ impl Settings {
         bg
     }
 
-    fn valid_value(key: &str, value: &Value) -> bool {
+    pub(crate) fn valid_value(key: &str, value: &Value) -> bool {
         let default = defaults_ref().get(key).cloned().unwrap_or(Value::Null);
         match &default {
             Value::Bool(_) => value.is_boolean(),

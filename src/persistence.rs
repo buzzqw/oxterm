@@ -1,4 +1,4 @@
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -64,6 +64,12 @@ pub fn write_private_temp(dir: &Path, prefix: &str, contents: &[u8]) -> std::io:
     ))
 }
 
+/// Flush the directory entry created by an atomic rename.
+pub fn sync_parent_directory(path: &Path) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    File::open(parent)?.sync_all()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,5 +89,11 @@ mod tests {
             temporary_path(dir, "settings"),
             temporary_path(dir, "settings")
         );
+    }
+
+    #[test]
+    fn syncs_existing_parent_directory() {
+        let path = std::env::temp_dir().join("oxterm-persistence-test");
+        assert!(sync_parent_directory(&path).is_ok());
     }
 }

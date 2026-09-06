@@ -339,8 +339,9 @@ of lines to avoid treating pasted output as commands.
 
 ### `/optimize history`
 
-Performs occasional SQLite maintenance: removes duplicate command/directory
-pairs, checkpoints the WAL, updates query statistics, and vacuums the database.
+Runs SQLite maintenance in the background. It keeps the most recent entry for
+each command/directory pair, checkpoints the WAL, updates query statistics, and
+vacuums the database. The terminal remains usable while it runs.
 
 ## History
 
@@ -351,8 +352,13 @@ Press `Ctrl+R` for reverse interactive search:
 
 - Type to filter.
 - Use the arrow keys to select.
+- Press `Ctrl+R` again to select the next match.
+- Use `Ctrl+W` to delete the last filter term or `Ctrl+U` to clear the filter.
 - Press Enter to use the selected command.
-- Press Escape to cancel.
+- Press Escape or `Ctrl+C` to cancel and preserve the current prompt.
+
+Filtering runs outside the terminal UI thread, so typing stays responsive even
+when the history database is large.
 
 The `Tab` key can open the history picker when shell completion does not change
 the current input. Selecting a result fills the command line without executing
@@ -464,9 +470,9 @@ The integration supports Bash, Zsh, and Fish. Use `Ctrl+Shift+Up` and
 | `Ctrl+Shift+S` | Set title |
 | `Ctrl+Shift+R` | Reset terminal |
 | `Ctrl+Shift+X` | Reset and clear |
-| `Ctrl+R` | Interactive history search |
-| `Ctrl+U` | Kill line |
-| `Ctrl+W` | Kill word |
+| `Ctrl+R` | Interactive history search; repeat to cycle matches |
+| `Ctrl+U` | Kill line; clear history filter while its picker is open |
+| `Ctrl+W` | Kill word; remove last history filter term while its picker is open |
 | `Ctrl+L` | Clear screen |
 | `Ctrl+C` | Interrupt or cancel AI/history mode |
 | `Ctrl+D` | EOF; closes an empty shell tab on exit |

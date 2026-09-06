@@ -2,7 +2,6 @@ use std::cell::RefCell;
 
 use glib::prelude::*;
 use glib::subclass::prelude::*;
-use glib::translate::*;
 use gtk::gdk;
 #[allow(non_snake_case)]
 mod K {
@@ -265,8 +264,8 @@ impl DetachedWindow {
     fn apply_window_visuals(&self) {
         let s = settings();
         let opacity = (s.get_f64("opacity") * 100.0).round() / 100.0;
-        self.set_opacity(opacity);
         if s.get_bool("enable_transparency") {
+            self.set_opacity(opacity);
             if let Some(screen) = gtk::prelude::WidgetExt::screen(self) {
                 if let Some(visual) = screen.rgba_visual() {
                     self.set_app_paintable(true);
@@ -274,6 +273,7 @@ impl DetachedWindow {
                 }
             }
         } else {
+            self.set_opacity(1.0);
             self.set_app_paintable(false);
         }
     }
@@ -892,6 +892,7 @@ impl DetachedWindow {
             }
         }
         *self.imp().closing.borrow_mut() = true;
+        self.stop_stats_timer();
         for handler in std::mem::take(&mut *self.imp().settings_handlers.borrow_mut()) {
             settings().disconnect_changed(handler);
         }
@@ -939,8 +940,10 @@ impl DetachedWindow {
         let source = glib::timeout_add_seconds_local(3, move || {
             if let Some(w) = weak.upgrade() {
                 w.refresh_stats();
+                glib::ControlFlow::Continue
+            } else {
+                glib::ControlFlow::Break
             }
-            glib::ControlFlow::Continue
         });
         *self.imp().stats_source_id.borrow_mut() = Some(source);
     }
@@ -949,6 +952,8 @@ impl DetachedWindow {
         if let Some(id) = self.imp().stats_source_id.borrow_mut().take() {
             id.remove();
         }
+        *self.imp().remote_stats_pending.borrow_mut() = false;
+        *self.imp().remote_stats_generation.borrow_mut() += 1;
     }
 
     fn refresh_stats(&self) {
@@ -964,22 +969,40 @@ impl DetachedWindow {
                 *self.imp().remote_stats_generation.borrow_mut() += 1;
                 let gen = *self.imp().remote_stats_generation.borrow();
                 let weak = crate::SendWeak::new(self);
-                let term_ptr = term.as_ptr() as usize;
+                let term_id = term.remote_id();
+                let Some((target, socket, cached)) = term.remote_stats_request() else {
+                    *self.imp().remote_stats_pending.borrow_mut() = false;
+                    return;
+                };
+                if let Some(stats) = cached {
+                    *self.imp().remote_stats_pending.borrow_mut() = false;
+                    if let Some(label) = self.imp().stats_sys_label.borrow().clone() {
+                        label.set_text(&stats);
+                    }
+                    return;
+                }
                 std::thread::spawn(move || {
-                    let obj: glib::Object = unsafe {
-                        glib::Object::from_glib_none(term_ptr as *mut glib::gobject_ffi::GObject)
-                    };
-                    let term: TerminalBox = unsafe { obj.unsafe_cast() };
-                    let stats = term.get_remote_stats();
+                    let stats = TerminalBox::collect_remote_stats(&target, socket.as_deref());
                     glib::MainContext::default().invoke(move || {
                         if let Some(w) = weak.upgrade() {
                             if gen == *w.imp().remote_stats_generation.borrow() {
                                 *w.imp().remote_stats_pending.borrow_mut() = false;
-                                if let Some(label) = w.imp().stats_sys_label.borrow().clone() {
-                                    if stats.is_empty() {
-                                        label.set_text(&crate::system_stats::ssh_placeholder());
-                                    } else {
-                                        label.set_text(&stats);
+                                let is_active = w
+                                    .imp()
+                                    .terminal
+                                    .borrow()
+                                    .as_ref()
+                                    .is_some_and(|term| term.remote_id() == term_id);
+                                if is_active {
+                                    if let Some(term) = w.imp().terminal.borrow().clone() {
+                                        term.cache_remote_stats(&stats);
+                                    }
+                                    if let Some(label) = w.imp().stats_sys_label.borrow().clone() {
+                                        if stats.is_empty() {
+                                            label.set_text(&crate::system_stats::ssh_placeholder());
+                                        } else {
+                                            label.set_text(&stats);
+                                        }
                                     }
                                 }
                             }
@@ -1431,8 +1454,8 @@ impl MainWindow {
     fn apply_window_visuals(&self) {
         let s = settings();
         let opacity = (s.get_f64("opacity") * 100.0).round() / 100.0;
-        self.set_opacity(opacity);
         if s.get_bool("enable_transparency") {
+            self.set_opacity(opacity);
             if let Some(screen) = gtk::prelude::WidgetExt::screen(self) {
                 if let Some(visual) = screen.rgba_visual() {
                     self.set_app_paintable(true);
@@ -1440,6 +1463,7 @@ impl MainWindow {
                 }
             }
         } else {
+            self.set_opacity(1.0);
             self.set_app_paintable(false);
         }
     }
@@ -3335,7 +3359,11 @@ impl MainWindow {
             return;
         };
         let title = self.get_tab_text(&term);
+        // Removing the final page closes the now-empty source window. That is
+        // a consequence of detaching, not a user-requested window close.
+        *self.imp().skip_close_confirm.borrow_mut() = true;
         nb.remove_page(Some(idx));
+        *self.imp().skip_close_confirm.borrow_mut() = false;
         self.imp().tab_labels.borrow_mut().remove(&term);
         self.imp().tab_base_titles.borrow_mut().remove(&term);
         self.update_tabs_menu();
@@ -3413,6 +3441,7 @@ impl MainWindow {
         }
 
         *self.imp().closing.borrow_mut() = true;
+        self.stop_stats_timer();
 
         let app = self.application();
         let windows = app.map(|a| a.windows().len()).unwrap_or(1);
@@ -3518,7 +3547,9 @@ impl MainWindow {
                 if let Some(page) = notebook.nth_page(Some(i)) {
                     if let Ok(term) = page.downcast::<TerminalBox>() {
                         if term != *source {
-                            term.vte().feed_child(data);
+                            if term.vte().is_input_enabled() {
+                                term.vte().feed_child(data);
+                            }
                         }
                     }
                 }
@@ -3555,8 +3586,10 @@ impl MainWindow {
         let source = glib::timeout_add_seconds_local(3, move || {
             if let Some(w) = weak.upgrade() {
                 w.refresh_stats();
+                glib::ControlFlow::Continue
+            } else {
+                glib::ControlFlow::Break
             }
-            glib::ControlFlow::Continue
         });
         *self.imp().stats_source_id.borrow_mut() = Some(source);
     }
@@ -3565,6 +3598,8 @@ impl MainWindow {
         if let Some(id) = self.imp().stats_source_id.borrow_mut().take() {
             id.remove();
         }
+        *self.imp().remote_stats_pending.borrow_mut() = false;
+        *self.imp().remote_stats_generation.borrow_mut() += 1;
     }
 
     fn refresh_stats(&self) {
@@ -3580,22 +3615,37 @@ impl MainWindow {
                 *self.imp().remote_stats_generation.borrow_mut() += 1;
                 let gen = *self.imp().remote_stats_generation.borrow();
                 let weak = crate::SendWeak::new(self);
-                let term_ptr = term.as_ptr() as usize;
+                let term_id = term.remote_id();
+                let Some((target, socket, cached)) = term.remote_stats_request() else {
+                    *self.imp().remote_stats_pending.borrow_mut() = false;
+                    return;
+                };
+                if let Some(stats) = cached {
+                    *self.imp().remote_stats_pending.borrow_mut() = false;
+                    if let Some(label) = self.imp().stats_sys_label.borrow().clone() {
+                        label.set_text(&stats);
+                    }
+                    return;
+                }
                 std::thread::spawn(move || {
-                    let obj: glib::Object = unsafe {
-                        glib::Object::from_glib_none(term_ptr as *mut glib::gobject_ffi::GObject)
-                    };
-                    let term: TerminalBox = unsafe { obj.unsafe_cast() };
-                    let stats = term.get_remote_stats();
+                    let stats = TerminalBox::collect_remote_stats(&target, socket.as_deref());
                     glib::MainContext::default().invoke(move || {
                         if let Some(w) = weak.upgrade() {
                             if gen == *w.imp().remote_stats_generation.borrow() {
                                 *w.imp().remote_stats_pending.borrow_mut() = false;
-                                if let Some(label) = w.imp().stats_sys_label.borrow().clone() {
-                                    if stats.is_empty() {
-                                        label.set_text(&crate::system_stats::ssh_placeholder());
-                                    } else {
-                                        label.set_text(&stats);
+                                let is_active = w
+                                    .current_terminal()
+                                    .is_some_and(|term| term.remote_id() == term_id);
+                                if is_active {
+                                    if let Some(term) = w.current_terminal() {
+                                        term.cache_remote_stats(&stats);
+                                    }
+                                    if let Some(label) = w.imp().stats_sys_label.borrow().clone() {
+                                        if stats.is_empty() {
+                                            label.set_text(&crate::system_stats::ssh_placeholder());
+                                        } else {
+                                            label.set_text(&stats);
+                                        }
                                     }
                                 }
                             }

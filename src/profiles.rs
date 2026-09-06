@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -7,7 +8,7 @@ use serde_json::Value;
 
 use crate::logging::LOGGER;
 use crate::persistence::validate_name;
-use crate::persistence::write_private_temp;
+use crate::persistence::{sync_parent_directory, write_private_temp};
 use crate::settings::{self, Settings};
 
 fn profile_dir() -> PathBuf {
@@ -78,50 +79,7 @@ fn validate_profile(data: &Value) -> Option<Value> {
         let Some(value) = src.get(*key) else {
             continue;
         };
-        let default = defs.get(*key).unwrap_or(&Value::Null);
-        let ok = match default {
-            Value::Bool(_) => value.is_boolean(),
-            Value::Number(n) => {
-                if n.is_i64() || n.is_u64() {
-                    if !value.is_number() || value.is_f64() {
-                        false
-                    } else {
-                        let v = value.as_i64().unwrap_or(0);
-                        match *key {
-                            "font_size" => (4..=128).contains(&v),
-                            "scrollback_lines" => (-1..=1_000_000).contains(&v),
-                            k if k.starts_with("window_padding_") => (0..=100).contains(&v),
-                            _ => true,
-                        }
-                    }
-                } else {
-                    value.is_number()
-                        && !value.is_boolean()
-                        && if *key == "opacity" {
-                            (0.1..=1.0).contains(&value.as_f64().unwrap_or(0.0))
-                        } else {
-                            true
-                        }
-                }
-            }
-            Value::String(_) => {
-                value.is_string() && value.as_str().unwrap().chars().count() <= 4096
-            }
-            Value::Null => value.is_null(),
-            Value::Object(_) => {
-                if let Value::Object(m) = value {
-                    !m.iter().any(|(k, v)| {
-                        k.chars().count() > 100
-                            || !v.is_string()
-                            || v.as_str().unwrap().chars().count() > 4096
-                    })
-                } else {
-                    false
-                }
-            }
-            Value::Array(_) => false,
-        };
-        if !ok {
+        if defs.get(*key).is_none() || !Settings::valid_value(key, value) {
             return None;
         }
         valid.insert(key.to_string(), value.clone());
@@ -171,11 +129,16 @@ pub fn save_profile(name: &str, settings_data: &Value) -> bool {
     ) {
         Ok(tmp) => {
             let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
-            if fs::rename(&tmp, &path).is_ok() {
-                return true;
+            if let Err(e) = fs::rename(&tmp, &path) {
+                let _ = fs::remove_file(&tmp);
+                LOGGER.error(&format!("profile_save_failed error={}", e));
+                return false;
             }
-            LOGGER.error("profile_save_failed");
-            false
+            if let Err(e) = sync_parent_directory(&path) {
+                LOGGER.error(&format!("profile_save_failed error={}", e));
+                return false;
+            }
+            true
         }
         Err(e) => {
             LOGGER.error(&format!("profile_save_failed error={}", e));
@@ -219,7 +182,7 @@ pub fn delete_profile(name: &str) {
     }
 }
 
-pub fn apply_profile(settings_obj: &Settings, name: &str) -> bool {
+pub fn apply_profile(settings_obj: impl Borrow<Settings>, name: &str) -> bool {
     match load_profile(name) {
         Some(data) => {
             let mut updates = BTreeMap::new();
@@ -228,9 +191,17 @@ pub fn apply_profile(settings_obj: &Settings, name: &str) -> bool {
                     updates.insert(k.clone(), v.clone());
                 }
             }
-            let _ = settings_obj.set_many(updates);
-            settings_obj.notify_changed();
-            true
+            let settings_obj = settings_obj.borrow();
+            match settings_obj.set_many(updates) {
+                Ok(()) => {
+                    settings_obj.notify_changed();
+                    true
+                }
+                Err(e) => {
+                    LOGGER.warning(&format!("profile_apply_failed error={}", e));
+                    false
+                }
+            }
         }
         None => false,
     }
@@ -257,4 +228,17 @@ pub fn list_profiles() -> Vec<String> {
     }
     out.sort();
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn rejects_values_settings_would_reject() {
+        assert!(validate_profile(&json!({"cursor_color": "not-a-color"})).is_none());
+        assert!(validate_profile(&json!({"font_size": 3})).is_none());
+        assert!(validate_profile(&json!({"cursor_color": "#aabbcc"})).is_some());
+    }
 }
