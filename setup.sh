@@ -35,6 +35,4 @@ StartupWMClass=Oxterm
 MimeType=inode/directory;
 EOF
 
-rm -f "${PREFIX}/bin/TRust" "${desktop_dir}/TRust.desktop" "${icon_dir}/TRust.svg"
-
 printf '%s\n' "Installed Oxterm to ${PREFIX}/bin/oxterm"

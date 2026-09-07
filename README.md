@@ -119,9 +119,7 @@ The script always rebuilds the release binary before installing it and asks for
 `sudo` only when it needs permission to write the system installation
 directories. It installs the executable, desktop launcher, and Oxterm ox
 icon system-wide. Run it again after building a newer version so the system
-command and launcher point to the new binary. Both installers remove the legacy
-`TRust` executable, desktop entry, and icon when present; they never remove the
-unrelated lowercase `trust` command.
+command and launcher point to the new binary.
 
 The command is `oxterm` in lowercase. This avoids the unrelated `/usr/bin/trust`
 `p11-kit` certificate utility.
