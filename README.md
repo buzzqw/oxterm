@@ -33,6 +33,7 @@ all with a small memory footprint and the memory-safety guarantees of Rust.
 - SQLite command history with reverse search, filters, read-only SQL, replay, command duration, and Git branch metadata
 - AI chat through OpenAI, Anthropic Claude, Google Gemini, DeepSeek, Ollama, and custom APIs
 - AI failure diagnosis with `/ai explain` and safe repair suggestions with `/ai repair`
+- AI response usage summary with input/output tokens and estimated USD cost when available
 - Timestamped Markdown notes and configurable editor integration
 - OSC 133 shell integration for prompts, command boundaries, and exit status
 - Session restore, named sessions, profiles, command palette, quickmarks, and hints
@@ -209,7 +210,7 @@ active and `last` after completion.
 
 ## Built-in Commands
 
-Commands beginning with `/` are handled by Oxterm:
+Commands beginning with `/` and one-shot AI prompts are handled by Oxterm:
 
 | Command | Purpose |
 | --- | --- |
@@ -217,6 +218,7 @@ Commands beginning with `/` are handled by Oxterm:
 | `/history [terms]` | Search command history using AND filters |
 | `/history :sql SELECT ...` | Run a read-only history query |
 | `/ai` | Enter AI chat mode |
+| `? QUESTION` / `# QUESTION` | Ask AI once and return to the shell prompt |
 | `/ai explain` | Explain the latest failed command in the current directory |
 | `/ai repair` | Suggest a safe repair for the latest failed command |
 | `/ai context N <question>` | Ask AI about the last N terminal lines |
@@ -305,6 +307,11 @@ does not affect normal terminal operation.
 `/ai context` sends the selected recent terminal lines to the configured
 provider after basic secret redaction. Do not use it with sensitive output that
 must not leave the machine.
+
+After a completed response, Oxterm displays the input, output, and total tokens
+reported by the provider. It also displays an estimated USD cost for supported
+models. The estimate is not an invoice: custom and local models, unknown model
+prices, and providers that do not report usage are shown as unavailable.
 
 URLs opened from terminal output are restricted to `http://` and `https://`.
 Links using other schemes are not passed to desktop URL handlers.

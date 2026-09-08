@@ -107,6 +107,98 @@ impl std::fmt::Display for AiError {
 
 const MAX_MESSAGE_PAIRS: usize = 20;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TokenUsage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+}
+
+impl TokenUsage {
+    fn from_value(value: &Value) -> Option<Self> {
+        let usage = value.as_object()?;
+        let input_tokens = usage
+            .get("prompt_tokens")
+            .or_else(|| usage.get("input_tokens"))
+            .and_then(Value::as_u64);
+        let output_tokens = usage
+            .get("completion_tokens")
+            .or_else(|| usage.get("output_tokens"))
+            .and_then(Value::as_u64);
+        let total_tokens = usage.get("total_tokens").and_then(Value::as_u64);
+        if input_tokens.is_none() && output_tokens.is_none() && total_tokens.is_none() {
+            return None;
+        }
+        Some(Self {
+            input_tokens,
+            output_tokens,
+            total_tokens,
+        })
+    }
+
+    fn merge(&mut self, value: &Value) {
+        let Some(other) = Self::from_value(value) else {
+            return;
+        };
+        if other.input_tokens.is_some() {
+            self.input_tokens = other.input_tokens;
+        }
+        if other.output_tokens.is_some() {
+            self.output_tokens = other.output_tokens;
+        }
+        if other.total_tokens.is_some() {
+            self.total_tokens = other.total_tokens;
+        }
+    }
+
+    fn merge_gemini(&mut self, value: &Value) {
+        let Some(usage) = value.as_object() else {
+            return;
+        };
+        for (source, target) in [
+            ("promptTokenCount", &mut self.input_tokens),
+            ("candidatesTokenCount", &mut self.output_tokens),
+            ("totalTokenCount", &mut self.total_tokens),
+        ] {
+            if let Some(tokens) = usage.get(source).and_then(Value::as_u64) {
+                *target = Some(tokens);
+            }
+        }
+    }
+}
+
+fn price_per_million_tokens(provider: &str, model: &str) -> Option<(u64, u64)> {
+    let model = model.to_ascii_lowercase();
+    let prices = match provider {
+        "openai" if model == "gpt-4o" => (2_500_000, 10_000_000),
+        "openai" if model == "gpt-4o-mini" => (150_000, 600_000),
+        "claude" if model.contains("sonnet-4") => (3_000_000, 15_000_000),
+        "claude" if model.contains("haiku-4") => (1_000_000, 5_000_000),
+        "gemini" if model.contains("2.5-flash") => (300_000, 2_500_000),
+        "deepseek" if model.starts_with("deepseek-chat") => (280_000, 420_000),
+        _ => return None,
+    };
+    Some(prices)
+}
+
+pub fn estimate_cost_microusd(provider: &str, model: &str, usage: &TokenUsage) -> Option<u64> {
+    let (input_price, output_price) = price_per_million_tokens(provider, model)?;
+    let mut total = 0u64;
+    let mut has_tokens = false;
+    if let Some(tokens) = usage.input_tokens {
+        total = total.checked_add(tokens.checked_mul(input_price)?)?;
+        has_tokens = true;
+    }
+    if let Some(tokens) = usage.output_tokens {
+        total = total.checked_add(tokens.checked_mul(output_price)?)?;
+        has_tokens = true;
+    }
+    if !has_tokens {
+        return None;
+    }
+    Some(total / 1_000_000)
+}
+
 static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
 static STREAM_AGENT: OnceLock<ureq::Agent> = OnceLock::new();
 
@@ -271,7 +363,7 @@ impl AIClient {
         message: &str,
         cancel: &AtomicBool,
         mut on_chunk: F,
-    ) -> Result<(), AiError>
+    ) -> Result<Option<TokenUsage>, AiError>
     where
         F: FnMut(&str),
     {
@@ -424,11 +516,12 @@ impl AIClient {
         &self,
         cancel: &AtomicBool,
         on_chunk: &mut F,
-    ) -> Result<(), AiError> {
+    ) -> Result<Option<TokenUsage>, AiError> {
         let headers = self.auth_headers();
         let mut payload =
             json!({"model": self.model, "messages": self.messages.lock().unwrap().clone()});
         payload["stream"] = Value::Bool(true);
+        payload["stream_options"] = json!({"include_usage": true});
         let resp = self.open_stream(&self.base_url, &headers, payload)?;
         if resp.status() != 200 {
             let status = resp.status();
@@ -440,6 +533,7 @@ impl AIClient {
             )));
         }
         let mut full = String::new();
+        let mut usage = TokenUsage::default();
         let reader = std::io::BufReader::new(resp.into_reader());
         for line in reader.lines() {
             if self.is_cancelled(cancel) {
@@ -455,6 +549,9 @@ impl AIClient {
                 break;
             }
             if let Ok(chunk) = serde_json::from_str::<Value>(data_str) {
+                if let Some(value) = chunk.get("usage") {
+                    usage.merge(value);
+                }
                 if let Some(content) = chunk
                     .get("choices")
                     .and_then(|c| c.get(0))
@@ -473,7 +570,7 @@ impl AIClient {
             return Err(AiError::Cancelled);
         }
         self.add_message("assistant", &full);
-        Ok(())
+        Ok((usage != TokenUsage::default()).then_some(usage))
     }
 
     fn call_claude(&self, streaming: bool) -> Result<String, String> {
@@ -510,7 +607,7 @@ impl AIClient {
         &self,
         cancel: &AtomicBool,
         on_chunk: &mut F,
-    ) -> Result<(), AiError> {
+    ) -> Result<Option<TokenUsage>, AiError> {
         let headers = self.claude_headers();
         let mut payload = self.build_messages_payload(true);
         payload["stream"] = Value::Bool(true);
@@ -526,6 +623,7 @@ impl AIClient {
         }
         let mut full = String::new();
         let mut event_type = String::new();
+        let mut usage = TokenUsage::default();
         let reader = std::io::BufReader::new(resp.into_reader());
         for line in reader.lines() {
             if self.is_cancelled(cancel) {
@@ -548,7 +646,19 @@ impl AIClient {
                 return Err(AiError::Http(truncate(data_str, 300)));
             }
             if let Ok(event) = serde_json::from_str::<Value>(data_str) {
-                if event.get("type").and_then(|t| t.as_str()) == Some("content_block_delta") {
+                if event.get("type").and_then(|t| t.as_str()) == Some("message_start") {
+                    if let Some(message_usage) = event
+                        .get("message")
+                        .and_then(|message| message.get("usage"))
+                    {
+                        usage.merge(message_usage);
+                    }
+                } else if event.get("type").and_then(|t| t.as_str()) == Some("message_delta") {
+                    if let Some(delta_usage) = event.get("usage") {
+                        usage.merge(delta_usage);
+                    }
+                } else if event.get("type").and_then(|t| t.as_str()) == Some("content_block_delta")
+                {
                     if let Some(text) = event
                         .get("delta")
                         .and_then(|d| d.get("text"))
@@ -573,7 +683,7 @@ impl AIClient {
             return Err(AiError::Cancelled);
         }
         self.add_message("assistant", &full);
-        Ok(())
+        Ok((usage != TokenUsage::default()).then_some(usage))
     }
 
     fn gemini_url(&self, streaming: bool) -> String {
@@ -630,7 +740,7 @@ impl AIClient {
         &self,
         cancel: &AtomicBool,
         on_chunk: &mut F,
-    ) -> Result<(), AiError> {
+    ) -> Result<Option<TokenUsage>, AiError> {
         let url = self.gemini_url(true);
         let headers = self.gemini_headers();
         let (payload, _) = self.build_gemini_payload();
@@ -645,6 +755,7 @@ impl AIClient {
             )));
         }
         let mut full = String::new();
+        let mut usage = TokenUsage::default();
         let reader = std::io::BufReader::new(resp.into_reader());
         for line in reader.lines() {
             if self.is_cancelled(cancel) {
@@ -657,6 +768,9 @@ impl AIClient {
             }
             let data_str = &line[6..];
             if let Ok(event) = serde_json::from_str::<Value>(data_str) {
+                if let Some(metadata) = event.get("usageMetadata") {
+                    usage.merge_gemini(metadata);
+                }
                 if let Some(text) = event
                     .get("candidates")
                     .and_then(|c| c.get(0))
@@ -675,7 +789,7 @@ impl AIClient {
             return Err(AiError::Cancelled);
         }
         self.add_message("assistant", &full);
-        Ok(())
+        Ok((usage != TokenUsage::default()).then_some(usage))
     }
 }
 
@@ -863,6 +977,49 @@ mod tests {
 
         let data = serde_json::json!({"data": [{"id": "gpt-test"}, {"id": "gpt-test"}]});
         assert_eq!(parse_models("openai", &data), vec!["gpt-test"]);
+    }
+
+    #[test]
+    fn parses_usage_and_estimates_known_model_cost() {
+        let usage = TokenUsage::from_value(&serde_json::json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150
+        }))
+        .unwrap();
+        assert_eq!(usage.input_tokens, Some(100));
+        assert_eq!(usage.output_tokens, Some(50));
+        assert_eq!(usage.total_tokens, Some(150));
+        assert_eq!(
+            estimate_cost_microusd("openai", "gpt-4o", &usage),
+            Some(750)
+        );
+    }
+
+    #[test]
+    fn parses_gemini_usage_metadata() {
+        let mut usage = TokenUsage::default();
+        usage.merge_gemini(&serde_json::json!({
+            "promptTokenCount": 12,
+            "candidatesTokenCount": 34,
+            "totalTokenCount": 46
+        }));
+        assert_eq!(usage.input_tokens, Some(12));
+        assert_eq!(usage.output_tokens, Some(34));
+        assert_eq!(usage.total_tokens, Some(46));
+    }
+
+    #[test]
+    fn unknown_model_has_no_estimated_cost() {
+        let usage = TokenUsage {
+            input_tokens: Some(100),
+            output_tokens: Some(100),
+            total_tokens: Some(200),
+        };
+        assert_eq!(
+            estimate_cost_microusd("custom", "local-model", &usage),
+            None
+        );
     }
 }
 

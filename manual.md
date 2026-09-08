@@ -255,10 +255,44 @@ quoted text are left to the shell because their meaning varies between shells.
 Questions and answers sent during the session remain in the AI conversation
 context, so a later question can refer to an earlier answer.
 
+At the end of a completed response, Oxterm prints an AI usage summary with input,
+output, and total tokens. When the provider reports usage and the model has a
+known price, the summary also includes an estimated cost in USD. The estimate is
+not an invoice and does not include provider-specific discounts, taxes, account
+credits, or prices that Oxterm does not know.
+
 `/ai context N` includes the last N visible terminal lines in the request after
 basic secret redaction. The resulting context is sent to the configured
 provider, so do not use it with sensitive output that must remain local. Use
 `Ctrl+C` to cancel an in-progress response.
+
+### Usage and estimated cost
+
+Usage comes from the provider's streaming metadata. If usage is missing, or if
+the provider/model is not in Oxterm's price table, token counts or cost are
+reported as unavailable rather than being guessed. Ollama and custom endpoints
+normally do not have a monetary estimate.
+
+The built-in USD rates are per one million tokens:
+
+| Provider/model | Input | Output |
+| --- | ---: | ---: |
+| OpenAI `gpt-4o` | $2.50 | $10.00 |
+| OpenAI `gpt-4o-mini` | $0.15 | $0.60 |
+| Claude Sonnet 4 | $3.00 | $15.00 |
+| Claude Haiku 4 | $1.00 | $5.00 |
+| Gemini 2.5 Flash | $0.30 | $2.50 |
+| DeepSeek Chat | $0.28 | $0.42 |
+
+The estimate is calculated as:
+
+```text
+(input tokens * input rate + output tokens * output rate) / 1,000,000
+```
+
+Provider prices can change, so the displayed amount should be treated as an
+approximation. Cached, reasoning, tool, subscription, and regional pricing may
+not be represented by the basic estimate.
 
 ### `/ai explain` and `/ai repair`
 
