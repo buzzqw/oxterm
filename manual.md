@@ -236,9 +236,24 @@ Starts AI chat with the configured provider:
 
 ```text
 /ai
+/ai on
 /ai context 30 why did the command fail?
 /ai off
 ```
+
+For a single question without entering AI chat mode, prefix the prompt with `?`
+or `#`:
+
+```text
+? how do I add two numbers in bash?
+# explain this error
+```
+
+Oxterm sends the question to the configured provider, displays the answer, and
+returns to the normal shell prompt. The `?` prefix is recommended; `!` and
+quoted text are left to the shell because their meaning varies between shells.
+Questions and answers sent during the session remain in the AI conversation
+context, so a later question can refer to an earlier answer.
 
 `/ai context N` includes the last N visible terminal lines in the request after
 basic secret redaction. The resulting context is sent to the configured
@@ -306,7 +321,11 @@ Selects and tests an AI provider:
 ```
 
 With no provider, Oxterm displays configured providers and their availability.
-For Ollama and custom endpoints, available models can be detected automatically.
+When a provider has no model in Preferences, Oxterm queries it using the API key
+and asks you to choose one of the models returned by that provider. The same
+model selection happens when starting the first chat with `/ai on`; no model
+needs to be entered manually. If a model is already configured in Preferences,
+that model is used directly.
 
 ### `/wnotes` and `/onotes`
 
@@ -375,8 +394,9 @@ Configure AI providers under **Edit > Preferences > AI**. Supported providers:
 | Custom | Optional | OpenAI-compatible servers |
 
 Each provider can have its own model, endpoint, and system prompt. Cloud API
-keys are stored in `~/.config/oxterm/settings.json`; protect the file and do not
-share it. Custom endpoints must use HTTPS, except for local HTTP services on
+keys are used to retrieve the provider's available models and are stored in
+`~/.config/oxterm/settings.json`; protect the file and do not share it. Custom
+endpoints must use HTTPS, except for local HTTP services on
 `localhost`, `127.0.0.1`, or `::1`.
 
 For Ollama, start the local server before connecting. Custom endpoints should

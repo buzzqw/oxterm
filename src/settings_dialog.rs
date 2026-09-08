@@ -303,7 +303,8 @@ Terminal workflow\n\
 \nBuilt-in commands\n\
   /help              Show the in-terminal command reference\n\
   /history [terms]   Search command history (use -term to exclude)\n\
-  /ai                Start optional AI chat\n\
+  /ai [on]           Start optional AI chat\n\
+   ? QUESTION         Ask AI once and return to the shell prompt\n\
   /ai explain        Explain the latest failed command\n\
   /ai repair         Suggest a safe repair for the latest failure\n\
   /connect           Select and test an AI provider\n\

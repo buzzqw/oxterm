@@ -722,6 +722,35 @@ pub fn fetch_models(provider: &str, api_key: &str, base_url: &str) -> Vec<String
             .timeout(Duration::from_secs(5));
         req = req.set("Authorization", &format!("Bearer {}", api_key));
         req.call()
+    } else if provider == "claude" && !api_key.is_empty() {
+        let Some((_, url, _, _)) = provider_info(provider) else {
+            return Vec::new();
+        };
+        let models_url = url
+            .rsplit_once("/messages")
+            .map(|(base, _)| format!("{}/models", base.trim_end_matches('/')))
+            .unwrap_or_else(|| "https://api.anthropic.com/v1/models".to_string());
+        agent()
+            .get(&models_url)
+            .set("x-api-key", api_key)
+            .set("anthropic-version", "2023-06-01")
+            .timeout(Duration::from_secs(5))
+            .call()
+    } else if provider == "gemini" && !api_key.is_empty() {
+        let Some((_, url, _, _)) = provider_info(provider) else {
+            return Vec::new();
+        };
+        let models_url = url
+            .split_once("/models/")
+            .map(|(base, _)| format!("{}/models", base.trim_end_matches('/')))
+            .unwrap_or_else(|| {
+                "https://generativelanguage.googleapis.com/v1beta/models".to_string()
+            });
+        agent()
+            .get(&models_url)
+            .set("x-goog-api-key", api_key)
+            .timeout(Duration::from_secs(5))
+            .call()
     } else {
         return Vec::new();
     };
@@ -733,33 +762,57 @@ pub fn fetch_models(provider: &str, api_key: &str, base_url: &str) -> Vec<String
         Ok(v) => v,
         Err(_) => return Vec::new(),
     };
+    parse_models(provider, &data)
+}
+
+fn parse_models(provider: &str, data: &Value) -> Vec<String> {
     let mut out = Vec::new();
     if provider == "ollama" {
         if let Some(models) = data.get("models").and_then(|m| m.as_array()) {
             for m in models {
-                let name = m
+                if let Some(name) = m
                     .get("name")
                     .and_then(|n| n.as_str())
                     .or_else(|| m.get("model").and_then(|n| n.as_str()))
-                    .unwrap_or(&m.to_string())
-                    .to_string();
-                out.push(name);
+                {
+                    out.push(name.to_string());
+                }
             }
         }
-    } else if let Some(items) = data.get("data").and_then(|d| d.as_array()) {
+    } else if let Some(items) = data
+        .get(if provider == "gemini" {
+            "models"
+        } else {
+            "data"
+        })
+        .and_then(|d| d.as_array())
+    {
         for m in items {
-            let name = m
+            if provider == "gemini" {
+                let supports_generation = m
+                    .get("supportedGenerationMethods")
+                    .and_then(|methods| methods.as_array())
+                    .map(|methods| {
+                        methods
+                            .iter()
+                            .any(|method| method.as_str() == Some("generateContent"))
+                    })
+                    .unwrap_or(true);
+                if !supports_generation {
+                    continue;
+                }
+            }
+            if let Some(name) = m
                 .get("id")
                 .and_then(|n| n.as_str())
                 .or_else(|| m.get("name").and_then(|n| n.as_str()))
-                .unwrap_or(&m.to_string())
-                .to_string();
-            out.push(name);
+            {
+                out.push(name.strip_prefix("models/").unwrap_or(name).to_string());
+            }
         }
     }
-    if provider == "openai" || provider == "deepseek" {
-        out.sort();
-    }
+    out.sort();
+    out.dedup();
     out
 }
 
@@ -796,6 +849,20 @@ mod tests {
         assert!(AIClient::new("custom", "", None, "http://example.test/chat").is_err());
         assert!(AIClient::new("custom", "", None, "http://127.0.0.1:8080/chat").is_ok());
         assert!(AIClient::new("custom", "", None, "https://example.test/chat").is_ok());
+    }
+
+    #[test]
+    fn parses_provider_model_lists() {
+        let data = serde_json::json!({
+            "models": [
+                {"name": "models/gemini-chat", "supportedGenerationMethods": ["generateContent"]},
+                {"name": "models/embedding", "supportedGenerationMethods": ["embedContent"]}
+            ]
+        });
+        assert_eq!(parse_models("gemini", &data), vec!["gemini-chat"]);
+
+        let data = serde_json::json!({"data": [{"id": "gpt-test"}, {"id": "gpt-test"}]});
+        assert_eq!(parse_models("openai", &data), vec!["gpt-test"]);
     }
 }
 
