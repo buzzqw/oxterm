@@ -158,6 +158,7 @@ read -r -p "Create release ${TAG_VERSION} and push it to GitHub? [y/N] " answer
 
 if [[ "$CURRENT_VERSION" != "$VERSION" ]]; then
     sed -i -E "0,/^version = \"[0-9.]+\"$/s//version = \"${VERSION}\"/" Cargo.toml
+    cargo update -p oxterm --offline
 fi
 
 git add Cargo.toml
