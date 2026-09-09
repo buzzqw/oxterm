@@ -50,10 +50,17 @@ configure_external_proxy() {
         exec 3>&-
         exec 3<&-
         local proxy="http://127.0.0.1:8088"
+        local mitm_ca="${MITM_CA_FILE:-${HOME}/.mitmproxy/mitmproxy-ca-cert.pem}"
         export http_proxy="$proxy"
         export https_proxy="$proxy"
         export HTTP_PROXY="$proxy"
         export HTTPS_PROXY="$proxy"
+        if [[ -f "$mitm_ca" ]]; then
+            export SSL_CERT_FILE="$mitm_ca"
+            export CURL_CA_BUNDLE="$mitm_ca"
+            export GIT_SSL_CAINFO="$mitm_ca"
+            info "Using local MITM CA at ${mitm_ca}."
+        fi
         info "Using local MITM proxy at ${proxy}."
     fi
 }
