@@ -45,11 +45,29 @@ git rev-parse --git-dir >/dev/null 2>&1 || err "Run this script inside a Git rep
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-command -v gh >/dev/null 2>&1 || err "GitHub CLI (gh) is required."
-gh auth status >/dev/null 2>&1 || err "Authenticate GitHub CLI with 'gh auth login' first."
+configure_external_proxy() {
+    if (exec 3<>/dev/tcp/127.0.0.1/8088) 2>/dev/null; then
+        exec 3>&-
+        exec 3<&-
+        local proxy="http://127.0.0.1:8088"
+        export http_proxy="$proxy"
+        export https_proxy="$proxy"
+        export HTTP_PROXY="$proxy"
+        export HTTPS_PROXY="$proxy"
+        info "Using local MITM proxy at ${proxy}."
+    fi
+}
 
-if [[ -n "$(git status --porcelain)" ]]; then
+configure_external_proxy
+
+if [[ "$DRY_RUN" == false && -n "$(git status --porcelain)" ]]; then
     err "The working tree must be clean before creating a release."
+fi
+
+if [[ "$DRY_RUN" == false ]]; then
+    command -v gh >/dev/null 2>&1 || err "GitHub CLI (gh) is required."
+    gh auth status >/dev/null 2>&1 || \
+        err "GitHub CLI is not authenticated or its token is invalid. Run 'gh auth login' or 'gh auth refresh -h github.com'."
 fi
 
 detect_main_branch() {
