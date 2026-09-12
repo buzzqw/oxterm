@@ -71,6 +71,15 @@ impl BrokerHandle {
         )
     }
 
+    /// Whether the child PTY currently echoes typed characters. Password
+    /// prompts clear ECHO, so callers must not retain input while it is false.
+    pub fn child_echo_on(&self) -> bool {
+        matches!(
+            control_request(&self.path, &format!("ECHO {}", self.id)),
+            Ok(response) if response == "1"
+        )
+    }
+
     pub fn local_off(&self) {
         let _ = control_request(&self.path, &format!("LOCAL_OFF {}", self.id));
     }
@@ -1165,6 +1174,7 @@ fn handle_command(
             | "SIGNAL"
             | "KILL"
             | "IS_SSH"
+            | "ECHO"
     ) && id != state.id
         && verb != "LIST"
     {
@@ -1178,6 +1188,7 @@ fn handle_command(
         } else {
             b"OK\n0"
         }),
+        "ECHO" => clients[index].queue(if child_echo_on() { b"OK\n1" } else { b"OK\n0" }),
         "ATTACH" => {
             clients[index].attached = true;
             // A new client starts from an empty screen (the broker does not
@@ -1282,6 +1293,32 @@ fn child_foreground_is_ssh() -> bool {
     std::fs::read_to_string(format!("/proc/{foreground}/comm"))
         .map(|name| name.trim() == "ssh")
         .unwrap_or(false)
+}
+
+fn child_echo_on() -> bool {
+    let mut attrs = std::mem::MaybeUninit::<libc::termios>::uninit();
+    if unsafe { libc::tcgetattr(CHILD_FD, attrs.as_mut_ptr()) } == 0 {
+        return termios_echo_on(unsafe { attrs.assume_init() });
+    }
+
+    // Some platforms expose terminal attributes only through the slave side.
+    // Open it as a fallback while keeping the conservative failure behavior.
+    let name = unsafe { libc::ptsname(CHILD_FD) };
+    if name.is_null() {
+        return false;
+    }
+    let slave = unsafe { libc::open(name, libc::O_RDWR | libc::O_NOCTTY) };
+    if slave < 0 {
+        return false;
+    }
+    let result = unsafe { libc::tcgetattr(slave, attrs.as_mut_ptr()) } == 0
+        && termios_echo_on(unsafe { attrs.assume_init() });
+    unsafe { libc::close(slave) };
+    result
+}
+
+fn termios_echo_on(attrs: libc::termios) -> bool {
+    attrs.c_lflag & libc::ECHO != 0
 }
 
 fn queue_child_input(state: &mut BrokerState, data: &[u8]) -> bool {
@@ -1494,6 +1531,15 @@ mod tests {
         let sanitized = field(&metadata);
         assert!(!sanitized.chars().any(|c| matches!(c, '\t' | '\n' | '\r')));
         assert_eq!(sanitized.chars().count(), 200);
+    }
+
+    #[test]
+    fn termios_echo_flag_is_detected() {
+        let mut attrs = unsafe { std::mem::zeroed::<libc::termios>() };
+        attrs.c_lflag = libc::ECHO;
+        assert!(termios_echo_on(attrs));
+        attrs.c_lflag = 0;
+        assert!(!termios_echo_on(attrs));
     }
 
     #[test]

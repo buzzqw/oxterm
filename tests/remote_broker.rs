@@ -67,6 +67,23 @@ fn set_raw(fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
+fn set_echo(fd: RawFd, enabled: bool) -> io::Result<()> {
+    let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
+    if unsafe { libc::tcgetattr(fd, termios.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut termios = unsafe { termios.assume_init() };
+    if enabled {
+        termios.c_lflag |= libc::ECHO;
+    } else {
+        termios.c_lflag &= !libc::ECHO;
+    }
+    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &termios) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 fn write_fd(fd: RawFd, mut data: &[u8]) -> io::Result<()> {
     while !data.is_empty() {
         let count = unsafe { libc::write(fd, data.as_ptr().cast(), data.len()) };
@@ -237,6 +254,17 @@ fn broker_round_trips_control_and_terminal_traffic() -> io::Result<()> {
         directory,
     };
     wait_for_socket(&fixture.socket, &mut fixture.child)?;
+
+    set_echo(fixture.child_slave, true)?;
+    assert_eq!(
+        control_request(&fixture.socket, "ECHO test-session")?,
+        b"OK\n1"
+    );
+    set_echo(fixture.child_slave, false)?;
+    assert_eq!(
+        control_request(&fixture.socket, "ECHO test-session")?,
+        b"OK\n0"
+    );
 
     let mode = std::fs::metadata(&fixture.socket)?.permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
