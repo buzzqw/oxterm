@@ -60,7 +60,7 @@ oxterm --title "Build server"      # fixed window title
 oxterm --geometry 120x40           # initial size in COLSxROWS cells
 oxterm --fullscreen                # or --maximize
 oxterm --hold --execute make       # keep the tab open after the command exits
-oxterm -- ~/dir-with-dashes        # everything after -- is treated as a directory
+oxterm -- ~/dir-with-dashes        # the next argument is treated as the directory
 ```
 
 `--title` sets a fixed title that programs cannot override through escape

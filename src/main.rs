@@ -338,7 +338,7 @@ fn usage() -> &'static str {
         "  -a, --attach [SESSION_ID]    Attach to one or choose an Oxterm terminal\n",
         "      --detach SESSION_ID      Detach its remote controller\n",
         "      --broker SOCKET ID       Run the persistent PTY broker (internal)\n",
-        "      --                       Treat every following argument as the directory\n",
+        "      --                       Treat the next argument as the directory\n",
         "  -V, --version                Show the Oxterm version\n",
         "  -h, --help                   Show this help\n",
     )
@@ -583,6 +583,115 @@ mod tests {
         assert!(o.hold);
         assert!(!o.maximize);
         assert!(parse_cli(&args(&["-V"])).unwrap().version);
+    }
+
+    #[test]
+    fn cli_parses_all_window_and_command_options() {
+        let o = parse_cli(&args(&[
+            "-w",
+            "/tmp",
+            "--new-window",
+            "--no-restore",
+            "--hold",
+            "--execute",
+            "sh",
+            "-c",
+            "printf '%s' ok",
+        ]))
+        .unwrap();
+        assert_eq!(o.start_dir.as_deref(), Some("/tmp"));
+        assert!(o.requested_dir);
+        assert!(o.new_window);
+        assert!(o.no_restore);
+        assert!(o.hold);
+        assert_eq!(o.execute, Some(args(&["sh", "-c", "printf '%s' ok"])));
+
+        let o = parse_cli(&args(&[
+            "--working-directory",
+            "/tmp",
+            "-e",
+            "printf",
+            "%s",
+            "ok",
+        ]))
+        .unwrap();
+        assert_eq!(o.start_dir.as_deref(), Some("/tmp"));
+        assert_eq!(o.execute, Some(args(&["printf", "%s", "ok"])));
+    }
+
+    #[test]
+    fn cli_parses_short_aliases() {
+        let o = parse_cli(&args(&["-F"])).unwrap();
+        assert!(o.fullscreen);
+        assert!(!o.maximize);
+
+        let o = parse_cli(&args(&["-m"])).unwrap();
+        assert!(!o.fullscreen);
+        assert!(o.maximize);
+
+        let o = parse_cli(&args(&["-g", "120X40"])).unwrap();
+        assert_eq!(o.geometry, Some((120, 40)));
+    }
+
+    #[test]
+    fn cli_requires_arguments_for_value_options() {
+        for option in [
+            "-w",
+            "--working-directory",
+            "-T",
+            "--title",
+            "-g",
+            "--geometry",
+            "--class",
+            "--name",
+            "-p",
+            "--profile",
+            "--config",
+            "-o",
+            "--option",
+            "--font",
+            "--font-size",
+            "-e",
+            "--execute",
+        ] {
+            assert!(
+                parse_cli(&args(&[option])).is_err(),
+                "{} accepts no value",
+                option
+            );
+        }
+    }
+
+    #[test]
+    fn cli_help_lists_every_standard_option() {
+        for option in [
+            "-w, --working-directory",
+            "-T, --title",
+            "-g, --geometry",
+            "-F, --fullscreen",
+            "-m, --maximize",
+            "--class",
+            "--name",
+            "-p, --profile",
+            "--config",
+            "-o, --option",
+            "--font",
+            "--font-size",
+            "--new-window",
+            "--no-restore",
+            "--hold",
+            "-e, --execute",
+            "--list",
+            "--info",
+            "-a, --attach",
+            "--detach",
+            "--broker",
+            "--",
+            "-V, --version",
+            "-h, --help",
+        ] {
+            assert!(usage().contains(option), "help is missing {}", option);
+        }
     }
 
     #[test]

@@ -40,6 +40,7 @@ all with a small memory footprint and the memory-safety guarantees of Rust.
 - Persistent PTY broker with SSH-friendly remote attach/detach, session listing, and multi-client terminal sharing
 - Parameterized snippets and JSON export for saved sessions
 - System statistics and SSH-aware status information
+- Optional close confirmation only when a terminal has an active foreground process
 
 ## Requirements
 
@@ -84,6 +85,16 @@ cd oxterm
 cargo build --release --locked
 ./target/release/oxterm
 ```
+
+To create the definitive project-root binary used by packaging workflows, run:
+
+```bash
+./build.sh
+./oxterm-linux-x86-64
+```
+
+`build.sh` runs the locked release build and copies the result to
+`oxterm-linux-x86-64`. The generated root binary is ignored by Git.
 
 The launcher uses the release binary when available and falls back to the debug
 binary:
@@ -137,22 +148,22 @@ oxterm [DIRECTORY] [OPTIONS] [-e CMD...]
   -m, --maximize               Start maximized
       --class CLASS            Set the WM_CLASS class part (window manager rules)
       --name NAME             Set the WM_CLASS instance name
-  -p, --profile NAME          Start with a saved profile (session only)
-      --config FILE           Use an alternative settings file
-  -o, --option KEY=VALUE      Override a setting for this session (repeatable)
+  -p, --profile NAME           Start with a saved profile (session only)
+      --config FILE            Use an alternative settings file
+  -o, --option KEY=VALUE       Override a setting for this session (repeatable)
       --font FAMILY           Override the font family for this session
       --font-size N           Override the font size for this session
       --new-window             Open an independent window
       --no-restore             Do not restore the last session
       --hold                   Keep the terminal open after the command exits
   -e, --execute CMD...         Run CMD instead of the configured shell
-      --list                    List active Oxterm terminals
-      --info SESSION_ID          Show one active terminal
+      --list                   List active Oxterm terminals
+      --info SESSION_ID        Show one active terminal
   -a, --attach [SESSION_ID]    Attach to one or choose an Oxterm terminal
-      --detach SESSION_ID       Detach its remote controller
-      --broker SOCKET ID        Run the persistent PTY broker (internal)
-      --                       Treat every following argument as the directory
-  -V, --version                Print the version
+      --detach SESSION_ID     Detach its remote controller
+      --broker SOCKET ID      Run the persistent PTY broker (internal)
+      --                      Treat the next argument as the directory
+  -V, --version                Show the Oxterm version
   -h, --help                   Print help
 ```
 
@@ -183,6 +194,10 @@ oxterm --detach 12345-2                   # release a remote attach
 launched session and are never written back to your saved settings. `--config`
 points Oxterm at an alternative settings file (handy for demos).
 
+`--execute` consumes every following argument as part of the command, so it must
+be the last option. `--` disables option parsing for the following directory
+argument, which is useful when its name begins with `-`.
+
 Without an explicit directory, Oxterm starts in the current working directory.
 
 `oxterm --list` and `oxterm -a [SESSION_ID]` are headless commands. They do
@@ -199,14 +214,19 @@ The listing includes the last command/application received from the shell, with
 The internal `oxterm --broker SOCKET SESSION_ID` mode is started by the GUI and
 is not normally invoked manually. Its framed Unix-socket protocol supports
 `LIST`, `INFO`, `ATTACH`, `DETACH`, `RENAME`, `COMMAND`, `LOCAL_ON`, `LOCAL_OFF`,
-and `KILL`. Attached clients exchange length-prefixed frames containing terminal
-input/output, and can detach without stopping the broker. Reconnecting does not
+`KILL`, `IS_SSH`, `ECHO`, and `IS_ACTIVE`. Attached clients exchange
+length-prefixed frames containing terminal input/output, and can detach without
+stopping the broker. Reconnecting does not
 replay output produced before the new client attached; it receives subsequent
 terminal output only. The broker removes its socket after the shell exits.
 
 The listing columns are `ID`, `NAME`, `TITLE`, `DIRECTORY`, `STATUS`,
 `APPLICATION`, and `APP_STATUS`. `APP_STATUS` is `running` while the command is
 active and `last` after completion.
+
+When **Confirm before closing active terminals** is enabled in Preferences,
+closing a window asks for confirmation only if one of its terminal tabs has an
+active foreground process. A shell waiting at its prompt closes immediately.
 
 ## Built-in Commands
 
@@ -245,12 +265,19 @@ completion.
 | `Ctrl+Shift+T` | New tab |
 | `Ctrl+Shift+N` | New window |
 | `Ctrl+Shift+W` | Close tab |
+| `Ctrl+Shift+Q` | Close window |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / paste |
+| `Ctrl+Shift+A` | Select all |
 | `Ctrl+Shift+S` | Set tab title |
 | `Ctrl+Shift+R` | Reset terminal |
 | `Ctrl+Shift+X` | Reset and clear terminal |
 | `Ctrl+Shift+F` | Search the scrollback (Enter/Shift+Enter = next/prev) |
 | `Ctrl++` / `Ctrl+-` / `Ctrl+0` | Zoom font in / out / reset |
+| `Ctrl+Shift+E` / `Ctrl+Shift+D` | Vertical / horizontal split |
+| `Ctrl+Shift+M` / `Ctrl+M` | Set / jump to quickmark |
+| `Ctrl+Shift+H` | Hint mode for URLs, paths, and Git SHAs |
+| `Ctrl+Shift+Y` | VI-style copy mode |
+| `Ctrl+Shift+B` | Toggle broadcast input |
 | `click` | Open the URL under the cursor |
 | `Ctrl+R` | Interactive history search; repeat to cycle matches |
 | `Ctrl+PageUp` / `Ctrl+PageDown` | Previous / next tab |
@@ -352,6 +379,11 @@ Release automation is available through:
 ./versiona.sh --dry-run
 ./versiona.sh
 ```
+
+The normal release flow updates both `Cargo.toml` and `Cargo.lock`, creates an
+annotated version tag, pushes the branch and tag, and publishes the GitHub
+release. Use `--dry-run` to inspect the next version and release notes without
+changing files or Git refs.
 
 ## Support
 

@@ -161,7 +161,7 @@ if [[ "$CURRENT_VERSION" != "$VERSION" ]]; then
     cargo update -p oxterm --offline
 fi
 
-git add Cargo.toml
+git add Cargo.toml Cargo.lock
 git commit -m "chore: release ${VERSION}"
 git tag -a "$TAG_VERSION" -m "Oxterm ${VERSION}" -m "$CHANGELOG"
 git push origin "$MAIN_BRANCH"
