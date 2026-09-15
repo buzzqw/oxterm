@@ -519,8 +519,15 @@ fn build_general(
     r = section(&grid, r, "Other");
     let chk_confirm_close = gtk::CheckButton::new();
     chk_confirm_close.set_active(s.get_bool("confirm_close"));
-    chk_confirm_close.set_tooltip_text(Some("Ask for confirmation before closing the window"));
-    r = row(&grid, r, "Confirm before closing:", &chk_confirm_close);
+    chk_confirm_close.set_tooltip_text(Some(
+        "Ask for confirmation only when a process is active in the terminal",
+    ));
+    r = row(
+        &grid,
+        r,
+        "Confirm before closing active terminals:",
+        &chk_confirm_close,
+    );
 
     let chk_auto_copy = gtk::CheckButton::new();
     chk_auto_copy.set_active(s.get_bool("auto_copy_selection"));

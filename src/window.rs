@@ -877,7 +877,13 @@ impl DetachedWindow {
         if *self.imp().closing.borrow() {
             return glib::Propagation::Stop;
         }
-        if settings().get_bool("confirm_close") {
+        let has_active_process = self
+            .imp()
+            .terminal
+            .borrow()
+            .as_ref()
+            .is_some_and(|term| term.has_active_process());
+        if settings().get_bool("confirm_close") && has_active_process {
             let dialog = gtk::MessageDialog::new(
                 Some(self),
                 gtk::DialogFlags::MODAL,
@@ -1542,6 +1548,21 @@ impl MainWindow {
         let nb = self.imp().notebook.borrow().clone().unwrap();
         let nb2 = self.imp().notebook2.borrow().clone().unwrap();
         nb.n_pages() + nb2.n_pages()
+    }
+
+    fn any_terminal_has_active_process(&self) -> bool {
+        let notebooks = [
+            self.imp().notebook.borrow().clone(),
+            self.imp().notebook2.borrow().clone(),
+        ];
+        notebooks.into_iter().flatten().any(|notebook| {
+            (0..notebook.n_pages()).any(|index| {
+                notebook
+                    .nth_page(Some(index))
+                    .and_then(|page| page.downcast::<TerminalBox>().ok())
+                    .is_some_and(|term| term.has_active_process())
+            })
+        })
     }
 
     fn update_tab_list_button(&self) {
@@ -3423,7 +3444,11 @@ impl MainWindow {
         if *self.imp().closing.borrow() {
             return glib::Propagation::Stop;
         }
-        if settings().get_bool("confirm_close") && !*self.imp().skip_close_confirm.borrow() {
+        let has_active_process = self.any_terminal_has_active_process();
+        if settings().get_bool("confirm_close")
+            && has_active_process
+            && !*self.imp().skip_close_confirm.borrow()
+        {
             *self.imp().closing.borrow_mut() = true;
             let dialog = gtk::MessageDialog::new(
                 Some(self),

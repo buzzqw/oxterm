@@ -417,6 +417,8 @@ mod imp {
         pub cached_delete_binding: RefCell<String>,
         pub cached_broadcast_input: RefCell<bool>,
         pub cmd_bar_visible: RefCell<bool>,
+
+        pub interactive_shell: RefCell<bool>,
     }
 
     #[glib::object_subclass]
@@ -1030,6 +1032,7 @@ impl TerminalBox {
 
     pub fn launch(&self, cwd: Option<&str>, command: Option<&Vec<String>>) {
         let s = settings();
+        *self.imp().interactive_shell.borrow_mut() = command.is_none();
         let mut argv: Vec<String> = if let Some(cmd) = command {
             cmd.clone()
         } else {
@@ -1094,7 +1097,7 @@ impl TerminalBox {
                 .unwrap_or_default()
         };
 
-        match self.spawn_in_pty(&argv, &env, &wd) {
+        match self.spawn_in_pty(&argv, &env, &wd, command.is_none()) {
             Ok(pid) => {
                 *self.imp().pid.borrow_mut() = pid;
                 let vte = self.vte();
@@ -1270,6 +1273,7 @@ impl TerminalBox {
         argv: &[String],
         env: &[(String, String)],
         cwd: &str,
+        interactive_shell: bool,
     ) -> Result<i32, String> {
         use std::os::unix::process::CommandExt;
         use std::process::{Command, Stdio};
@@ -1349,6 +1353,7 @@ impl TerminalBox {
             child_pid,
             "Terminal",
             cwd,
+            interactive_shell,
         ) {
             Ok(broker) => broker,
             Err(error) => {
@@ -1468,6 +1473,32 @@ impl TerminalBox {
         } else {
             "local"
         }
+    }
+
+    pub fn has_active_process(&self) -> bool {
+        let pid = *self.imp().pid.borrow();
+        if pid <= 0 {
+            return false;
+        }
+        if *self.imp().osc133_integration_active.borrow()
+            && *self.imp().remote_command_running.borrow()
+        {
+            return true;
+        }
+        if let Some(handle) = self.imp().remote_handle.borrow().as_ref() {
+            return handle.foreground_process_active();
+        }
+
+        let fd = *self.imp().pty_fd.borrow();
+        if fd < 0 || !*self.imp().interactive_shell.borrow() {
+            return true;
+        }
+        let foreground = unsafe { libc::tcgetpgrp(fd) };
+        let shell_group = unsafe { libc::getpgid(pid) };
+        if foreground <= 0 || shell_group <= 0 {
+            return true;
+        }
+        foreground != shell_group
     }
 
     pub fn reattach_local(&self) {

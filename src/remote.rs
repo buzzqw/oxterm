@@ -71,6 +71,13 @@ impl BrokerHandle {
         )
     }
 
+    pub fn foreground_process_active(&self) -> bool {
+        matches!(
+            control_request(&self.path, &format!("IS_ACTIVE {}", self.id)),
+            Ok(response) if response == "1"
+        )
+    }
+
     /// Whether the child PTY currently echoes typed characters. Password
     /// prompts clear ECHO, so callers must not retain input while it is false.
     pub fn child_echo_on(&self) -> bool {
@@ -229,6 +236,7 @@ pub fn spawn_broker(
     child_pid: i32,
     title: &str,
     cwd: &str,
+    interactive_shell: bool,
 ) -> Result<BrokerHandle, String> {
     if invalid_id(session_id) || session_id.contains('/') {
         return Err("invalid remote session ID".to_string());
@@ -262,6 +270,10 @@ pub fn spawn_broker(
             .env("OXTERM_BROKER_CHILD_PID", child_pid.to_string())
             .env("OXTERM_BROKER_TITLE", field(title))
             .env("OXTERM_BROKER_CWD", field(cwd))
+            .env(
+                "OXTERM_BROKER_INTERACTIVE_SHELL",
+                if interactive_shell { "1" } else { "0" },
+            )
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -829,6 +841,9 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         .ok()
         .and_then(|value| value.parse::<i32>().ok())
         .unwrap_or(0);
+    let interactive_shell = std::env::var("OXTERM_BROKER_INTERACTIVE_SHELL")
+        .map(|value| value == "1")
+        .unwrap_or(true);
     let mut state = BrokerState {
         id: id.to_string(),
         name: std::env::var("OXTERM_BROKER_NAME").unwrap_or_default(),
@@ -840,6 +855,7 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         gui_closed: false,
         child_closed: false,
         child_pid,
+        interactive_shell,
         kill_requested: false,
         child_input: VecDeque::new(),
         child_input_offset: 0,
@@ -1056,6 +1072,7 @@ struct BrokerState {
     gui_closed: bool,
     child_closed: bool,
     child_pid: i32,
+    interactive_shell: bool,
     kill_requested: bool,
     child_input: VecDeque<Vec<u8>>,
     child_input_offset: usize,
@@ -1174,6 +1191,7 @@ fn handle_command(
             | "SIGNAL"
             | "KILL"
             | "IS_SSH"
+            | "IS_ACTIVE"
             | "ECHO"
     ) && id != state.id
         && verb != "LIST"
@@ -1184,6 +1202,11 @@ fn handle_command(
     match verb {
         "LIST" | "INFO" => clients[index].queue(format!("OK\n{}", line).as_bytes()),
         "IS_SSH" => clients[index].queue(if child_foreground_is_ssh() {
+            b"OK\n1"
+        } else {
+            b"OK\n0"
+        }),
+        "IS_ACTIVE" => clients[index].queue(if child_foreground_is_active(&state) {
             b"OK\n1"
         } else {
             b"OK\n0"
@@ -1293,6 +1316,24 @@ fn child_foreground_is_ssh() -> bool {
     std::fs::read_to_string(format!("/proc/{foreground}/comm"))
         .map(|name| name.trim() == "ssh")
         .unwrap_or(false)
+}
+
+fn child_foreground_is_active(state: &BrokerState) -> bool {
+    if state.child_closed || state.child_pid <= 0 {
+        return false;
+    }
+    // A command passed directly to oxterm has no shell prompt to compare
+    // against, so the child is active for as long as it is alive.
+    if !state.interactive_shell || state.command_running {
+        return true;
+    }
+    let foreground = unsafe { libc::tcgetpgrp(CHILD_FD) };
+    let shell_group = unsafe { libc::getpgid(state.child_pid) };
+    if foreground <= 0 || shell_group <= 0 {
+        // Do not silently close a window when the PTY state cannot be read.
+        return true;
+    }
+    foreground != shell_group
 }
 
 fn child_echo_on() -> bool {
@@ -1588,6 +1629,7 @@ mod tests {
             gui_closed: false,
             child_closed: false,
             child_pid: 0,
+            interactive_shell: true,
             kill_requested: false,
             child_input: VecDeque::new(),
             child_input_offset: 0,
