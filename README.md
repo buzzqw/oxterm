@@ -86,7 +86,7 @@ cargo build --release --locked
 ./target/release/oxterm
 ```
 
-To create the definitive project-root binary used by packaging workflows, run:
+To create the definitive release binary in the project root, run:
 
 ```bash
 ./build.sh
@@ -103,11 +103,13 @@ binary:
 ./oxterm.sh
 ```
 
-The repository includes local build hooks. Configure them once with
-`./setup.sh` or `git config core.hooksPath .githooks`; after each commit it
-builds `oxterm-linux-x86-64` in the project root. The generated file is ignored
-by Git. The displayed Oxterm version uses the Cargo version plus the total Git
-commit count as its fourth component, for example `1.1.1.<commit-count>`.
+The repository includes local build hooks. Configure them with
+`git config core.hooksPath .githooks`; `./setup.sh` also configures them as part
+of its per-user installation. After each commit, the hook builds
+`oxterm-linux-x86-64` in the project root. The generated file is ignored by
+Git. The displayed Oxterm version uses the Cargo version plus the total Git
+commit count as its fourth component, for example
+`MAJOR.MINOR.PATCH.<commit-count>`.
 
 Install the binary and desktop entry under `~/.local`:
 
@@ -132,9 +134,6 @@ The script always rebuilds the release binary before installing it and asks for
 directories. It installs the executable, desktop launcher, and Oxterm ox
 icon system-wide. Run it again after building a newer version so the system
 command and launcher point to the new binary.
-
-The command is `oxterm` in lowercase. This avoids the unrelated `/usr/bin/trust`
-`p11-kit` certificate utility.
 
 ## Command Line
 
@@ -373,7 +372,7 @@ artifact on every commit push, pull request, and manual workflow dispatch on any
 branch. Version tags also trigger versioned release artifacts and checksum
 generation.
 
-Release automation is available through:
+For maintainers, release automation is available through:
 
 ```bash
 ./versiona.sh --dry-run
