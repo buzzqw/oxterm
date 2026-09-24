@@ -13,6 +13,10 @@ if ! command -v cargo >/dev/null 2>&1; then
     exit 1
 fi
 
+# shellcheck source=packaging/install-deps.sh
+. "${ROOT_DIR}/packaging/install-deps.sh"
+oxterm_install_build_deps
+
 printf '%s\n' "Building Oxterm..."
 cargo build --release --locked --manifest-path "${ROOT_DIR}/Cargo.toml"
 
