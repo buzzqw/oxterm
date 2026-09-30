@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
@@ -23,6 +24,7 @@ const TRIM_MAX_ROWS: i64 = 1_000_000;
 pub struct HistoryManager {
     conn: Mutex<Connection>,
     inserts_since_trim: Mutex<u32>,
+    trim_pending: Arc<AtomicBool>,
 }
 
 static HISTORY: OnceLock<HistoryManager> = OnceLock::new();
@@ -53,6 +55,7 @@ impl HistoryManager {
         HistoryManager {
             conn: Mutex::new(conn),
             inserts_since_trim: Mutex::new(0),
+            trim_pending: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -62,6 +65,7 @@ impl HistoryManager {
     }
 
     fn initialize_connection(conn: Connection) -> rusqlite::Result<Connection> {
+        conn.busy_timeout(Duration::from_secs(2))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS commands (
@@ -101,10 +105,22 @@ impl HistoryManager {
     }
 
     fn bump_inserts(&self, n: usize) {
-        let mut c = self.inserts_since_trim.lock().unwrap();
-        *c += n as u32;
-        if *c >= TRIM_CHECK_INTERVAL {
-            *c = 0;
+        let should_trim = {
+            let mut c = self.inserts_since_trim.lock().unwrap();
+            *c += n as u32;
+            if *c >= TRIM_CHECK_INTERVAL {
+                *c = 0;
+                true
+            } else {
+                false
+            }
+        };
+        if should_trim
+            && self
+                .trim_pending
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+        {
             self.trim();
         }
     }
@@ -430,6 +446,7 @@ impl HistoryManager {
 
     fn trim(&self) {
         let db_path = history_db_path();
+        let trim_pending = Arc::clone(&self.trim_pending);
         std::thread::spawn(move || {
             if let Ok(conn) = Connection::open(&db_path) {
                 if let Ok(count) =
@@ -444,6 +461,7 @@ impl HistoryManager {
                     }
                 }
             }
+            trim_pending.store(false, Ordering::Release);
         });
     }
 
@@ -590,7 +608,8 @@ fn rusqlite_value_to_json(v: rusqlite::types::Value) -> Value {
 mod tests {
     use super::{is_read_only_sql, HistoryManager};
     use rusqlite::Connection;
-    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
 
     fn test_history() -> HistoryManager {
         let conn = Connection::open_in_memory().unwrap();
@@ -609,6 +628,7 @@ mod tests {
         HistoryManager {
             conn: Mutex::new(conn),
             inserts_since_trim: Mutex::new(0),
+            trim_pending: Arc::new(AtomicBool::new(false)),
         }
     }
 

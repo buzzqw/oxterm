@@ -931,25 +931,27 @@ fn run_broker(path: &Path, id: &str) -> i32 {
             break;
         }
 
-        while poll_fds[0].revents & libc::POLLIN != 0 {
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    if clients.len() >= MAX_CLIENTS {
-                        drop(stream);
-                        continue;
+        if poll_fds[0].revents & libc::POLLIN != 0 {
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        if clients.len() >= MAX_CLIENTS {
+                            drop(stream);
+                            continue;
+                        }
+                        let _ = stream.set_nonblocking(true);
+                        clients.push(Client {
+                            stream,
+                            attached: false,
+                            input: Vec::new(),
+                            output: VecDeque::new(),
+                            output_offset: 0,
+                            output_pending: 0,
+                        });
                     }
-                    let _ = stream.set_nonblocking(true);
-                    clients.push(Client {
-                        stream,
-                        attached: false,
-                        input: Vec::new(),
-                        output: VecDeque::new(),
-                        output_offset: 0,
-                        output_pending: 0,
-                    });
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(_) => break,
                 }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                Err(_) => break,
             }
         }
 
