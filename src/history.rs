@@ -105,6 +105,7 @@ fn history_worker_loop(receiver: mpsc::Receiver<HistoryRequest>) {
             }
         });
     let mut pending = BTreeMap::<u64, i64>::new();
+    let mut completed = BTreeMap::<u64, (i64, Option<i64>)>::new();
 
     for request in receiver {
         match request {
@@ -125,6 +126,10 @@ fn history_worker_loop(receiver: mpsc::Receiver<HistoryRequest>) {
                 );
                 if let Some(ticket) = ticket {
                     if id != 0 {
+                        if let Some((exit_code, duration_ms)) = completed.remove(&ticket) {
+                            manager.set_command_result(Some(id), exit_code, duration_ms);
+                            continue;
+                        }
                         if pending.len() >= 4096 {
                             if let Some(oldest) = pending.keys().next().copied() {
                                 pending.remove(&oldest);
@@ -141,6 +146,13 @@ fn history_worker_loop(receiver: mpsc::Receiver<HistoryRequest>) {
             } => {
                 if let Some(id) = pending.remove(&ticket) {
                     manager.set_command_result(Some(id), exit_code, duration_ms);
+                } else {
+                    if completed.len() >= 4096 {
+                        if let Some(oldest) = completed.keys().next().copied() {
+                            completed.remove(&oldest);
+                        }
+                    }
+                    completed.insert(ticket, (exit_code, duration_ms));
                 }
             }
             HistoryRequest::AddMany {
@@ -1086,6 +1098,17 @@ mod tests {
             .collect();
 
         assert_eq!(commands, ["git status"]);
+    }
+
+    #[test]
+    fn fts_index_tracks_history_deletes() {
+        let history = test_history();
+        history.add("kubectl get pods", "/workspace", 0);
+        assert_eq!(history.search("kubectl", 50, "/workspace").len(), 1);
+
+        history.clear();
+
+        assert!(history.search("kubectl", 50, "/workspace").is_empty());
     }
 
     #[test]
