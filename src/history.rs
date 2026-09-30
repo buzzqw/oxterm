@@ -62,6 +62,7 @@ enum HistoryRequest {
 
 struct HistoryWorker {
     sender: SyncSender<HistoryRequest>,
+    overflow_sender: mpsc::Sender<HistoryRequest>,
 }
 
 static HISTORY_WORKER: OnceLock<HistoryWorker> = OnceLock::new();
@@ -70,11 +71,26 @@ static HISTORY_TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 fn history_worker() -> &'static HistoryWorker {
     HISTORY_WORKER.get_or_init(|| {
         let (sender, receiver) = mpsc::sync_channel(HISTORY_QUEUE_SIZE);
+        let (overflow_sender, overflow_receiver) = mpsc::channel();
+        let sender_for_overflow = sender.clone();
         std::thread::Builder::new()
             .name("oxterm-history".to_string())
             .spawn(move || history_worker_loop(receiver))
             .expect("could not start history worker");
-        HistoryWorker { sender }
+        std::thread::Builder::new()
+            .name("oxterm-history-overflow".to_string())
+            .spawn(move || {
+                for request in overflow_receiver {
+                    if sender_for_overflow.send(request).is_err() {
+                        break;
+                    }
+                }
+            })
+            .expect("could not start history overflow worker");
+        HistoryWorker {
+            sender,
+            overflow_sender,
+        }
     })
 }
 
@@ -179,12 +195,9 @@ fn history_worker_loop(receiver: mpsc::Receiver<HistoryRequest>) {
 }
 
 fn defer_history_request(request: HistoryRequest) {
-    let sender = history_worker().sender.clone();
-    std::thread::spawn(move || {
-        if sender.send(request).is_err() {
-            crate::logging::log_warning("history worker stopped; deferred request dropped");
-        }
-    });
+    if history_worker().overflow_sender.send(request).is_err() {
+        crate::logging::log_warning("history worker stopped; deferred request dropped");
+    }
 }
 
 pub struct HistoryManager {
