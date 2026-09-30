@@ -1,4 +1,5 @@
 use std::fs;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 fn mb(val: u64) -> String {
@@ -83,10 +84,20 @@ fn disk_usage(path: &str) -> (u64, u64) {
 }
 
 static CPU_PREV: std::sync::Mutex<Option<(u64, u64)>> = std::sync::Mutex::new(None);
+static SYSTEM_CACHE: OnceLock<Mutex<Option<(Instant, String)>>> = OnceLock::new();
+static SELF_CACHE: OnceLock<Mutex<Option<(Instant, String)>>> = OnceLock::new();
 
 pub fn collect(is_ssh: bool) -> String {
     if is_ssh {
         return ssh_placeholder();
+    }
+    let cache = SYSTEM_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(snapshot) = cache.lock() {
+        if let Some((at, value)) = snapshot.as_ref() {
+            if at.elapsed().as_millis() < 500 {
+                return value.clone();
+            }
+        }
     }
     let mut prev = CPU_PREV.lock().unwrap();
     let cpu = cpu_percent(&mut prev);
@@ -103,7 +114,7 @@ pub fn collect(is_ssh: bool) -> String {
     } else {
         0
     };
-    format!(
+    let result = format!(
         "  CPU {:5.1}%  RAM {}/{} ({}%)  Disk {}/{} ({}%)",
         cpu,
         mb(mem_used),
@@ -112,14 +123,30 @@ pub fn collect(is_ssh: bool) -> String {
         mb(disk_used),
         mb(disk_total),
         disk_pct
-    )
+    );
+    if let Ok(mut snapshot) = cache.lock() {
+        *snapshot = Some((Instant::now(), result.clone()));
+    }
+    result
 }
 
 pub fn collect_self() -> String {
+    let cache = SELF_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(snapshot) = cache.lock() {
+        if let Some((at, value)) = snapshot.as_ref() {
+            if at.elapsed().as_millis() < 500 {
+                return value.clone();
+            }
+        }
+    }
     let pid = std::process::id();
     let rss = proc_rss(pid);
     let cpu = process_cpu_percent(pid);
-    format!("Oxterm  CPU {:5.1}%  RAM {}  ", cpu, mb(rss))
+    let result = format!("Oxterm  CPU {:5.1}%  RAM {}  ", cpu, mb(rss));
+    if let Ok(mut snapshot) = cache.lock() {
+        *snapshot = Some((Instant::now(), result.clone()));
+    }
+    result
 }
 
 fn proc_rss(pid: u32) -> u64 {

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -20,6 +21,159 @@ pub fn history_db_path() -> PathBuf {
 
 const TRIM_CHECK_INTERVAL: u32 = 50;
 const TRIM_MAX_ROWS: i64 = 1_000_000;
+const HISTORY_QUEUE_SIZE: usize = 256;
+
+type SearchCallback = Box<dyn FnOnce(Vec<Vec<Value>>) + Send + 'static>;
+type SqlCallback = Box<dyn FnOnce(Result<Vec<Vec<Value>>, String>) + Send + 'static>;
+type AddManyCallback = Box<dyn FnOnce(usize) + Send + 'static>;
+
+enum HistoryRequest {
+    Add {
+        ticket: Option<u64>,
+        command: String,
+        cwd: String,
+        exit_code: i64,
+        duration_ms: Option<i64>,
+        git_branch: Option<String>,
+    },
+    SetResult {
+        ticket: u64,
+        exit_code: i64,
+        duration_ms: Option<i64>,
+    },
+    AddMany {
+        commands: Vec<String>,
+        cwd: String,
+        exit_code: i64,
+        callback: AddManyCallback,
+    },
+    Search {
+        terms: String,
+        limit: i64,
+        cwd: String,
+        callback: SearchCallback,
+    },
+    SqlSearch {
+        sql: String,
+        callback: SqlCallback,
+    },
+    Clear,
+}
+
+struct HistoryWorker {
+    sender: SyncSender<HistoryRequest>,
+}
+
+static HISTORY_WORKER: OnceLock<HistoryWorker> = OnceLock::new();
+static HISTORY_TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn history_worker() -> &'static HistoryWorker {
+    HISTORY_WORKER.get_or_init(|| {
+        let (sender, receiver) = mpsc::sync_channel(HISTORY_QUEUE_SIZE);
+        std::thread::Builder::new()
+            .name("oxterm-history".to_string())
+            .spawn(move || history_worker_loop(receiver))
+            .expect("could not start history worker");
+        HistoryWorker { sender }
+    })
+}
+
+fn history_worker_loop(receiver: mpsc::Receiver<HistoryRequest>) {
+    let path = history_db_path();
+    let manager = HistoryManager::open_and_initialize(&path)
+        .map(|conn| HistoryManager {
+            conn: Mutex::new(conn),
+            inserts_since_trim: Mutex::new(0),
+            trim_pending: Arc::new(AtomicBool::new(false)),
+        })
+        .unwrap_or_else(|error| {
+            crate::logging::Logger::log(
+                "WARNING",
+                "history",
+                "worker using temporary in-memory history",
+                Some(&error.to_string()),
+            );
+            HistoryManager {
+                conn: Mutex::new(
+                    HistoryManager::initialize_connection(
+                        Connection::open_in_memory().expect("open in-memory history database"),
+                    )
+                    .expect("initialize in-memory history database"),
+                ),
+                inserts_since_trim: Mutex::new(0),
+                trim_pending: Arc::new(AtomicBool::new(false)),
+            }
+        });
+    let mut pending = BTreeMap::<u64, i64>::new();
+
+    for request in receiver {
+        match request {
+            HistoryRequest::Add {
+                ticket,
+                command,
+                cwd,
+                exit_code,
+                duration_ms,
+                git_branch,
+            } => {
+                let id = manager.add_with_context(
+                    &command,
+                    &cwd,
+                    exit_code,
+                    duration_ms,
+                    git_branch.as_deref(),
+                );
+                if let Some(ticket) = ticket {
+                    if id != 0 {
+                        if pending.len() >= 4096 {
+                            if let Some(oldest) = pending.keys().next().copied() {
+                                pending.remove(&oldest);
+                            }
+                        }
+                        pending.insert(ticket, id);
+                    }
+                }
+            }
+            HistoryRequest::SetResult {
+                ticket,
+                exit_code,
+                duration_ms,
+            } => {
+                if let Some(id) = pending.remove(&ticket) {
+                    manager.set_command_result(Some(id), exit_code, duration_ms);
+                }
+            }
+            HistoryRequest::AddMany {
+                commands,
+                cwd,
+                exit_code,
+                callback,
+            } => {
+                let added = manager.add_many(&commands, &cwd, exit_code);
+                callback(added);
+            }
+            HistoryRequest::Search {
+                terms,
+                limit,
+                cwd,
+                callback,
+            } => callback(manager.search(&terms, limit, &cwd)),
+            HistoryRequest::SqlSearch { sql, callback } => {
+                callback(manager.sql_search(&sql));
+            }
+            HistoryRequest::Clear => manager.clear(),
+        }
+    }
+}
+
+fn defer_history_request(request: HistoryRequest) {
+    let sender = history_worker().sender.clone();
+    std::thread::spawn(move || {
+        if sender.send(request).is_err() {
+            crate::logging::log_warning("history worker stopped; deferred request dropped");
+        }
+    });
+}
 
 pub struct HistoryManager {
     conn: Mutex<Connection>,
@@ -85,7 +239,48 @@ impl HistoryManager {
         // expected duplicate-column error from an already migrated database.
         Self::add_column_if_missing(&conn, "ALTER TABLE commands ADD COLUMN duration_ms INTEGER")?;
         Self::add_column_if_missing(&conn, "ALTER TABLE commands ADD COLUMN git_branch TEXT")?;
+        if let Err(error) = Self::initialize_fts(&conn) {
+            crate::logging::Logger::log(
+                "WARNING",
+                "history",
+                "history FTS index unavailable; using LIKE search",
+                Some(&error.to_string()),
+            );
+        }
         Ok(conn)
+    }
+
+    fn initialize_fts(conn: &Connection) -> rusqlite::Result<()> {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'commands_fts')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            conn.execute_batch(
+                "CREATE VIRTUAL TABLE commands_fts USING fts5(
+                    command,
+                    content='commands',
+                    content_rowid='id',
+                    tokenize='trigram'
+                );
+                INSERT INTO commands_fts(commands_fts) VALUES ('rebuild');",
+            )?;
+        }
+        conn.execute_batch(
+            "CREATE TRIGGER IF NOT EXISTS commands_fts_ai AFTER INSERT ON commands BEGIN
+                 INSERT INTO commands_fts(rowid, command) VALUES (new.id, new.command);
+             END;
+             CREATE TRIGGER IF NOT EXISTS commands_fts_ad AFTER DELETE ON commands BEGIN
+                 INSERT INTO commands_fts(commands_fts, rowid, command)
+                 VALUES ('delete', old.id, old.command);
+             END;
+             CREATE TRIGGER IF NOT EXISTS commands_fts_au AFTER UPDATE OF command ON commands BEGIN
+                 INSERT INTO commands_fts(commands_fts, rowid, command)
+                 VALUES ('delete', old.id, old.command);
+                 INSERT INTO commands_fts(rowid, command) VALUES (new.id, new.command);
+             END;",
+        )
     }
 
     fn add_column_if_missing(conn: &Connection, sql: &str) -> rusqlite::Result<()> {
@@ -164,6 +359,136 @@ impl HistoryManager {
             self.bump_inserts(1);
         }
         id
+    }
+
+    /// Queue a history entry without blocking the GTK main loop. This is used
+    /// for commands whose result does not need to be updated later.
+    pub fn add_async(&self, command: &str, cwd: &str, exit_code: i64) {
+        let request = HistoryRequest::Add {
+            ticket: None,
+            command: command.to_string(),
+            cwd: cwd.to_string(),
+            exit_code,
+            duration_ms: None,
+            git_branch: None,
+        };
+        match history_worker().sender.try_send(request) {
+            Ok(()) => {}
+            Err(TrySendError::Full(request)) => defer_history_request(request),
+            Err(TrySendError::Disconnected(_)) => {
+                // Preserve the old synchronous fallback if the worker exits.
+                let _ = self.add(command, cwd, exit_code);
+            }
+        }
+    }
+
+    /// Queue a command-start entry and return a ticket that can later be used
+    /// to update its exit code and duration. The ticket is deliberately local
+    /// to the worker and is not exposed as a database row ID.
+    pub fn add_with_context_async(
+        &self,
+        command: &str,
+        cwd: &str,
+        exit_code: i64,
+        duration_ms: Option<i64>,
+        git_branch: Option<&str>,
+    ) -> Option<u64> {
+        let ticket = HISTORY_TICKET.fetch_add(1, Ordering::Relaxed);
+        let request = HistoryRequest::Add {
+            ticket: Some(ticket),
+            command: command.to_string(),
+            cwd: cwd.to_string(),
+            exit_code,
+            duration_ms,
+            git_branch: git_branch.map(str::to_string),
+        };
+        match history_worker().sender.try_send(request) {
+            Ok(()) => Some(ticket),
+            Err(TrySendError::Full(request)) => {
+                // Keep the request ordered after earlier writes without ever
+                // making terminal input wait for a saturated queue.
+                defer_history_request(request);
+                Some(ticket)
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                let _ = self.add_with_context(command, cwd, exit_code, duration_ms, git_branch);
+                None
+            }
+        }
+    }
+
+    pub fn set_command_result_async(&self, ticket: u64, exit_code: i64, duration_ms: Option<i64>) {
+        let request = HistoryRequest::SetResult {
+            ticket,
+            exit_code,
+            duration_ms,
+        };
+        match history_worker().sender.try_send(request) {
+            Ok(()) => {}
+            Err(TrySendError::Full(request)) => defer_history_request(request),
+            Err(TrySendError::Disconnected(_)) => {
+                crate::logging::log_warning("history worker stopped; result update skipped");
+            }
+        }
+    }
+
+    pub fn add_many_async(
+        &self,
+        commands: Vec<String>,
+        cwd: String,
+        exit_code: i64,
+        callback: AddManyCallback,
+    ) {
+        let request = HistoryRequest::AddMany {
+            commands,
+            cwd,
+            exit_code,
+            callback,
+        };
+        match history_worker().sender.try_send(request) {
+            Ok(()) => {}
+            Err(TrySendError::Full(request)) => defer_history_request(request),
+            Err(TrySendError::Disconnected(_)) => {
+                crate::logging::log_warning("history worker stopped; import skipped")
+            }
+        }
+    }
+
+    pub fn search_async(&self, terms: String, limit: i64, cwd: String, callback: SearchCallback) {
+        let request = HistoryRequest::Search {
+            terms,
+            limit,
+            cwd,
+            callback,
+        };
+        match history_worker().sender.try_send(request) {
+            Ok(()) => {}
+            Err(TrySendError::Full(request)) => defer_history_request(request),
+            Err(TrySendError::Disconnected(_)) => {
+                crate::logging::log_warning("history worker stopped; search skipped")
+            }
+        }
+    }
+
+    pub fn sql_search_async(&self, sql: String, callback: SqlCallback) {
+        let request = HistoryRequest::SqlSearch { sql, callback };
+        match history_worker().sender.try_send(request) {
+            Ok(()) => {}
+            Err(TrySendError::Full(request)) => defer_history_request(request),
+            Err(TrySendError::Disconnected(_)) => {
+                crate::logging::log_warning("history worker stopped; SQL search skipped")
+            }
+        }
+    }
+
+    pub fn clear_async(&self) {
+        match history_worker().sender.try_send(HistoryRequest::Clear) {
+            Ok(()) => {}
+            Err(TrySendError::Full(request)) => defer_history_request(request),
+            Err(TrySendError::Disconnected(_)) => {
+                crate::logging::log_warning("history worker stopped; history clear skipped")
+            }
+        }
     }
 
     pub fn add_many(&self, commands: &[String], cwd: &str, exit_code: i64) -> usize {
@@ -301,6 +626,12 @@ impl HistoryManager {
             }
         }
 
+        if !pos.is_empty() && pos.iter().all(|term| term.chars().count() >= 3) {
+            if let Some(result) = Self::search_fts(&conn, &pos, &neg, limit, cwd) {
+                return result;
+            }
+        }
+
         let mut where_clauses: Vec<String> = Vec::new();
         let mut where_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
         if pos.len() == 1 {
@@ -367,6 +698,92 @@ impl HistoryManager {
             iter.collect()
         })();
         Self::search_result(result)
+    }
+
+    fn search_fts(
+        conn: &Connection,
+        positive: &[&str],
+        negative: &[&str],
+        limit: i64,
+        cwd: &str,
+    ) -> Option<Vec<Vec<Value>>> {
+        let fts_query = positive
+            .iter()
+            .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let mut subquery = vec![
+            "f.commands_fts MATCH ?".to_string(),
+            "c2.command NOT LIKE '/%' ESCAPE '\\'".to_string(),
+        ];
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(fts_query)];
+        for term in negative {
+            subquery.push("c2.command NOT LIKE ? ESCAPE '\\'".to_string());
+            params.push(Box::new(format!("%{}%", Self::like_escape(term))));
+        }
+
+        let mut candidates = format!(
+            "SELECT MAX(c2.id) FROM commands c2 \
+             JOIN commands_fts f ON f.rowid = c2.id \
+             WHERE {} GROUP BY c2.command",
+            subquery.join(" AND ")
+        );
+        // Preserve the historical compact-match behavior (`gitstatus` also
+        // matched `git status`) alongside the normal FTS substring match.
+        if positive.len() == 1 {
+            let mut compact = vec![
+                "REPLACE(c3.command, ' ', '') LIKE ? ESCAPE '\\'".to_string(),
+                "c3.command NOT LIKE '/%' ESCAPE '\\'".to_string(),
+            ];
+            params.push(Box::new(format!("%{}%", Self::like_escape(positive[0]))));
+            for term in negative {
+                compact.push("c3.command NOT LIKE ? ESCAPE '\\'".to_string());
+                params.push(Box::new(format!("%{}%", Self::like_escape(term))));
+            }
+            candidates.push_str(&format!(
+                " UNION SELECT MAX(c3.id) FROM commands c3 WHERE {} GROUP BY c3.command",
+                compact.join(" AND ")
+            ));
+        }
+
+        let mut order_parts = Vec::new();
+        let mut order_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        order_parts.push("CASE WHEN c.command LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END".to_string());
+        order_params.push(Box::new(format!("{}%", Self::like_escape(positive[0]))));
+        if !cwd.is_empty() {
+            order_parts.push("CASE WHEN c.cwd = ? THEN 0 ELSE 1 END".to_string());
+            order_params.push(Box::new(cwd.to_string()));
+        }
+        if positive.len() > 1 {
+            let sum = positive
+                .iter()
+                .map(|_| "INSTR(LOWER(c.command), ?)".to_string())
+                .collect::<Vec<_>>()
+                .join(" + ");
+            order_parts.push(format!("({})", sum));
+            for term in positive {
+                order_params.push(Box::new(term.to_lowercase()));
+            }
+        }
+        order_parts.push("LENGTH(c.command)".to_string());
+        order_parts.push("c.id DESC".to_string());
+
+        let sql = format!(
+            "SELECT c.id, c.command, c.cwd, c.timestamp, c.exit_code, c.duration_ms, c.git_branch \
+             FROM commands c WHERE c.id IN ( \
+                 {} \
+             ) ORDER BY {} LIMIT ?",
+            candidates,
+            order_parts.join(", ")
+        );
+        params.extend(order_params);
+        params.push(Box::new(limit));
+        let result = (|| -> rusqlite::Result<Vec<Vec<Value>>> {
+            let mut stmt = conn.prepare(&sql)?;
+            let iter = stmt.query_map(rusqlite::params_from_iter(params), Self::map_row_7)?;
+            iter.collect()
+        })();
+        result.ok()
     }
 
     fn search_result(result: rusqlite::Result<Vec<Vec<Value>>>) -> Vec<Vec<Value>> {
@@ -625,6 +1042,7 @@ mod tests {
             );",
         )
         .unwrap();
+        HistoryManager::initialize_fts(&conn).unwrap();
         HistoryManager {
             conn: Mutex::new(conn),
             inserts_since_trim: Mutex::new(0),
@@ -653,6 +1071,21 @@ mod tests {
             .collect();
 
         assert_eq!(commands, ["ssh andres@example.test"]);
+    }
+
+    #[test]
+    fn search_preserves_compact_single_term_matching() {
+        let history = test_history();
+        history.add("git status", "/workspace", 0);
+        history.add("git stash", "/workspace", 0);
+
+        let commands: Vec<_> = history
+            .search("gitstatus", 50, "/workspace")
+            .into_iter()
+            .map(|row| row[1].as_str().unwrap().to_string())
+            .collect();
+
+        assert_eq!(commands, ["git status"]);
     }
 
     #[test]
