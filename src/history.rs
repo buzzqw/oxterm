@@ -229,15 +229,16 @@ fn history_worker_loop(receiver: mpsc::Receiver<HistoryRequest>) {
 /// Queue a request for the worker without ever blocking the caller. Once a
 /// request has spilled into the overflow channel, later ones follow it there
 /// so they cannot overtake it (e.g. a Clear overtaking an earlier Add).
-fn send_history_request(request: HistoryRequest, what: &str) {
+/// Returns false if the worker has stopped and the request was dropped.
+fn send_history_request(request: HistoryRequest, what: &str) -> bool {
     let worker = history_worker();
     let request = if OVERFLOW_IN_FLIGHT.load(Ordering::Acquire) == 0 {
         match worker.sender.try_send(request) {
-            Ok(()) => return,
+            Ok(()) => return true,
             Err(TrySendError::Full(request)) => request,
             Err(TrySendError::Disconnected(_)) => {
                 crate::logging::log_warning(&format!("history worker stopped; {} skipped", what));
-                return;
+                return false;
             }
         }
     } else {
@@ -247,7 +248,9 @@ fn send_history_request(request: HistoryRequest, what: &str) {
     if worker.overflow_sender.send(request).is_err() {
         OVERFLOW_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
         crate::logging::log_warning(&format!("history worker stopped; {} dropped", what));
+        return false;
     }
+    true
 }
 
 /// Branch of the git repository containing `cwd`, if any. Runs `git`, so it
@@ -319,7 +322,7 @@ impl History {
             git_branch: None,
             lookup_branch: false,
         };
-        send_history_request(request, "history entry");
+        let _ = send_history_request(request, "history entry");
     }
 
     /// Queue a command-start entry and return a ticket that can later be used
@@ -337,7 +340,7 @@ impl History {
             git_branch: None,
             lookup_branch: true,
         };
-        send_history_request(request, "history entry");
+        let _ = send_history_request(request, "history entry");
         Some(ticket)
     }
 
@@ -347,7 +350,7 @@ impl History {
             exit_code,
             duration_ms,
         };
-        send_history_request(request, "result update");
+        let _ = send_history_request(request, "result update");
     }
 
     pub fn add_many_async(
@@ -363,7 +366,7 @@ impl History {
             exit_code,
             callback,
         };
-        send_history_request(request, "import");
+        let _ = send_history_request(request, "import");
     }
 
     pub fn search_async(&self, terms: String, limit: i64, cwd: String, callback: SearchCallback) {
@@ -373,23 +376,24 @@ impl History {
             cwd,
             callback,
         };
-        send_history_request(request, "search");
+        let _ = send_history_request(request, "search");
     }
 
     pub fn sql_search_async(&self, sql: String, callback: SqlCallback) {
-        send_history_request(HistoryRequest::SqlSearch { sql, callback }, "SQL search");
+        let _ = send_history_request(HistoryRequest::SqlSearch { sql, callback }, "SQL search");
     }
 
     pub fn latest_failed_async(&self, cwd: String, callback: LatestFailedCallback) {
-        send_history_request(HistoryRequest::LatestFailed { cwd, callback }, "lookup");
+        let _ = send_history_request(HistoryRequest::LatestFailed { cwd, callback }, "lookup");
     }
 
-    pub fn optimize_async(&self, callback: OptimizeCallback) {
-        send_history_request(HistoryRequest::Optimize { callback }, "optimize");
+    /// Returns false if the request could not be queued (worker stopped).
+    pub fn optimize_async(&self, callback: OptimizeCallback) -> bool {
+        send_history_request(HistoryRequest::Optimize { callback }, "optimize")
     }
 
     pub fn clear_async(&self) {
-        send_history_request(HistoryRequest::Clear, "history clear");
+        let _ = send_history_request(HistoryRequest::Clear, "history clear");
     }
 }
 

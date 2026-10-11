@@ -21,6 +21,7 @@ impl TerminalBox {
                         t.vte().feed(
                             b"\r\n\x1b[33m[AI] No failed command found in the current directory.\x1b[0m\r\n",
                         );
+                        t.vte().feed_child(b"\r");
                         return;
                     };
                     let prompt = t.build_ai_failure_prompt(&row, repair, &question);

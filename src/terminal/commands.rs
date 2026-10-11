@@ -275,7 +275,7 @@ impl TerminalBox {
             .feed(b"\r\n\x1b[90mOptimizing history database...\x1b[0m\r\n");
         *self.imp().history_optimizing.borrow_mut() = true;
         let weak = crate::SendWeak::new(self);
-        history().optimize_async(Box::new(move |result| {
+        let queued = history().optimize_async(Box::new(move |result| {
             crate::run_on_main(move || {
                 if let Some(t) = weak.upgrade() {
                     *t.imp().history_optimizing.borrow_mut() = false;
@@ -326,6 +326,11 @@ impl TerminalBox {
                 }
             });
         }));
+        if !queued {
+            *self.imp().history_optimizing.borrow_mut() = false;
+            self.vte()
+                .feed(b"\x1b[31m/optimize: history database is unavailable\x1b[0m\r\n");
+        }
     }
 
     pub(super) fn cmd_session(&self, args: &str) {

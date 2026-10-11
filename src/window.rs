@@ -1219,8 +1219,11 @@ impl MainWindow {
             let Some(win) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
+            // on_close owns removing this source (SourceId::remove panics on
+            // an already destroyed source), and a cancelled close dialog must
+            // leave autosave running, so never Break here.
             if *win.imp().closing.borrow() {
-                return glib::ControlFlow::Break;
+                return glib::ControlFlow::Continue;
             }
             // With several windows in one process each would overwrite the
             // others' "last" session; only autosave a lone main window.
