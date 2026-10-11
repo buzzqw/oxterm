@@ -892,7 +892,15 @@ impl DetachedWindow {
                 return glib::Propagation::Stop;
             }
         }
-        *self.imp().closing.borrow_mut() = true;
+        self.shutdown();
+        glib::Propagation::Stop
+    }
+
+    /// Close without asking (used after confirmation and on SIGTERM/SIGHUP).
+    pub fn shutdown(&self) {
+        if self.imp().closing.replace(true) {
+            return;
+        }
         self.stop_stats_timer();
         for handler in std::mem::take(&mut *self.imp().settings_handlers.borrow_mut()) {
             settings().disconnect_changed(handler);
@@ -901,7 +909,6 @@ impl DetachedWindow {
             t.terminate();
         }
         unsafe { self.destroy() };
-        glib::Propagation::Stop
     }
 
     fn on_window_key(&self, _widget: &gtk::Window, event: &gdk::EventKey) -> glib::Propagation {
@@ -3441,6 +3448,13 @@ impl MainWindow {
     }
 
     // ── Window signals ───────────────────────────────────────
+
+    /// Close without confirmation, saving the session as on a normal close
+    /// (used on SIGTERM/SIGHUP, e.g. at logout).
+    pub fn shutdown(&self) {
+        *self.imp().skip_close_confirm.borrow_mut() = true;
+        self.on_close(self);
+    }
 
     fn on_close(&self, _widget: &MainWindow) -> glib::Propagation {
         if *self.imp().closing.borrow() {

@@ -506,6 +506,23 @@ impl App {
         });
         // With HANDLES_COMMAND_LINE every launch goes through the
         // command-line handler above; "activate" is never emitted.
+
+        // Logout and `kill` send SIGTERM/SIGHUP: close windows cleanly so the
+        // session is saved and this process's temporary files are removed.
+        for signal in [libc::SIGTERM, libc::SIGHUP] {
+            let app = app.clone();
+            glib::unix_signal_add_local(signal, move || {
+                for window in app.windows() {
+                    if let Some(win) = window.downcast_ref::<MainWindow>() {
+                        win.shutdown();
+                    } else if let Some(win) = window.downcast_ref::<window::DetachedWindow>() {
+                        win.shutdown();
+                    }
+                }
+                app.quit();
+                glib::ControlFlow::Break
+            });
+        }
         self.app.run_with_args(&args).value()
     }
 }
