@@ -4,7 +4,8 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::settings;
@@ -32,6 +33,9 @@ pub struct BrokerHandle {
     path: PathBuf,
     id: String,
     pid: i32,
+    /// Set by the waiter thread once the broker has been reaped; after that
+    /// its PID may belong to an unrelated process and must not be signalled.
+    exited: Arc<AtomicBool>,
 }
 
 impl BrokerHandle {
@@ -66,23 +70,25 @@ impl BrokerHandle {
 
     pub fn foreground_is_ssh(&self) -> bool {
         matches!(
-            control_request(&self.path, &format!("IS_SSH {}", self.id)),
+            query_request(&self.path, &format!("IS_SSH {}", self.id)),
             Ok(response) if response == "1"
         )
     }
 
     pub fn foreground_process_active(&self) -> bool {
         matches!(
-            control_request(&self.path, &format!("IS_ACTIVE {}", self.id)),
+            query_request(&self.path, &format!("IS_ACTIVE {}", self.id)),
             Ok(response) if response == "1"
         )
     }
 
     /// Whether the child PTY currently echoes typed characters. Password
     /// prompts clear ECHO, so callers must not retain input while it is false.
+    /// This is queried on keystrokes, so a slow broker reads as "echo off"
+    /// (the safe answer) instead of freezing the UI.
     pub fn child_echo_on(&self) -> bool {
         matches!(
-            control_request(&self.path, &format!("ECHO {}", self.id)),
+            query_request(&self.path, &format!("ECHO {}", self.id)),
             Ok(response) if response == "1"
         )
     }
@@ -100,7 +106,9 @@ impl BrokerHandle {
     }
 
     pub fn kill(&self) {
-        if control_request(&self.path, &format!("KILL {}", self.id)).is_err() {
+        if control_request(&self.path, &format!("KILL {}", self.id)).is_err()
+            && !self.exited.load(Ordering::Acquire)
+        {
             unsafe {
                 libc::kill(self.pid, libc::SIGTERM);
             }
@@ -300,9 +308,12 @@ pub fn spawn_broker(
     let pid = child.id() as i32;
     // Child handles do not reap on drop. Keep one in a detached waiter so a
     // persistent broker is reaped even after its terminal handle is dropped.
+    let exited = Arc::new(AtomicBool::new(false));
+    let exited_for_waiter = Arc::clone(&exited);
     std::thread::spawn(move || {
         let mut child = child;
         let _ = child.wait();
+        exited_for_waiter.store(true, Ordering::Release);
     });
     let mut ready = false;
     for _ in 0..200 {
@@ -313,8 +324,10 @@ pub fn spawn_broker(
         std::thread::sleep(Duration::from_millis(5));
     }
     if !ready {
-        unsafe {
-            libc::kill(pid, libc::SIGTERM);
+        if !exited.load(Ordering::Acquire) {
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
         }
         return Err("PTY broker did not create its session socket".to_string());
     }
@@ -322,7 +335,29 @@ pub fn spawn_broker(
         path,
         id: session_id.to_string(),
         pid,
+        exited,
     })
+}
+
+/// Defence in depth on top of the 0700 socket directory: only accept
+/// connections from processes running as our own user.
+fn peer_is_same_user(stream: &UnixStream) -> bool {
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: u32::MAX,
+        gid: u32::MAX,
+    };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let status = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut cred as *mut libc::ucred as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    status == 0 && cred.uid == unsafe { libc::geteuid() }
 }
 
 fn duplicate_fd(fd: RawFd) -> Result<RawFd, String> {
@@ -498,9 +533,26 @@ fn choose_session(requested: Option<String>) -> Result<String, String> {
 }
 
 fn control_request(path: &Path, command: &str) -> Result<String, String> {
+    control_request_with_timeout(path, command, Duration::from_secs(5))
+}
+
+/// Status queries issued from the GTK thread (often per keystroke) must never
+/// stall the UI behind a busy or wedged broker.
+fn query_request(path: &Path, command: &str) -> Result<String, String> {
+    control_request_with_timeout(path, command, Duration::from_millis(250))
+}
+
+fn control_request_with_timeout(
+    path: &Path,
+    command: &str,
+    timeout: Duration,
+) -> Result<String, String> {
     let mut stream = UnixStream::connect(path).map_err(|e| e.to_string())?;
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(timeout))
+        .map_err(|e| e.to_string())?;
+    stream
+        .set_write_timeout(Some(timeout))
         .map_err(|e| e.to_string())?;
     write_frame(&mut stream, command.as_bytes())?;
     let response = read_frame(&mut stream)?;
@@ -576,8 +628,12 @@ fn relay_terminal(path: &Path, session_id: &str) -> i32 {
         return 1;
     }
     let _ = stream.set_nonblocking(true);
+    // Reads stay non-blocking for the poll loop, but frames must be written
+    // whole: a partial frame (e.g. a large paste hitting WouldBlock) would
+    // desynchronise the broker protocol.
+    let mut writer = PollWriter(&stream);
     let mut last_size: Option<(u16, u16)> = None;
-    forward_resize(&mut stream, stdin_fd, &mut last_size);
+    forward_resize(&mut writer, stdin_fd, &mut last_size);
     let mut input_buffer = Vec::new();
     let mut tmux_prefix = false;
     let mut detached = false;
@@ -602,34 +658,34 @@ fn relay_terminal(path: &Path, session_id: &str) -> i32 {
             let mut bytes = [0u8; 8192];
             let count = unsafe { libc::read(stdin_fd, bytes.as_mut_ptr() as *mut _, bytes.len()) };
             if count <= 0 {
-                let _ = write_frame(&mut stream, &[FRAME_DETACH]);
+                let _ = write_frame(&mut writer, &[FRAME_DETACH]);
                 break 0;
             }
             match relay_input(&bytes[..count as usize], &mut tmux_prefix) {
                 RelayAction::Forward(forwarded) => {
-                    if !forwarded.is_empty() && send_input(&mut stream, &forwarded).is_err() {
+                    if !forwarded.is_empty() && send_input(&mut writer, &forwarded).is_err() {
                         break 0;
                     }
                 }
                 RelayAction::Detach(forwarded) => {
                     if !forwarded.is_empty() {
-                        let _ = send_input(&mut stream, &forwarded);
+                        let _ = send_input(&mut writer, &forwarded);
                     }
-                    let _ = write_frame(&mut stream, &[FRAME_DETACH]);
+                    let _ = write_frame(&mut writer, &[FRAME_DETACH]);
                     detached = true;
                     break 0;
                 }
                 RelayAction::PrefixDetach { upper, forwarded } => {
-                    if !forwarded.is_empty() && send_input(&mut stream, &forwarded).is_err() {
+                    if !forwarded.is_empty() && send_input(&mut writer, &forwarded).is_err() {
                         break 0;
                     }
                     if is_child_ssh(path, session_id) {
                         let seq = if upper { b"\x02D" } else { b"\x02d" };
-                        if send_input(&mut stream, seq).is_err() {
+                        if send_input(&mut writer, seq).is_err() {
                             break 0;
                         }
                     } else {
-                        let _ = write_frame(&mut stream, &[FRAME_DETACH]);
+                        let _ = write_frame(&mut writer, &[FRAME_DETACH]);
                         detached = true;
                         break 0;
                     }
@@ -639,7 +695,7 @@ fn relay_terminal(path: &Path, session_id: &str) -> i32 {
         if poll_fds[1].revents & (libc::POLLIN | libc::POLLHUP) != 0 {
             let mut bytes = [0u8; 8192];
             loop {
-                match stream.read(&mut bytes) {
+                match (&stream).read(&mut bytes) {
                     Ok(0) => break 'relay 0,
                     Ok(count) => input_buffer.extend_from_slice(&bytes[..count]),
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
@@ -665,7 +721,7 @@ fn relay_terminal(path: &Path, session_id: &str) -> i32 {
                 }
             }
         }
-        forward_resize(&mut stream, stdin_fd, &mut last_size);
+        forward_resize(&mut writer, stdin_fd, &mut last_size);
     };
     unsafe {
         libc::tcsetattr(stdin_fd, libc::TCSAFLUSH, &original);
@@ -730,7 +786,43 @@ fn is_child_ssh(path: &Path, session_id: &str) -> bool {
 }
 
 /// Wrap `data` in a `FRAME_INPUT` frame and write it to the broker.
-fn send_input(stream: &mut UnixStream, data: &[u8]) -> Result<(), String> {
+/// Writer over a non-blocking socket that waits for POLLOUT instead of
+/// failing with WouldBlock, so every frame is written completely.
+struct PollWriter<'a>(&'a UnixStream);
+
+impl Write for PollWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        loop {
+            match (&*self.0).write(buf) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    let mut pfd = libc::pollfd {
+                        fd: self.0.as_raw_fd(),
+                        events: libc::POLLOUT,
+                        revents: 0,
+                    };
+                    let status = unsafe { libc::poll(&mut pfd, 1, 5000) };
+                    if status == 0 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "broker is not reading input",
+                        ));
+                    }
+                    if status < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted
+                    {
+                        return Err(io::Error::last_os_error());
+                    }
+                }
+                other => return other,
+            }
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn send_input(stream: &mut impl Write, data: &[u8]) -> Result<(), String> {
     let mut frame = Vec::with_capacity(data.len() + 1);
     frame.push(FRAME_INPUT);
     frame.extend_from_slice(data);
@@ -757,7 +849,7 @@ fn resize_frame(columns: u16, rows: u16) -> [u8; 5] {
 /// actually changed since the last time. Sending a resize frame after every
 /// keystroke used to spam the child with `SIGWINCH`, which made full-screen
 /// programs redraw on every key press.
-fn forward_resize(stream: &mut UnixStream, fd: RawFd, last: &mut Option<(u16, u16)>) {
+fn forward_resize(stream: &mut impl Write, fd: RawFd, last: &mut Option<(u16, u16)>) {
     let Some(size) = terminal_size(fd) else {
         return;
     };
@@ -935,7 +1027,7 @@ fn run_broker(path: &Path, id: &str) -> i32 {
             loop {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        if clients.len() >= MAX_CLIENTS {
+                        if clients.len() >= MAX_CLIENTS || !peer_is_same_user(&stream) {
                             drop(stream);
                             continue;
                         }

@@ -13,24 +13,17 @@ pub struct Logger;
 
 impl Logger {
     pub fn log(level: &str, logger: &str, event: &str, exception: Option<&str>) {
-        let mut msg = format!(
-            "{{\"timestamp\":\"{}\",\"level\":\"{}\",\"logger\":\"{}\",\"event\":{:?}}}",
-            utc_iso_now(),
-            level,
-            logger,
-            event
-        );
+        // serde_json produces valid JSON escapes (`{:?}` would emit Rust
+        // escapes such as `\u{1b}`, which JSON parsers reject).
+        let mut record = serde_json::Map::new();
+        record.insert("timestamp".into(), utc_iso_now().into());
+        record.insert("level".into(), level.into());
+        record.insert("logger".into(), logger.into());
+        record.insert("event".into(), event.into());
         if let Some(exc) = exception {
-            msg = format!(
-                "{{\"timestamp\":\"{}\",\"level\":\"{}\",\"logger\":\"{}\",\"event\":{:?},\"exception\":{:?}}}",
-                utc_iso_now(),
-                level,
-                logger,
-                event,
-                exc
-            );
+            record.insert("exception".into(), exc.into());
         }
-        eprintln!("{}", msg);
+        eprintln!("{}", serde_json::Value::Object(record));
     }
 
     pub fn info(logger: &str, event: &str) {

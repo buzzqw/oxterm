@@ -1,11 +1,11 @@
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
@@ -26,6 +26,8 @@ const HISTORY_QUEUE_SIZE: usize = 256;
 type SearchCallback = Box<dyn FnOnce(Vec<Vec<Value>>) + Send + 'static>;
 type SqlCallback = Box<dyn FnOnce(Result<Vec<Vec<Value>>, String>) + Send + 'static>;
 type AddManyCallback = Box<dyn FnOnce(usize) + Send + 'static>;
+type LatestFailedCallback = Box<dyn FnOnce(Option<Vec<Value>>) + Send + 'static>;
+type OptimizeCallback = Box<dyn FnOnce(Result<BTreeMap<String, Value>, String>) + Send + 'static>;
 
 enum HistoryRequest {
     Add {
@@ -35,6 +37,8 @@ enum HistoryRequest {
         exit_code: i64,
         duration_ms: Option<i64>,
         git_branch: Option<String>,
+        /// Resolve the git branch of `cwd` on the worker (spawns `git`).
+        lookup_branch: bool,
     },
     SetResult {
         ticket: u64,
@@ -57,6 +61,13 @@ enum HistoryRequest {
         sql: String,
         callback: SqlCallback,
     },
+    LatestFailed {
+        cwd: String,
+        callback: LatestFailedCallback,
+    },
+    Optimize {
+        callback: OptimizeCallback,
+    },
     Clear,
 }
 
@@ -67,6 +78,9 @@ struct HistoryWorker {
 
 static HISTORY_WORKER: OnceLock<HistoryWorker> = OnceLock::new();
 static HISTORY_TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// Requests parked in the overflow channel. While any are pending, new
+/// requests must queue behind them so the worker sees them in order.
+static OVERFLOW_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 fn history_worker() -> &'static HistoryWorker {
     HISTORY_WORKER.get_or_init(|| {
@@ -81,7 +95,9 @@ fn history_worker() -> &'static HistoryWorker {
             .name("oxterm-history-overflow".to_string())
             .spawn(move || {
                 for request in overflow_receiver {
-                    if sender_for_overflow.send(request).is_err() {
+                    let sent = sender_for_overflow.send(request).is_ok();
+                    OVERFLOW_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+                    if !sent {
                         break;
                     }
                 }
@@ -95,12 +111,19 @@ fn history_worker() -> &'static HistoryWorker {
 }
 
 fn history_worker_loop(receiver: mpsc::Receiver<HistoryRequest>) {
+    // Opening (and, on upgrade, migrating/rebuilding the FTS index) happens
+    // here so the GTK thread never touches the database.
+    let dir = settings::config_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     let path = history_db_path();
     let manager = HistoryManager::open_and_initialize(&path)
-        .map(|conn| HistoryManager {
-            conn: Mutex::new(conn),
-            inserts_since_trim: Mutex::new(0),
-            trim_pending: Arc::new(AtomicBool::new(false)),
+        .map(|conn| {
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            HistoryManager {
+                conn: Mutex::new(conn),
+                inserts_since_trim: Mutex::new(0),
+            }
         })
         .unwrap_or_else(|error| {
             crate::logging::Logger::log(
@@ -117,7 +140,6 @@ fn history_worker_loop(receiver: mpsc::Receiver<HistoryRequest>) {
                     .expect("initialize in-memory history database"),
                 ),
                 inserts_since_trim: Mutex::new(0),
-                trim_pending: Arc::new(AtomicBool::new(false)),
             }
         });
     let mut pending = BTreeMap::<u64, i64>::new();
@@ -132,7 +154,15 @@ fn history_worker_loop(receiver: mpsc::Receiver<HistoryRequest>) {
                 exit_code,
                 duration_ms,
                 git_branch,
+                lookup_branch,
             } => {
+                let git_branch = git_branch.or_else(|| {
+                    if lookup_branch {
+                        current_git_branch(&cwd)
+                    } else {
+                        None
+                    }
+                });
                 let id = manager.add_with_context(
                     &command,
                     &cwd,
@@ -189,55 +219,183 @@ fn history_worker_loop(receiver: mpsc::Receiver<HistoryRequest>) {
             HistoryRequest::SqlSearch { sql, callback } => {
                 callback(manager.sql_search(&sql));
             }
+            HistoryRequest::LatestFailed { cwd, callback } => {
+                callback(manager.latest_failed(&cwd));
+            }
+            HistoryRequest::Optimize { callback } => callback(manager.optimize()),
             HistoryRequest::Clear => manager.clear(),
         }
     }
 }
 
-fn defer_history_request(request: HistoryRequest) {
-    if history_worker().overflow_sender.send(request).is_err() {
-        crate::logging::log_warning("history worker stopped; deferred request dropped");
+/// Queue a request for the worker without ever blocking the caller. Once a
+/// request has spilled into the overflow channel, later ones follow it there
+/// so they cannot overtake it (e.g. a Clear overtaking an earlier Add).
+fn send_history_request(request: HistoryRequest, what: &str) {
+    let worker = history_worker();
+    let request = if OVERFLOW_IN_FLIGHT.load(Ordering::Acquire) == 0 {
+        match worker.sender.try_send(request) {
+            Ok(()) => return,
+            Err(TrySendError::Full(request)) => request,
+            Err(TrySendError::Disconnected(_)) => {
+                crate::logging::log_warning(&format!("history worker stopped; {} skipped", what));
+                return;
+            }
+        }
+    } else {
+        request
+    };
+    OVERFLOW_IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
+    if worker.overflow_sender.send(request).is_err() {
+        OVERFLOW_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+        crate::logging::log_warning(&format!("history worker stopped; {} dropped", what));
     }
 }
 
+/// Branch of the git repository containing `cwd`, if any. Runs `git`, so it
+/// is only called from the history worker thread.
+fn current_git_branch(cwd: &str) -> Option<String> {
+    // A command can emit more than one OSC 133 command-start event in quick
+    // succession; a short TTL avoids spawning git for each of them.
+    static CACHE: OnceLock<Mutex<HashMap<String, (Instant, Option<String>)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(entries) = cache.lock() {
+        if let Some((at, branch)) = entries.get(cwd) {
+            if at.elapsed() < Duration::from_secs(2) {
+                return branch.clone();
+            }
+        }
+    }
+    let output = std::process::Command::new("git")
+        .args(["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok();
+    let branch = output.and_then(|output| {
+        if !output.status.success() {
+            return None;
+        }
+        let branch = String::from_utf8(output.stdout).ok()?.trim().to_string();
+        if branch.is_empty() || branch == "HEAD" {
+            None
+        } else {
+            Some(branch)
+        }
+    });
+    if let Ok(mut entries) = cache.lock() {
+        if entries.len() >= 256 {
+            entries.clear();
+        }
+        entries.insert(cwd.to_string(), (Instant::now(), branch.clone()));
+    }
+    branch
+}
+
+/// Owns the SQLite connection. Only the history worker thread (and tests)
+/// create one; everything else goes through [`History`].
 pub struct HistoryManager {
     conn: Mutex<Connection>,
     inserts_since_trim: Mutex<u32>,
-    trim_pending: Arc<AtomicBool>,
 }
 
-static HISTORY: OnceLock<HistoryManager> = OnceLock::new();
+/// Handle used by the UI. Every operation is queued to the worker thread, so
+/// none of them can block GTK on disk I/O or a long VACUUM.
+pub struct History;
 
-pub fn history() -> &'static HistoryManager {
-    HISTORY.get_or_init(|| HistoryManager::new())
+static HISTORY: History = History;
+
+pub fn history() -> &'static History {
+    &HISTORY
+}
+
+impl History {
+    /// Queue a history entry. Used for commands whose result is not updated.
+    pub fn add_async(&self, command: &str, cwd: &str, exit_code: i64) {
+        let request = HistoryRequest::Add {
+            ticket: None,
+            command: command.to_string(),
+            cwd: cwd.to_string(),
+            exit_code,
+            duration_ms: None,
+            git_branch: None,
+            lookup_branch: false,
+        };
+        send_history_request(request, "history entry");
+    }
+
+    /// Queue a command-start entry and return a ticket that can later be used
+    /// to update its exit code and duration. The ticket is deliberately local
+    /// to the worker and is not exposed as a database row ID. The git branch
+    /// of `cwd` is resolved on the worker.
+    pub fn add_command_start_async(&self, command: &str, cwd: &str) -> Option<u64> {
+        let ticket = HISTORY_TICKET.fetch_add(1, Ordering::Relaxed);
+        let request = HistoryRequest::Add {
+            ticket: Some(ticket),
+            command: command.to_string(),
+            cwd: cwd.to_string(),
+            exit_code: -1,
+            duration_ms: None,
+            git_branch: None,
+            lookup_branch: true,
+        };
+        send_history_request(request, "history entry");
+        Some(ticket)
+    }
+
+    pub fn set_command_result_async(&self, ticket: u64, exit_code: i64, duration_ms: Option<i64>) {
+        let request = HistoryRequest::SetResult {
+            ticket,
+            exit_code,
+            duration_ms,
+        };
+        send_history_request(request, "result update");
+    }
+
+    pub fn add_many_async(
+        &self,
+        commands: Vec<String>,
+        cwd: String,
+        exit_code: i64,
+        callback: AddManyCallback,
+    ) {
+        let request = HistoryRequest::AddMany {
+            commands,
+            cwd,
+            exit_code,
+            callback,
+        };
+        send_history_request(request, "import");
+    }
+
+    pub fn search_async(&self, terms: String, limit: i64, cwd: String, callback: SearchCallback) {
+        let request = HistoryRequest::Search {
+            terms,
+            limit,
+            cwd,
+            callback,
+        };
+        send_history_request(request, "search");
+    }
+
+    pub fn sql_search_async(&self, sql: String, callback: SqlCallback) {
+        send_history_request(HistoryRequest::SqlSearch { sql, callback }, "SQL search");
+    }
+
+    pub fn latest_failed_async(&self, cwd: String, callback: LatestFailedCallback) {
+        send_history_request(HistoryRequest::LatestFailed { cwd, callback }, "lookup");
+    }
+
+    pub fn optimize_async(&self, callback: OptimizeCallback) {
+        send_history_request(HistoryRequest::Optimize { callback }, "optimize");
+    }
+
+    pub fn clear_async(&self) {
+        send_history_request(HistoryRequest::Clear, "history clear");
+    }
 }
 
 impl HistoryManager {
-    fn new() -> HistoryManager {
-        let dir = settings::config_dir();
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-        let db_path = history_db_path();
-        let conn = Self::open_and_initialize(&db_path).unwrap_or_else(|error| {
-            crate::logging::Logger::log(
-                "WARNING",
-                "history",
-                "using temporary in-memory history",
-                Some(&error.to_string()),
-            );
-            Self::initialize_connection(
-                Connection::open_in_memory().expect("open in-memory history database"),
-            )
-            .expect("initialize in-memory history database")
-        });
-        let _ = std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o600));
-        HistoryManager {
-            conn: Mutex::new(conn),
-            inserts_since_trim: Mutex::new(0),
-            trim_pending: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
     fn open_and_initialize(path: &std::path::Path) -> rusqlite::Result<Connection> {
         let conn = Connection::open(path)?;
         Self::initialize_connection(conn)
@@ -246,6 +404,9 @@ impl HistoryManager {
     fn initialize_connection(conn: Connection) -> rusqlite::Result<Connection> {
         conn.busy_timeout(Duration::from_secs(2))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        // NORMAL is durable against application crashes in WAL mode and
+        // avoids an fsync on every single command insert.
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS commands (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -335,12 +496,7 @@ impl HistoryManager {
                 false
             }
         };
-        if should_trim
-            && self
-                .trim_pending
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-        {
+        if should_trim {
             self.trim();
         }
     }
@@ -386,136 +542,6 @@ impl HistoryManager {
         id
     }
 
-    /// Queue a history entry without blocking the GTK main loop. This is used
-    /// for commands whose result does not need to be updated later.
-    pub fn add_async(&self, command: &str, cwd: &str, exit_code: i64) {
-        let request = HistoryRequest::Add {
-            ticket: None,
-            command: command.to_string(),
-            cwd: cwd.to_string(),
-            exit_code,
-            duration_ms: None,
-            git_branch: None,
-        };
-        match history_worker().sender.try_send(request) {
-            Ok(()) => {}
-            Err(TrySendError::Full(request)) => defer_history_request(request),
-            Err(TrySendError::Disconnected(_)) => {
-                // Preserve the old synchronous fallback if the worker exits.
-                let _ = self.add(command, cwd, exit_code);
-            }
-        }
-    }
-
-    /// Queue a command-start entry and return a ticket that can later be used
-    /// to update its exit code and duration. The ticket is deliberately local
-    /// to the worker and is not exposed as a database row ID.
-    pub fn add_with_context_async(
-        &self,
-        command: &str,
-        cwd: &str,
-        exit_code: i64,
-        duration_ms: Option<i64>,
-        git_branch: Option<&str>,
-    ) -> Option<u64> {
-        let ticket = HISTORY_TICKET.fetch_add(1, Ordering::Relaxed);
-        let request = HistoryRequest::Add {
-            ticket: Some(ticket),
-            command: command.to_string(),
-            cwd: cwd.to_string(),
-            exit_code,
-            duration_ms,
-            git_branch: git_branch.map(str::to_string),
-        };
-        match history_worker().sender.try_send(request) {
-            Ok(()) => Some(ticket),
-            Err(TrySendError::Full(request)) => {
-                // Keep the request ordered after earlier writes without ever
-                // making terminal input wait for a saturated queue.
-                defer_history_request(request);
-                Some(ticket)
-            }
-            Err(TrySendError::Disconnected(_)) => {
-                let _ = self.add_with_context(command, cwd, exit_code, duration_ms, git_branch);
-                None
-            }
-        }
-    }
-
-    pub fn set_command_result_async(&self, ticket: u64, exit_code: i64, duration_ms: Option<i64>) {
-        let request = HistoryRequest::SetResult {
-            ticket,
-            exit_code,
-            duration_ms,
-        };
-        match history_worker().sender.try_send(request) {
-            Ok(()) => {}
-            Err(TrySendError::Full(request)) => defer_history_request(request),
-            Err(TrySendError::Disconnected(_)) => {
-                crate::logging::log_warning("history worker stopped; result update skipped");
-            }
-        }
-    }
-
-    pub fn add_many_async(
-        &self,
-        commands: Vec<String>,
-        cwd: String,
-        exit_code: i64,
-        callback: AddManyCallback,
-    ) {
-        let request = HistoryRequest::AddMany {
-            commands,
-            cwd,
-            exit_code,
-            callback,
-        };
-        match history_worker().sender.try_send(request) {
-            Ok(()) => {}
-            Err(TrySendError::Full(request)) => defer_history_request(request),
-            Err(TrySendError::Disconnected(_)) => {
-                crate::logging::log_warning("history worker stopped; import skipped")
-            }
-        }
-    }
-
-    pub fn search_async(&self, terms: String, limit: i64, cwd: String, callback: SearchCallback) {
-        let request = HistoryRequest::Search {
-            terms,
-            limit,
-            cwd,
-            callback,
-        };
-        match history_worker().sender.try_send(request) {
-            Ok(()) => {}
-            Err(TrySendError::Full(request)) => defer_history_request(request),
-            Err(TrySendError::Disconnected(_)) => {
-                crate::logging::log_warning("history worker stopped; search skipped")
-            }
-        }
-    }
-
-    pub fn sql_search_async(&self, sql: String, callback: SqlCallback) {
-        let request = HistoryRequest::SqlSearch { sql, callback };
-        match history_worker().sender.try_send(request) {
-            Ok(()) => {}
-            Err(TrySendError::Full(request)) => defer_history_request(request),
-            Err(TrySendError::Disconnected(_)) => {
-                crate::logging::log_warning("history worker stopped; SQL search skipped")
-            }
-        }
-    }
-
-    pub fn clear_async(&self) {
-        match history_worker().sender.try_send(HistoryRequest::Clear) {
-            Ok(()) => {}
-            Err(TrySendError::Full(request)) => defer_history_request(request),
-            Err(TrySendError::Disconnected(_)) => {
-                crate::logging::log_warning("history worker stopped; history clear skipped")
-            }
-        }
-    }
-
     pub fn add_many(&self, commands: &[String], cwd: &str, exit_code: i64) -> usize {
         if commands.is_empty() {
             return 0;
@@ -525,8 +551,13 @@ impl HistoryManager {
             return 0;
         };
         let mut n = 0usize;
+        // One transaction for the whole import instead of a commit per row.
+        let Ok(tx) = conn.unchecked_transaction() else {
+            crate::logging::log_warning("could not start history import");
+            return 0;
+        };
         {
-            let Ok(mut stmt) = conn.prepare(
+            let Ok(mut stmt) = tx.prepare(
                 "INSERT INTO commands (command, cwd, exit_code, timestamp) VALUES (?1,?2,?3,?4)",
             ) else {
                 crate::logging::log_warning("could not prepare history import");
@@ -544,6 +575,15 @@ impl HistoryManager {
             if failed {
                 crate::logging::log_warning("some history import entries could not be written");
             }
+        }
+        if let Err(error) = tx.commit() {
+            crate::logging::Logger::log(
+                "WARNING",
+                "history",
+                "could not commit history import",
+                Some(&error.to_string()),
+            );
+            return 0;
         }
         drop(conn);
         self.bump_inserts(n);
@@ -886,25 +926,42 @@ impl HistoryManager {
         Ok(rows)
     }
 
+    /// Keep at most TRIM_MAX_ROWS commands. Runs on the worker's own
+    /// connection, so it cannot race other writes or hit busy timeouts.
     fn trim(&self) {
-        let db_path = history_db_path();
-        let trim_pending = Arc::clone(&self.trim_pending);
-        std::thread::spawn(move || {
-            if let Ok(conn) = Connection::open(&db_path) {
-                if let Ok(count) =
-                    conn.query_row("SELECT COUNT(*) FROM commands", [], |r| r.get::<_, i64>(0))
-                {
-                    if count > TRIM_MAX_ROWS {
-                        let _ = conn.execute(
-                            "DELETE FROM commands WHERE id NOT IN \
-                             (SELECT id FROM commands ORDER BY id DESC LIMIT ?1)",
-                            params![TRIM_MAX_ROWS],
-                        );
-                    }
-                }
+        let Ok(conn) = self.conn.lock() else {
+            return;
+        };
+        // Cheap upper bound first: ids are monotonic, so if the id span fits
+        // there is nothing to trim and no index scan is needed.
+        let span: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(id) - MIN(id) + 1, 0) FROM commands",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if span <= TRIM_MAX_ROWS {
+            return;
+        }
+        let cutoff: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM commands ORDER BY id DESC LIMIT 1 OFFSET ?1",
+                params![TRIM_MAX_ROWS],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(cutoff) = cutoff {
+            if let Err(error) = conn.execute("DELETE FROM commands WHERE id <= ?1", params![cutoff])
+            {
+                crate::logging::Logger::log(
+                    "WARNING",
+                    "history",
+                    "could not trim history",
+                    Some(&error.to_string()),
+                );
             }
-            trim_pending.store(false, Ordering::Release);
-        });
+        }
     }
 
     pub fn search_latest(&self, prefix: &str, limit: i64) -> Vec<Value> {
@@ -915,11 +972,11 @@ impl HistoryManager {
         if !prefix.is_empty() {
             let result = (|| -> rusqlite::Result<Vec<Value>> {
                 let mut stmt = conn.prepare(
-                    "SELECT command FROM commands WHERE command LIKE ?1 \
+                    "SELECT command FROM commands WHERE command LIKE ?1 ESCAPE '\\' \
                      GROUP BY command ORDER BY MAX(id) DESC LIMIT ?2",
                 )?;
-                let iter =
-                    stmt.query_map(params![format!("{}%", prefix), limit], Self::map_row_1)?;
+                let pattern = format!("{}%", Self::like_escape(prefix));
+                let iter = stmt.query_map(params![pattern, limit], Self::map_row_1)?;
                 iter.collect()
             })();
             Self::search_latest_result(result)
@@ -949,26 +1006,41 @@ impl HistoryManager {
         Self::search_latest_result(result)
     }
 
+    /// Delete all history. Commands can contain secrets, so freed pages are
+    /// zeroed, the FTS index is emptied and the WAL is truncated rather than
+    /// leaving the old text recoverable from the database files.
     pub fn clear(&self) {
-        if let Ok(conn) = self.conn.lock() {
-            if let Err(error) = conn.execute("DELETE FROM commands", []) {
-                crate::logging::Logger::log(
-                    "WARNING",
-                    "history",
-                    "could not clear history",
-                    Some(&error.to_string()),
-                );
-            }
-        } else {
+        let Ok(conn) = self.conn.lock() else {
             crate::logging::log_warning("history database lock is unavailable");
+            return;
+        };
+        let has_fts: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'commands_fts')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        let mut sql = String::from("PRAGMA secure_delete = ON; DELETE FROM commands;");
+        if has_fts {
+            sql.push_str(" INSERT INTO commands_fts(commands_fts) VALUES ('delete-all');");
+        }
+        sql.push_str(" PRAGMA secure_delete = OFF; PRAGMA wal_checkpoint(TRUNCATE);");
+        if let Err(error) = conn.execute_batch(&sql) {
+            crate::logging::Logger::log(
+                "WARNING",
+                "history",
+                "could not clear history",
+                Some(&error.to_string()),
+            );
         }
     }
 
     pub fn optimize(&self) -> Result<BTreeMap<String, Value>, String> {
         let db_path = history_db_path();
         let mut stats = BTreeMap::new();
-        // Use the same connection as normal history writes so SQLite maintenance
-        // cannot race an insert or command-result update.
+        // Runs on the worker, on the same connection as every other history
+        // operation, so maintenance cannot race inserts or block the UI.
         let mut conn = self
             .conn
             .lock()
@@ -1050,8 +1122,7 @@ fn rusqlite_value_to_json(v: rusqlite::types::Value) -> Value {
 mod tests {
     use super::{is_read_only_sql, HistoryManager};
     use rusqlite::Connection;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
 
     fn test_history() -> HistoryManager {
         let conn = Connection::open_in_memory().unwrap();
@@ -1071,7 +1142,6 @@ mod tests {
         HistoryManager {
             conn: Mutex::new(conn),
             inserts_since_trim: Mutex::new(0),
-            trim_pending: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -1140,5 +1210,59 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM commands", [], |row| row.get(0))
             .unwrap();
         assert_eq!(rows, 2);
+    }
+
+    fn count(history: &HistoryManager) -> i64 {
+        history
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM commands", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn add_many_imports_in_one_transaction() {
+        let history = test_history();
+        let commands: Vec<String> = (0..500).map(|i| format!("echo {}", i)).collect();
+        assert_eq!(history.add_many(&commands, "/w", 0), 500);
+        assert_eq!(count(&history), 500);
+    }
+
+    #[test]
+    fn search_latest_treats_like_wildcards_literally() {
+        let history = test_history();
+        history.add("git_status", "/w", 0);
+        history.add("gitXstatus", "/w", 0);
+        history.add("100% done", "/w", 0);
+        history.add("1000 done", "/w", 0);
+        assert_eq!(
+            history.search_latest("git_", 10),
+            vec![serde_json::json!("git_status")]
+        );
+        assert_eq!(
+            history.search_latest("100%", 10),
+            vec![serde_json::json!("100% done")]
+        );
+    }
+
+    #[test]
+    fn clear_removes_commands_and_fts_rows() {
+        let history = test_history();
+        history.add("export TOKEN=secret", "/w", 0);
+        history.clear();
+        assert_eq!(count(&history), 0);
+        assert!(history.search("secret", 10, "/w").is_empty());
+    }
+
+    #[test]
+    fn latest_failed_ignores_successes_and_other_directories() {
+        let history = test_history();
+        let failed = history.add("make", "/w", 2);
+        history.add("ls", "/w", 0);
+        history.add("cargo build", "/other", 1);
+        let row = history.latest_failed("/w").unwrap();
+        assert_eq!(row[0].as_i64(), Some(failed));
+        assert_eq!(row[1].as_str(), Some("make"));
     }
 }
