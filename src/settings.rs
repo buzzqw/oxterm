@@ -895,6 +895,35 @@ mod tests {
         assert!(Settings::valid_value("foreground_color", &json!("#abcdef")));
         assert!(!Settings::valid_value("foreground_color", &json!("#abc")));
     }
+
+    #[test]
+    fn unreadable_settings_file_is_moved_aside() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxterm-settings-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("settings.json");
+        fs::write(&path, "{ not json").unwrap();
+        preserve_unreadable_settings(&path);
+        assert!(!path.exists());
+        let preserved: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(preserved.len(), 1);
+        assert!(preserved[0].starts_with("settings.json.corrupt-"));
+        assert_eq!(
+            fs::read_to_string(dir.join(&preserved[0])).unwrap(),
+            "{ not json"
+        );
+        assert!(!SAVE_DISABLED.load(Ordering::SeqCst));
+        fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 pub fn json_to_str_map(value: &Value) -> BTreeMap<String, String> {

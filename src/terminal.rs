@@ -269,6 +269,14 @@ mod security_tests {
     }
 
     #[test]
+    fn char_column_counts_characters_not_bytes() {
+        let line = "età → https://example.test";
+        let start = line.find("https").unwrap();
+        assert_eq!(char_column(line, start), 6);
+        assert_eq!(char_column(line, 0), 0);
+    }
+
+    #[test]
     fn child_status_reports_signal_termination() {
         assert_eq!(child_status_message(0), "[Process exited with code 0]");
         assert_eq!(

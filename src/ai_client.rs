@@ -1049,6 +1049,35 @@ mod tests {
             None
         );
     }
+
+    #[test]
+    fn endpoint_policy_handles_edge_cases() {
+        assert!(endpoint_is_allowed("https://api.example.test/v1"));
+        assert!(endpoint_is_allowed("HTTP://LOCALHOST:11434/api"));
+        assert!(endpoint_is_allowed("http://[::1]:8080/v1"));
+        assert!(!endpoint_is_allowed("http://localhost.evil.test/v1"));
+        assert!(!endpoint_is_allowed("http://127.0.0.1@evil.test/v1"));
+        assert!(!endpoint_is_allowed("http://user:pw@localhost/v1"));
+        assert!(!endpoint_is_allowed("http:///v1"));
+        assert!(!endpoint_is_allowed("ftp://localhost/"));
+    }
+
+    #[test]
+    fn empty_reply_drops_its_question() {
+        let client = AIClient::new("ollama", "", None, "").unwrap();
+        client.add_message("user", "first");
+        client.add_reply("answer");
+        client.add_message("user", "second");
+        client.add_reply("   ");
+        let roles: Vec<String> = client
+            .messages
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|m| m["role"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(roles, ["user", "assistant"]);
+    }
 }
 
 pub fn ping_provider(provider: &str, url: &str) -> bool {
