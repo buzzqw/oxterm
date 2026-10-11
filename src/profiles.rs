@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use serde_json::Value;
 
 use crate::logging::LOGGER;
+use crate::persistence::atomic_write;
 use crate::persistence::validate_name;
-use crate::persistence::{sync_parent_directory, write_private_temp};
 use crate::settings::{self, Settings};
 
 fn profile_dir() -> PathBuf {
@@ -16,8 +16,8 @@ fn profile_dir() -> PathBuf {
 }
 
 fn ensure_dir() {
-    let _ = fs::create_dir_all(&profile_dir());
-    let _ = fs::set_permissions(&profile_dir(), fs::Permissions::from_mode(0o700));
+    let _ = fs::create_dir_all(profile_dir());
+    let _ = fs::set_permissions(profile_dir(), fs::Permissions::from_mode(0o700));
 }
 
 pub fn profile_path(name: &str) -> Result<PathBuf, String> {
@@ -79,8 +79,11 @@ fn validate_profile(data: &Value) -> Option<Value> {
         let Some(value) = src.get(*key) else {
             continue;
         };
+        // Drop individual invalid values (e.g. after an upgrade tightened the
+        // allowed range) instead of discarding the whole profile.
         if defs.get(*key).is_none() || !Settings::valid_value(key, value) {
-            return None;
+            LOGGER.warning(&format!("profile_value_invalid key={}", key));
+            continue;
         }
         valid.insert(key.to_string(), value.clone());
     }
@@ -90,7 +93,8 @@ fn validate_profile(data: &Value) -> Option<Value> {
                 .iter()
                 .any(|(k, v)| !v.is_string() || !is_hex(v.as_str().unwrap()) || k.is_empty())
         {
-            return None;
+            LOGGER.warning("profile_value_invalid key=custom_palette");
+            valid.remove("custom_palette");
         }
     }
     Some(Value::Object(valid))
@@ -120,26 +124,9 @@ pub fn save_profile(name: &str, settings_data: &Value) -> bool {
             return false;
         }
     };
-    match write_private_temp(
-        &profile_dir(),
-        "profile_tmp",
-        serde_json::to_string_pretty(&validated)
-            .unwrap_or_default()
-            .as_bytes(),
-    ) {
-        Ok(tmp) => {
-            let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
-            if let Err(e) = fs::rename(&tmp, &path) {
-                let _ = fs::remove_file(&tmp);
-                LOGGER.error(&format!("profile_save_failed error={}", e));
-                return false;
-            }
-            if let Err(e) = sync_parent_directory(&path) {
-                LOGGER.error(&format!("profile_save_failed error={}", e));
-                return false;
-            }
-            true
-        }
+    let contents = serde_json::to_string_pretty(&validated).unwrap_or_default();
+    match atomic_write(&path, contents.as_bytes()) {
+        Ok(()) => true,
         Err(e) => {
             LOGGER.error(&format!("profile_save_failed error={}", e));
             false
@@ -216,7 +203,7 @@ pub fn list_profiles() -> Vec<String> {
         return Vec::new();
     }
     let mut out = Vec::new();
-    if let Ok(entries) = fs::read_dir(&profile_dir()) {
+    if let Ok(entries) = fs::read_dir(profile_dir()) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if let Some(base) = name.strip_suffix(".json") {
@@ -236,9 +223,15 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn rejects_values_settings_would_reject() {
-        assert!(validate_profile(&json!({"cursor_color": "not-a-color"})).is_none());
-        assert!(validate_profile(&json!({"font_size": 3})).is_none());
-        assert!(validate_profile(&json!({"cursor_color": "#aabbcc"})).is_some());
+    fn drops_values_settings_would_reject() {
+        assert_eq!(
+            validate_profile(&json!({"cursor_color": "not-a-color", "font_size": 3})),
+            Some(json!({}))
+        );
+        assert_eq!(
+            validate_profile(&json!({"cursor_color": "#aabbcc", "font_size": 3})),
+            Some(json!({"cursor_color": "#aabbcc"}))
+        );
+        assert!(validate_profile(&json!(["not", "an", "object"])).is_none());
     }
 }

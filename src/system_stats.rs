@@ -55,7 +55,7 @@ fn cpu_percent(prev: &mut Option<(u64, u64)>) -> f64 {
                 let d_total = cur.1.saturating_sub(*p_total);
                 let d_idle = cur.0.saturating_sub(*p_idle);
                 if d_total > 0 {
-                    let pct = (d_total - d_idle) as f64 / d_total as f64 * 100.0;
+                    let pct = d_total.saturating_sub(d_idle) as f64 / d_total as f64 * 100.0;
                     *prev = Some(cur);
                     return pct;
                 }
@@ -76,9 +76,9 @@ fn disk_usage(path: &str) -> (u64, u64) {
     };
     let _ = meta;
     let block_size = stats.fragment_size();
-    let total = stats.blocks() as u64 * block_size;
-    let free = stats.blocks_free() as u64 * block_size;
-    let avail = stats.blocks_available() as u64 * block_size;
+    let total = stats.blocks() * block_size;
+    let free = stats.blocks_free() * block_size;
+    let avail = stats.blocks_available() * block_size;
     let used = total.saturating_sub(free.max(avail));
     (used, total)
 }

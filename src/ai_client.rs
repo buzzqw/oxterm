@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 use std::io::BufRead;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -7,8 +5,6 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use serde_json::{json, Value};
-
-use crate::logging::LOGGER;
 
 pub const PROVIDERS: &[(&str, &str, &str, &str, &str)] = &[
     (
@@ -88,6 +84,18 @@ fn endpoint_is_allowed(url: &str) -> bool {
         authority.split(':').next().unwrap_or("")
     };
     matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
+/// ureq 2 reports 4xx/5xx as `Error::Status`; surface the provider's error
+/// body so users see more than a bare status code.
+fn http_error_message(e: ureq::Error) -> String {
+    match e {
+        ureq::Error::Status(status, resp) => {
+            let text = resp.into_string().unwrap_or_default();
+            format!("HTTP {}: {}", status, truncate(&text, 300))
+        }
+        other => other.to_string(),
+    }
 }
 
 #[derive(Debug)]
@@ -215,7 +223,10 @@ fn stream_agent() -> &'static ureq::Agent {
     STREAM_AGENT.get_or_init(|| {
         ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(10))
-            .timeout_read(Duration::from_secs(5))
+            // Cold model loads and reasoning models can go well past a few
+            // seconds before the first token; cancellation is handled by the
+            // caller's flag, not by this timeout.
+            .timeout_read(Duration::from_secs(180))
             .build()
     })
 }
@@ -326,6 +337,17 @@ impl AIClient {
         }
     }
 
+    /// Record the assistant's reply. Providers such as Claude reject empty
+    /// assistant turns, so an empty reply drops its question instead of
+    /// wedging every later request in this conversation.
+    fn add_reply(&self, content: &str) {
+        if content.trim().is_empty() {
+            self.remove_last_user();
+        } else {
+            self.add_message("assistant", content);
+        }
+    }
+
     pub fn cancel(&self) {
         self.cancel_requested.store(true, Ordering::SeqCst);
     }
@@ -367,6 +389,8 @@ impl AIClient {
     where
         F: FnMut(&str),
     {
+        // Per-request cancellation goes through `cancel`; a client-wide
+        // cancel() from an earlier, abandoned request must not abort this one.
         self.cancel_requested.store(false, Ordering::SeqCst);
         self.truncate_messages();
         let mut system_message = None;
@@ -401,7 +425,7 @@ impl AIClient {
         }
         let body_str = body.to_string();
         req.send_bytes(body_str.as_bytes())
-            .map_err(|e| AiError::Http(e.to_string()))
+            .map_err(|e| AiError::Http(http_error_message(e)))
     }
 
     fn auth_headers(&self) -> BTreeMap<String, String> {
@@ -493,7 +517,7 @@ impl AIClient {
         }
         let resp = req
             .send_bytes(payload.to_string().as_bytes())
-            .map_err(|e| e.to_string())?;
+            .map_err(http_error_message)?;
         if resp.status() != 200 {
             let status = resp.status();
             let text = resp.into_string().unwrap_or_default();
@@ -508,7 +532,7 @@ impl AIClient {
             .and_then(|c| c.as_str())
             .unwrap_or("")
             .to_string();
-        self.add_message("assistant", &content);
+        self.add_reply(&content);
         Ok(content)
     }
 
@@ -569,7 +593,7 @@ impl AIClient {
         if self.is_cancelled(cancel) {
             return Err(AiError::Cancelled);
         }
-        self.add_message("assistant", &full);
+        self.add_reply(&full);
         Ok((usage != TokenUsage::default()).then_some(usage))
     }
 
@@ -585,7 +609,7 @@ impl AIClient {
         }
         let resp = req
             .send_bytes(payload.to_string().as_bytes())
-            .map_err(|e| e.to_string())?;
+            .map_err(http_error_message)?;
         if resp.status() != 200 {
             let status = resp.status();
             let text = resp.into_string().unwrap_or_default();
@@ -599,7 +623,7 @@ impl AIClient {
             .and_then(|c| c.as_str())
             .unwrap_or("")
             .to_string();
-        self.add_message("assistant", &content);
+        self.add_reply(&content);
         Ok(content)
     }
 
@@ -682,7 +706,7 @@ impl AIClient {
         if self.is_cancelled(cancel) {
             return Err(AiError::Cancelled);
         }
-        self.add_message("assistant", &full);
+        self.add_reply(&full);
         Ok((usage != TokenUsage::default()).then_some(usage))
     }
 
@@ -715,7 +739,7 @@ impl AIClient {
         }
         let resp = req
             .send_bytes(payload.to_string().as_bytes())
-            .map_err(|e| e.to_string())?;
+            .map_err(http_error_message)?;
         if resp.status() != 200 {
             let status = resp.status();
             let text = resp.into_string().unwrap_or_default();
@@ -732,7 +756,7 @@ impl AIClient {
             .and_then(|c| c.as_str())
             .unwrap_or("")
             .to_string();
-        self.add_message("assistant", &content);
+        self.add_reply(&content);
         Ok(content)
     }
 
@@ -788,7 +812,7 @@ impl AIClient {
         if self.is_cancelled(cancel) {
             return Err(AiError::Cancelled);
         }
-        self.add_message("assistant", &full);
+        self.add_reply(&full);
         Ok((usage != TokenUsage::default()).then_some(usage))
     }
 }
@@ -811,6 +835,10 @@ pub fn fetch_models(provider: &str, api_key: &str, base_url: &str) -> Vec<String
             .timeout(Duration::from_secs(5))
             .call()
     } else if provider == "custom" && !base_url.is_empty() {
+        if !api_key.is_empty() && !endpoint_is_allowed(base_url) {
+            // Never send a bearer key over plain HTTP to a non-local host.
+            return Vec::new();
+        }
         let base = base_url
             .rsplit_once("/chat/completions")
             .map(|(b, _)| b.trim_end_matches('/').to_string())
@@ -1021,6 +1049,35 @@ mod tests {
             None
         );
     }
+
+    #[test]
+    fn endpoint_policy_handles_edge_cases() {
+        assert!(endpoint_is_allowed("https://api.example.test/v1"));
+        assert!(endpoint_is_allowed("HTTP://LOCALHOST:11434/api"));
+        assert!(endpoint_is_allowed("http://[::1]:8080/v1"));
+        assert!(!endpoint_is_allowed("http://localhost.evil.test/v1"));
+        assert!(!endpoint_is_allowed("http://127.0.0.1@evil.test/v1"));
+        assert!(!endpoint_is_allowed("http://user:pw@localhost/v1"));
+        assert!(!endpoint_is_allowed("http:///v1"));
+        assert!(!endpoint_is_allowed("ftp://localhost/"));
+    }
+
+    #[test]
+    fn empty_reply_drops_its_question() {
+        let client = AIClient::new("ollama", "", None, "").unwrap();
+        client.add_message("user", "first");
+        client.add_reply("answer");
+        client.add_message("user", "second");
+        client.add_reply("   ");
+        let roles: Vec<String> = client
+            .messages
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|m| m["role"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(roles, ["user", "assistant"]);
+    }
 }
 
 pub fn ping_provider(provider: &str, url: &str) -> bool {
@@ -1074,11 +1131,4 @@ fn truncate(s: &str, max: usize) -> String {
     } else {
         s.to_string()
     }
-}
-
-pub fn log_provider_error(provider: &str, msg: &str) {
-    LOGGER.error(&format!(
-        "ai_models_fetch_failed provider={} error={}",
-        provider, msg
-    ));
 }

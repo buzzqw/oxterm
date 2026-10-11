@@ -250,7 +250,8 @@ or `#`:
 ```
 
 Oxterm sends the question to the configured provider, displays the answer, and
-returns to the normal shell prompt. The `?` prefix is recommended; `!` and
+returns to the normal shell prompt. The prefixes are only recognised at the shell
+prompt; lines typed into a running program are always passed to that program. The `?` prefix is recommended; `!` and
 quoted text are left to the shell because their meaning varies between shells.
 Questions and answers sent during the session remain in the AI conversation
 context, so a later question can refer to an earlier answer.
@@ -506,6 +507,33 @@ creates temporary startup files and removes them when the session ends; `.bashrc
 
 The integration supports Bash, Zsh, and Fish. Use `Ctrl+Shift+Up` and
 `Ctrl+Shift+Down` to move between detected prompts.
+
+### SSH connections
+
+With shell integration active, `ssh` typed at the prompt goes through a small
+wrapper that:
+
+- shares one authenticated connection per server, port, and user across all
+  tabs (`ControlMaster=auto`, socket in `~/.config/oxterm/cm-<hash>`, kept for
+  10 minutes after the last session closes). A second tab to the same server
+  opens instantly without logging in again;
+- enables keepalives (`ServerAliveInterval=30`) when your configuration sets
+  none, so a dropped connection ends the session instead of freezing the tab.
+
+Your own `~/.ssh/config` always wins: if it sets `ControlPath` or
+`ServerAliveInterval`, Oxterm does not override it. Turn sharing off under
+**Preferences > General > SSH connection sharing** (applies to new tabs).
+
+`autossh` gets the same treatment (its own `-M`, `-f`, and `-V` options are kept
+as they are). `mosh` is left untouched: in its default mode it disables ssh
+connection sharing itself, so Oxterm only recognises mosh sessions.
+
+The status bar shows the remote host's CPU, memory, and disk usage for `ssh`,
+`autossh`, and `mosh` sessions. Oxterm reads them through a shared connection to
+that host only (for mosh, one opened by another tab); it never opens extra
+logins, so hosts without a shared connection simply show no remote statistics.
+`Ctrl+B`, then `d` is passed through to the remote side for all three, so a
+remote tmux detaches instead of the local terminal.
 
 ## Keyboard Shortcuts
 

@@ -54,6 +54,8 @@ struct DialogState {
     chk_bell_notify: gtk::CheckButton,
     chk_hint_mode: gtk::CheckButton,
     chk_vi_copy: gtk::CheckButton,
+    chk_tmux_prefix: gtk::CheckButton,
+    chk_ssh_sharing: gtk::CheckButton,
     // Appearance
     font_btn: gtk::FontButton,
     chk_bold: gtk::CheckButton,
@@ -180,6 +182,8 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
         chk_bell_notify: general.16,
         chk_hint_mode: general.17,
         chk_vi_copy: general.18,
+        chk_tmux_prefix: general.19,
+        chk_ssh_sharing: general.20,
         font_btn: appearance.0,
         chk_bold: appearance.1,
         combo_scheme: appearance.2,
@@ -201,8 +205,8 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
         combo_delete: compat.1,
         combo_encoding: compat.2,
         chk_osc133: compat.3,
-        ai_entries: ai_entries,
-        ai_url_entries: ai_url_entries,
+        ai_entries,
+        ai_url_entries,
         entry_notes_dir: notes.0,
         entry_notes_file: notes.1,
         entry_editor: notes.2,
@@ -247,9 +251,20 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
         });
     }
 
-    dialog.connect_response(move |_dlg, response| {
+    dialog.connect_response(move |dlg, response| {
         if response == gtk::ResponseType::Ok {
-            state.apply();
+            let errors = state.apply();
+            if !errors.is_empty() {
+                let msg = gtk::MessageDialog::new(
+                    Some(dlg),
+                    gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+                    gtk::MessageType::Warning,
+                    gtk::ButtonsType::Close,
+                    &format!("Some settings were not saved:\n\n{}", errors.join("\n")),
+                );
+                msg.run();
+                msg.close();
+            }
         }
         // destroy handled by response default
     });
@@ -394,6 +409,8 @@ fn build_general(
         gtk::CheckButton,
         gtk::CheckButton,
         gtk::Entry,
+        gtk::CheckButton,
+        gtk::CheckButton,
         gtk::CheckButton,
         gtk::CheckButton,
         gtk::CheckButton,
@@ -578,7 +595,21 @@ fn build_general(
     chk_vi_copy.set_tooltip_text(Some(
         "Ctrl+Shift+Y: VI-style copy mode (hjkl scroll, v select, y yank, Esc exit)",
     ));
-    row(&grid, r, "VI copy mode:", &chk_vi_copy);
+    r = row(&grid, r, "VI copy mode:", &chk_vi_copy);
+
+    let chk_tmux_prefix = gtk::CheckButton::new();
+    chk_tmux_prefix.set_active(s.get_bool("tmux_prefix_enabled"));
+    chk_tmux_prefix.set_tooltip_text(Some(
+        "Use Ctrl+B as a tmux-style prefix for tab and split shortcuts. Disable to pass Ctrl+B to programs",
+    ));
+    r = row(&grid, r, "Ctrl+B prefix keys:", &chk_tmux_prefix);
+
+    let chk_ssh_sharing = gtk::CheckButton::new();
+    chk_ssh_sharing.set_active(s.get_bool("ssh_connection_sharing"));
+    chk_ssh_sharing.set_tooltip_text(Some(
+        "Reuse one SSH connection per server across tabs (faster logins, live remote stats). Ignored when your ssh config sets ControlPath. Applies to new tabs",
+    ));
+    row(&grid, r, "SSH connection sharing:", &chk_ssh_sharing);
 
     sw.add(&grid);
     (
@@ -603,6 +634,8 @@ fn build_general(
             chk_bell_notify,
             chk_hint_mode,
             chk_vi_copy,
+            chk_tmux_prefix,
+            chk_ssh_sharing,
         ),
     )
 }
@@ -1129,7 +1162,7 @@ fn build_ai(
 
         let key_entry = gtk::Entry::new();
         key_entry.set_text(keys.get(provider).cloned().unwrap_or_default().as_str());
-        if provider != "ollama" && provider != "custom" {
+        if provider != "ollama" {
             key_entry.set_visibility(false);
         }
         let ph = if provider == "ollama" || provider == "custom" {
@@ -1241,7 +1274,8 @@ fn build_notes(s: &Settings) -> (gtk::Grid, (gtk::Entry, gtk::Entry, gtk::Entry)
 }
 
 impl DialogState {
-    fn apply(&self) {
+    /// Apply the dialog to the settings; returns values that were rejected.
+    fn apply(&self) -> Vec<String> {
         let s = settings();
         s.begin_batch();
 
@@ -1282,6 +1316,8 @@ impl DialogState {
         s.set_bool("bell_notification", self.chk_bell_notify.is_active());
         s.set_bool("hint_mode_enabled", self.chk_hint_mode.is_active());
         s.set_bool("vi_copy_mode_enabled", self.chk_vi_copy.is_active());
+        s.set_bool("tmux_prefix_enabled", self.chk_tmux_prefix.is_active());
+        s.set_bool("ssh_connection_sharing", self.chk_ssh_sharing.is_active());
 
         let font_name = self
             .font_btn
@@ -1377,7 +1413,7 @@ impl DialogState {
             "delete_binding",
             del_map.get(idx).copied().unwrap_or("escape-sequence"),
         );
-        let _ = s.set_str(
+        s.set_str(
             "encoding",
             &self
                 .combo_encoding
@@ -1394,8 +1430,10 @@ impl DialogState {
         let mut new_urls = BTreeMap::new();
         let mut new_sys_prompts = BTreeMap::new();
         for (provider, (key_entry, model_entry, buf)) in &self.ai_entries {
-            new_keys.insert(provider.clone(), key_entry.text().to_string());
-            new_models.insert(provider.clone(), model_entry.text().to_string());
+            // Pasted keys often carry a trailing newline, which produces an
+            // invalid HTTP header.
+            new_keys.insert(provider.clone(), key_entry.text().trim().to_string());
+            new_models.insert(provider.clone(), model_entry.text().trim().to_string());
             let prompt = buf
                 .text(&buf.start_iter(), &buf.end_iter(), true)
                 .map(|t| t.trim().to_string())
@@ -1405,15 +1443,19 @@ impl DialogState {
             }
         }
         for (provider, url_entry) in &self.ai_url_entries {
-            new_urls.insert(provider.clone(), url_entry.text().to_string());
+            new_urls.insert(provider.clone(), url_entry.text().trim().to_string());
         }
-        let _ = s.set("ai_keys", settings::str_map_to_json(&new_keys));
-        let _ = s.set("ai_models", settings::str_map_to_json(&new_models));
-        let _ = s.set("ai_urls", settings::str_map_to_json(&new_urls));
-        let _ = s.set(
-            "ai_system_prompts",
-            settings::str_map_to_json(&new_sys_prompts),
-        );
+        let mut errors = Vec::new();
+        for (key, map) in [
+            ("ai_keys", &new_keys),
+            ("ai_models", &new_models),
+            ("ai_urls", &new_urls),
+            ("ai_system_prompts", &new_sys_prompts),
+        ] {
+            if let Err(e) = s.set(key, settings::str_map_to_json(map)) {
+                errors.push(format!("{}: {}", key, e));
+            }
+        }
 
         s.set_str("notes_dir", &self.entry_notes_dir.text());
         s.set_str("notes_file", &self.entry_notes_file.text());
@@ -1421,5 +1463,6 @@ impl DialogState {
 
         s.end_batch();
         s.notify_changed();
+        errors
     }
 }
