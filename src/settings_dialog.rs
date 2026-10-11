@@ -55,6 +55,7 @@ struct DialogState {
     chk_hint_mode: gtk::CheckButton,
     chk_vi_copy: gtk::CheckButton,
     chk_tmux_prefix: gtk::CheckButton,
+    chk_ssh_sharing: gtk::CheckButton,
     // Appearance
     font_btn: gtk::FontButton,
     chk_bold: gtk::CheckButton,
@@ -182,6 +183,7 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
         chk_hint_mode: general.17,
         chk_vi_copy: general.18,
         chk_tmux_prefix: general.19,
+        chk_ssh_sharing: general.20,
         font_btn: appearance.0,
         chk_bold: appearance.1,
         combo_scheme: appearance.2,
@@ -412,6 +414,7 @@ fn build_general(
         gtk::CheckButton,
         gtk::CheckButton,
         gtk::CheckButton,
+        gtk::CheckButton,
     ),
 ) {
     let sw = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
@@ -599,7 +602,14 @@ fn build_general(
     chk_tmux_prefix.set_tooltip_text(Some(
         "Use Ctrl+B as a tmux-style prefix for tab and split shortcuts. Disable to pass Ctrl+B to programs",
     ));
-    row(&grid, r, "Ctrl+B prefix keys:", &chk_tmux_prefix);
+    r = row(&grid, r, "Ctrl+B prefix keys:", &chk_tmux_prefix);
+
+    let chk_ssh_sharing = gtk::CheckButton::new();
+    chk_ssh_sharing.set_active(s.get_bool("ssh_connection_sharing"));
+    chk_ssh_sharing.set_tooltip_text(Some(
+        "Reuse one SSH connection per server across tabs (faster logins, live remote stats). Ignored when your ssh config sets ControlPath. Applies to new tabs",
+    ));
+    row(&grid, r, "SSH connection sharing:", &chk_ssh_sharing);
 
     sw.add(&grid);
     (
@@ -625,6 +635,7 @@ fn build_general(
             chk_hint_mode,
             chk_vi_copy,
             chk_tmux_prefix,
+            chk_ssh_sharing,
         ),
     )
 }
@@ -1306,6 +1317,7 @@ impl DialogState {
         s.set_bool("hint_mode_enabled", self.chk_hint_mode.is_active());
         s.set_bool("vi_copy_mode_enabled", self.chk_vi_copy.is_active());
         s.set_bool("tmux_prefix_enabled", self.chk_tmux_prefix.is_active());
+        s.set_bool("ssh_connection_sharing", self.chk_ssh_sharing.is_active());
 
         let font_name = self
             .font_btn

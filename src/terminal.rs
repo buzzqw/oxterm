@@ -5,7 +5,6 @@ use std::os::fd::RawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use glib::prelude::*;
@@ -277,6 +276,44 @@ mod security_tests {
     }
 
     #[test]
+    fn control_socket_is_resolved_through_ssh_config() {
+        if std::process::Command::new("ssh")
+            .arg("-V")
+            .output()
+            .is_err()
+        {
+            return; // no OpenSSH client available
+        }
+        let dir = std::env::temp_dir().join(format!("oxterm-ssh-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("cm.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let args = |path: &str| {
+            vec![
+                "-o".to_string(),
+                format!("ControlPath={}", path),
+                "-p".to_string(),
+                "2222".to_string(),
+                "bob@example.test".to_string(),
+                "uptime".to_string(),
+            ]
+        };
+        assert_eq!(
+            TerminalBox::ssh_control_socket(&args(&socket.to_string_lossy())),
+            Some((
+                socket.to_string_lossy().into_owned(),
+                "example.test".to_string()
+            ))
+        );
+        // A missing socket means no shared connection: never probe.
+        assert_eq!(
+            TerminalBox::ssh_control_socket(&args(&dir.join("absent").to_string_lossy())),
+            None
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn child_status_reports_signal_termination() {
         assert_eq!(child_status_message(0), "[Process exited with code 0]");
         assert_eq!(
@@ -389,7 +426,7 @@ mod imp {
         pub remote_stats_cache: RefCell<String>,
         pub remote_stats_ts: RefCell<f64>,
         pub remote_stats_running: RefCell<bool>,
-        pub ssh_target_cache: RefCell<Option<(Instant, Option<String>)>>,
+        pub ssh_target_cache: RefCell<Option<(Instant, Option<Vec<String>>)>>,
 
         pub osc133_markers: RefCell<Vec<(i64, String, i64)>>,
         pub osc133_rfd: RefCell<i32>,
@@ -1090,11 +1127,24 @@ impl TerminalBox {
                 "OXTERM_OSC133_FIFO".to_string(),
                 fifo_path.to_string_lossy().to_string(),
             ));
+            // Read by the shell's ssh wrapper (see shell_scripts.rs).
+            env.push((
+                "OXTERM_SSH_SHARING".to_string(),
+                if settings().get_bool("ssh_connection_sharing") {
+                    "1"
+                } else {
+                    "0"
+                }
+                .to_string(),
+            ));
             let fd = unsafe {
                 let cpath = std::ffi::CString::new(fifo_path.to_string_lossy().as_bytes()).unwrap();
+                // O_RDWR keeps a writer on the FIFO for as long as we hold it,
+                // so a shell that opens it per event (fish) or reopens it never
+                // produces EOF/HUP and the watch stays alive until child exit.
                 libc::open(
                     cpath.as_ptr(),
-                    libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC,
+                    libc::O_RDWR | libc::O_NONBLOCK | libc::O_CLOEXEC,
                 )
             };
             *self.imp().osc133_rfd.borrow_mut() = fd;
@@ -1676,7 +1726,9 @@ impl TerminalBox {
         self.get_ssh_target().is_some()
     }
 
-    fn get_ssh_target(&self) -> Option<String> {
+    /// Arguments (without the program name) of an `ssh` client running as a
+    /// direct child of this terminal's shell, if any.
+    fn get_ssh_target(&self) -> Option<Vec<String>> {
         if let Some((at, target)) = self.imp().ssh_target_cache.borrow().as_ref() {
             if at.elapsed() < Duration::from_secs(2) {
                 return target.clone();
@@ -1700,24 +1752,18 @@ impl TerminalBox {
                 let Ok(raw) = std::fs::read(format!("/proc/{}/cmdline", child)) else {
                     continue;
                 };
-                if raw.is_empty() {
-                    continue;
-                }
-                let args: Vec<String> = raw
+                let mut args: Vec<String> = raw
                     .split(|&b| b == 0)
                     .map(|a| String::from_utf8_lossy(a).to_string())
                     .collect();
-                let mut target: Option<String> = None;
-                for arg in &args[1..] {
-                    if arg.is_empty() || arg.starts_with('-') {
-                        continue;
-                    }
-                    if arg.contains('@') {
-                        return Some(arg.clone());
-                    }
-                    target = Some(arg.clone());
+                if args.last().is_some_and(String::is_empty) {
+                    args.pop();
                 }
-                return target;
+                if args.len() < 2 {
+                    continue;
+                }
+                args.remove(0);
+                return Some(args);
             }
             None
         })();
@@ -1725,73 +1771,31 @@ impl TerminalBox {
         result
     }
 
-    fn find_ssh_control_socket(&self) -> Option<String> {
-        let target = self.get_ssh_target()?;
-        let pid = *self.imp().pid.borrow();
-        let mut socket_dirs = Vec::new();
-        if let Some(dir) = std::env::var_os("OXTERM_CONFIG_DIR") {
-            socket_dirs.push(std::path::PathBuf::from(dir));
-        }
-        socket_dirs.push(settings::config_dir());
-        // /tmp is deliberately not searched: any local user could plant an
-        // "oxterm-ssh-<pid>" socket there and intercept the stats probe.
-        for dir in socket_dirs {
-            let socket = dir.join(format!("oxterm-ssh-{}", pid));
-            if socket.exists() {
-                return Some(socket.to_string_lossy().to_string());
-            }
-        }
-        let config_path = dirs::home_dir().map(|p| p.join(".ssh").join("config"))?;
-        if !config_path.exists() {
-            return None;
-        }
-        let content = std::fs::read_to_string(&config_path).ok()?;
-        static CONTROL_PATH_RE: OnceLock<Regex> = OnceLock::new();
-        let re = CONTROL_PATH_RE.get_or_init(|| Regex::new(r"(?i)controlpath\s+(.+)").unwrap());
-        let m = re.captures(&content)?;
-        let mut ctl_path = m.get(1)?.as_str().trim().to_string();
-        let user = if let Some(idx) = target.find('@') {
-            target[..idx].to_string()
-        } else {
-            std::env::var("USER").unwrap_or_default()
-        };
-        let host = if let Some(idx) = target.find('@') {
-            target[idx + 1..].to_string()
-        } else {
-            target.clone()
-        };
-        ctl_path = ctl_path.replace("%r", &user);
-        ctl_path = ctl_path.replace("%h", &host);
-        ctl_path = ctl_path.replace("%p", "22");
-        let expanded = if let Some(rest) = ctl_path.strip_prefix("~/") {
-            dirs::home_dir()
-                .map(|p| p.join(rest))
-                .map(|p| p.to_string_lossy().to_string())
-        } else {
-            Some(ctl_path)
-        }?;
-        if std::path::Path::new(&expanded).exists() {
-            return Some(expanded);
-        }
-        None
-    }
-
-    pub fn remote_stats_request(&self) -> Option<(String, Option<String>, Option<String>)> {
+    /// The running ssh client's arguments plus any still-fresh cached stats.
+    /// A failed probe is remembered for a minute so an unreachable or
+    /// unshared connection is not retried every few seconds.
+    pub fn remote_stats_request(&self) -> Option<(Vec<String>, Option<String>)> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs_f64())
             .unwrap_or(0.0);
-        let target = self.get_ssh_target()?;
+        let args = self.get_ssh_target()?;
         let cache = self.imp().remote_stats_cache.borrow().clone();
         let cached_at = *self.imp().remote_stats_ts.borrow();
-        let cached = (!cache.is_empty() && now - cached_at < 15.0).then_some(cache);
-        Some((target, self.find_ssh_control_socket(), cached))
+        let age = now - cached_at;
+        let cached = if cached_at <= 0.0 {
+            None
+        } else if !cache.is_empty() && age < 15.0 {
+            Some(cache)
+        } else if cache.is_empty() && age < 60.0 {
+            Some(crate::system_stats::ssh_placeholder())
+        } else {
+            None
+        };
+        Some((args, cached))
     }
 
     pub fn cache_remote_stats(&self, stats: &str) {
-        if stats.is_empty() {
-            return;
-        }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs_f64())
@@ -1800,40 +1804,82 @@ impl TerminalBox {
         *self.imp().remote_stats_ts.borrow_mut() = now;
     }
 
-    pub fn collect_remote_stats(target: &str, socket: Option<&str>) -> String {
+    /// Path of the live connection-sharing (ControlMaster) socket for the
+    /// given ssh arguments, resolved by ssh itself (`ssh -G`), so the user's
+    /// config, `-p`, `-l`, `-J` and our wrapper's options are all honoured.
+    fn ssh_control_socket(args: &[String]) -> Option<(String, String)> {
+        let output = std::process::Command::new("ssh")
+            .arg("-G")
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        let config = String::from_utf8_lossy(&output.stdout);
+        let value = |key: &str| {
+            config.lines().find_map(|line| {
+                line.strip_prefix(key)
+                    .and_then(|rest| rest.strip_prefix(' '))
+                    .map(str::to_string)
+            })
+        };
+        let socket = value("controlpath").filter(|p| p != "none")?;
+        let host = value("hostname").unwrap_or_else(|| "localhost".to_string());
+        let socket_path = if let Some(rest) = socket.strip_prefix("~/") {
+            dirs::home_dir()?.join(rest).to_string_lossy().into_owned()
+        } else {
+            socket
+        };
+        use std::os::unix::fs::FileTypeExt;
+        std::fs::metadata(&socket_path)
+            .ok()
+            .filter(|m| m.file_type().is_socket())?;
+        Some((socket_path, host))
+    }
+
+    /// Collect CPU/RAM/disk of the remote host through the session's shared
+    /// ssh connection. Never opens a new connection: without a live master
+    /// socket it returns nothing (no extra logins, no fail2ban hits).
+    pub fn collect_remote_stats(args: &[String]) -> String {
+        let Some((socket, host)) = Self::ssh_control_socket(args) else {
+            return String::new();
+        };
+        let mux_args = |extra: &[&str]| -> Vec<String> {
+            let mut v: Vec<String> = [
+                "-S",
+                socket.as_str(),
+                "-o",
+                "ControlMaster=no",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=2",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+            v.extend(extra.iter().map(|s| s.to_string()));
+            v
+        };
+        // Make sure the master is alive first; otherwise ssh would fall back
+        // to opening a brand-new connection.
+        let alive = std::process::Command::new("ssh")
+            .args(mux_args(&["-O", "check", &host]))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if !alive {
+            return String::new();
+        }
         let cmd = "cpu1=$(awk '/^cpu /{idle=$5+$6; total=$2+$3+$4+$5+$6+$7+$8+$9; printf \"%s %s\",idle,total; exit}' /proc/stat 2>/dev/null); \
 sleep 0.2; \
 cpu2=$(awk '/^cpu /{idle=$5+$6; total=$2+$3+$4+$5+$6+$7+$8+$9; printf \"%s %s\",idle,total; exit}' /proc/stat 2>/dev/null); \
 awk -v first=\"$cpu1\" -v second=\"$cpu2\" 'BEGIN{split(first,a);split(second,b);d=b[2]-a[2];u=d>0?(1-(b[1]-a[1])/d)*100:0;if(u<0)u=0;if(u>100)u=100;printf \"%.1f\\n\",u}'; \
 awk '/^MemTotal/{t=$2}/^MemAvailable/{a=$2}END{printf \"%d %d\\n\",(t-a)*1024,t*1024}' /proc/meminfo 2>/dev/null; \
 df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
-        let ssh_args: Vec<String> = if let Some(socket) = socket {
-            vec![
-                "-S".to_string(),
-                socket.to_string(),
-                "-o".to_string(),
-                "ConnectTimeout=2".to_string(),
-                "-o".to_string(),
-                "StrictHostKeyChecking=yes".to_string(),
-                target.to_string(),
-                cmd.to_string(),
-            ]
-        } else {
-            vec![
-                "-o".to_string(),
-                "ConnectTimeout=3".to_string(),
-                "-o".to_string(),
-                "StrictHostKeyChecking=yes".to_string(),
-                "-o".to_string(),
-                "PreferredAuthentications=publickey,keyboard-interactive".to_string(),
-                "-o".to_string(),
-                "PasswordAuthentication=no".to_string(),
-                "-o".to_string(),
-                "BatchMode=yes".to_string(),
-                target.to_string(),
-                cmd.to_string(),
-            ]
-        };
+        let ssh_args = mux_args(&[&host, cmd]);
         let output = std::process::Command::new("ssh")
             .args(&ssh_args)
             .env("SSH_ASKPASS", "true")

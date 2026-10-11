@@ -165,6 +165,7 @@ fn build_defaults() -> Value {
         "hint_mode_enabled": true,
         "vi_copy_mode_enabled": false,
         "tmux_prefix_enabled": true,
+        "ssh_connection_sharing": true,
     })
 }
 

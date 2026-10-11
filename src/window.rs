@@ -985,7 +985,7 @@ impl DetachedWindow {
                 let gen = *self.imp().remote_stats_generation.borrow();
                 let weak = crate::SendWeak::new(self);
                 let term_id = term.remote_id();
-                let Some((target, socket, cached)) = term.remote_stats_request() else {
+                let Some((ssh_args, cached)) = term.remote_stats_request() else {
                     *self.imp().remote_stats_pending.borrow_mut() = false;
                     return;
                 };
@@ -997,7 +997,7 @@ impl DetachedWindow {
                     return;
                 }
                 std::thread::spawn(move || {
-                    let stats = TerminalBox::collect_remote_stats(&target, socket.as_deref());
+                    let stats = TerminalBox::collect_remote_stats(&ssh_args);
                     crate::run_on_main(move || {
                         if let Some(w) = weak.upgrade() {
                             *w.imp().remote_stats_pending.borrow_mut() = false;
@@ -3667,7 +3667,7 @@ impl MainWindow {
                 let gen = *self.imp().remote_stats_generation.borrow();
                 let weak = crate::SendWeak::new(self);
                 let term_id = term.remote_id();
-                let Some((target, socket, cached)) = term.remote_stats_request() else {
+                let Some((ssh_args, cached)) = term.remote_stats_request() else {
                     *self.imp().remote_stats_pending.borrow_mut() = false;
                     return;
                 };
@@ -3679,7 +3679,7 @@ impl MainWindow {
                     return;
                 }
                 std::thread::spawn(move || {
-                    let stats = TerminalBox::collect_remote_stats(&target, socket.as_deref());
+                    let stats = TerminalBox::collect_remote_stats(&ssh_args);
                     crate::run_on_main(move || {
                         if let Some(w) = weak.upgrade() {
                             *w.imp().remote_stats_pending.borrow_mut() = false;

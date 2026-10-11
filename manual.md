@@ -508,6 +508,26 @@ creates temporary startup files and removes them when the session ends; `.bashrc
 The integration supports Bash, Zsh, and Fish. Use `Ctrl+Shift+Up` and
 `Ctrl+Shift+Down` to move between detected prompts.
 
+### SSH connections
+
+With shell integration active, `ssh` typed at the prompt goes through a small
+wrapper that:
+
+- shares one authenticated connection per server, port, and user across all
+  tabs (`ControlMaster=auto`, socket in `~/.config/oxterm/cm-<hash>`, kept for
+  10 minutes after the last session closes). A second tab to the same server
+  opens instantly without logging in again;
+- enables keepalives (`ServerAliveInterval=30`) when your configuration sets
+  none, so a dropped connection ends the session instead of freezing the tab.
+
+Your own `~/.ssh/config` always wins: if it sets `ControlPath` or
+`ServerAliveInterval`, Oxterm does not override it. Turn sharing off under
+**Preferences > General > SSH connection sharing** (applies to new tabs).
+
+The status bar shows the remote host's CPU, memory, and disk usage. Oxterm reads
+them through the shared connection only; it never opens extra logins, so hosts
+without a shared connection simply show no remote statistics.
+
 ## Keyboard Shortcuts
 
 | Shortcut | Action |

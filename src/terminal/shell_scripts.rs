@@ -45,17 +45,28 @@ __oxterm_osc133_precmd() {
     printf '\033]7;%s\007' "file://$PWD"
 }
 
+# ssh wrapper: share one authenticated connection per host/port/user across
+# all tabs (instant new sessions, cheap stats probes) unless the user's own
+# ssh config already sets ControlPath, and enable keepalives when none are
+# configured so dead connections are detected instead of freezing the tab.
 __oxterm_ssh() {
     local socket_dir="${OXTERM_CONFIG_DIR:-${HOME}/.config/oxterm}"
-    if [ ! -d "$socket_dir" ]; then
-        mkdir -p -- "$socket_dir" 2>/dev/null
-        chmod 700 -- "$socket_dir" 2>/dev/null
+    local -a opts
+    local cfg
+    cfg=$'\n'"$(command ssh -G "$@" 2>/dev/null)"$'\n'
+    if [ "${OXTERM_SSH_SHARING:-1}" = "1" ] && [[ $cfg != *$'\ncontrolpath '* ]]; then
+        if [ ! -d "$socket_dir" ]; then
+            mkdir -p -- "$socket_dir" 2>/dev/null
+            chmod 700 -- "$socket_dir" 2>/dev/null
+        fi
+        if [ -d "$socket_dir" ]; then
+            opts+=(-o ControlMaster=auto -o "ControlPath=$socket_dir/cm-%C" -o ControlPersist=10m)
+        fi
     fi
-    if [ -d "$socket_dir" ]; then
-        command ssh -o ControlMaster=auto -o "ControlPath=$socket_dir/oxterm-ssh-$$" "$@"
-    else
-        command ssh "$@"
+    if [[ $cfg == *$'\nserveraliveinterval 0\n'* ]]; then
+        opts+=(-o ServerAliveInterval=30 -o ServerAliveCountMax=4)
     fi
+    command ssh "${opts[@]}" "$@"
 }
 
 if [ -n "$BASH_VERSION" ]; then
@@ -96,13 +107,12 @@ fi
 
 pub const OSC133_FISH_SCRIPT: &str = r#"# Oxterm OSC 133 Fish Integration
 
-if set -q OXTERM_OSC133_FIFO; and test -p "$OXTERM_OSC133_FIFO"
-    exec 3>>"$OXTERM_OSC133_FIFO"
-end
-
+# fish cannot keep a descriptor open with a bare `exec 3>>file` (it prints
+# the exec help instead), so open the FIFO for each event. Oxterm holds the
+# read end open for the shell's lifetime, so the open never blocks.
 function __oxterm_osc133_notify
-    if set -q OXTERM_OSC133_FIFO
-        printf '%s\n' "$argv[1]" >&3 2>/dev/null
+    if set -q OXTERM_OSC133_FIFO; and test -p "$OXTERM_OSC133_FIFO"
+        printf '%s\n' "$argv[1]" >>"$OXTERM_OSC133_FIFO" 2>/dev/null
     end
 end
 
@@ -124,19 +134,27 @@ function __oxterm_osc133_prompt --on-event fish_prompt
 end
 
 function __oxterm_ssh
-    set -l socket_dir "$OXTERM_CONFIG_DIR"
-    if test -z "$socket_dir"
-        set socket_dir "$HOME/.config/oxterm"
+    # See the bash/zsh wrapper: shared connections and keepalives, unless the
+    # user's ssh config already configures them.
+    set -l opts
+    set -l cfg (command ssh -G $argv 2>/dev/null)
+    if test "$OXTERM_SSH_SHARING" != 0; and not string match -qr '^controlpath ' -- $cfg
+        set -l socket_dir "$OXTERM_CONFIG_DIR"
+        if test -z "$socket_dir"
+            set socket_dir "$HOME/.config/oxterm"
+        end
+        if not test -d "$socket_dir"
+            mkdir -p "$socket_dir" 2>/dev/null
+            chmod 700 "$socket_dir" 2>/dev/null
+        end
+        if test -d "$socket_dir"
+            set opts -o ControlMaster=auto -o "ControlPath=$socket_dir/cm-%C" -o ControlPersist=10m
+        end
     end
-    if not test -d "$socket_dir"
-        mkdir -p "$socket_dir" 2>/dev/null
-        chmod 700 "$socket_dir" 2>/dev/null
+    if contains -- "serveraliveinterval 0" $cfg
+        set -a opts -o ServerAliveInterval=30 -o ServerAliveCountMax=4
     end
-    if test -d "$socket_dir"
-        command ssh -o ControlMaster=auto -o "ControlPath=$socket_dir/oxterm-ssh-$fish_pid" $argv
-    else
-        command ssh $argv
-    end
+    command ssh $opts $argv
 end
 
 function ssh
