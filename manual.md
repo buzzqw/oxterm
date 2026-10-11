@@ -250,7 +250,8 @@ or `#`:
 ```
 
 Oxterm sends the question to the configured provider, displays the answer, and
-returns to the normal shell prompt. The `?` prefix is recommended; `!` and
+returns to the normal shell prompt. The prefixes are only recognised at the shell
+prompt; lines typed into a running program are always passed to that program. The `?` prefix is recommended; `!` and
 quoted text are left to the shell because their meaning varies between shells.
 Questions and answers sent during the session remain in the AI conversation
 context, so a later question can refer to an earlier answer.
