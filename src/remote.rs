@@ -1399,7 +1399,8 @@ fn close_gui(
     *gui_pending = 0;
 }
 
-/// Whether the child's foreground process group is `ssh`, used to pass the
+/// Whether the child's foreground process group is a remote session (`ssh`,
+/// `autossh` or `mosh-client`), used to pass the
 /// `Ctrl+B`/`d` detach sequence through to a remote tmux instead of detaching
 /// the local client.
 fn child_foreground_is_ssh() -> bool {
@@ -1408,7 +1409,7 @@ fn child_foreground_is_ssh() -> bool {
         return false;
     }
     std::fs::read_to_string(format!("/proc/{foreground}/comm"))
-        .map(|name| name.trim() == "ssh")
+        .map(|name| matches!(name.trim(), "ssh" | "autossh" | "mosh-client"))
         .unwrap_or(false)
 }
 

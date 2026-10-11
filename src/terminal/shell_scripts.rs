@@ -49,9 +49,10 @@ __oxterm_osc133_precmd() {
 # all tabs (instant new sessions, cheap stats probes) unless the user's own
 # ssh config already sets ControlPath, and enable keepalives when none are
 # configured so dead connections are detected instead of freezing the tab.
-__oxterm_ssh() {
+# __oxterm_ssh_options fills __oxterm_ssh_opts for the given ssh arguments.
+__oxterm_ssh_options() {
+    __oxterm_ssh_opts=()
     local socket_dir="${OXTERM_CONFIG_DIR:-${HOME}/.config/oxterm}"
-    local -a opts
     local cfg
     cfg=$'\n'"$(command ssh -G "$@" 2>/dev/null)"$'\n'
     if [ "${OXTERM_SSH_SHARING:-1}" = "1" ] && [[ $cfg != *$'\ncontrolpath '* ]]; then
@@ -60,17 +61,36 @@ __oxterm_ssh() {
             chmod 700 -- "$socket_dir" 2>/dev/null
         fi
         if [ -d "$socket_dir" ]; then
-            opts+=(-o ControlMaster=auto -o "ControlPath=$socket_dir/cm-%C" -o ControlPersist=10m)
+            __oxterm_ssh_opts+=(-o ControlMaster=auto -o "ControlPath=$socket_dir/cm-%C" -o ControlPersist=10m)
         fi
     fi
     if [[ $cfg == *$'\nserveraliveinterval 0\n'* ]]; then
-        opts+=(-o ServerAliveInterval=30 -o ServerAliveCountMax=4)
+        __oxterm_ssh_opts+=(-o ServerAliveInterval=30 -o ServerAliveCountMax=4)
     fi
-    command ssh "${opts[@]}" "$@"
+}
+
+__oxterm_ssh() {
+    __oxterm_ssh_options "$@"
+    command ssh "${__oxterm_ssh_opts[@]}" "$@"
+}
+
+# autossh: same options for the ssh it supervises. Its own leading options
+# (-M port, -f, -V) are not ssh options and are kept in front.
+__oxterm_autossh() {
+    local -a pre=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -M) pre+=("$1" "$2"); shift 2 || break ;;
+            -M*|-f|-V) pre+=("$1"); shift ;;
+            *) break ;;
+        esac
+    done
+    __oxterm_ssh_options "$@"
+    command autossh "${pre[@]}" "${__oxterm_ssh_opts[@]}" "$@"
 }
 
 if [ -n "$BASH_VERSION" ]; then
-    alias ssh='__oxterm_ssh'
+    alias ssh='__oxterm_ssh' autossh='__oxterm_autossh'
     trap '__oxterm_osc133_preexec' DEBUG
     if [[ "$(declare -p PROMPT_COMMAND 2>/dev/null)" == "declare -a"* ]]; then
         PROMPT_COMMAND+=(__oxterm_osc133_precmd)
@@ -98,7 +118,7 @@ elif [ -n "$ZSH_VERSION" ]; then
     }
     add-zsh-hook preexec __oxterm_zsh_preexec
     add-zsh-hook precmd __oxterm_zsh_precmd
-    alias ssh='__oxterm_ssh'
+    alias ssh='__oxterm_ssh' autossh='__oxterm_autossh'
     printf '\033]133;A\007'
     __oxterm_osc133_notify A
     printf '\033]7;%s\007' "file://$PWD"
@@ -133,9 +153,9 @@ function __oxterm_osc133_prompt --on-event fish_prompt
     printf '\e]7;file://%s\a' "$PWD"
 end
 
-function __oxterm_ssh
-    # See the bash/zsh wrapper: shared connections and keepalives, unless the
-    # user's ssh config already configures them.
+# See the bash/zsh wrapper: shared connections and keepalives, unless the
+# user's ssh config already configures them.
+function __oxterm_ssh_options
     set -l opts
     set -l cfg (command ssh -G $argv 2>/dev/null)
     if test "$OXTERM_SSH_SHARING" != 0; and not string match -qr '^controlpath ' -- $cfg
@@ -154,10 +174,31 @@ function __oxterm_ssh
     if contains -- "serveraliveinterval 0" $cfg
         set -a opts -o ServerAliveInterval=30 -o ServerAliveCountMax=4
     end
-    command ssh $opts $argv
+    string join \n -- $opts
+end
+
+function __oxterm_ssh
+    command ssh (__oxterm_ssh_options $argv) $argv
 end
 
 function ssh
     __oxterm_ssh $argv
+end
+
+function autossh
+    set -l pre
+    while set -q argv[1]
+        switch $argv[1]
+            case -M
+                set -a pre $argv[1..2]
+                set -e argv[1..2]
+            case '-M*' -f -V
+                set -a pre $argv[1]
+                set -e argv[1]
+            case '*'
+                break
+        end
+    end
+    command autossh $pre (__oxterm_ssh_options $argv) $argv
 end
 "#;

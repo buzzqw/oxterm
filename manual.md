@@ -524,9 +524,16 @@ Your own `~/.ssh/config` always wins: if it sets `ControlPath` or
 `ServerAliveInterval`, Oxterm does not override it. Turn sharing off under
 **Preferences > General > SSH connection sharing** (applies to new tabs).
 
-The status bar shows the remote host's CPU, memory, and disk usage. Oxterm reads
-them through the shared connection only; it never opens extra logins, so hosts
-without a shared connection simply show no remote statistics.
+`autossh` gets the same treatment (its own `-M`, `-f`, and `-V` options are kept
+as they are). `mosh` is left untouched: in its default mode it disables ssh
+connection sharing itself, so Oxterm only recognises mosh sessions.
+
+The status bar shows the remote host's CPU, memory, and disk usage for `ssh`,
+`autossh`, and `mosh` sessions. Oxterm reads them through a shared connection to
+that host only (for mosh, one opened by another tab); it never opens extra
+logins, so hosts without a shared connection simply show no remote statistics.
+`Ctrl+B`, then `d` is passed through to the remote side for all three, so a
+remote tmux detaches instead of the local terminal.
 
 ## Keyboard Shortcuts
 
