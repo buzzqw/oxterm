@@ -54,10 +54,8 @@ impl NotesManager {
                 file_name,
             });
         }
-        if Path::new(&name).is_absolute() {
-            if filename.is_some() {
-                return Err("Note filename must be relative to the notes directory".to_string());
-            }
+        if Path::new(&name).is_absolute() && filename.is_some() {
+            return Err("Note filename must be relative to the notes directory".to_string());
         }
         let mut name = name;
         if !name.ends_with(".md") {

@@ -372,8 +372,8 @@ impl App {
             Some("com.buzzqw.oxterm"),
             gio::ApplicationFlags::HANDLES_COMMAND_LINE | gio::ApplicationFlags::NON_UNIQUE,
         );
-        let _ = glib::set_prgname(Some(window::APP_NAME));
-        let _ = glib::set_application_name(window::APP_TITLE);
+        glib::set_prgname(Some(window::APP_NAME));
+        glib::set_application_name(window::APP_TITLE);
 
         let _settings = settings();
 

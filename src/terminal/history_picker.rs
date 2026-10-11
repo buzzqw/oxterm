@@ -227,8 +227,7 @@ impl TerminalBox {
         let mut out =
             "\x1b[36m\u{2500}\u{2500}\u{2500} History \u{2500}\u{2500}\u{2500}\x1b[0m\r\n"
                 .to_string();
-        for i in page_start..page_end {
-            let row = &results[i];
+        for (i, row) in results.iter().enumerate().take(page_end).skip(page_start) {
             let (raw_cmd, time_str) = if row.len() >= 4 && !sql_mode {
                 let cmd = row[1].as_str().unwrap_or("").to_string();
                 let ts = row[3].as_str().unwrap_or("").to_string();

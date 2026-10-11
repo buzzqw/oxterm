@@ -675,7 +675,7 @@ impl HistoryManager {
             return Self::search_result(result);
         }
 
-        let parts: Vec<&str> = terms.trim().split_whitespace().collect();
+        let parts: Vec<&str> = terms.split_whitespace().collect();
         let mut pos: Vec<&str> = Vec::new();
         let mut neg: Vec<&str> = Vec::new();
         for p in &parts {
@@ -897,10 +897,7 @@ impl HistoryManager {
         let mut rows = Vec::new();
         {
             let mut query = stmt.query([]).map_err(|e| e.to_string())?;
-            loop {
-                let Some(row) = query.next().map_err(|e| e.to_string())? else {
-                    break;
-                };
+            while let Some(row) = query.next().map_err(|e| e.to_string())? {
                 let mut values = Vec::new();
                 for i in 0..col_count {
                     let v = row

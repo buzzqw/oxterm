@@ -6,7 +6,6 @@ use once_cell::sync::Lazy;
 ///
 /// Events are emitted on stderr as single-line JSON objects:
 /// `{"timestamp": "...", "level": "INFO", "logger": "...", "event": "..."}`.
-
 pub struct Logger;
 
 impl Logger {

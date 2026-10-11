@@ -76,9 +76,9 @@ fn disk_usage(path: &str) -> (u64, u64) {
     };
     let _ = meta;
     let block_size = stats.fragment_size();
-    let total = stats.blocks() as u64 * block_size;
-    let free = stats.blocks_free() as u64 * block_size;
-    let avail = stats.blocks_available() as u64 * block_size;
+    let total = stats.blocks() * block_size;
+    let free = stats.blocks_free() * block_size;
+    let avail = stats.blocks_available() * block_size;
     let used = total.saturating_sub(free.max(avail));
     (used, total)
 }

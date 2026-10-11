@@ -114,7 +114,7 @@ fn validate_tab(v: &Value) -> Option<TabEntry> {
     let title = obj
         .get("title")
         .and_then(|x| x.as_str())
-        .unwrap_or_else(|| base_title.as_str())
+        .unwrap_or(base_title.as_str())
         .to_string();
     Some(TabEntry {
         cwd,
@@ -152,9 +152,9 @@ fn validate_state(data: &Value) -> Option<SessionData> {
                 return None;
             }
             for item in arr {
-                match validate_tab(item) {
-                    Some(t) => dst.push(t),
-                    None => return None,
+                {
+                    let t = validate_tab(item)?;
+                    dst.push(t)
                 }
             }
         }
@@ -200,7 +200,7 @@ pub fn list_sessions() -> Vec<String> {
         return Vec::new();
     }
     let mut out = Vec::new();
-    if let Ok(entries) = fs::read_dir(&session_dir()) {
+    if let Ok(entries) = fs::read_dir(session_dir()) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if let Some(base) = name.strip_suffix(".json") {

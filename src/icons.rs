@@ -11,22 +11,16 @@ pub fn symbolic_image(icon_name: &str, pixel_size: i32) -> gtk::Image {
 
 fn symbolic_color() -> gdk::RGBA {
     let ctx = gtk::Image::new().style_context();
-    let color = ctx
-        .lookup_color("theme_fg_color")
-        .unwrap_or_else(|| ctx.color(gtk::StateFlags::NORMAL));
-    color
+
+    ctx.lookup_color("theme_fg_color")
+        .unwrap_or_else(|| ctx.color(gtk::StateFlags::NORMAL))
 }
 
 pub fn split_view_image(vertical: bool, size: i32) -> gtk::Image {
     let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, size, size).unwrap();
     let cr = cairo::Context::new(&surface).unwrap();
     let color = symbolic_color();
-    cr.set_source_rgba(
-        color.red().into(),
-        color.green().into(),
-        color.blue().into(),
-        color.alpha().into(),
-    );
+    cr.set_source_rgba(color.red(), color.green(), color.blue(), color.alpha());
     cr.set_line_width(1.6);
 
     let margin = 2.0_f64;

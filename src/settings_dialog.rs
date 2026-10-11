@@ -203,8 +203,8 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
         combo_delete: compat.1,
         combo_encoding: compat.2,
         chk_osc133: compat.3,
-        ai_entries: ai_entries,
-        ai_url_entries: ai_url_entries,
+        ai_entries,
+        ai_url_entries,
         entry_notes_dir: notes.0,
         entry_notes_file: notes.1,
         entry_editor: notes.2,
@@ -1401,7 +1401,7 @@ impl DialogState {
             "delete_binding",
             del_map.get(idx).copied().unwrap_or("escape-sequence"),
         );
-        let _ = s.set_str(
+        s.set_str(
             "encoding",
             &self
                 .combo_encoding

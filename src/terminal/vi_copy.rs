@@ -39,11 +39,9 @@ impl TerminalBox {
             self.deactivate_vi_copy();
             return glib::Propagation::Stop;
         }
-        if key == K::c || key == K::C {
-            if ctrl {
-                self.deactivate_vi_copy();
-                return glib::Propagation::Stop;
-            }
+        if (key == K::c || key == K::C) && ctrl {
+            self.deactivate_vi_copy();
+            return glib::Propagation::Stop;
         }
         if ctrl {
             if key == K::u || key == K::U {

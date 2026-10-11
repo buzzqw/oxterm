@@ -3138,10 +3138,7 @@ impl MainWindow {
             .parent()
             .and_then(|p| p.downcast::<gtk::Notebook>().ok());
         if let Some(nb) = nb {
-            self.imp()
-                .current_pages
-                .borrow_mut()
-                .insert(nb, page_num as u32);
+            self.imp().current_pages.borrow_mut().insert(nb, page_num);
         }
         if let Ok(term) = page.clone().downcast::<TerminalBox>() {
             let weak = crate::SendWeak::new(&term);
@@ -3305,12 +3302,8 @@ impl MainWindow {
         dialog.show_all();
         if dialog.run() == gtk::ResponseType::Ok {
             let name = entry.text().trim().to_string();
-            if !name.is_empty() {
-                if !self.save_session_named(&name) {
-                    self.show_error(
-                        "Could not save the session. See the application log for details.",
-                    );
-                }
+            if !name.is_empty() && !self.save_session_named(&name) {
+                self.show_error("Could not save the session. See the application log for details.");
             }
         }
         dialog.close();
@@ -3582,10 +3575,8 @@ impl MainWindow {
             for i in 0..notebook.n_pages() {
                 if let Some(page) = notebook.nth_page(Some(i)) {
                     if let Ok(term) = page.downcast::<TerminalBox>() {
-                        if term != *source {
-                            if term.vte().is_input_enabled() {
-                                term.vte().feed_child(data);
-                            }
+                        if term != *source && term.vte().is_input_enabled() {
+                            term.vte().feed_child(data);
                         }
                     }
                 }
@@ -3717,8 +3708,10 @@ impl MainWindow {
     // ── Sessions ─────────────────────────────────────────────
 
     fn build_session_data(&self) -> crate::session::SessionData {
-        let mut data = crate::session::SessionData::default();
-        data.split_mode = self.imp().split_mode.borrow().clone();
+        let mut data = crate::session::SessionData {
+            split_mode: self.imp().split_mode.borrow().clone(),
+            ..Default::default()
+        };
         let nb = self.imp().notebook.borrow().clone().unwrap();
         let nb2 = self.imp().notebook2.borrow().clone().unwrap();
         for (notebook, target) in [(&nb, &mut data.tabs_left), (&nb2, &mut data.tabs_right)] {

@@ -84,8 +84,7 @@ impl TerminalBox {
         }
         let mut filename = None;
         let mut text = args.to_string();
-        if args.starts_with('-') {
-            let rest = &args[1..];
+        if let Some(rest) = args.strip_prefix('-') {
             if let Some(pos) = rest.find(' ') {
                 filename = Some(rest[..pos].to_string());
                 text = rest[pos + 1..].trim().to_string();

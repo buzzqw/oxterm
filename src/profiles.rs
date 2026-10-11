@@ -16,8 +16,8 @@ fn profile_dir() -> PathBuf {
 }
 
 fn ensure_dir() {
-    let _ = fs::create_dir_all(&profile_dir());
-    let _ = fs::set_permissions(&profile_dir(), fs::Permissions::from_mode(0o700));
+    let _ = fs::create_dir_all(profile_dir());
+    let _ = fs::set_permissions(profile_dir(), fs::Permissions::from_mode(0o700));
 }
 
 pub fn profile_path(name: &str) -> Result<PathBuf, String> {
@@ -203,7 +203,7 @@ pub fn list_profiles() -> Vec<String> {
         return Vec::new();
     }
     let mut out = Vec::new();
-    if let Ok(entries) = fs::read_dir(&profile_dir()) {
+    if let Ok(entries) = fs::read_dir(profile_dir()) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if let Some(base) = name.strip_suffix(".json") {

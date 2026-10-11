@@ -853,7 +853,7 @@ fn forward_resize(stream: &mut impl Write, fd: RawFd, last: &mut Option<(u16, u1
     let Some(size) = terminal_size(fd) else {
         return;
     };
-    let current = (size.ws_col as u16, size.ws_row as u16);
+    let current = (size.ws_col, size.ws_row);
     if *last == Some(current) {
         return;
     }
@@ -1300,7 +1300,7 @@ fn handle_command(
         } else {
             b"OK\n0"
         }),
-        "IS_ACTIVE" => clients[index].queue(if child_foreground_is_active(&state) {
+        "IS_ACTIVE" => clients[index].queue(if child_foreground_is_active(state) {
             b"OK\n1"
         } else {
             b"OK\n0"
