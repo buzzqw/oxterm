@@ -55,7 +55,7 @@ fn cpu_percent(prev: &mut Option<(u64, u64)>) -> f64 {
                 let d_total = cur.1.saturating_sub(*p_total);
                 let d_idle = cur.0.saturating_sub(*p_idle);
                 if d_total > 0 {
-                    let pct = (d_total - d_idle) as f64 / d_total as f64 * 100.0;
+                    let pct = d_total.saturating_sub(d_idle) as f64 / d_total as f64 * 100.0;
                     *prev = Some(cur);
                     return pct;
                 }

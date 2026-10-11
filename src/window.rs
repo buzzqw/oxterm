@@ -1024,12 +1024,7 @@ impl DetachedWindow {
         let stats = if term.is_ssh() {
             format!("  [SSH] {}", crate::system_stats::collect(false).trim())
         } else {
-            let osc = term.get_osc133_stats();
-            if osc.is_empty() {
-                crate::system_stats::collect(false)
-            } else {
-                osc
-            }
+            crate::system_stats::collect(false)
         };
         if let Some(label) = self.imp().stats_sys_label.borrow().clone() {
             label.set_text(&stats);
@@ -3686,12 +3681,7 @@ impl MainWindow {
         let stats = if term.is_ssh() {
             format!("  [SSH] {}", crate::system_stats::collect(false).trim())
         } else {
-            let osc = term.get_osc133_stats();
-            if osc.is_empty() {
-                crate::system_stats::collect(false)
-            } else {
-                osc
-            }
+            crate::system_stats::collect(false)
         };
         if let Some(label) = self.imp().stats_sys_label.borrow().clone() {
             label.set_text(&stats);

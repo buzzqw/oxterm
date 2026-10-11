@@ -393,6 +393,9 @@ impl AIClient {
     where
         F: FnMut(&str),
     {
+        // Per-request cancellation goes through `cancel`; a client-wide
+        // cancel() from an earlier, abandoned request must not abort this one.
+        self.cancel_requested.store(false, Ordering::SeqCst);
         self.truncate_messages();
         let mut system_message = None;
         if !self.system_prompt.is_empty() && !self.has_system_message() {
@@ -405,9 +408,6 @@ impl AIClient {
             "gemini" => self.call_gemini_stream(cancel, &mut on_chunk),
             _ => self.call_openai_stream(cancel, &mut on_chunk),
         };
-        // Clear a cancel() only once this stream has observed it, so a cancel
-        // that arrives before the worker starts is not lost.
-        self.cancel_requested.store(false, Ordering::SeqCst);
         if result.is_err() {
             self.remove_last_user();
             if system_message.is_some() {

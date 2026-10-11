@@ -164,6 +164,7 @@ fn build_defaults() -> Value {
         "history_enabled": true,
         "hint_mode_enabled": true,
         "vi_copy_mode_enabled": false,
+        "tmux_prefix_enabled": true,
     })
 }
 
