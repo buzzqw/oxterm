@@ -90,6 +90,18 @@ fn endpoint_is_allowed(url: &str) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "::1")
 }
 
+/// ureq 2 reports 4xx/5xx as `Error::Status`; surface the provider's error
+/// body so users see more than a bare status code.
+fn http_error_message(e: ureq::Error) -> String {
+    match e {
+        ureq::Error::Status(status, resp) => {
+            let text = resp.into_string().unwrap_or_default();
+            format!("HTTP {}: {}", status, truncate(&text, 300))
+        }
+        other => other.to_string(),
+    }
+}
+
 #[derive(Debug)]
 pub enum AiError {
     Cancelled,
@@ -215,7 +227,10 @@ fn stream_agent() -> &'static ureq::Agent {
     STREAM_AGENT.get_or_init(|| {
         ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(10))
-            .timeout_read(Duration::from_secs(5))
+            // Cold model loads and reasoning models can go well past a few
+            // seconds before the first token; cancellation is handled by the
+            // caller's flag, not by this timeout.
+            .timeout_read(Duration::from_secs(180))
             .build()
     })
 }
@@ -326,6 +341,17 @@ impl AIClient {
         }
     }
 
+    /// Record the assistant's reply. Providers such as Claude reject empty
+    /// assistant turns, so an empty reply drops its question instead of
+    /// wedging every later request in this conversation.
+    fn add_reply(&self, content: &str) {
+        if content.trim().is_empty() {
+            self.remove_last_user();
+        } else {
+            self.add_message("assistant", content);
+        }
+    }
+
     pub fn cancel(&self) {
         self.cancel_requested.store(true, Ordering::SeqCst);
     }
@@ -367,7 +393,6 @@ impl AIClient {
     where
         F: FnMut(&str),
     {
-        self.cancel_requested.store(false, Ordering::SeqCst);
         self.truncate_messages();
         let mut system_message = None;
         if !self.system_prompt.is_empty() && !self.has_system_message() {
@@ -380,6 +405,9 @@ impl AIClient {
             "gemini" => self.call_gemini_stream(cancel, &mut on_chunk),
             _ => self.call_openai_stream(cancel, &mut on_chunk),
         };
+        // Clear a cancel() only once this stream has observed it, so a cancel
+        // that arrives before the worker starts is not lost.
+        self.cancel_requested.store(false, Ordering::SeqCst);
         if result.is_err() {
             self.remove_last_user();
             if system_message.is_some() {
@@ -401,7 +429,7 @@ impl AIClient {
         }
         let body_str = body.to_string();
         req.send_bytes(body_str.as_bytes())
-            .map_err(|e| AiError::Http(e.to_string()))
+            .map_err(|e| AiError::Http(http_error_message(e)))
     }
 
     fn auth_headers(&self) -> BTreeMap<String, String> {
@@ -493,7 +521,7 @@ impl AIClient {
         }
         let resp = req
             .send_bytes(payload.to_string().as_bytes())
-            .map_err(|e| e.to_string())?;
+            .map_err(http_error_message)?;
         if resp.status() != 200 {
             let status = resp.status();
             let text = resp.into_string().unwrap_or_default();
@@ -508,7 +536,7 @@ impl AIClient {
             .and_then(|c| c.as_str())
             .unwrap_or("")
             .to_string();
-        self.add_message("assistant", &content);
+        self.add_reply(&content);
         Ok(content)
     }
 
@@ -569,7 +597,7 @@ impl AIClient {
         if self.is_cancelled(cancel) {
             return Err(AiError::Cancelled);
         }
-        self.add_message("assistant", &full);
+        self.add_reply(&full);
         Ok((usage != TokenUsage::default()).then_some(usage))
     }
 
@@ -585,7 +613,7 @@ impl AIClient {
         }
         let resp = req
             .send_bytes(payload.to_string().as_bytes())
-            .map_err(|e| e.to_string())?;
+            .map_err(http_error_message)?;
         if resp.status() != 200 {
             let status = resp.status();
             let text = resp.into_string().unwrap_or_default();
@@ -599,7 +627,7 @@ impl AIClient {
             .and_then(|c| c.as_str())
             .unwrap_or("")
             .to_string();
-        self.add_message("assistant", &content);
+        self.add_reply(&content);
         Ok(content)
     }
 
@@ -682,7 +710,7 @@ impl AIClient {
         if self.is_cancelled(cancel) {
             return Err(AiError::Cancelled);
         }
-        self.add_message("assistant", &full);
+        self.add_reply(&full);
         Ok((usage != TokenUsage::default()).then_some(usage))
     }
 
@@ -715,7 +743,7 @@ impl AIClient {
         }
         let resp = req
             .send_bytes(payload.to_string().as_bytes())
-            .map_err(|e| e.to_string())?;
+            .map_err(http_error_message)?;
         if resp.status() != 200 {
             let status = resp.status();
             let text = resp.into_string().unwrap_or_default();
@@ -732,7 +760,7 @@ impl AIClient {
             .and_then(|c| c.as_str())
             .unwrap_or("")
             .to_string();
-        self.add_message("assistant", &content);
+        self.add_reply(&content);
         Ok(content)
     }
 
@@ -788,7 +816,7 @@ impl AIClient {
         if self.is_cancelled(cancel) {
             return Err(AiError::Cancelled);
         }
-        self.add_message("assistant", &full);
+        self.add_reply(&full);
         Ok((usage != TokenUsage::default()).then_some(usage))
     }
 }
@@ -811,6 +839,10 @@ pub fn fetch_models(provider: &str, api_key: &str, base_url: &str) -> Vec<String
             .timeout(Duration::from_secs(5))
             .call()
     } else if provider == "custom" && !base_url.is_empty() {
+        if !api_key.is_empty() && !endpoint_is_allowed(base_url) {
+            // Never send a bearer key over plain HTTP to a non-local host.
+            return Vec::new();
+        }
         let base = base_url
             .rsplit_once("/chat/completions")
             .map(|(b, _)| b.trim_end_matches('/').to_string())

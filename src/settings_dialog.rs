@@ -247,9 +247,20 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
         });
     }
 
-    dialog.connect_response(move |_dlg, response| {
+    dialog.connect_response(move |dlg, response| {
         if response == gtk::ResponseType::Ok {
-            state.apply();
+            let errors = state.apply();
+            if !errors.is_empty() {
+                let msg = gtk::MessageDialog::new(
+                    Some(dlg),
+                    gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+                    gtk::MessageType::Warning,
+                    gtk::ButtonsType::Close,
+                    &format!("Some settings were not saved:\n\n{}", errors.join("\n")),
+                );
+                msg.run();
+                msg.close();
+            }
         }
         // destroy handled by response default
     });
@@ -1129,7 +1140,7 @@ fn build_ai(
 
         let key_entry = gtk::Entry::new();
         key_entry.set_text(keys.get(provider).cloned().unwrap_or_default().as_str());
-        if provider != "ollama" && provider != "custom" {
+        if provider != "ollama" {
             key_entry.set_visibility(false);
         }
         let ph = if provider == "ollama" || provider == "custom" {
@@ -1241,7 +1252,8 @@ fn build_notes(s: &Settings) -> (gtk::Grid, (gtk::Entry, gtk::Entry, gtk::Entry)
 }
 
 impl DialogState {
-    fn apply(&self) {
+    /// Apply the dialog to the settings; returns values that were rejected.
+    fn apply(&self) -> Vec<String> {
         let s = settings();
         s.begin_batch();
 
@@ -1394,8 +1406,10 @@ impl DialogState {
         let mut new_urls = BTreeMap::new();
         let mut new_sys_prompts = BTreeMap::new();
         for (provider, (key_entry, model_entry, buf)) in &self.ai_entries {
-            new_keys.insert(provider.clone(), key_entry.text().to_string());
-            new_models.insert(provider.clone(), model_entry.text().to_string());
+            // Pasted keys often carry a trailing newline, which produces an
+            // invalid HTTP header.
+            new_keys.insert(provider.clone(), key_entry.text().trim().to_string());
+            new_models.insert(provider.clone(), model_entry.text().trim().to_string());
             let prompt = buf
                 .text(&buf.start_iter(), &buf.end_iter(), true)
                 .map(|t| t.trim().to_string())
@@ -1405,15 +1419,19 @@ impl DialogState {
             }
         }
         for (provider, url_entry) in &self.ai_url_entries {
-            new_urls.insert(provider.clone(), url_entry.text().to_string());
+            new_urls.insert(provider.clone(), url_entry.text().trim().to_string());
         }
-        let _ = s.set("ai_keys", settings::str_map_to_json(&new_keys));
-        let _ = s.set("ai_models", settings::str_map_to_json(&new_models));
-        let _ = s.set("ai_urls", settings::str_map_to_json(&new_urls));
-        let _ = s.set(
-            "ai_system_prompts",
-            settings::str_map_to_json(&new_sys_prompts),
-        );
+        let mut errors = Vec::new();
+        for (key, map) in [
+            ("ai_keys", &new_keys),
+            ("ai_models", &new_models),
+            ("ai_urls", &new_urls),
+            ("ai_system_prompts", &new_sys_prompts),
+        ] {
+            if let Err(e) = s.set(key, settings::str_map_to_json(map)) {
+                errors.push(format!("{}: {}", key, e));
+            }
+        }
 
         s.set_str("notes_dir", &self.entry_notes_dir.text());
         s.set_str("notes_file", &self.entry_notes_file.text());
@@ -1421,5 +1439,6 @@ impl DialogState {
 
         s.end_batch();
         s.notify_changed();
+        errors
     }
 }

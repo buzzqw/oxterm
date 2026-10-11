@@ -2,7 +2,7 @@ use std::cell::{Cell, OnceCell};
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -419,6 +419,32 @@ thread_local! {
 
 static SAVE_LOCK: Mutex<()> = Mutex::new(());
 
+/// Set when an unreadable settings file could not be moved aside; saving would
+/// otherwise replace the user's settings (including API keys) with defaults.
+static SAVE_DISABLED: AtomicBool = AtomicBool::new(false);
+
+/// Move a settings file that failed to load out of the way instead of
+/// overwriting it with defaults, so the user can recover it by hand.
+fn preserve_unreadable_settings(path: &Path) {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".corrupt-{}", stamp));
+    let dest = path.with_file_name(name);
+    match fs::rename(path, &dest) {
+        Ok(()) => LOGGER.warning(&format!(
+            "settings_preserved path={}",
+            dest.to_string_lossy()
+        )),
+        Err(e) => {
+            LOGGER.error(&format!("settings_preserve_failed error={}", e));
+            SAVE_DISABLED.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
 pub fn settings() -> Settings {
     SETTINGS.with(|slot| slot.get_or_init(Settings::default).clone())
 }
@@ -494,16 +520,16 @@ impl Settings {
                     }
                     Ok(_) => {
                         LOGGER.warning("settings root must be an object");
-                        rewrite = true;
+                        preserve_unreadable_settings(&path);
                     }
                     Err(e) => {
                         LOGGER.error(&format!("settings_load_failed error={}", e));
-                        rewrite = true;
+                        preserve_unreadable_settings(&path);
                     }
                 },
                 Err(e) => {
                     LOGGER.error(&format!("settings_load_failed error={}", e));
-                    rewrite = true;
+                    preserve_unreadable_settings(&path);
                 }
             }
         }
@@ -520,6 +546,9 @@ impl Settings {
         if imp.batch.get() {
             return Ok(());
         }
+        if SAVE_DISABLED.load(Ordering::SeqCst) {
+            return Err("settings file could not be read; refusing to overwrite it".to_string());
+        }
         let _g = SAVE_LOCK.lock().unwrap();
         let target = config_file();
         // Write the temp file next to the final target so the atomic rename never
@@ -529,8 +558,12 @@ impl Settings {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(config_dir);
         fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
-        fs::set_permissions(&target_dir, fs::Permissions::from_mode(0o700))
-            .map_err(|e| e.to_string())?;
+        // Only lock down oxterm's own config directory. A `--config` override
+        // may live in a shared directory whose permissions are not ours.
+        if target_dir == config_dir() {
+            fs::set_permissions(&target_dir, fs::Permissions::from_mode(0o700))
+                .map_err(|e| e.to_string())?;
+        }
         let json_str = serde_json::to_string_pretty(&*imp.data.lock().unwrap());
         match json_str {
             Ok(s) => {
@@ -816,10 +849,17 @@ impl Settings {
                     if map.len() > 100 {
                         return false;
                     }
+                    // System prompts are free-form text and routinely exceed
+                    // the 4 KiB cap that suits keys, models and URLs.
+                    let max_value = if key == "ai_system_prompts" {
+                        32_768
+                    } else {
+                        4096
+                    };
                     return map.iter().all(|(k, v)| {
                         k.chars().count() <= 100
                             && v.is_string()
-                            && v.as_str().unwrap().chars().count() <= 4096
+                            && v.as_str().unwrap().chars().count() <= max_value
                     });
                 }
                 false

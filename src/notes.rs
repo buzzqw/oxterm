@@ -36,6 +36,13 @@ impl NotesManager {
                 "notes.md".to_string()
             }
         });
+        // Expand "~/..." up front so it is treated as an absolute path rather
+        // than a literal "~" directory inside the notes directory.
+        let name = if name == "~" || name.starts_with("~/") {
+            expand_user(&name).to_string_lossy().into_owned()
+        } else {
+            name
+        };
         let configured_external = filename.is_none() && Path::new(&name).is_absolute();
         if configured_external {
             let path = expand_user(&name);
@@ -67,14 +74,28 @@ impl NotesManager {
         })
     }
 
-    pub fn write_note(&self, text: &str, filename: Option<&str>) -> Result<PathBuf, String> {
-        let target = self.note_target(filename)?;
-        let ts = human_now();
-        let entry = format!("\n## {}\n\n{}\n", ts, text);
-        let (mut f, _) = open_note_file(&target)?;
-        f.write_all(entry.as_bytes()).map_err(|e| e.to_string())?;
-        f.sync_all().map_err(|e| e.to_string())?;
-        Ok(target.path)
+    /// Resolve the note target on the calling (GTK) thread, then append and
+    /// fsync on a worker thread so large notes never stall the UI. `done` runs
+    /// back on the main thread.
+    pub fn write_note_async<F>(&self, text: String, filename: Option<&str>, done: F)
+    where
+        F: FnOnce(Result<PathBuf, String>) + 'static,
+    {
+        let target = match self.note_target(filename) {
+            Ok(target) => target,
+            Err(e) => {
+                done(Err(e));
+                return;
+            }
+        };
+        let done = crate::Sendable(done);
+        std::thread::spawn(move || {
+            let result = append_note(target, &text);
+            crate::run_on_main(move || {
+                let done = done;
+                (done.0)(result)
+            });
+        });
     }
 
     pub fn open_notes(&self, filename: Option<&str>) -> Result<PathBuf, String> {
@@ -103,6 +124,15 @@ impl NotesManager {
         }
         Ok(target.path)
     }
+}
+
+fn append_note(target: NoteTarget, text: &str) -> Result<PathBuf, String> {
+    let ts = human_now();
+    let entry = format!("\n## {}\n\n{}\n", ts, text);
+    let (mut f, _) = open_note_file(&target)?;
+    f.write_all(entry.as_bytes()).map_err(|e| e.to_string())?;
+    f.sync_all().map_err(|e| e.to_string())?;
+    Ok(target.path)
 }
 
 struct NoteTarget {
@@ -242,7 +272,9 @@ fn open_note_file(target: &NoteTarget) -> Result<(fs::File, bool), String> {
     if unsafe { stat.assume_init().st_mode } & libc::S_IFMT != libc::S_IFREG {
         return Err("Note path must be a regular file".to_string());
     }
-    if unsafe { libc::fchmod(file.as_raw_fd(), 0o600) } != 0 {
+    // Only tighten permissions on files we created; leave a user's existing
+    // (possibly shared) notes file as they configured it.
+    if created && unsafe { libc::fchmod(file.as_raw_fd(), 0o600) } != 0 {
         return Err(std::io::Error::last_os_error().to_string());
     }
     Ok((file, created))
@@ -324,12 +356,26 @@ pub fn which(cmd: &str) -> Option<String> {
     find_in_path(cmd)
 }
 
-pub fn spawn_detached(program: &str, args: &[&str]) -> Option<std::process::Child> {
-    Command::new(program)
+pub fn spawn_detached(program: &str, args: &[&str]) -> bool {
+    match Command::new(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .ok()
+    {
+        Ok(child) => {
+            reap_in_background(child);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Wait for a launched helper on a throwaway thread so it never lingers as a
+/// zombie for the lifetime of the terminal.
+pub fn reap_in_background(mut child: std::process::Child) {
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
 }

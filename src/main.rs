@@ -40,6 +40,13 @@ impl<T: glib::IsA<glib::Object>> SendWeak<T> {
 unsafe impl<T: glib::IsA<glib::Object>> Send for SendWeak<T> {}
 unsafe impl<T: glib::IsA<glib::Object>> Sync for SendWeak<T> {}
 
+/// Schedule `f` on the GTK main loop from any thread. Unlike
+/// `MainContext::invoke`, this never runs `f` synchronously on the calling
+/// thread, so GTK objects are only touched from the main thread.
+pub fn run_on_main<F: FnOnce() + Send + 'static>(f: F) {
+    glib::timeout_add_once(std::time::Duration::ZERO, f);
+}
+
 /// Move a non-Send value into a worker thread; it is only ever touched again
 /// on the main thread.
 pub struct Sendable<T>(pub T);

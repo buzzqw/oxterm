@@ -989,7 +989,7 @@ impl DetachedWindow {
                 }
                 std::thread::spawn(move || {
                     let stats = TerminalBox::collect_remote_stats(&target, socket.as_deref());
-                    glib::MainContext::default().invoke(move || {
+                    crate::run_on_main(move || {
                         if let Some(w) = weak.upgrade() {
                             if gen == *w.imp().remote_stats_generation.borrow() {
                                 *w.imp().remote_stats_pending.borrow_mut() = false;
@@ -3409,29 +3409,29 @@ impl MainWindow {
 
     fn copy_all_to_notes(&self, term: &TerminalBox) {
         let vte = term.vte();
-        let max_lines = settings().get_i64("scrollback_lines");
-        let bound = if max_lines <= 0 { 1_000_000 } else { max_lines };
-        let (text, _) = vte.text_range_format(zoha_vte::Format::Text, 0, 0, bound, 0);
+        // VTE rows are absolute: the oldest retained line is at the
+        // adjustment's lower bound, not necessarily row 0.
+        let vadj = term.vadjustment();
+        let first_row = vadj.lower() as i64;
+        let last_row = (vadj.upper() as i64).max(first_row);
+        let (text, _) = vte.text_range_format(zoha_vte::Format::Text, first_row, 0, last_row, 0);
         let text = text.map(|t| t.to_string()).unwrap_or_default();
         if text.is_empty() {
             return;
         }
         let notes = crate::notes::NotesManager::new();
-        match notes.write_note(&text, None) {
-            Ok(path) => {
-                vte.feed(
-                    format!(
-                        "\r\n\x1b[32m+ Added all text to note: {}\x1b[0m\r\n",
-                        path.to_string_lossy()
-                    )
-                    .as_bytes(),
-                );
-                vte.feed_child(b"\r");
-            }
+        notes.write_note_async(text, None, move |result| match result {
+            Ok(path) => vte.feed(
+                format!(
+                    "\r\n\x1b[32m+ Added all text to note: {}\x1b[0m\r\n",
+                    path.to_string_lossy()
+                )
+                .as_bytes(),
+            ),
             Err(e) => {
-                vte.feed(format!("\r\n\x1b[31mCould not write note: {}\x1b[0m\r\n", e).as_bytes());
+                vte.feed(format!("\r\n\x1b[31mCould not write note: {}\x1b[0m\r\n", e).as_bytes())
             }
-        }
+        });
     }
 
     fn show_about(&self) {
@@ -3654,7 +3654,7 @@ impl MainWindow {
                 }
                 std::thread::spawn(move || {
                     let stats = TerminalBox::collect_remote_stats(&target, socket.as_deref());
-                    glib::MainContext::default().invoke(move || {
+                    crate::run_on_main(move || {
                         if let Some(w) = weak.upgrade() {
                             if gen == *w.imp().remote_stats_generation.borrow() {
                                 *w.imp().remote_stats_pending.borrow_mut() = false;
@@ -3885,6 +3885,7 @@ fn spawn_new_process(_new_window: bool) {
     if _new_window {
         cmd.arg("--new-window");
     }
-    cmd.env("OXTERM_RELOAD_MODULES", "1");
-    let _ = cmd.spawn();
+    if let Ok(child) = cmd.spawn() {
+        crate::notes::reap_in_background(child);
+    }
 }
