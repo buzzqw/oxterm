@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 use std::io::BufRead;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -7,8 +5,6 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use serde_json::{json, Value};
-
-use crate::logging::LOGGER;
 
 pub const PROVIDERS: &[(&str, &str, &str, &str, &str)] = &[
     (
@@ -1106,11 +1102,4 @@ fn truncate(s: &str, max: usize) -> String {
     } else {
         s.to_string()
     }
-}
-
-pub fn log_provider_error(provider: &str, msg: &str) {
-    LOGGER.error(&format!(
-        "ai_models_fetch_failed provider={} error={}",
-        provider, msg
-    ));
 }

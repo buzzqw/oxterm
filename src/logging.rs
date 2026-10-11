@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::sync::OnceLock;
 
 use once_cell::sync::Lazy;
@@ -26,10 +24,6 @@ impl Logger {
         eprintln!("{}", serde_json::Value::Object(record));
     }
 
-    pub fn info(logger: &str, event: &str) {
-        Self::log("INFO", logger, event, None);
-    }
-
     pub fn error(logger: &str, event: &str) {
         Self::log("ERROR", logger, event, None);
     }
@@ -37,27 +31,12 @@ impl Logger {
     pub fn warning(logger: &str, event: &str) {
         Self::log("WARNING", logger, event, None);
     }
-
-    pub fn debug(logger: &str, event: &str) {
-        // Debug is not emitted by default, mirroring logging INFO level.
-        let _ = (logger, event);
-    }
 }
 
 static LOGGER_NAME: OnceLock<&'static str> = OnceLock::new();
 
 pub fn configure_logging() {
     let _ = LOGGER_NAME.set("Oxterm");
-}
-
-#[inline]
-pub fn log_info(event: &str) {
-    Logger::info(logger_name(), event);
-}
-
-#[inline]
-pub fn log_error(event: &str) {
-    Logger::error(logger_name(), event);
 }
 
 #[inline]
@@ -105,17 +84,11 @@ pub struct ScopedLogger {
 }
 
 impl ScopedLogger {
-    pub fn info(&self, event: &str) {
-        Logger::info(self.name, event);
-    }
     pub fn error(&self, event: &str) {
         Logger::error(self.name, event);
     }
     pub fn warning(&self, event: &str) {
         Logger::warning(self.name, event);
-    }
-    pub fn exception(&self, event: &str) {
-        Logger::error(self.name, event);
     }
 }
 

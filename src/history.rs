@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, HashMap};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -501,6 +499,7 @@ impl HistoryManager {
         }
     }
 
+    #[cfg(test)]
     pub fn add(&self, command: &str, cwd: &str, exit_code: i64) -> i64 {
         self.add_with_context(command, cwd, exit_code, None, None)
     }
@@ -588,10 +587,6 @@ impl HistoryManager {
         drop(conn);
         self.bump_inserts(n);
         n
-    }
-
-    pub fn set_exit_code(&self, row_id: Option<i64>, exit_code: i64) {
-        self.set_command_result(row_id, exit_code, None);
     }
 
     pub fn set_command_result(
@@ -878,10 +873,6 @@ impl HistoryManager {
         ])
     }
 
-    fn map_row_1(row: &rusqlite::Row) -> rusqlite::Result<Value> {
-        Ok(Value::String(row.get::<_, String>(0)?))
-    }
-
     pub fn sql_search(&self, sql: &str) -> Result<Vec<Vec<Value>>, String> {
         let sql_stripped = sql.trim();
         if !is_read_only_sql(sql_stripped) {
@@ -962,48 +953,6 @@ impl HistoryManager {
                 );
             }
         }
-    }
-
-    pub fn search_latest(&self, prefix: &str, limit: i64) -> Vec<Value> {
-        let Ok(conn) = self.conn.lock() else {
-            crate::logging::log_warning("history database lock is unavailable");
-            return Vec::new();
-        };
-        if !prefix.is_empty() {
-            let result = (|| -> rusqlite::Result<Vec<Value>> {
-                let mut stmt = conn.prepare(
-                    "SELECT command FROM commands WHERE command LIKE ?1 ESCAPE '\\' \
-                     GROUP BY command ORDER BY MAX(id) DESC LIMIT ?2",
-                )?;
-                let pattern = format!("{}%", Self::like_escape(prefix));
-                let iter = stmt.query_map(params![pattern, limit], Self::map_row_1)?;
-                iter.collect()
-            })();
-            Self::search_latest_result(result)
-        } else {
-            let result = (|| -> rusqlite::Result<Vec<Value>> {
-                let mut stmt = conn.prepare(
-                    "SELECT command FROM commands GROUP BY command ORDER BY MAX(id) DESC LIMIT ?1",
-                )?;
-                let iter = stmt.query_map(params![limit], Self::map_row_1)?;
-                iter.collect()
-            })();
-            Self::search_latest_result(result)
-        }
-    }
-
-    pub fn get_all(&self, limit: i64) -> Vec<Value> {
-        let Ok(conn) = self.conn.lock() else {
-            crate::logging::log_warning("history database lock is unavailable");
-            return Vec::new();
-        };
-        let result = (|| -> rusqlite::Result<Vec<Value>> {
-            let mut stmt =
-                conn.prepare("SELECT command FROM commands ORDER BY id DESC LIMIT ?1")?;
-            let iter = stmt.query_map(params![limit], Self::map_row_1)?;
-            iter.collect()
-        })();
-        Self::search_latest_result(result)
     }
 
     /// Delete all history. Commands can contain secrets, so freed pages are
@@ -1088,18 +1037,6 @@ impl HistoryManager {
              )",
             [],
         )
-    }
-
-    fn search_latest_result(result: rusqlite::Result<Vec<Value>>) -> Vec<Value> {
-        result.unwrap_or_else(|error| {
-            crate::logging::Logger::log(
-                "WARNING",
-                "history",
-                "history lookup failed",
-                Some(&error.to_string()),
-            );
-            Vec::new()
-        })
     }
 }
 
@@ -1227,23 +1164,6 @@ mod tests {
         let commands: Vec<String> = (0..500).map(|i| format!("echo {}", i)).collect();
         assert_eq!(history.add_many(&commands, "/w", 0), 500);
         assert_eq!(count(&history), 500);
-    }
-
-    #[test]
-    fn search_latest_treats_like_wildcards_literally() {
-        let history = test_history();
-        history.add("git_status", "/w", 0);
-        history.add("gitXstatus", "/w", 0);
-        history.add("100% done", "/w", 0);
-        history.add("1000 done", "/w", 0);
-        assert_eq!(
-            history.search_latest("git_", 10),
-            vec![serde_json::json!("git_status")]
-        );
-        assert_eq!(
-            history.search_latest("100%", 10),
-            vec![serde_json::json!("100% done")]
-        );
     }
 
     #[test]
