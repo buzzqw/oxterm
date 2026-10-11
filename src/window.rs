@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use glib::prelude::*;
 use glib::subclass::prelude::*;
@@ -117,6 +117,9 @@ mod det_imp {
         pub remote_stats_generation: RefCell<u64>,
         pub closing: RefCell<bool>,
         pub encoding_actions: RefCell<Vec<(gtk::CheckMenuItem, String)>>,
+        /// (columns, rows, font size) last used to size the window; settings
+        /// changes only resize when one of these actually changes.
+        pub applied_size_key: Cell<Option<(i64, i64, i64)>>,
     }
 
     #[glib::object_subclass]
@@ -193,33 +196,26 @@ impl DetachedWindow {
         menubar.set_visible(settings().get_bool("show_menubar"));
         this.apply_stats_visibility();
 
-        let h1 = settings().connect_changed({
+        // One handler per window: each settings change re-applies everything
+        // this window derives from settings.
+        let handler = settings().connect_changed({
             let w = this.downgrade();
             move || {
                 if let Some(w) = w.upgrade() {
                     w.apply_window_size();
-                }
-            }
-        });
-        let h2 = settings().connect_changed({
-            let w = this.downgrade();
-            move || {
-                if let Some(w) = w.upgrade() {
                     w.apply_window_visuals();
-                }
-            }
-        });
-        let h3 = settings().connect_changed({
-            let w = this.downgrade();
-            move || {
-                if let Some(w) = w.upgrade() {
                     w.apply_ui_visibility();
                 }
             }
         });
-        this.imp().settings_handlers.borrow_mut().push(h1);
-        this.imp().settings_handlers.borrow_mut().push(h2);
-        this.imp().settings_handlers.borrow_mut().push(h3);
+        this.imp().settings_handlers.borrow_mut().push(handler);
+        // Settings is a process-wide object: drop our handlers however the
+        // window goes away, not only through on_close.
+        this.connect_destroy(|w| {
+            for handler in std::mem::take(&mut *w.imp().settings_handlers.borrow_mut()) {
+                settings().disconnect_changed(handler);
+            }
+        });
 
         let weak = this.downgrade();
         this.connect_delete_event(move |w, _| {
@@ -252,13 +248,12 @@ impl DetachedWindow {
     }
 
     fn apply_window_size(&self) {
-        let s = settings();
-        let cols = s.get_i64("terminal_columns") as i32;
-        let rows = s.get_i64("terminal_rows") as i32;
-        let font_size = s.get_i64("font_size");
-        let cw = (font_size as i32 * 6 / 10).max(5);
-        let ch = (font_size as i32 * 145 / 100).max(10);
-        self.resize(cols * cw + 60, rows * ch + 120);
+        let key = window_size_key();
+        if self.imp().applied_size_key.replace(Some(key)) == Some(key) {
+            return;
+        }
+        let (w, h) = window_size_for(key);
+        self.resize(w, h);
     }
 
     fn apply_window_visuals(&self) {
@@ -945,7 +940,12 @@ impl DetachedWindow {
         let weak = crate::SendWeak::new(self);
         let source = glib::timeout_add_seconds_local(3, move || {
             if let Some(w) = weak.upgrade() {
-                w.refresh_stats();
+                // Nobody can see the stats of a minimized window.
+                let iconified = gtk::prelude::WidgetExt::window(&w)
+                    .is_some_and(|gw| gw.state().contains(gdk::WindowState::ICONIFIED));
+                if !iconified {
+                    w.refresh_stats();
+                }
                 glib::ControlFlow::Continue
             } else {
                 glib::ControlFlow::Break
@@ -958,7 +958,9 @@ impl DetachedWindow {
         if let Some(id) = self.imp().stats_source_id.borrow_mut().take() {
             id.remove();
         }
-        *self.imp().remote_stats_pending.borrow_mut() = false;
+        // Leave remote_stats_pending set while a probe is still running: it
+        // is cleared when that probe reports back, so toggling the stats bar
+        // cannot stack up concurrent ssh probes.
         *self.imp().remote_stats_generation.borrow_mut() += 1;
     }
 
@@ -991,8 +993,8 @@ impl DetachedWindow {
                     let stats = TerminalBox::collect_remote_stats(&target, socket.as_deref());
                     crate::run_on_main(move || {
                         if let Some(w) = weak.upgrade() {
+                            *w.imp().remote_stats_pending.borrow_mut() = false;
                             if gen == *w.imp().remote_stats_generation.borrow() {
-                                *w.imp().remote_stats_pending.borrow_mut() = false;
                                 let is_active = w
                                     .imp()
                                     .terminal
@@ -1128,6 +1130,13 @@ mod main_imp {
         /// When true (`--hold`), the initial terminal is kept open after its
         /// command exits instead of closing the tab/window.
         pub hold: RefCell<bool>,
+        /// Periodic "last" session autosave, so logout/SIGTERM/crash do not
+        /// lose the open tabs.
+        pub autosave_source: RefCell<Option<glib::SourceId>>,
+        pub last_saved_session: RefCell<Option<crate::session::SessionData>>,
+        /// (columns, rows, font size) last used to size the window; settings
+        /// changes only resize when one of these actually changes.
+        pub applied_size_key: Cell<Option<(i64, i64, i64)>>,
     }
 
     #[glib::object_subclass]
@@ -1193,7 +1202,33 @@ impl MainWindow {
             this.set_application(Some(app));
         }
         this.init(start_dir, command, restore_session, options);
+        this.start_session_autosave();
         this
+    }
+
+    fn start_session_autosave(&self) {
+        let weak = self.downgrade();
+        let source = glib::timeout_add_seconds_local(30, move || {
+            let Some(win) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if *win.imp().closing.borrow() {
+                return glib::ControlFlow::Break;
+            }
+            // With several windows in one process each would overwrite the
+            // others' "last" session; only autosave a lone main window.
+            if win.main_window_count() == 1 {
+                win.save_session("last");
+            }
+            glib::ControlFlow::Continue
+        });
+        *self.imp().autosave_source.borrow_mut() = Some(source);
+    }
+
+    fn main_window_count(&self) -> usize {
+        self.application()
+            .map(|a| a.windows().iter().filter(|w| w.is::<MainWindow>()).count())
+            .unwrap_or(1)
     }
 
     fn init(
@@ -1228,9 +1263,11 @@ impl MainWindow {
             )
         });
         let font_size = s.get_i64("font_size");
-        let cw = (font_size as i32 * 6 / 10).max(5);
-        let ch = (font_size as i32 * 145 / 100).max(10);
-        self.set_default_size(cols * cw + 60, rows * ch + 120);
+        let (w, h) = window_size_for((cols as i64, rows as i64, font_size));
+        self.set_default_size(w, h);
+        // The initial size (possibly from --geometry) is already applied;
+        // don't snap back to the configured size on the next settings change.
+        self.imp().applied_size_key.set(Some(window_size_key()));
 
         if options.fullscreen {
             self.fullscreen();
@@ -1361,51 +1398,26 @@ impl MainWindow {
             self.update_title(&forced);
         }
 
-        let h1 = settings().connect_changed({
+        // One handler per window: each settings change re-applies everything
+        // this window derives from settings.
+        let handler = settings().connect_changed({
             let w = self.downgrade();
             move || {
                 if let Some(w) = w.upgrade() {
                     w.apply_tab_colors();
-                }
-            }
-        });
-        let h2 = settings().connect_changed({
-            let w = self.downgrade();
-            move || {
-                if let Some(w) = w.upgrade() {
                     w.apply_window_size();
-                }
-            }
-        });
-        let h3 = settings().connect_changed({
-            let w = self.downgrade();
-            move || {
-                if let Some(w) = w.upgrade() {
                     w.apply_window_visuals();
-                }
-            }
-        });
-        self.imp().settings_handlers.borrow_mut().push(h1);
-        self.imp().settings_handlers.borrow_mut().push(h2);
-        self.imp().settings_handlers.borrow_mut().push(h3);
-        let h4 = settings().connect_changed({
-            let w = self.downgrade();
-            move || {
-                if let Some(w) = w.upgrade() {
                     w.apply_ui_visibility();
-                }
-            }
-        });
-        self.imp().settings_handlers.borrow_mut().push(h4);
-        let h5 = settings().connect_changed({
-            let w = self.downgrade();
-            move || {
-                if let Some(w) = w.upgrade() {
                     w.apply_dynamic_titles();
                 }
             }
         });
-        self.imp().settings_handlers.borrow_mut().push(h5);
+        self.imp().settings_handlers.borrow_mut().push(handler);
+        self.connect_destroy(|w| {
+            for handler in std::mem::take(&mut *w.imp().settings_handlers.borrow_mut()) {
+                settings().disconnect_changed(handler);
+            }
+        });
 
         let weak = crate::SendWeak::new(self);
         let sd = start_dir.clone();
@@ -1441,14 +1453,11 @@ impl MainWindow {
     }
 
     fn apply_window_size(&self) {
-        let s = settings();
-        let cols = s.get_i64("terminal_columns") as i32;
-        let rows = s.get_i64("terminal_rows") as i32;
-        let font_size = s.get_i64("font_size");
-        let cw = (font_size as i32 * 6 / 10).max(5);
-        let ch = (font_size as i32 * 145 / 100).max(10);
-        let w = cols * cw + 60;
-        let h = rows * ch + 120;
+        let key = window_size_key();
+        if self.imp().applied_size_key.replace(Some(key)) == Some(key) {
+            return;
+        }
+        let (w, h) = window_size_for(key);
         self.resize(w, h);
     }
 
@@ -2785,7 +2794,7 @@ impl MainWindow {
         });
         menu.append(&item_h);
         menu.show_all();
-        menu.popup_at_pointer(None);
+        crate::popup_transient_menu(&menu);
     }
 
     fn move_tab_to_split(&self, term: &TerminalBox, mode: &str) {
@@ -3385,6 +3394,11 @@ impl MainWindow {
         self.update_tabs_menu();
 
         let new_win = DetachedWindow::new(&term, &title);
+        // Register with the application so the process (and this tab's
+        // shell) keeps running when the last main window goes away.
+        if let Some(app) = self.application() {
+            app.add_window(&new_win);
+        }
         term.set_window_ref(&new_win);
         let weak = crate::SendWeak::new(&term);
         new_win.connect_destroy(move |_| {
@@ -3462,10 +3476,12 @@ impl MainWindow {
 
         *self.imp().closing.borrow_mut() = true;
         self.stop_stats_timer();
+        if let Some(id) = self.imp().autosave_source.borrow_mut().take() {
+            id.remove();
+        }
 
-        let app = self.application();
-        let windows = app.map(|a| a.windows().len()).unwrap_or(1);
-        if windows <= 1 {
+        // Detached tab windows are not MainWindows and do not own a session.
+        if self.main_window_count() <= 1 {
             self.save_session("last");
         }
         let nb = self.imp().notebook.borrow().clone().unwrap();
@@ -3605,7 +3621,12 @@ impl MainWindow {
         let weak = crate::SendWeak::new(self);
         let source = glib::timeout_add_seconds_local(3, move || {
             if let Some(w) = weak.upgrade() {
-                w.refresh_stats();
+                // Nobody can see the stats of a minimized window.
+                let iconified = gtk::prelude::WidgetExt::window(&w)
+                    .is_some_and(|gw| gw.state().contains(gdk::WindowState::ICONIFIED));
+                if !iconified {
+                    w.refresh_stats();
+                }
                 glib::ControlFlow::Continue
             } else {
                 glib::ControlFlow::Break
@@ -3618,7 +3639,9 @@ impl MainWindow {
         if let Some(id) = self.imp().stats_source_id.borrow_mut().take() {
             id.remove();
         }
-        *self.imp().remote_stats_pending.borrow_mut() = false;
+        // Leave remote_stats_pending set while a probe is still running: it
+        // is cleared when that probe reports back, so toggling the stats bar
+        // cannot stack up concurrent ssh probes.
         *self.imp().remote_stats_generation.borrow_mut() += 1;
     }
 
@@ -3651,8 +3674,8 @@ impl MainWindow {
                     let stats = TerminalBox::collect_remote_stats(&target, socket.as_deref());
                     crate::run_on_main(move || {
                         if let Some(w) = weak.upgrade() {
+                            *w.imp().remote_stats_pending.borrow_mut() = false;
                             if gen == *w.imp().remote_stats_generation.borrow() {
-                                *w.imp().remote_stats_pending.borrow_mut() = false;
                                 let is_active = w
                                     .current_terminal()
                                     .is_some_and(|term| term.remote_id() == term_id);
@@ -3726,11 +3749,29 @@ impl MainWindow {
     }
 
     fn save_session(&self, name: &str) -> bool {
-        if settings().get_bool("session_restore") {
-            let data = self.build_session_data();
-            return crate::session::save_session(name, &data);
+        if !settings().get_bool("session_restore") {
+            return true;
         }
-        true
+        let mut data = self.build_session_data();
+        if data.tabs_left.is_empty() {
+            data.tabs_left = std::mem::take(&mut data.tabs_right);
+            data.split_mode = "single".to_string();
+        }
+        if data.tabs_left.is_empty() {
+            // Every tab was closed: there is nothing to restore. Writing an
+            // empty session would be rejected on load anyway.
+            crate::session::delete_session(name);
+            *self.imp().last_saved_session.borrow_mut() = None;
+            return true;
+        }
+        if self.imp().last_saved_session.borrow().as_ref() == Some(&data) {
+            return true;
+        }
+        let saved = crate::session::save_session(name, &data);
+        if saved {
+            *self.imp().last_saved_session.borrow_mut() = Some(data);
+        }
+        saved
     }
 
     fn save_session_named(&self, name: &str) -> bool {
@@ -3814,9 +3855,27 @@ impl MainWindow {
     }
 
     fn load_session_named(&self, name: &str) {
-        if let Some(data) = crate::session::load_session(name) {
-            self.restore_window(data);
+        let Some(data) = crate::session::load_session(name) else {
+            self.show_error("Could not load the session. See the application log for details.");
+            return;
+        };
+        // Restoring replaces every open tab; don't kill running programs
+        // without asking.
+        if self.any_terminal_has_active_process() {
+            let dialog = gtk::MessageDialog::new(
+                Some(self),
+                gtk::DialogFlags::MODAL,
+                gtk::MessageType::Question,
+                gtk::ButtonsType::YesNo,
+                "Restoring this session closes all open tabs, including running programs.\n\nContinue?",
+            );
+            let resp = dialog.run();
+            dialog.close();
+            if resp != gtk::ResponseType::Yes {
+                return;
+            }
         }
+        self.restore_window(data);
     }
 }
 
@@ -3867,6 +3926,23 @@ fn escape_markup(text: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// Settings that determine the default window size.
+fn window_size_key() -> (i64, i64, i64) {
+    let s = settings();
+    (
+        s.get_i64("terminal_columns"),
+        s.get_i64("terminal_rows"),
+        s.get_i64("font_size"),
+    )
+}
+
+/// Approximate window size in pixels for (columns, rows, font size).
+fn window_size_for((cols, rows, font_size): (i64, i64, i64)) -> (i32, i32) {
+    let cw = (font_size as i32 * 6 / 10).max(5);
+    let ch = (font_size as i32 * 145 / 100).max(10);
+    (cols as i32 * cw + 60, rows as i32 * ch + 120)
 }
 
 fn spawn_new_process(_new_window: bool) {

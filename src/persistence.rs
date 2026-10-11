@@ -64,6 +64,23 @@ pub fn write_private_temp(dir: &Path, prefix: &str, contents: &[u8]) -> std::io:
     ))
 }
 
+/// Atomically replace `path` with `contents`: write a private (0600) temp
+/// file in the same directory, fsync it, rename it over the target and fsync
+/// the directory so the new entry survives a crash.
+pub fn atomic_write(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let prefix = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "tmp".to_string());
+    let tmp = write_private_temp(dir, &prefix, contents)?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    sync_parent_directory(path)
+}
+
 /// Flush the directory entry created by an atomic rename.
 pub fn sync_parent_directory(path: &Path) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));

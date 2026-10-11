@@ -47,6 +47,17 @@ pub fn run_on_main<F: FnOnce() + Send + 'static>(f: F) {
     glib::timeout_add_once(std::time::Duration::ZERO, f);
 }
 
+/// Pop up a menu built for a single use and destroy it once it closes, so it
+/// (and the widgets its item closures capture) is not leaked.
+pub fn popup_transient_menu(menu: &gtk::Menu) {
+    menu.connect_deactivate(|menu| {
+        // Item "activate" handlers run after "deactivate"; destroy afterwards.
+        let menu = menu.clone();
+        glib::idle_add_local_once(move || unsafe { menu.destroy() });
+    });
+    menu.popup_at_pointer(None);
+}
+
 /// Move a non-Send value into a worker thread; it is only ever touched again
 /// on the main thread.
 pub struct Sendable<T>(pub T);
@@ -353,7 +364,6 @@ fn usage() -> &'static str {
 
 struct App {
     app: gtk::Application,
-    current_dir: Option<String>,
 }
 
 impl App {
@@ -367,7 +377,7 @@ impl App {
 
         let _settings = settings();
 
-        app.connect_startup(|app| {
+        app.connect_startup(|_app| {
             let css_provider = gtk::CssProvider::new();
             let css = b"
                 vte-terminal { padding-left: 8px; padding-right: 4px; }
@@ -392,17 +402,9 @@ impl App {
                     gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
                 );
             }
-            app.connect_activate(|_app| {
-                // handled via command_line
-            });
         });
 
-        App {
-            app,
-            current_dir: std::env::current_dir()
-                .ok()
-                .map(|p| p.to_string_lossy().to_string()),
-        }
+        App { app }
     }
 
     fn run(&mut self, args: Vec<String>) -> i32 {
@@ -502,23 +504,8 @@ impl App {
             win.present();
             0
         });
-        let first_win = self.current_dir.clone();
-        app.connect_activate(move |app| {
-            let windows = app.windows();
-            if !windows.is_empty() {
-                windows[0].present();
-                return;
-            }
-            let win = MainWindow::new(
-                Some(app),
-                first_win.clone(),
-                None,
-                true,
-                window::WindowOptions::default(),
-            );
-            app.add_window(&win);
-            win.present();
-        });
+        // With HANDLES_COMMAND_LINE every launch goes through the
+        // command-line handler above; "activate" is never emitted.
         self.app.run_with_args(&args).value()
     }
 }

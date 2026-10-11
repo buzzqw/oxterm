@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use serde_json::{json, Value};
 
 use crate::logging::LOGGER;
+use crate::persistence::atomic_write;
 use crate::persistence::validate_name;
-use crate::persistence::write_private_temp;
 use crate::settings;
 
 fn session_dir() -> PathBuf {
@@ -14,8 +14,11 @@ fn session_dir() -> PathBuf {
 }
 
 fn ensure_dir() {
-    let _ = fs::create_dir_all(&session_dir());
-    let _ = fs::set_permissions(&session_dir(), fs::Permissions::from_mode(0o700));
+    let dir = session_dir();
+    if !dir.is_dir() {
+        let _ = fs::create_dir_all(&dir);
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+    }
 }
 
 pub fn session_path(name: &str) -> Result<PathBuf, String> {
@@ -24,14 +27,14 @@ pub fn session_path(name: &str) -> Result<PathBuf, String> {
     Ok(session_dir().join(format!("{}.json", name)))
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 pub struct TabEntry {
     pub base_title: String,
     pub title: String,
     pub cwd: String,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 pub struct SessionData {
     pub split_mode: String,
     pub tabs_left: Vec<TabEntry>,
@@ -64,26 +67,9 @@ pub fn save_session(name: &str, data: &SessionData) -> bool {
             return false;
         }
     };
-    match write_private_temp(
-        &session_dir(),
-        "session_tmp",
-        serde_json::to_string_pretty(&payload)
-            .unwrap_or_default()
-            .as_bytes(),
-    ) {
-        Ok(tmp) => {
-            let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
-            if fs::rename(&tmp, &path).is_ok() {
-                if crate::persistence::sync_parent_directory(&path).is_ok() {
-                    return true;
-                }
-                LOGGER.error("session_save_failed_to_sync_directory");
-                return false;
-            }
-            let _ = fs::remove_file(&tmp);
-            LOGGER.error("session_save_failed");
-            false
-        }
+    let contents = serde_json::to_string_pretty(&payload).unwrap_or_default();
+    match atomic_write(&path, contents.as_bytes()) {
+        Ok(()) => true,
         Err(e) => {
             LOGGER.error(&format!("session_save_failed error={}", e));
             false
@@ -101,14 +87,8 @@ pub fn export_session(name: &str, destination: &str) -> Result<(), String> {
     if !parent.is_dir() {
         return Err("export destination directory does not exist".to_string());
     }
-    let temp = write_private_temp(parent, "session_export", &content)
-        .map_err(|e| format!("could not write session export: {}", e))?;
-    if fs::rename(&temp, &destination).is_err() {
-        let _ = fs::remove_file(&temp);
-        return Err("could not finalize session export".to_string());
-    }
-    let _ = fs::set_permissions(&destination, fs::Permissions::from_mode(0o600));
-    Ok(())
+    atomic_write(&destination, &content)
+        .map_err(|e| format!("could not write session export: {}", e))
 }
 
 fn validate_tab(v: &Value) -> Option<TabEntry> {

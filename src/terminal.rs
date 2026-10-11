@@ -2448,7 +2448,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         menu.append(&cast_item);
 
         menu.show_all();
-        menu.popup_at_pointer(None);
+        crate::popup_transient_menu(&menu);
     }
 
     fn add_selection_to_note(&self) {
