@@ -1700,7 +1700,10 @@ mod tests {
             matches!(parse_cli_mode(&args), Some(Ok(CliMode::Move(Some(id)))) if id == "1234-2")
         );
         let args = vec!["oxterm".into(), "--move".into()];
-        assert!(matches!(parse_cli_mode(&args), Some(Ok(CliMode::Move(None)))));
+        assert!(matches!(
+            parse_cli_mode(&args),
+            Some(Ok(CliMode::Move(None)))
+        ));
         let args = vec!["oxterm".into(), "--info".into(), "1234-2".into()];
         assert!(matches!(parse_cli_mode(&args), Some(Ok(CliMode::Info(id))) if id == "1234-2"));
         let args = vec!["oxterm".into(), "--detach".into(), "1234-2".into()];
@@ -1857,9 +1860,10 @@ mod tests {
         assert!(!state.local_on);
         assert!(!clients[1].attached);
         // The previous remote client is notified with a FRAME_DETACH frame.
-        assert!(clients[1].output.iter().any(|frame| {
-            frame.len() == 5 && frame[4] == FRAME_DETACH
-        }));
+        assert!(clients[1]
+            .output
+            .iter()
+            .any(|frame| { frame.len() == 5 && frame[4] == FRAME_DETACH }));
         // The caller gets OK\nMOVE back.
         assert!(clients[0]
             .output
