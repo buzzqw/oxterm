@@ -83,6 +83,7 @@ struct DialogState {
     entry_notes_dir: gtk::Entry,
     entry_notes_file: gtk::Entry,
     entry_editor: gtk::Entry,
+    chk_notes_context: gtk::CheckButton,
 }
 
 pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
@@ -203,6 +204,7 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
         entry_notes_dir: notes.0,
         entry_notes_file: notes.1,
         entry_editor: notes.2,
+        chk_notes_context: notes.3,
     };
 
     {
@@ -308,6 +310,7 @@ Terminal workflow\n\
   Ctrl+Shift+C/V     Copy / paste\n\
   Ctrl+Plus/Minus    Zoom in / out\n\
   Ctrl+0             Reset zoom\n\
+  Ctrl+Shift+M       New note (Notes menu)\n\
 \nBuilt-in commands\n\
   /help              Show the in-terminal command reference\n\
   /history [terms]   Search command history (use -term to exclude)\n\
@@ -1114,7 +1117,12 @@ fn build_compatibility(
     )
 }
 
-fn build_notes(s: &Settings) -> (gtk::Grid, (gtk::Entry, gtk::Entry, gtk::Entry)) {
+fn build_notes(
+    s: &Settings,
+) -> (
+    gtk::Grid,
+    (gtk::Entry, gtk::Entry, gtk::Entry, gtk::CheckButton),
+) {
     let grid = gtk::Grid::new();
     grid.set_margin_start(12);
     grid.set_margin_end(12);
@@ -1127,14 +1135,10 @@ fn build_notes(s: &Settings) -> (gtk::Grid, (gtk::Entry, gtk::Entry, gtk::Entry)
     rr = section(&grid, rr, "Notes");
     let entry_notes_dir = gtk::Entry::new();
     entry_notes_dir.set_text(&s.get_str("notes_dir"));
-    entry_notes_dir.set_placeholder_text(Some(
-        dirs::home_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default()
-            .as_str(),
-    ));
+    let default_dir = crate::notes::default_notes_dir();
+    entry_notes_dir.set_placeholder_text(Some(default_dir.to_string_lossy().as_ref()));
     entry_notes_dir.set_tooltip_text(Some(
-        "Directory where note files are stored. Default: home directory",
+        "Directory where note files are stored. Leave empty to use the default data directory",
     ));
     rr = row(&grid, rr, "Notes directory:", &entry_notes_dir);
 
@@ -1151,9 +1155,25 @@ fn build_notes(s: &Settings) -> (gtk::Grid, (gtk::Entry, gtk::Entry, gtk::Entry)
     entry_editor.set_tooltip_text(Some(
         "Fallback editor for /onotes, used only if xdg-open is unavailable.",
     ));
-    row(&grid, rr, "Fallback editor:", &entry_editor);
+    rr = row(&grid, rr, "Fallback editor:", &entry_editor);
 
-    (grid, (entry_notes_dir, entry_notes_file, entry_editor))
+    let chk_notes_context =
+        gtk::CheckButton::with_label("Record terminal context (cwd, host) in note entries");
+    chk_notes_context.set_active(s.get_bool("notes_record_context"));
+    chk_notes_context.set_tooltip_text(Some(
+        "Add a small HTML comment with the source, working directory and host to each entry",
+    ));
+    grid.attach(&chk_notes_context, 0, rr, 2, 1);
+
+    (
+        grid,
+        (
+            entry_notes_dir,
+            entry_notes_file,
+            entry_editor,
+            chk_notes_context,
+        ),
+    )
 }
 
 impl DialogState {
@@ -1308,9 +1328,10 @@ impl DialogState {
         let osc133_now_enabled = self.chk_osc133.is_active();
         s.set_bool("osc133", osc133_now_enabled);
 
-        s.set_str("notes_dir", &self.entry_notes_dir.text());
-        s.set_str("notes_file", &self.entry_notes_file.text());
-        s.set_str("editor_command", &self.entry_editor.text());
+        s.set_str("notes_dir", self.entry_notes_dir.text().trim());
+        s.set_str("notes_file", self.entry_notes_file.text().trim());
+        s.set_str("editor_command", self.entry_editor.text().trim());
+        s.set_bool("notes_record_context", self.chk_notes_context.is_active());
 
         s.end_batch();
         s.notify_changed();

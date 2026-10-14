@@ -92,9 +92,6 @@ pub fn defaults() -> Value {
 
 fn build_defaults() -> Value {
     let shell = env_or("SHELL", "/bin/bash");
-    let home = dirs::home_dir()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| "/".to_string());
     let editor = env_or("EDITOR", "nano");
     json!({
         "font_name": "Monospace",
@@ -111,7 +108,8 @@ fn build_defaults() -> Value {
         "opacity": 1.0,
         "shell_command": shell,
         "notes_file": "",
-        "notes_dir": home,
+        "notes_dir": "",
+        "notes_record_context": true,
         "editor_command": editor,
         "snippets": {},
         "osc133": false,

@@ -31,7 +31,7 @@ memory footprint and the memory-safety guarantees of Rust.
 - Configurable font, colors, 16-color palettes, cursor, opacity, padding, and encoding
 - Live Preferences reload without restarting the application
 - SQLite command history with reverse search, filters, read-only SQL, replay, command duration, and Git branch metadata
-- Timestamped Markdown notes and configurable editor integration
+- Timestamped Markdown notes with an in-app Notes menu, per-entry context, and configurable editor integration
 - OSC 133 shell integration for prompts, command boundaries, and exit status
 - Session restore, named sessions, profiles, command palette, quickmarks, and hints
 - Persistent PTY broker with SSH-friendly remote attach/detach, session listing, and multi-client terminal sharing
@@ -242,6 +242,9 @@ Commands beginning with `/` are handled by Oxterm:
 | `/history :sql SELECT ...` | Run a read-only history query |
 | `/wnotes [-file.md] <text>` | Save a timestamped note |
 | `/onotes [-file.md]` | Open a notes file in the configured editor |
+
+The **Notes** menu also provides New Note, Add Selection to Note, Copy All to
+Note, Open Note, and Open Notes Folder actions (see the manual).
 | `/learn <file>` | Import commands into history without executing them |
 | `/optimize history` | Keep latest command/directory entries and optimize history in background |
 | `/session export NAME [FILE]` | Export a saved session as private JSON |

@@ -73,6 +73,36 @@ pub fn utc_iso_now() -> String {
     )
 }
 
+/// Local-time human timestamp (`YYYY-MM-DD HH:MM:SS`) without external
+/// dependencies (libc `localtime_r`). Used for note entries, where the user's
+/// wall-clock time is more meaningful than UTC.
+pub fn local_human_now() -> String {
+    use std::mem::MaybeUninit;
+
+    let mut tv = MaybeUninit::<libc::timeval>::uninit();
+    unsafe {
+        libc::gettimeofday(tv.as_mut_ptr(), std::ptr::null_mut());
+    }
+    let tv = unsafe { tv.assume_init() };
+    let mut tm = MaybeUninit::<libc::tm>::uninit();
+    let tm = unsafe {
+        if libc::localtime_r(&tv.tv_sec as *const libc::time_t, tm.as_mut_ptr()).is_null() {
+            // Extremely unlikely; fall back to the UTC formatter.
+            return utc_iso_now();
+        }
+        tm.assume_init()
+    };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec
+    )
+}
+
 /// Reusable lazy logger name for module-scoped logging.
 pub fn scoped(name: &'static str) -> ScopedLogger {
     ScopedLogger { name }

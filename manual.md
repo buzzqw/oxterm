@@ -326,9 +326,30 @@ it immediately.
 
 ## Notes
 
-Notes are Markdown files with timestamped entries. Configure their location in
-**Edit > Preferences > Notes**, then use `/wnotes` to append and `/onotes` to
-open them.
+Notes are Markdown files with timestamped entries (in local time). They are
+stored, by default, in `~/.local/share/oxterm/notes/`; change the directory and
+default filename in **Edit > Preferences > Notes**.
+
+The **Notes** menu (or `Ctrl+Shift+M`) lets you:
+
+- **New Note...** — compose a note and choose which file to save it to.
+- **Add Selection to Note...** — append the selected terminal text to a note.
+- **Copy All to Note...** — append the whole terminal buffer after a confirmation.
+- **Open Default Note** / **Open Note...** — open a note in the editor.
+- **Open Notes Folder** — open the notes directory in the file manager.
+
+Each entry can record a small context comment (source, working directory, host),
+which can be turned off in **Preferences > Notes**. The same actions are also
+available from the terminal context menu.
+
+From the prompt, `/wnotes` appends and `/onotes` opens a note:
+
+```text
+/wnotes Deploy completed on staging
+/wnotes -project.md TODO: review the migration
+/onotes
+/onotes -project.md
+```
 
 The editor preference is used as a fallback when the desktop `xdg-open` helper
 is unavailable.
@@ -374,7 +395,9 @@ variants, CP1252, CP850, ASCII, KOI8-R, Shift_JIS, EUC-JP, and GBK.
 
 ### Notes
 
-Configure the notes directory, default Markdown filename, and fallback editor.
+Configure the notes directory (empty means `~/.local/share/oxterm/notes`), the
+default Markdown filename, whether entries record terminal context, and the
+fallback editor.
 
 ## Shell Integration
 

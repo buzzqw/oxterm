@@ -28,7 +28,6 @@ use zoha_vte::{CursorBlinkMode, CursorShape, Format, PtyFlags, Regex as VteRegex
 
 use crate::history::history;
 use crate::logging::LOGGER;
-use crate::notes::NotesManager;
 use crate::persistence::validate_name;
 use crate::session;
 use crate::settings::{self, settings};
@@ -2291,7 +2290,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
 
         menu.append(&gtk::SeparatorMenuItem::new());
 
-        let add_note_item = gtk::MenuItem::with_label("Add to Note");
+        let add_note_item = gtk::MenuItem::with_label("Add Selection to Note...");
         add_note_item.set_sensitive(has_sel);
         add_note_item.set_tooltip_text(Some("Append the selected text to a notes file"));
         if has_sel {
@@ -2431,24 +2430,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         vte.copy_clipboard_format(Format::Text);
         // Read the selection directly instead of round-tripping through the
         // clipboard, which would spin a nested main loop.
-        let Some(text) = vte.text_selected(Format::Text).map(|t| t.to_string()) else {
-            return;
-        };
-        if text.is_empty() {
-            return;
-        }
-        NotesManager::new().write_note_async(text, None, move |result| match result {
-            Ok(path) => vte.feed(
-                format!(
-                    "\r\n\x1b[32m+ Added selection to note: {}\x1b[0m\r\n",
-                    path.to_string_lossy()
-                )
-                .as_bytes(),
-            ),
-            Err(e) => {
-                vte.feed(format!("\r\n\x1b[31mCould not write note: {}\x1b[0m\r\n", e).as_bytes())
-            }
-        });
+        self.call_window(|w| w.note_add_selection());
     }
 
     fn open_fm(&self) {

@@ -4,6 +4,7 @@ mod history;
 mod icons;
 mod logging;
 mod notes;
+mod notes_ui;
 mod persistence;
 mod profiles;
 mod remote;
@@ -376,6 +377,7 @@ impl App {
         glib::set_application_name(window::APP_TITLE);
 
         let _settings = settings();
+        notes::migrate_legacy_notes_dir();
 
         app.connect_startup(|_app| {
             let css_provider = gtk::CssProvider::new();

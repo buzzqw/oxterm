@@ -1,6 +1,7 @@
 //! Oxterm `/commands` typed at the prompt or in the command bar.
 
 use super::*;
+use crate::notes::NotesManager;
 
 impl TerminalBox {
     // ── Oxterm commands ───────────────────────────────────────
@@ -102,6 +103,7 @@ impl TerminalBox {
         NotesManager::new().write_note_async(
             text,
             filename.as_deref(),
+            crate::notes::NoteContext::manual(),
             move |result| match result {
                 Ok(path) => vte.feed(
                     format!(

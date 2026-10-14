@@ -6,8 +6,130 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::logging::utc_iso_now;
+use crate::logging::local_human_now;
 use crate::settings::{settings, Settings};
+
+/// Default notes directory under the XDG data dir
+/// (`~/.local/share/oxterm/notes`), instead of littering the home directory.
+pub fn default_notes_dir() -> PathBuf {
+    dirs::data_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".local/share")))
+        .unwrap_or_else(|| PathBuf::from("/"))
+        .join("oxterm")
+        .join("notes")
+}
+
+/// One-time migration away from the legacy default notes directory (the home
+/// directory). It only triggers when the setting still equals the home dir and
+/// no `notes.md` was already written there, so existing notes are never lost.
+pub fn migrate_legacy_notes_dir() {
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let s = settings();
+    if s.get_str("notes_dir") != home.to_string_lossy() {
+        return;
+    }
+    if home.join("notes.md").exists() {
+        return;
+    }
+    let target = default_notes_dir();
+    s.set_str("notes_dir", &target.to_string_lossy());
+    crate::logging::log_warning(&format!(
+        "notes_dir_migrated from={} to={}",
+        home.display(),
+        target.display()
+    ));
+}
+
+/// Resolve the directory notes are written to, honouring the (optional)
+/// setting and falling back to [`default_notes_dir`].
+pub fn resolve_notes_dir() -> PathBuf {
+    let raw = settings().get_str("notes_dir");
+    if raw.trim().is_empty() {
+        default_notes_dir()
+    } else {
+        expand_user(&raw)
+    }
+}
+
+/// Normalize a user-provided note name: trim it, reject traversal and absolute
+/// paths, and make sure it ends in `.md`.
+pub fn validate_note_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Note filename cannot be empty".to_string());
+    }
+    if Path::new(name).is_absolute() {
+        return Err("Note filename must be relative to the notes directory".to_string());
+    }
+    relative_note_components(Path::new(name))?;
+    let mut name = name.to_string();
+    if !name.to_ascii_lowercase().ends_with(".md") {
+        name.push_str(".md");
+    }
+    Ok(name)
+}
+
+/// List the Markdown files in the notes directory, newest first (falling back
+/// to name order when timestamps are unavailable).
+pub fn list_note_files() -> Vec<String> {
+    let dir = resolve_notes_dir();
+    let mut files: Vec<(String, u64)> = Vec::new();
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_md = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("md"))
+                .unwrap_or(false);
+            if !is_md || !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let modified = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            files.push((name.to_string(), modified));
+        }
+    }
+    files.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    files.into_iter().map(|(name, _)| name).collect()
+}
+
+/// Context recorded alongside a note entry so it can be understood later.
+#[derive(Default, Clone)]
+pub struct NoteContext {
+    pub source: Option<String>,
+    pub cwd: Option<String>,
+    pub host: Option<String>,
+}
+
+impl NoteContext {
+    /// Context for a manually composed note (from the Notes menu).
+    pub fn manual() -> NoteContext {
+        NoteContext {
+            source: Some("manual".to_string()),
+            ..NoteContext::default()
+        }
+    }
+
+    /// Context for text taken from a terminal.
+    pub fn from_terminal(source: &str, cwd: &str) -> NoteContext {
+        NoteContext {
+            source: Some(source.to_string()),
+            cwd: Some(cwd.to_string()),
+            host: hostname(),
+        }
+    }
+}
 
 pub struct NotesManager {
     _settings: Settings,
@@ -22,12 +144,7 @@ impl NotesManager {
 
     fn note_target(&self, filename: Option<&str>) -> Result<NoteTarget, String> {
         let s = settings();
-        let notes_dir_raw = s.get_str_default("notes_dir", "");
-        let notes_dir = if notes_dir_raw.is_empty() {
-            dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
-        } else {
-            expand_user(&notes_dir_raw)
-        };
+        let notes_dir = resolve_notes_dir();
         let configured = s.get_str("notes_file");
         let name = filename.map(|f| f.to_string()).unwrap_or_else(|| {
             if !configured.is_empty() {
@@ -57,10 +174,7 @@ impl NotesManager {
         if Path::new(&name).is_absolute() && filename.is_some() {
             return Err("Note filename must be relative to the notes directory".to_string());
         }
-        let mut name = name;
-        if !name.ends_with(".md") {
-            name.push_str(".md");
-        }
+        let name = validate_note_name(&name)?;
         let components = relative_note_components(Path::new(&name))?;
         let notes_dir = absolute_path(&notes_dir)?;
         let root = open_directory_tree(&notes_dir, true)?;
@@ -75,8 +189,13 @@ impl NotesManager {
     /// Resolve the note target on the calling (GTK) thread, then append and
     /// fsync on a worker thread so large notes never stall the UI. `done` runs
     /// back on the main thread.
-    pub fn write_note_async<F>(&self, text: String, filename: Option<&str>, done: F)
-    where
+    pub fn write_note_async<F>(
+        &self,
+        text: String,
+        filename: Option<&str>,
+        context: NoteContext,
+        done: F,
+    ) where
         F: FnOnce(Result<PathBuf, String>) + 'static,
     {
         let target = match self.note_target(filename) {
@@ -88,7 +207,7 @@ impl NotesManager {
         };
         let done = crate::Sendable(done);
         std::thread::spawn(move || {
-            let result = append_note(target, &text);
+            let result = append_note(target, &text, context);
             crate::run_on_main(move || {
                 let done = done;
                 (done.0)(result)
@@ -124,13 +243,60 @@ impl NotesManager {
     }
 }
 
-fn append_note(target: NoteTarget, text: &str) -> Result<PathBuf, String> {
-    let ts = human_now();
-    let entry = format!("\n## {}\n\n{}\n", ts, text);
+/// Open the notes directory in the configured file manager (or `xdg-open`).
+pub fn open_notes_folder() -> Result<PathBuf, String> {
+    let dir = resolve_notes_dir();
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dir_str = dir.to_string_lossy().to_string();
+    let file_manager = settings().get_str("file_manager");
+    if !file_manager.is_empty() && spawn_detached(&file_manager, &[&dir_str]) {
+        return Ok(dir);
+    }
+    if let Some(opener) = find_in_path("xdg-open") {
+        spawn_detached(&opener, &[&dir_str]);
+    }
+    Ok(dir)
+}
+
+fn append_note(target: NoteTarget, text: &str, context: NoteContext) -> Result<PathBuf, String> {
+    let ts = local_human_now();
+    let mut entry = format!("\n## {}\n", ts);
+    if settings().get_bool("notes_record_context") {
+        let mut fields = Vec::new();
+        if let Some(source) = context.source.filter(|s| !s.trim().is_empty()) {
+            fields.push(format!("source: {}", source.trim()));
+        }
+        if let Some(cwd) = context.cwd.filter(|s| !s.trim().is_empty()) {
+            fields.push(format!("cwd: {}", cwd.trim()));
+        }
+        if let Some(host) = context.host.filter(|s| !s.trim().is_empty()) {
+            fields.push(format!("host: {}", host.trim()));
+        }
+        if !fields.is_empty() {
+            entry.push_str(&format!("<!-- {} -->\n", fields.join(" | ")));
+        }
+    }
+    entry.push_str(&format!("\n{}\n", text.trim_end()));
+
     let (mut f, _) = open_note_file(&target)?;
     f.write_all(entry.as_bytes()).map_err(|e| e.to_string())?;
     f.sync_all().map_err(|e| e.to_string())?;
     Ok(target.path)
+}
+
+fn hostname() -> Option<String> {
+    let mut buf = [0u8; 256];
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+    if rc != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let name = String::from_utf8_lossy(&buf[..end]).trim().to_string();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
 }
 
 struct NoteTarget {
@@ -297,6 +463,18 @@ mod tests {
     }
 
     #[test]
+    fn validates_and_normalizes_note_names() {
+        assert_eq!(validate_note_name(" project ").unwrap(), "project.md");
+        assert_eq!(validate_note_name("ideas.md").unwrap(), "ideas.md");
+        assert_eq!(validate_note_name("ideas.MD").unwrap(), "ideas.MD");
+        assert!(validate_note_name("").is_err());
+        assert!(validate_note_name("  ").is_err());
+        assert!(validate_note_name("/etc/passwd").is_err());
+        assert!(validate_note_name("../escape.md").is_err());
+        assert!(validate_note_name("sub/note.md").unwrap() == "sub/note.md");
+    }
+
+    #[test]
     fn rejects_symlinked_parent_directory() {
         let root = std::env::temp_dir().join(format!(
             "oxterm-notes-test-{}-{}",
@@ -324,19 +502,6 @@ fn expand_user(path: &str) -> PathBuf {
     } else {
         PathBuf::from(path)
     }
-}
-
-fn human_now() -> String {
-    // Python: datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    let full = utc_iso_now();
-    // Local time approximation would require tz; use a UTC ISO date prefix.
-    // Reuse RFC3339 but replace 'T' with space and drop sub-seconds/tz.
-    full.replace('T', " ")
-        .split('.')
-        .next()
-        .unwrap_or("")
-        .to_string()
-        + " UTC"
 }
 
 fn find_in_path(cmd: &str) -> Option<String> {

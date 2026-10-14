@@ -11,6 +11,7 @@ use gtk::prelude::*;
 
 use zoha_vte::traits::TerminalExt;
 
+use crate::notes::{NoteContext, NotesManager};
 use crate::settings::settings;
 use crate::terminal::TerminalBox;
 
@@ -76,6 +77,45 @@ pub fn detect_file_manager() -> Option<String> {
     None
 }
 
+/// Build the in-app information bar used to report note actions without
+/// polluting the terminal scrollback with escape sequences.
+fn build_info_bar() -> (gtk::InfoBar, gtk::Label) {
+    let bar = gtk::InfoBar::new();
+    bar.set_no_show_all(true);
+    bar.set_show_close_button(true);
+    let label = gtk::Label::new(None);
+    label.set_line_wrap(true);
+    label.set_halign(gtk::Align::Start);
+    bar.content_area().pack_start(&label, true, true, 0);
+    bar.connect_response(|bar, _| bar.hide());
+    (bar, label)
+}
+
+/// Show a transient message in a window's info bar, hiding it after a few
+/// seconds. No-op when the window has no info bar.
+fn show_note_feedback(
+    bar: &RefCell<Option<gtk::InfoBar>>,
+    label: &RefCell<Option<gtk::Label>>,
+    message: &str,
+    is_error: bool,
+) {
+    let (Some(bar_widget), Some(label_widget)) = (bar.borrow().clone(), label.borrow().clone())
+    else {
+        return;
+    };
+    label_widget.set_text(message);
+    bar_widget.set_message_type(if is_error {
+        gtk::MessageType::Error
+    } else {
+        gtk::MessageType::Info
+    });
+    bar_widget.show_all();
+    glib::timeout_add_seconds_local(5, move || {
+        bar_widget.hide();
+        glib::ControlFlow::Break
+    });
+}
+
 /// Interface implemented by both window types so a terminal can drive its
 /// host window without knowing which concrete kind it is.
 pub trait TerminalWindow {
@@ -92,6 +132,103 @@ pub trait TerminalWindow {
     fn session_list_signal(&self);
     fn set_tab_title_from_terminal(&self, term: &TerminalBox, title: &str);
     fn broadcast_feed(&self, source: &TerminalBox, data: &[u8]);
+
+    // ── Notes ────────────────────────────────────────────────
+    // Required hooks implemented by each window type.
+    fn note_feedback(&self, message: &str, is_error: bool);
+    fn note_window(&self) -> gtk::Window;
+    fn note_terminal(&self) -> Option<TerminalBox>;
+    fn note_write(&self, text: String, filename: Option<String>, context: NoteContext);
+
+    /// Compose a new note from scratch.
+    fn note_new(&self) {
+        let window = self.note_window();
+        if let Some((name, text)) = crate::notes_ui::compose_note(&window, "New Note") {
+            let filename = if name.is_empty() { None } else { Some(name) };
+            self.note_write(text, filename, NoteContext::manual());
+        }
+    }
+
+    /// Append the current terminal selection to a chosen note.
+    fn note_add_selection(&self) {
+        let Some(term) = self.note_terminal() else {
+            return;
+        };
+        let text = term
+            .vte()
+            .text_selected(zoha_vte::Format::Text)
+            .map(|t| t.to_string())
+            .unwrap_or_default();
+        if text.trim().is_empty() {
+            self.note_feedback("No text selected in the terminal", true);
+            return;
+        }
+        let window = self.note_window();
+        let Some(name) = crate::notes_ui::pick_note_file(&window, "Add selection to note") else {
+            return;
+        };
+        let filename = if name.is_empty() { None } else { Some(name) };
+        let context = NoteContext::from_terminal("selection", &term.get_cwd());
+        self.note_write(text, filename, context);
+    }
+
+    /// Append the whole terminal buffer to a chosen note, after confirmation.
+    fn note_add_all(&self) {
+        let Some(term) = self.note_terminal() else {
+            return;
+        };
+        let vte = term.vte();
+        let vadj = term.vadjustment();
+        let first_row = vadj.lower() as i64;
+        let last_row = (vadj.upper() as i64).max(first_row);
+        let (text, _) = vte.text_range_format(zoha_vte::Format::Text, first_row, 0, last_row, 0);
+        let text = text.map(|t| t.to_string()).unwrap_or_default();
+        if text.trim().is_empty() {
+            self.note_feedback("Nothing to copy from the terminal", true);
+            return;
+        }
+        let window = self.note_window();
+        let lines = text.lines().count();
+        let chars = text.chars().count();
+        if !crate::notes_ui::confirm_large_append(&window, "all terminal text", lines, chars) {
+            return;
+        }
+        let Some(name) = crate::notes_ui::pick_note_file(&window, "Copy all to note") else {
+            return;
+        };
+        let filename = if name.is_empty() { None } else { Some(name) };
+        let context = NoteContext::from_terminal("scrollback", &term.get_cwd());
+        self.note_write(text, filename, context);
+    }
+
+    /// Open the default note in the configured external editor.
+    fn note_open_default(&self) {
+        match NotesManager::new().open_notes(None) {
+            Ok(path) => self.note_feedback(&format!("Opening note: {}", path.display()), false),
+            Err(e) => self.note_feedback(&format!("Could not open note: {}", e), true),
+        }
+    }
+
+    /// Open the notes directory in the file manager (or `xdg-open`).
+    fn note_open_folder(&self) {
+        match crate::notes::open_notes_folder() {
+            Ok(path) => self.note_feedback(&format!("Notes folder: {}", path.display()), false),
+            Err(e) => self.note_feedback(&format!("Could not open notes folder: {}", e), true),
+        }
+    }
+
+    /// Pick a note and open it in the external editor.
+    fn note_choose_open(&self) {
+        let window = self.note_window();
+        let Some(name) = crate::notes_ui::pick_note_file(&window, "Open note") else {
+            return;
+        };
+        let filename = if name.is_empty() { None } else { Some(name) };
+        match NotesManager::new().open_notes(filename.as_deref()) {
+            Ok(path) => self.note_feedback(&format!("Opening note: {}", path.display()), false),
+            Err(e) => self.note_feedback(&format!("Could not open note: {}", e), true),
+        }
+    }
 }
 
 // ── DetachedWindow ───────────────────────────────────────────
@@ -112,6 +249,8 @@ mod det_imp {
         pub stats_sys_label: RefCell<Option<gtk::Label>>,
         pub stats_self_label: RefCell<Option<gtk::Label>>,
         pub stats_box: RefCell<Option<gtk::Box>>,
+        pub info_bar: RefCell<Option<gtk::InfoBar>>,
+        pub info_label: RefCell<Option<gtk::Label>>,
         pub stats_source_id: RefCell<Option<glib::SourceId>>,
         pub remote_stats_pending: RefCell<bool>,
         pub remote_stats_generation: RefCell<u64>,
@@ -172,6 +311,10 @@ impl DetachedWindow {
         *this.imp().stats_box.borrow_mut() = Some(stats_box.clone());
 
         let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let (info_bar, info_label) = build_info_bar();
+        *this.imp().info_bar.borrow_mut() = Some(info_bar.clone());
+        *this.imp().info_label.borrow_mut() = Some(info_label);
+        vbox.pack_start(&info_bar, false, false, 0);
         this.add(&vbox);
 
         let accel_group = gtk::AccelGroup::new();
@@ -349,7 +492,7 @@ impl DetachedWindow {
         let menubar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         menubar.style_context().add_class("oxterm-menu-row");
         let mut buttons = Vec::new();
-        for label in ["File", "Edit", "View", "Terminal", "Help"] {
+        for label in ["File", "Edit", "View", "Terminal", "Notes", "Help"] {
             let btn = gtk::MenuButton::new();
             btn.set_label(label);
             btn.set_relief(gtk::ReliefStyle::None);
@@ -753,6 +896,83 @@ impl DetachedWindow {
         );
         menus.push(("Terminal".into(), term_menu));
 
+        let notes_menu = gtk::Menu::new();
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &notes_menu,
+            "New Note...",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.note_new();
+                }
+            }),
+            Some("<Primary><Shift>M"),
+            Some("Compose a new note and save it to a Markdown file"),
+        );
+        notes_menu.append(&gtk::SeparatorMenuItem::new());
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &notes_menu,
+            "Add Selection to Note...",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.note_add_selection();
+                }
+            }),
+            None,
+            Some("Append the selected terminal text to a note"),
+        );
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &notes_menu,
+            "Copy All to Note...",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.note_add_all();
+                }
+            }),
+            None,
+            Some("Append the whole terminal buffer to a note after confirmation"),
+        );
+        notes_menu.append(&gtk::SeparatorMenuItem::new());
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &notes_menu,
+            "Open Default Note",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.note_open_default();
+                }
+            }),
+            None,
+            Some("Open the default notes file in the editor"),
+        );
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &notes_menu,
+            "Open Note...",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.note_choose_open();
+                }
+            }),
+            None,
+            Some("Choose a note to open in the editor"),
+        );
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &notes_menu,
+            "Open Notes Folder",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.note_open_folder();
+                }
+            }),
+            None,
+            Some("Open the notes directory in the file manager"),
+        );
+        menus.push(("Notes".into(), notes_menu));
+
         let help_menu = gtk::Menu::new();
         let weak = crate::SendWeak::new(self);
         self.menu_item(
@@ -1087,6 +1307,32 @@ impl TerminalWindow for DetachedWindow {
         self.update_title(&format!("{} - {}", APP_NAME, title));
     }
     fn broadcast_feed(&self, _source: &TerminalBox, _data: &[u8]) {}
+
+    fn note_feedback(&self, message: &str, is_error: bool) {
+        show_note_feedback(
+            &self.imp().info_bar,
+            &self.imp().info_label,
+            message,
+            is_error,
+        );
+    }
+    fn note_window(&self) -> gtk::Window {
+        self.clone().upcast()
+    }
+    fn note_terminal(&self) -> Option<TerminalBox> {
+        self.imp().terminal.borrow().clone()
+    }
+    fn note_write(&self, text: String, filename: Option<String>, context: NoteContext) {
+        let weak = crate::SendWeak::new(self);
+        NotesManager::new().write_note_async(text, filename.as_deref(), context, move |result| {
+            if let Some(w) = weak.upgrade() {
+                match result {
+                    Ok(path) => w.note_feedback(&format!("Saved to {}", path.display()), false),
+                    Err(e) => w.note_feedback(&format!("Could not write note: {}", e), true),
+                }
+            }
+        });
+    }
 }
 
 // ── MainWindow ───────────────────────────────────────────────
@@ -1109,6 +1355,8 @@ mod main_imp {
         pub stats_sys_label: RefCell<Option<gtk::Label>>,
         pub stats_self_label: RefCell<Option<gtk::Label>>,
         pub stats_box: RefCell<Option<gtk::Box>>,
+        pub info_bar: RefCell<Option<gtk::InfoBar>>,
+        pub info_label: RefCell<Option<gtk::Label>>,
         pub stats_source_id: RefCell<Option<glib::SourceId>>,
         pub remote_stats_pending: RefCell<bool>,
         pub remote_stats_generation: RefCell<u64>,
@@ -1363,6 +1611,10 @@ impl MainWindow {
         *self.imp().stats_box.borrow_mut() = Some(stats_box.clone());
 
         let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let (info_bar, info_label) = build_info_bar();
+        *self.imp().info_bar.borrow_mut() = Some(info_bar.clone());
+        *self.imp().info_label.borrow_mut() = Some(info_label);
+        vbox.pack_start(&info_bar, false, false, 0);
         let menubar = self.imp().menubar.borrow().clone().unwrap();
         vbox.pack_start(&menubar, false, false, 0);
         vbox.pack_start(
@@ -1839,7 +2091,7 @@ impl MainWindow {
         let menubar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         menubar.style_context().add_class("oxterm-menu-row");
         let mut buttons = Vec::new();
-        for label in ["File", "Edit", "View", "Terminal", "Tabs", "Help"] {
+        for label in ["File", "Edit", "View", "Terminal", "Tabs", "Notes", "Help"] {
             let btn = gtk::MenuButton::new();
             btn.set_label(label);
             btn.set_relief(gtk::ReliefStyle::None);
@@ -2493,6 +2745,83 @@ impl MainWindow {
         *self.imp().tabs_menu.borrow_mut() = Some(tabs_menu.clone());
         menus.push(("Tabs".into(), tabs_menu));
 
+        let notes_menu = gtk::Menu::new();
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &notes_menu,
+            "New Note...",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.note_new();
+                }
+            }),
+            Some("<Primary><Shift>M"),
+            Some("Compose a new note and save it to a Markdown file"),
+        );
+        notes_menu.append(&gtk::SeparatorMenuItem::new());
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &notes_menu,
+            "Add Selection to Note...",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.note_add_selection();
+                }
+            }),
+            None,
+            Some("Append the selected terminal text to a note"),
+        );
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &notes_menu,
+            "Copy All to Note...",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.note_add_all();
+                }
+            }),
+            None,
+            Some("Append the whole terminal buffer to a note after confirmation"),
+        );
+        notes_menu.append(&gtk::SeparatorMenuItem::new());
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &notes_menu,
+            "Open Default Note",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.note_open_default();
+                }
+            }),
+            None,
+            Some("Open the default notes file in the editor"),
+        );
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &notes_menu,
+            "Open Note...",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.note_choose_open();
+                }
+            }),
+            None,
+            Some("Choose a note to open in the editor"),
+        );
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &notes_menu,
+            "Open Notes Folder",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.note_open_folder();
+                }
+            }),
+            None,
+            Some("Open the notes directory in the file manager"),
+        );
+        menus.push(("Notes".into(), notes_menu));
+
         // Help
         let help_menu = gtk::Menu::new();
         let weak = crate::SendWeak::new(self);
@@ -2777,7 +3106,7 @@ impl MainWindow {
         menu.append(&item_copy);
         let weak = crate::SendWeak::new(self);
         let term_c = term.clone();
-        let item_copy_notes = gtk::MenuItem::with_label("Copy All to Notes");
+        let item_copy_notes = gtk::MenuItem::with_label("Copy All to Note...");
         item_copy_notes.connect_activate(move |_| {
             if let Some(w) = weak.upgrade() {
                 w.copy_all_to_notes(&term_c);
@@ -3428,22 +3757,25 @@ impl MainWindow {
         let last_row = (vadj.upper() as i64).max(first_row);
         let (text, _) = vte.text_range_format(zoha_vte::Format::Text, first_row, 0, last_row, 0);
         let text = text.map(|t| t.to_string()).unwrap_or_default();
-        if text.is_empty() {
+        if text.trim().is_empty() {
+            self.note_feedback("Nothing to copy from the terminal", true);
             return;
         }
-        let notes = crate::notes::NotesManager::new();
-        notes.write_note_async(text, None, move |result| match result {
-            Ok(path) => vte.feed(
-                format!(
-                    "\r\n\x1b[32m+ Added all text to note: {}\x1b[0m\r\n",
-                    path.to_string_lossy()
-                )
-                .as_bytes(),
-            ),
-            Err(e) => {
-                vte.feed(format!("\r\n\x1b[31mCould not write note: {}\x1b[0m\r\n", e).as_bytes())
-            }
-        });
+        let window = self.clone().upcast::<gtk::Window>();
+        if !crate::notes_ui::confirm_large_append(
+            &window,
+            "all terminal text",
+            text.lines().count(),
+            text.chars().count(),
+        ) {
+            return;
+        }
+        let Some(name) = crate::notes_ui::pick_note_file(&window, "Copy all to note") else {
+            return;
+        };
+        let filename = if name.is_empty() { None } else { Some(name) };
+        let context = NoteContext::from_terminal("scrollback", &term.get_cwd());
+        self.note_write(text, filename, context);
     }
 
     fn show_about(&self) {
@@ -3928,6 +4260,32 @@ impl TerminalWindow for MainWindow {
     }
     fn broadcast_feed(&self, source: &TerminalBox, data: &[u8]) {
         MainWindow::broadcast_feed(self, source, data);
+    }
+
+    fn note_feedback(&self, message: &str, is_error: bool) {
+        show_note_feedback(
+            &self.imp().info_bar,
+            &self.imp().info_label,
+            message,
+            is_error,
+        );
+    }
+    fn note_window(&self) -> gtk::Window {
+        self.clone().upcast()
+    }
+    fn note_terminal(&self) -> Option<TerminalBox> {
+        self.current_terminal()
+    }
+    fn note_write(&self, text: String, filename: Option<String>, context: NoteContext) {
+        let weak = crate::SendWeak::new(self);
+        NotesManager::new().write_note_async(text, filename.as_deref(), context, move |result| {
+            if let Some(w) = weak.upgrade() {
+                match result {
+                    Ok(path) => w.note_feedback(&format!("Saved to {}", path.display()), false),
+                    Err(e) => w.note_feedback(&format!("Could not write note: {}", e), true),
+                }
+            }
+        });
     }
 }
 
