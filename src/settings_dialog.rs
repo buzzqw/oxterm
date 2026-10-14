@@ -79,9 +79,6 @@ struct DialogState {
     combo_delete: gtk::ComboBoxText,
     combo_encoding: gtk::ComboBoxText,
     chk_osc133: gtk::CheckButton,
-    // AI
-    ai_entries: BTreeMap<String, (gtk::Entry, gtk::Entry, gtk::TextBuffer)>,
-    ai_url_entries: BTreeMap<String, gtk::Entry>,
     // Notes
     entry_notes_dir: gtk::Entry,
     entry_notes_file: gtk::Entry,
@@ -127,14 +124,12 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
     let (appearance_widget, appearance) = build_appearance(&s);
     let (colors_widget, colors) = build_colors(&s);
     let (compat_widget, compat) = build_compatibility(&s);
-    let (ai_widget, ai_entries, ai_url_entries) = build_ai(&s);
     let (notes_widget, notes) = build_notes(&s);
 
     stack.add_titled(&general_widget, "general", "General");
     stack.add_titled(&appearance_widget, "appearance", "Appearance");
     stack.add_titled(&colors_widget, "colors", "Colors");
     stack.add_titled(&compat_widget, "compatibility", "Compatibility");
-    stack.add_titled(&ai_widget, "ai", "AI");
     stack.add_titled(&notes_widget, "notes", "Notes");
 
     let readability_css = gtk::CssProvider::new();
@@ -205,8 +200,6 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
         combo_delete: compat.1,
         combo_encoding: compat.2,
         chk_osc133: compat.3,
-        ai_entries,
-        ai_url_entries,
         entry_notes_dir: notes.0,
         entry_notes_file: notes.1,
         entry_editor: notes.2,
@@ -281,7 +274,7 @@ pub fn show_about_dialog(parent: Option<&gtk::Window>) {
     dialog.set_program_name(APP_NAME);
     dialog.set_version(Some(VERSION));
     dialog.set_comments(Some(
-        "Native Linux terminal emulator built with Rust, GTK 3 and VTE.\n\nTabs, split panes, command history, shell integration, notes, profiles, named sessions, optional AI chat, and SSH-friendly remote attach/detach.\n\nSee the project page for the user manual, releases, and issue tracker.",
+        "Native Linux terminal emulator built with Rust, GTK 3 and VTE.\n\nTabs, split panes, command history, shell integration, notes, profiles, named sessions, and SSH-friendly remote attach/detach.\n\nSee the project page for the user manual, releases, and issue tracker.",
     ));
     dialog.set_authors(&["Andres Zanzani"]);
     dialog.set_copyright(Some("Copyright (C) 2026 Andres Zanzani"));
@@ -318,11 +311,6 @@ Terminal workflow\n\
 \nBuilt-in commands\n\
   /help              Show the in-terminal command reference\n\
   /history [terms]   Search command history (use -term to exclude)\n\
-  /ai [on]           Start optional AI chat\n\
-   ? QUESTION         Ask AI once and return to the shell prompt\n\
-  /ai explain        Explain the latest failed command\n\
-  /ai repair         Suggest a safe repair for the latest failure\n\
-  /connect           Select and test an AI provider\n\
   /wnotes TEXT       Save a timestamped Markdown note\n\
   /onotes            Open the configured notes file\n\
   /session list      List saved sessions\n\
@@ -1126,111 +1114,6 @@ fn build_compatibility(
     )
 }
 
-fn build_ai(
-    s: &Settings,
-) -> (
-    gtk::ScrolledWindow,
-    BTreeMap<String, (gtk::Entry, gtk::Entry, gtk::TextBuffer)>,
-    BTreeMap<String, gtk::Entry>,
-) {
-    let grid = gtk::Grid::new();
-    grid.set_margin_start(12);
-    grid.set_margin_end(12);
-    grid.set_margin_top(8);
-    grid.set_margin_bottom(8);
-    grid.set_row_spacing(9);
-    grid.set_column_spacing(12);
-
-    let keys = settings::json_to_str_map(&s.get_obj("ai_keys"));
-    let models = settings::json_to_str_map(&s.get_obj("ai_models"));
-    let urls = settings::json_to_str_map(&s.get_obj("ai_urls"));
-    let sys_prompts = settings::json_to_str_map(&s.get_obj("ai_system_prompts"));
-
-    let providers = ["openai", "claude", "gemini", "deepseek", "ollama", "custom"];
-    let mut ai_entries: BTreeMap<String, (gtk::Entry, gtk::Entry, gtk::TextBuffer)> =
-        BTreeMap::new();
-    let mut ai_url_entries: BTreeMap<String, gtk::Entry> = BTreeMap::new();
-    let mut rr = 0;
-
-    for provider in providers {
-        let title = provider
-            .chars()
-            .next()
-            .map(|c| c.to_uppercase().collect::<String>() + &provider[1..])
-            .unwrap_or_default();
-        rr = section(&grid, rr, &title);
-
-        let key_entry = gtk::Entry::new();
-        key_entry.set_text(keys.get(provider).cloned().unwrap_or_default().as_str());
-        if provider != "ollama" {
-            key_entry.set_visibility(false);
-        }
-        let ph = if provider == "ollama" || provider == "custom" {
-            "(optional)".to_string()
-        } else {
-            format!("{}_API_KEY", provider.to_uppercase())
-        };
-        key_entry.set_placeholder_text(Some(&ph));
-        rr = row(&grid, rr, "API Key:", &key_entry);
-
-        let model_entry = gtk::Entry::new();
-        model_entry.set_text(models.get(provider).cloned().unwrap_or_default().as_str());
-        model_entry.set_placeholder_text(Some("default model"));
-        rr = row(&grid, rr, "Model:", &model_entry);
-
-        let sys_prompt_buf = gtk::TextBuffer::new(None::<&gtk::TextTagTable>);
-        sys_prompt_buf.set_text(
-            sys_prompts
-                .get(provider)
-                .cloned()
-                .unwrap_or_default()
-                .as_str(),
-        );
-        let sys_prompt_view = gtk::TextView::with_buffer(&sys_prompt_buf);
-        sys_prompt_view.set_wrap_mode(gtk::WrapMode::WordChar);
-        sys_prompt_view.set_size_request(-1, 60);
-        let sys_prompt_scroll =
-            gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
-        sys_prompt_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-        sys_prompt_scroll.set_min_content_height(40);
-        sys_prompt_scroll.add(&sys_prompt_view);
-        let sys_prompt_frame = gtk::Frame::new(None);
-        sys_prompt_frame.set_shadow_type(gtk::ShadowType::In);
-        sys_prompt_frame.add(&sys_prompt_scroll);
-        let lbl = gtk::Label::new(Some("Sys. prompt:"));
-        lbl.set_halign(gtk::Align::End);
-        lbl.set_margin_end(8);
-        lbl.set_valign(gtk::Align::Start);
-        lbl.set_margin_top(4);
-        grid.attach(&lbl, 0, rr, 1, 1);
-        grid.attach(&sys_prompt_frame, 1, rr, 1, 1);
-        rr += 1;
-
-        ai_entries.insert(
-            provider.to_string(),
-            (key_entry, model_entry, sys_prompt_buf),
-        );
-
-        if provider == "ollama" || provider == "custom" {
-            let url_entry = gtk::Entry::new();
-            url_entry.set_text(urls.get(provider).cloned().unwrap_or_default().as_str());
-            url_entry.set_placeholder_text(Some(if provider == "ollama" {
-                "http://localhost:11434/v1/chat/completions"
-            } else {
-                "http://localhost:8080/v1/chat/completions"
-            }));
-            rr = row(&grid, rr, "URL:", &url_entry);
-            ai_url_entries.insert(provider.to_string(), url_entry);
-        }
-        rr += 1;
-    }
-
-    let sw = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
-    sw.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-    sw.add(&grid);
-    (sw, ai_entries, ai_url_entries)
-}
-
 fn build_notes(s: &Settings) -> (gtk::Grid, (gtk::Entry, gtk::Entry, gtk::Entry)) {
     let grid = gtk::Grid::new();
     grid.set_margin_start(12);
@@ -1425,44 +1308,12 @@ impl DialogState {
         let osc133_now_enabled = self.chk_osc133.is_active();
         s.set_bool("osc133", osc133_now_enabled);
 
-        let mut new_keys = BTreeMap::new();
-        let mut new_models = BTreeMap::new();
-        let mut new_urls = BTreeMap::new();
-        let mut new_sys_prompts = BTreeMap::new();
-        for (provider, (key_entry, model_entry, buf)) in &self.ai_entries {
-            // Pasted keys often carry a trailing newline, which produces an
-            // invalid HTTP header.
-            new_keys.insert(provider.clone(), key_entry.text().trim().to_string());
-            new_models.insert(provider.clone(), model_entry.text().trim().to_string());
-            let prompt = buf
-                .text(&buf.start_iter(), &buf.end_iter(), true)
-                .map(|t| t.trim().to_string())
-                .unwrap_or_default();
-            if !prompt.is_empty() {
-                new_sys_prompts.insert(provider.clone(), prompt);
-            }
-        }
-        for (provider, url_entry) in &self.ai_url_entries {
-            new_urls.insert(provider.clone(), url_entry.text().trim().to_string());
-        }
-        let mut errors = Vec::new();
-        for (key, map) in [
-            ("ai_keys", &new_keys),
-            ("ai_models", &new_models),
-            ("ai_urls", &new_urls),
-            ("ai_system_prompts", &new_sys_prompts),
-        ] {
-            if let Err(e) = s.set(key, settings::str_map_to_json(map)) {
-                errors.push(format!("{}: {}", key, e));
-            }
-        }
-
         s.set_str("notes_dir", &self.entry_notes_dir.text());
         s.set_str("notes_file", &self.entry_notes_file.text());
         s.set_str("editor_command", &self.entry_editor.text());
 
         s.end_batch();
         s.notify_changed();
-        errors
+        Vec::new()
     }
 }

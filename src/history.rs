@@ -24,7 +24,6 @@ const HISTORY_QUEUE_SIZE: usize = 256;
 type SearchCallback = Box<dyn FnOnce(Vec<Vec<Value>>) + Send + 'static>;
 type SqlCallback = Box<dyn FnOnce(Result<Vec<Vec<Value>>, String>) + Send + 'static>;
 type AddManyCallback = Box<dyn FnOnce(usize) + Send + 'static>;
-type LatestFailedCallback = Box<dyn FnOnce(Option<Vec<Value>>) + Send + 'static>;
 type OptimizeCallback = Box<dyn FnOnce(Result<BTreeMap<String, Value>, String>) + Send + 'static>;
 
 enum HistoryRequest {
@@ -58,10 +57,6 @@ enum HistoryRequest {
     SqlSearch {
         sql: String,
         callback: SqlCallback,
-    },
-    LatestFailed {
-        cwd: String,
-        callback: LatestFailedCallback,
     },
     Optimize {
         callback: OptimizeCallback,
@@ -216,9 +211,6 @@ fn history_worker_loop(receiver: mpsc::Receiver<HistoryRequest>) {
             } => callback(manager.search(&terms, limit, &cwd)),
             HistoryRequest::SqlSearch { sql, callback } => {
                 callback(manager.sql_search(&sql));
-            }
-            HistoryRequest::LatestFailed { cwd, callback } => {
-                callback(manager.latest_failed(&cwd));
             }
             HistoryRequest::Optimize { callback } => callback(manager.optimize()),
             HistoryRequest::Clear => manager.clear(),
@@ -381,10 +373,6 @@ impl History {
 
     pub fn sql_search_async(&self, sql: String, callback: SqlCallback) {
         let _ = send_history_request(HistoryRequest::SqlSearch { sql, callback }, "SQL search");
-    }
-
-    pub fn latest_failed_async(&self, cwd: String, callback: LatestFailedCallback) {
-        let _ = send_history_request(HistoryRequest::LatestFailed { cwd, callback }, "lookup");
     }
 
     /// Returns false if the request could not be queued (worker stopped).
@@ -616,31 +604,6 @@ impl HistoryManager {
                 );
             }
         }
-    }
-
-    pub fn latest_failed(&self, cwd: &str) -> Option<Vec<Value>> {
-        let Ok(conn) = self.conn.lock() else {
-            crate::logging::log_warning("history database lock is unavailable");
-            return None;
-        };
-        let sql = if cwd.is_empty() {
-            "SELECT id, command, cwd, timestamp, exit_code, duration_ms, git_branch
-             FROM commands
-             WHERE exit_code IS NOT NULL AND exit_code != 0 AND exit_code >= 0
-             ORDER BY id DESC LIMIT 1"
-        } else {
-            "SELECT id, command, cwd, timestamp, exit_code, duration_ms, git_branch
-             FROM commands
-             WHERE cwd = ?1 AND exit_code IS NOT NULL AND exit_code != 0 AND exit_code >= 0
-             ORDER BY id DESC LIMIT 1"
-        };
-        let mut stmt = conn.prepare(sql).ok()?;
-        let row = if cwd.is_empty() {
-            stmt.query_row([], Self::map_row_7)
-        } else {
-            stmt.query_row(params![cwd], Self::map_row_7)
-        };
-        row.ok()
     }
 
     fn like_escape(term: &str) -> String {
@@ -1174,16 +1137,5 @@ mod tests {
         history.clear();
         assert_eq!(count(&history), 0);
         assert!(history.search("secret", 10, "/w").is_empty());
-    }
-
-    #[test]
-    fn latest_failed_ignores_successes_and_other_directories() {
-        let history = test_history();
-        let failed = history.add("make", "/w", 2);
-        history.add("ls", "/w", 0);
-        history.add("cargo build", "/other", 1);
-        let row = history.latest_failed("/w").unwrap();
-        assert_eq!(row[0].as_i64(), Some(failed));
-        assert_eq!(row[1].as_str(), Some("make"));
     }
 }

@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=Oxterm Terminal
-Comment=GTK3/VTE terminal emulator with AI, history and notes
+Comment=GTK3/VTE terminal emulator with history and notes
 Exec=oxterm
 Icon=oxterm
 Terminal=false

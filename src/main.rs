@@ -1,6 +1,5 @@
 #![recursion_limit = "256"]
 
-mod ai_client;
 mod history;
 mod icons;
 mod logging;
@@ -354,6 +353,7 @@ fn usage() -> &'static str {
         "      --list                   List active Oxterm terminals\n",
         "      --info SESSION_ID        Show one active terminal\n",
         "  -a, --attach [SESSION_ID]    Attach to one or choose an Oxterm terminal\n",
+        "  -M, --move [SESSION_ID]      Move one to this terminal (detaches its other views)\n",
         "      --detach SESSION_ID      Detach its remote controller\n",
         "      --broker SOCKET ID       Run the persistent PTY broker (internal)\n",
         "      --                       Treat the next argument as the directory\n",

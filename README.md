@@ -12,8 +12,8 @@ functional** terminal: light on resources and quick to start, while providing
 everything you expect from a modern terminal.
 
 The project combines a full terminal emulator with tabs, split panes, command
-history, notes, shell integration, profiles, sessions, and optional AI chat —
-all with a small memory footprint and the memory-safety guarantees of Rust.
+history, notes, shell integration, profiles, and sessions — all with a small
+memory footprint and the memory-safety guarantees of Rust.
 
 > **Quick start:** prebuilt Linux executables are already available on the
 > [GitHub Releases page](https://github.com/buzzqw/oxterm/releases/latest). This
@@ -31,9 +31,6 @@ all with a small memory footprint and the memory-safety guarantees of Rust.
 - Configurable font, colors, 16-color palettes, cursor, opacity, padding, and encoding
 - Live Preferences reload without restarting the application
 - SQLite command history with reverse search, filters, read-only SQL, replay, command duration, and Git branch metadata
-- AI chat through OpenAI, Anthropic Claude, Google Gemini, DeepSeek, Ollama, and custom APIs
-- AI failure diagnosis with `/ai explain` and safe repair suggestions with `/ai repair`
-- AI response usage summary with input/output tokens and estimated USD cost when available
 - Timestamped Markdown notes and configurable editor integration
 - OSC 133 shell integration for prompts, command boundaries, and exit status
 - Session restore, named sessions, profiles, command palette, quickmarks, and hints
@@ -159,6 +156,7 @@ oxterm [DIRECTORY] [OPTIONS] [-e CMD...]
       --list                   List active Oxterm terminals
       --info SESSION_ID        Show one active terminal
   -a, --attach [SESSION_ID]    Attach to one or choose an Oxterm terminal
+  -M, --move [SESSION_ID]      Move one to this terminal (detaches its other views)
       --detach SESSION_ID     Detach its remote controller
       --broker SOCKET ID      Run the persistent PTY broker (internal)
       --                      Treat the next argument as the directory
@@ -186,6 +184,8 @@ oxterm --list                             # list terminals on this host
 oxterm --info 12345-2                      # inspect one terminal
 oxterm -a                                  # attach automatically or choose one
 oxterm -a 12345-2                          # attach to one terminal
+oxterm -M                                  # move one here (detaches its other views)
+oxterm -M 12345-2                          # move one terminal here
 oxterm --detach 12345-2                   # release a remote attach
 ```
 
@@ -199,21 +199,25 @@ argument, which is useful when its name begins with `-`.
 
 Without an explicit directory, Oxterm starts in the current working directory.
 
-`oxterm --list` and `oxterm -a [SESSION_ID]` are headless commands. They do
-not open a GTK window: they inspect or attach to the live broker session of a
-running Oxterm terminal on the same host. This makes them suitable for use
-through SSH. Broker sockets are private (`0700` directory, `0600` socket) and
-the broker process owns the child PTY, so an unexpected GUI crash does not
-terminate the shell. An intentional GUI close still terminates its tabs through
-the normal cleanup path. Multiple `-a` clients may be connected at once; their
-input is forwarded to the same shell and output is broadcast to each client.
-The listing includes the last command/application received from the shell, with
-`running` while OSC 133 reports that command as active and `last` otherwise.
+`oxterm --list`, `oxterm -a [SESSION_ID]` and `oxterm -M [SESSION_ID]` are
+headless commands. They do not open a GTK window: they inspect, attach to, or
+move the live broker session of a running Oxterm terminal on the same host.
+This makes them suitable for use through SSH. Broker sockets are private
+(`0700` directory, `0600` socket) and the broker process owns the child PTY, so
+an unexpected GUI crash does not terminate the shell. An intentional GUI close
+still terminates its tabs through the normal cleanup path. Multiple `-a`
+clients may be connected at once; their input is forwarded to the same shell
+and output is broadcast to each client. `-M` instead takes control: it detaches
+every remote controller and turns off the local GUI view, so the chosen session
+is shown only in the terminal that ran the command. In the original Oxterm
+window, `Ctrl+B` then `s`/`w` brings it back. The listing includes the last
+command/application received from the shell, with `running` while OSC 133
+reports that command as active and `last` otherwise.
 
 The internal `oxterm --broker SOCKET SESSION_ID` mode is started by the GUI and
 is not normally invoked manually. Its framed Unix-socket protocol supports
-`LIST`, `INFO`, `ATTACH`, `DETACH`, `RENAME`, `COMMAND`, `LOCAL_ON`, `LOCAL_OFF`,
-`KILL`, `IS_SSH`, `ECHO`, and `IS_ACTIVE`. Attached clients exchange
+`LIST`, `INFO`, `ATTACH`, `MOVE`, `DETACH`, `RENAME`, `COMMAND`, `LOCAL_ON`,
+`LOCAL_OFF`, `KILL`, `IS_SSH`, `ECHO`, and `IS_ACTIVE`. Attached clients exchange
 length-prefixed frames containing terminal input/output, and can detach without
 stopping the broker. Reconnecting does not
 replay output produced before the new client attached; it receives subsequent
@@ -229,20 +233,13 @@ active foreground process. A shell waiting at its prompt closes immediately.
 
 ## Built-in Commands
 
-Commands beginning with `/` and one-shot AI prompts are handled by Oxterm:
+Commands beginning with `/` are handled by Oxterm:
 
 | Command | Purpose |
 | --- | --- |
 | `/help` | Show the command reference |
 | `/history [terms]` | Search command history using AND filters |
 | `/history :sql SELECT ...` | Run a read-only history query |
-| `/ai` | Enter AI chat mode |
-| `? QUESTION` / `# QUESTION` | Ask AI once and return to the shell prompt |
-| `/ai explain` | Explain the latest failed command in the current directory |
-| `/ai repair` | Suggest a safe repair for the latest failed command |
-| `/ai context N <question>` | Ask AI about the last N terminal lines |
-| `/ai off` | Leave AI chat mode |
-| `/connect [provider]` | Select an AI provider and model |
 | `/wnotes [-file.md] <text>` | Save a timestamped note |
 | `/onotes [-file.md]` | Open a notes file in the configured editor |
 | `/learn <file>` | Import commands into history without executing them |
@@ -303,7 +300,7 @@ Any other key after `Ctrl+B` is passed to the running program together with
 Oxterm intentionally uses the existing shared data directory:
 
 ```text
-~/.config/oxterm/settings.json   Preferences and provider configuration
+~/.config/oxterm/settings.json   Preferences
 ~/.config/oxterm/settings.json.bak Previous valid Preferences snapshot
 ~/.config/oxterm/history.db      SQLite command history
 ~/.config/oxterm/sessions/       Saved sessions
@@ -312,36 +309,7 @@ Oxterm intentionally uses the existing shared data directory:
 ```
 
 Open **Edit > Preferences** to configure the terminal, appearance, colors,
-compatibility, AI providers, and notes. Most changes are applied immediately.
-
-API keys are stored in the settings file. Protect that file appropriately and
-never commit it to a repository. The file and its backup are written with
-restrictive permissions, but they are not encrypted.
-
-## AI Providers
-
-The AI page supports:
-
-- OpenAI
-- Anthropic Claude
-- Google Gemini
-- DeepSeek
-- Ollama for local models
-- Custom OpenAI-compatible endpoints
-
-Cloud providers require their API key. Ollama requires a running local Ollama
-server. Custom endpoints must use HTTPS; plain HTTP is accepted only for local
-services such as `localhost`, `127.0.0.1`, and `::1`. AI chat is optional and
-does not affect normal terminal operation.
-
-`/ai context` sends the selected recent terminal lines to the configured
-provider after basic secret redaction. Do not use it with sensitive output that
-must not leave the machine.
-
-After a completed response, Oxterm displays the input, output, and total tokens
-reported by the provider. It also displays an estimated USD cost for supported
-models. The estimate is not an invoice: custom and local models, unknown model
-prices, and providers that do not report usage are shown as unavailable.
+compatibility, and notes. Most changes are applied immediately.
 
 URLs opened from terminal output are restricted to `http://` and `https://`.
 Links using other schemes are not passed to desktop URL handlers.

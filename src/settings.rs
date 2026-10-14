@@ -113,21 +113,6 @@ fn build_defaults() -> Value {
         "notes_file": "",
         "notes_dir": home,
         "editor_command": editor,
-        "ai_provider": "",
-        "ai_models": {
-            "openai": "", "claude": "", "gemini": "",
-            "deepseek": "", "ollama": "", "custom": "",
-        },
-        "ai_urls": {
-            "ollama": "http://localhost:11434/v1/chat/completions",
-            "custom": "",
-        },
-        "ai_keys": {
-            "openai": "", "claude": "", "gemini": "",
-            "deepseek": "", "ollama": "", "custom": "",
-        },
-        "ai_last_provider": "",
-        "ai_system_prompts": {},
         "snippets": {},
         "osc133": false,
         "enable_transparency": false,
@@ -851,17 +836,10 @@ impl Settings {
                     if map.len() > 100 {
                         return false;
                     }
-                    // System prompts are free-form text and routinely exceed
-                    // the 4 KiB cap that suits keys, models and URLs.
-                    let max_value = if key == "ai_system_prompts" {
-                        32_768
-                    } else {
-                        4096
-                    };
                     return map.iter().all(|(k, v)| {
                         k.chars().count() <= 100
                             && v.is_string()
-                            && v.as_str().unwrap().chars().count() <= max_value
+                            && v.as_str().unwrap().chars().count() <= 4096
                     });
                 }
                 false

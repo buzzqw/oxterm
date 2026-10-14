@@ -97,6 +97,17 @@ impl BrokerHandle {
         let _ = control_request(&self.path, &format!("LOCAL_OFF {}", self.id));
     }
 
+    /// Whether the broker still forwards child output to its local GUI
+    /// endpoint. `false` means the session was detached or moved away, so its
+    /// tab no longer receives output even though the shell keeps running.
+    pub fn local_is_on(&self) -> bool {
+        match query_request(&self.path, &format!("INFO {}", self.id)) {
+            Ok(line) => line.split('\t').nth(4) != Some("local-off"),
+            // Unknown state: assume the local view is still live.
+            Err(_) => true,
+        }
+    }
+
     pub fn local_on(&self) {
         let _ = control_request(&self.path, &format!("LOCAL_ON {}", self.id));
     }
@@ -120,6 +131,7 @@ impl BrokerHandle {
 pub enum CliMode {
     List,
     Attach(Option<String>),
+    Move(Option<String>),
     Info(String),
     Detach(String),
     Broker(PathBuf, String),
@@ -157,6 +169,17 @@ pub fn parse_cli_mode(args: &[String]) -> Option<Result<CliMode, String>> {
                 Some(Err("invalid session ID".to_string()))
             } else {
                 Some(Ok(CliMode::Attach(Some(args[2].clone()))))
+            }
+        }
+        "-M" | "--move" => {
+            if args.len() > 3 {
+                Some(Err("usage: oxterm -M [SESSION_ID]".to_string()))
+            } else if args.len() == 2 {
+                Some(Ok(CliMode::Move(None)))
+            } else if invalid_id(&args[2]) {
+                Some(Err("invalid session ID".to_string()))
+            } else {
+                Some(Ok(CliMode::Move(Some(args[2].clone()))))
             }
         }
         "--info" | "--detach" => {
@@ -392,7 +415,7 @@ pub fn run_cli(mode: CliMode) -> i32 {
         }
         CliMode::Attach(session_id) => match choose_session(session_id) {
             Ok(id) => match find_socket(&id) {
-                Ok(path) => relay_terminal(&path, &id),
+                Ok(path) => relay_terminal(&path, &id, "oxterm attach", false),
                 Err(error) => {
                     eprintln!("oxterm attach: {}", error);
                     1
@@ -400,6 +423,19 @@ pub fn run_cli(mode: CliMode) -> i32 {
             },
             Err(error) => {
                 eprintln!("oxterm attach: {}", error);
+                1
+            }
+        },
+        CliMode::Move(session_id) => match choose_session(session_id) {
+            Ok(id) => match find_socket(&id) {
+                Ok(path) => relay_terminal(&path, &id, "oxterm move", true),
+                Err(error) => {
+                    eprintln!("oxterm move: {}", error);
+                    1
+                }
+            },
+            Err(error) => {
+                eprintln!("oxterm move: {}", error);
                 1
             }
         },
@@ -590,41 +626,81 @@ pub fn read_frame(stream: &mut impl Read) -> Result<Vec<u8>, String> {
     Ok(payload)
 }
 
-fn relay_terminal(path: &Path, session_id: &str) -> i32 {
+fn relay_terminal(path: &Path, session_id: &str, label: &str, move_first: bool) -> i32 {
+    let stdin_fd = libc::STDIN_FILENO;
+    let stdout_fd = libc::STDOUT_FILENO;
+    // Validate the terminal before touching broker state: `move` disables the
+    // local GUI view, and a relay that cannot start would leave the session
+    // with no visible endpoint.
+    let mut original = std::mem::MaybeUninit::<libc::termios>::uninit();
+    if unsafe { libc::tcgetattr(stdin_fd, original.as_mut_ptr()) } != 0 {
+        eprintln!("{}: stdin is not a terminal", label);
+        return 1;
+    }
+    let original = unsafe { original.assume_init() };
+
     let mut stream = match UnixStream::connect(path) {
         Ok(stream) => stream,
         Err(error) => {
-            eprintln!("could not connect to broker: {}", error);
+            eprintln!("{}: could not connect to broker: {}", label, error);
             return 1;
         }
     };
+    let restore_local = || {
+        // Best-effort: a failed move must not leave the session detached with
+        // no view anywhere. This uses a fresh control connection, which is
+        // always legal whether or not the relay already attached.
+        let _ = control_request(path, &format!("LOCAL_ON {}", session_id));
+    };
+    if move_first {
+        if let Err(error) = write_frame(&mut stream, format!("MOVE {}", session_id).as_bytes()) {
+            eprintln!("{}: {}", label, error);
+            return 1;
+        }
+        match read_frame(&mut stream) {
+            Ok(response) if response == b"OK\nMOVE" => {}
+            Ok(response) => {
+                eprintln!("{}: {}", label, String::from_utf8_lossy(&response));
+                return 1;
+            }
+            Err(error) => {
+                eprintln!("{}: {}", label, error);
+                restore_local();
+                return 1;
+            }
+        }
+    }
     if let Err(error) = write_frame(&mut stream, format!("ATTACH {}", session_id).as_bytes()) {
-        eprintln!("oxterm attach: {}", error);
+        eprintln!("{}: {}", label, error);
+        if move_first {
+            restore_local();
+        }
         return 1;
     }
     match read_frame(&mut stream) {
         Ok(response) if response == b"OK\nATTACH" => {}
         Ok(response) => {
-            eprintln!("oxterm attach: {}", String::from_utf8_lossy(&response));
+            eprintln!("{}: {}", label, String::from_utf8_lossy(&response));
+            if move_first {
+                restore_local();
+            }
             return 1;
         }
         Err(error) => {
-            eprintln!("oxterm attach: {}", error);
+            eprintln!("{}: {}", label, error);
+            if move_first {
+                restore_local();
+            }
             return 1;
         }
     }
 
-    let stdin_fd = libc::STDIN_FILENO;
-    let stdout_fd = libc::STDOUT_FILENO;
-    let mut original = std::mem::MaybeUninit::<libc::termios>::uninit();
-    if unsafe { libc::tcgetattr(stdin_fd, original.as_mut_ptr()) } != 0 {
-        eprintln!("oxterm attach: stdin is not a terminal");
-        return 1;
-    }
-    let original = unsafe { original.assume_init() };
     let mut raw = original;
     unsafe { libc::cfmakeraw(&mut raw) };
     if unsafe { libc::tcsetattr(stdin_fd, libc::TCSANOW, &raw) } != 0 {
+        if move_first {
+            restore_local();
+        }
         return 1;
     }
     let _ = stream.set_nonblocking(true);
@@ -1242,6 +1318,20 @@ fn read_client(index: usize, clients: &mut [Client], state: &mut BrokerState) ->
     true
 }
 
+/// Release every attached remote client: drop pending output so a later
+/// reattach cannot replay stale frames, then tell the relay to leave.
+fn detach_attached_clients(clients: &mut [Client]) {
+    for client in clients.iter_mut() {
+        if client.attached {
+            client.attached = false;
+            client.output.clear();
+            client.output_offset = 0;
+            client.output_pending = 0;
+            let _ = client.queue(&[FRAME_DETACH]);
+        }
+    }
+}
+
 fn handle_command(
     index: usize,
     clients: &mut [Client],
@@ -1276,6 +1366,7 @@ fn handle_command(
         "LIST"
             | "INFO"
             | "ATTACH"
+            | "MOVE"
             | "DETACH"
             | "RENAME"
             | "LOCAL_ON"
@@ -1316,17 +1407,17 @@ fn handle_command(
             clients[index].queue(b"OK\nATTACH")
         }
         "DETACH" => {
-            for client in clients.iter_mut() {
-                if client.attached {
-                    // Discard pending terminal output before notifying the relay.
-                    client.attached = false;
-                    client.output.clear();
-                    client.output_offset = 0;
-                    client.output_pending = 0;
-                    let _ = client.queue(&[FRAME_DETACH]);
-                }
-            }
+            detach_attached_clients(clients);
             clients[index].queue(b"OK\nDETACH")
+        }
+        "MOVE" => {
+            // Move detaches every remote controller and turns off the local
+            // GUI view, so the session is visible only in the relay that
+            // issues this command. The GUI can bring it back later with
+            // LOCAL_ON (Ctrl+B, then s/w).
+            state.local_on = false;
+            detach_attached_clients(clients);
+            clients[index].queue(b"OK\nMOVE")
         }
         "RENAME" => {
             state.name = field(parts.next().unwrap_or(""));
@@ -1604,6 +1695,12 @@ mod tests {
         assert!(
             matches!(parse_cli_mode(&args), Some(Ok(CliMode::Attach(Some(id)))) if id == "1234-2")
         );
+        let args = vec!["oxterm".into(), "-M".into(), "1234-2".into()];
+        assert!(
+            matches!(parse_cli_mode(&args), Some(Ok(CliMode::Move(Some(id)))) if id == "1234-2")
+        );
+        let args = vec!["oxterm".into(), "--move".into()];
+        assert!(matches!(parse_cli_mode(&args), Some(Ok(CliMode::Move(None)))));
         let args = vec!["oxterm".into(), "--info".into(), "1234-2".into()];
         assert!(matches!(parse_cli_mode(&args), Some(Ok(CliMode::Info(id))) if id == "1234-2"));
         let args = vec!["oxterm".into(), "--detach".into(), "1234-2".into()];
@@ -1653,6 +1750,10 @@ mod tests {
         let args = vec!["oxterm".into(), "--list".into(), "extra".into()];
         assert!(parse_cli_mode(&args).unwrap().is_err());
         let args = vec!["oxterm".into(), "--attach".into(), "bad id".into()];
+        assert!(parse_cli_mode(&args).unwrap().is_err());
+        let args = vec!["oxterm".into(), "--move".into(), "bad id".into()];
+        assert!(parse_cli_mode(&args).unwrap().is_err());
+        let args = vec!["oxterm".into(), "--move".into(), "a".into(), "b".into()];
         assert!(parse_cli_mode(&args).unwrap().is_err());
     }
 
@@ -1709,6 +1810,61 @@ mod tests {
         };
         assert!(client.queue(&vec![0; MAX_PENDING - 4]));
         assert!(!client.queue(b"overflow"));
+    }
+
+    #[test]
+    fn move_command_detaches_clients_and_disables_local_view() {
+        let (command_stream, _command_peer) = UnixStream::pair().unwrap();
+        let (attached_stream, _attached_peer) = UnixStream::pair().unwrap();
+        let mut clients = vec![
+            Client {
+                stream: command_stream,
+                attached: false,
+                input: Vec::new(),
+                output: VecDeque::new(),
+                output_offset: 0,
+                output_pending: 0,
+            },
+            Client {
+                stream: attached_stream,
+                attached: true,
+                input: Vec::new(),
+                output: VecDeque::new(),
+                output_offset: 0,
+                output_pending: 0,
+            },
+        ];
+        let mut state = BrokerState {
+            id: "test".to_string(),
+            name: String::new(),
+            title: String::new(),
+            cwd: String::new(),
+            last_command: String::new(),
+            command_running: false,
+            local_on: true,
+            gui_closed: false,
+            child_closed: false,
+            child_pid: 0,
+            interactive_shell: true,
+            kill_requested: false,
+            child_input: VecDeque::new(),
+            child_input_offset: 0,
+            child_input_pending: 0,
+        };
+
+        assert!(handle_command(0, &mut clients, &mut state, b"MOVE test"));
+
+        assert!(!state.local_on);
+        assert!(!clients[1].attached);
+        // The previous remote client is notified with a FRAME_DETACH frame.
+        assert!(clients[1].output.iter().any(|frame| {
+            frame.len() == 5 && frame[4] == FRAME_DETACH
+        }));
+        // The caller gets OK\nMOVE back.
+        assert!(clients[0]
+            .output
+            .iter()
+            .any(|frame| frame.ends_with(b"OK\nMOVE")));
     }
 
     #[test]

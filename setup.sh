@@ -29,7 +29,7 @@ install -Dm644 "${ROOT_DIR}/packaging/oxterm.svg" "${icon_dir}/oxterm.svg"
 cat > "${desktop_dir}/oxterm.desktop" <<EOF
 [Desktop Entry]
 Name=Oxterm Terminal
-Comment=GTK3/VTE terminal emulator with AI, history and notes
+Comment=GTK3/VTE terminal emulator with history and notes
 Exec="${PREFIX}/bin/oxterm" %f
 Icon=oxterm
 Terminal=false

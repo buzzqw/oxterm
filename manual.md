@@ -7,13 +7,12 @@
 3. [Tabs, windows, and splits](#tabs-windows-and-splits)
 4. [Built-in commands](#built-in-commands)
 5. [History](#history)
-6. [AI chat](#ai-chat)
-7. [Notes](#notes)
-8. [Preferences](#preferences)
-9. [Shell integration](#shell-integration)
-10. [Keyboard shortcuts](#keyboard-shortcuts)
-11. [Configuration files](#configuration-files)
-12. [Troubleshooting](#troubleshooting)
+6. [Notes](#notes)
+7. [Preferences](#preferences)
+8. [Shell integration](#shell-integration)
+9. [Keyboard shortcuts](#keyboard-shortcuts)
+10. [Configuration files](#configuration-files)
+11. [Troubleshooting](#troubleshooting)
 
 ## Starting Oxterm
 
@@ -118,6 +117,13 @@ With one active terminal, `oxterm -a` attaches immediately. With multiple active
 terminals it displays a numbered chooser. Use `oxterm -a SESSION_ID` to bypass
 the chooser.
 
+`oxterm -M [SESSION_ID]` (or `--move`) works like `-a` but takes control instead
+of sharing: it detaches every remote controller and turns off the local GUI view,
+so the chosen session is displayed only in the terminal that ran the command.
+Use it to hand a session over from one SSH shell to another. In the original
+Oxterm window, `Ctrl+B`, then `s` or `w` and selecting the terminal brings it
+back.
+
 Use `/session name NAME` in a live terminal to assign a readable name. Use
 `oxterm --detach SESSION_ID` from another SSH shell to detach all remote clients
 without stopping the broker. `Ctrl+B`, then `d` turns local forwarding off;
@@ -126,11 +132,11 @@ without stopping the broker. `Ctrl+B`, then `d` turns local forwarding off;
 The broker socket uses a `0700` directory and `0600` socket under
 `~/.config/oxterm/remote/`. The internal `oxterm --broker SOCKET SESSION_ID` mode
 owns the child PTY and accepts length-prefixed Unix-socket frames for
-`LIST`, `INFO`, `ATTACH`, `DETACH`, `RENAME`, `COMMAND`, `LOCAL_ON`, `LOCAL_OFF`,
-and `KILL`. The GUI PTY is a separate endpoint, allowing its local forwarding
-to be disabled without releasing the shell session. A reconnect receives output
-from that point onward; Oxterm does not persist or replay terminal scrollback.
-When the shell exits, the broker removes the session socket.
+`LIST`, `INFO`, `ATTACH`, `MOVE`, `DETACH`, `RENAME`, `COMMAND`, `LOCAL_ON`,
+`LOCAL_OFF`, and `KILL`. The GUI PTY is a separate endpoint, allowing its local
+forwarding to be disabled without releasing the shell session. A reconnect
+receives output from that point onward; Oxterm does not persist or replay
+terminal scrollback. When the shell exits, the broker removes the session socket.
 
 The listing columns are `ID`, `NAME`, `TITLE`, `DIRECTORY`, `STATUS`,
 `APPLICATION`, and `APP_STATUS`. The application column contains the latest
@@ -230,86 +236,6 @@ duration and the current Git branch when the working directory is a repository.
 Results are numbered. Press `Alt+1` through `Alt+9` to replay a result, or use
 the interactive picker to fill or execute it.
 
-### `/ai`
-
-Starts AI chat with the configured provider:
-
-```text
-/ai
-/ai on
-/ai context 30 why did the command fail?
-/ai off
-```
-
-For a single question without entering AI chat mode, prefix the prompt with `?`
-or `#`:
-
-```text
-? how do I add two numbers in bash?
-# explain this error
-```
-
-Oxterm sends the question to the configured provider, displays the answer, and
-returns to the normal shell prompt. The prefixes are only recognised at the shell
-prompt; lines typed into a running program are always passed to that program. The `?` prefix is recommended; `!` and
-quoted text are left to the shell because their meaning varies between shells.
-Questions and answers sent during the session remain in the AI conversation
-context, so a later question can refer to an earlier answer.
-
-At the end of a completed response, Oxterm prints an AI usage summary with input,
-output, and total tokens. When the provider reports usage and the model has a
-known price, the summary also includes an estimated cost in USD. The estimate is
-not an invoice and does not include provider-specific discounts, taxes, account
-credits, or prices that Oxterm does not know.
-
-`/ai context N` includes the last N visible terminal lines in the request after
-basic secret redaction. The resulting context is sent to the configured
-provider, so do not use it with sensitive output that must remain local. Use
-`Ctrl+C` to cancel an in-progress response.
-
-### Usage and estimated cost
-
-Usage comes from the provider's streaming metadata. If usage is missing, or if
-the provider/model is not in Oxterm's price table, token counts or cost are
-reported as unavailable rather than being guessed. Ollama and custom endpoints
-normally do not have a monetary estimate.
-
-The built-in USD rates are per one million tokens:
-
-| Provider/model | Input | Output |
-| --- | ---: | ---: |
-| OpenAI `gpt-4o` | $2.50 | $10.00 |
-| OpenAI `gpt-4o-mini` | $0.15 | $0.60 |
-| Claude Sonnet 4 | $3.00 | $15.00 |
-| Claude Haiku 4 | $1.00 | $5.00 |
-| Gemini 2.5 Flash | $0.30 | $2.50 |
-| DeepSeek Chat | $0.28 | $0.42 |
-
-The estimate is calculated as:
-
-```text
-(input tokens * input rate + output tokens * output rate) / 1,000,000
-```
-
-Provider prices can change, so the displayed amount should be treated as an
-approximation. Cached, reasoning, tool, subscription, and regional pricing may
-not be represented by the basic estimate.
-
-### `/ai explain` and `/ai repair`
-
-These commands use the latest failed command in the current directory, its exit
-code, duration, Git branch, and recent redacted terminal output:
-
-```text
-/ai explain
-/ai repair
-/ai repair the failure only happens in CI
-```
-
-`/ai explain` focuses on the likely cause and next checks. `/ai repair` asks for
-the smallest safe fix and displays commands for review; Oxterm never executes the
-suggested repair automatically.
-
 ### `/session`
 
 Named sessions are saved from the **File > Sessions** menu. Export one for
@@ -344,23 +270,6 @@ use `{1}` through `{9}`; `{*}` expands to all arguments:
 
 Expansion fills the shell prompt but does not press Enter, so the command can be
 reviewed or edited before execution.
-
-### `/connect`
-
-Selects and tests an AI provider:
-
-```text
-/connect
-/connect ollama
-/connect openai
-```
-
-With no provider, Oxterm displays configured providers and their availability.
-When a provider has no model in Preferences, Oxterm queries it using the API key
-and asks you to choose one of the models returned by that provider. The same
-model selection happens when starting the first chat with `/ai on`; no model
-needs to be entered manually. If a model is already configured in Preferences,
-that model is used directly.
 
 ### `/wnotes` and `/onotes`
 
@@ -415,29 +324,6 @@ The `Tab` key can open the history picker when shell completion does not change
 the current input. Selecting a result fills the command line without executing
 it immediately.
 
-## AI Chat
-
-Configure AI providers under **Edit > Preferences > AI**. Supported providers:
-
-| Provider | API key | Typical use |
-| --- | --- | --- |
-| OpenAI | Required | Cloud chat and coding assistance |
-| Anthropic Claude | Required | Cloud chat and analysis |
-| Google Gemini | Required | Cloud chat and analysis |
-| DeepSeek | Required | Cloud chat and coding assistance |
-| Ollama | Not required | Local models |
-| Custom | Optional | OpenAI-compatible servers |
-
-Each provider can have its own model, endpoint, and system prompt. Cloud API
-keys are used to retrieve the provider's available models and are stored in
-`~/.config/oxterm/settings.json`; protect the file and do not share it. Custom
-endpoints must use HTTPS, except for local HTTP services on
-`localhost`, `127.0.0.1`, or `::1`.
-
-For Ollama, start the local server before connecting. Custom endpoints should
-provide an OpenAI-compatible chat API; local servers such as llama.cpp, vLLM,
-and LM Studio are common examples.
-
 ## Notes
 
 Notes are Markdown files with timestamped entries. Configure their location in
@@ -485,11 +371,6 @@ Custom** to persist the current palette.
 Configure Backspace and Delete bindings, terminal encoding, and OSC 133 shell
 integration. Supported encodings include UTF-8, ISO-8859 variants, UTF-16
 variants, CP1252, CP850, ASCII, KOI8-R, Shift_JIS, EUC-JP, and GBK.
-
-### AI
-
-Enter provider keys, models, endpoints, and system prompts. Ollama and custom
-providers can be used without a cloud API key.
 
 ### Notes
 
@@ -553,7 +434,7 @@ remote tmux detaches instead of the local terminal.
 | `Ctrl+U` | Kill line; clear history filter while its picker is open |
 | `Ctrl+W` | Kill word; remove last history filter term while its picker is open |
 | `Ctrl+L` | Clear screen |
-| `Ctrl+C` | Interrupt or cancel AI/history mode |
+| `Ctrl+C` | Interrupt or cancel history mode |
 | `Ctrl+D` | EOF; closes an empty shell tab on exit |
 | `Ctrl+PageUp` / `Ctrl+PageDown` | Previous / next tab |
 | `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` | Move tab |
@@ -620,11 +501,6 @@ cargo test --test remote_broker -- --nocapture
 
 Open Preferences and reapply the desired scheme or encoding. Encoding can also
 be changed for the active tab from **Terminal > Set Encoding**.
-
-### AI does not respond
-
-Check the provider key, model, endpoint, and network connection. For Ollama,
-verify that its service is running and that at least one model is installed.
 
 ### Shell integration is not visible
 
