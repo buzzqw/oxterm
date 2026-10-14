@@ -6,11 +6,18 @@
 #   2. Generate release notes from commits after the last tag.
 #   3. Update Cargo.toml, create a release commit and annotated tag.
 #   4. Push the branch and tag, then create the GitHub release.
+#   5. Build and install the local binary the user launches (skip with --no-install).
 #
 # Usage:
 #   ./versiona.sh --dry-run
 #   ./versiona.sh                 # bump the patch component
 #   ./versiona.sh 1.2.0           # release an explicit version
+#   ./versiona.sh --no-install    # release without updating the local binary
+#
+# The local binary is installed in the same place used by the desktop launcher
+# (see install.sh): /usr/bin/oxterm when it is writable or sudo is available,
+# otherwise ${HOME}/.local/bin/oxterm. The documented root copy
+# (oxterm-linux-x86-64, see build.sh) is refreshed as well.
 
 set -euo pipefail
 
@@ -28,12 +35,14 @@ err() { printf '%b\n' "${RED}Error:${RESET} $*" >&2; exit 1; }
 separator() { printf '%b\n' "${BOLD}----------------------------------------------${RESET}"; }
 
 DRY_RUN=false
+SKIP_INSTALL=false
 REQUESTED_VERSION=""
 for arg in "$@"; do
     case "$arg" in
         --dry-run) DRY_RUN=true ;;
+        --no-install) SKIP_INSTALL=true ;;
         -h|--help)
-            sed -n '1,16p' "$0"
+            sed -n '1,22p' "$0"
             exit 0
             ;;
         v*) REQUESTED_VERSION="${arg#v}" ;;
@@ -175,3 +184,36 @@ gh release create "$TAG_VERSION" \
     --notes-file "$NOTES_FILE"
 
 ok "Oxterm ${VERSION} released as ${TAG_VERSION}."
+
+install_local_binary() {
+    info "Building the local release binary..."
+    cargo build --release --locked
+
+    local built="${REPO_ROOT}/target/release/oxterm"
+    if [[ ! -x "$built" ]]; then
+        warn "Build did not produce ${built}; skipping local install."
+        return 0
+    fi
+
+    # Keep the documented root copy in sync (see build.sh).
+    install -m 0755 "$built" "${REPO_ROOT}/oxterm-linux-x86-64"
+
+    local system_bin="/usr/bin/oxterm"
+    if [[ -w "$(dirname "$system_bin")" ]]; then
+        install -m 0755 "$built" "$system_bin"
+        ok "Installed ${system_bin}; the desktop launcher now uses ${VERSION}."
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo install -m 0755 "$built" "$system_bin"
+        ok "Installed ${system_bin}; the desktop launcher now uses ${VERSION}."
+    else
+        local user_bin="${HOME}/.local/bin/oxterm"
+        install -Dm755 "$built" "$user_bin"
+        ok "Installed ${user_bin}; make sure it is on your PATH."
+    fi
+}
+
+if [[ "$SKIP_INSTALL" == true ]]; then
+    info "Skipping local binary install (--no-install)."
+else
+    install_local_binary
+fi
