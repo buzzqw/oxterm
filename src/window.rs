@@ -1741,7 +1741,7 @@ impl MainWindow {
         }
         let content_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         content_row.pack_start(&paned, true, true, 0);
-        content_row.pack_start(&notes_panel.root, false, false, 0);
+        content_row.pack_start(&notes_panel.root, false, true, 0);
         vbox.pack_start(&content_row, true, true, 0);
         *self.imp().notes_panel.borrow_mut() = Some(notes_panel);
         vbox.pack_end(&stats_box, false, false, 0);
@@ -3937,7 +3937,12 @@ impl MainWindow {
     fn set_notes_panel_visible(&self, visible: bool) {
         if let Some(panel) = self.imp().notes_panel.borrow().as_ref() {
             if visible {
+                // The panel carries `no_show_all` so the window's own
+                // `show_all()` keeps it hidden; clear it just long enough to
+                // show the panel and its children, then restore it.
+                panel.root.set_no_show_all(false);
                 panel.root.show_all();
+                panel.root.set_no_show_all(true);
             } else {
                 panel.root.hide();
             }
