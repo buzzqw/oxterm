@@ -358,6 +358,24 @@ fn broker_round_trips_control_and_terminal_traffic() -> io::Result<()> {
     let output = read_frame(&mut second)?;
     assert_eq!(&output[1..], b"local-again");
 
+    // A client that attaches later repaints from the recorded output instead
+    // of receiving a blank screen.
+    let mut third = UnixStream::connect(&fixture.socket)?;
+    third.set_read_timeout(Some(Duration::from_secs(2)))?;
+    write_frame(&mut third, b"ATTACH test-session")?;
+    assert_eq!(read_frame(&mut third)?, b"OK\nATTACH");
+    let replay = read_frame(&mut third)?;
+    assert_eq!(replay.first(), Some(&FRAME_OUTPUT));
+    let replay = String::from_utf8_lossy(&replay[1..]);
+    assert!(
+        replay.contains("broadcast"),
+        "replay missing broadcast: {replay}"
+    );
+    assert!(
+        replay.contains("local-again"),
+        "replay missing local-again: {replay}"
+    );
+
     write_frame(&mut first, &[FRAME_DETACH])?;
     assert_eq!(read_frame(&mut first)?, b"OK\nDETACH");
     assert_eq!(

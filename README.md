@@ -155,13 +155,30 @@ oxterm [DIRECTORY] [OPTIONS] [-e CMD...]
   -e, --execute CMD...         Run CMD instead of the configured shell
       --list                   List active Oxterm terminals
       --info SESSION_ID        Show one active terminal
-  -a, --attach [SESSION_ID]    Attach to one or choose an Oxterm terminal
-  -M, --move [SESSION_ID]      Move one to this terminal (detaches its other views)
-      --detach SESSION_ID     Detach its remote controller
-      --broker SOCKET ID      Run the persistent PTY broker (internal)
-      --                      Treat the next argument as the directory
+      --broker SOCKET ID       Run the persistent PTY broker (internal)
+      --                       Treat the next argument as the directory
   -V, --version                Show the Oxterm version
-  -h, --help                   Print help
+  -h, --help                   Show this help
+
+Remote sessions (SESSION_ID is the first column printed by --list):
+  -a, --attach [SESSION_ID]    Share a live session in this terminal
+  -M, --move [SESSION_ID]      Take a live session over in this terminal
+      --detach SESSION_ID      Disconnect every remote client of a session
+
+  These headless commands act on a running Oxterm terminal on the same host and
+  open no window, so they are safe to use over SSH. Without a SESSION_ID, -a and
+  -M use the only session or show a list to choose from.
+
+  attach  Adds this terminal as another view of the session, repainting its
+          current screen. The shell keeps running and its original window stays
+          live; every view shares the same input and output.
+
+  move    Like attach but takes control: it disconnects every other remote client
+          and switches off the original window's view, so the session is shown
+          only here. In that window, Ctrl+B then s or w brings the view back.
+
+  detach  Releases every remote client (attach or move) without stopping the
+          shell, leaving the original window as the only view again.
 ```
 
 Examples:
@@ -182,7 +199,7 @@ oxterm --config ~/demo-settings.json     # throwaway configuration
 oxterm --execute git status
 oxterm --list                             # list terminals on this host
 oxterm --info 12345-2                      # inspect one terminal
-oxterm -a                                  # attach automatically or choose one
+oxterm -a                                  # choose from the active terminals
 oxterm -a 12345-2                          # attach to one terminal
 oxterm -M                                  # move one here (detaches its other views)
 oxterm -M 12345-2                          # move one terminal here
@@ -202,7 +219,9 @@ Without an explicit directory, Oxterm starts in the current working directory.
 `oxterm --list`, `oxterm -a [SESSION_ID]` and `oxterm -M [SESSION_ID]` are
 headless commands. They do not open a GTK window: they inspect, attach to, or
 move the live broker session of a running Oxterm terminal on the same host.
-This makes them suitable for use through SSH. Broker sockets are private
+Attaching repaints the session by replaying its most recent output, so the
+current screen appears instead of an empty one. This makes them suitable for use
+through SSH. Broker sockets are private
 (`0700` directory, `0600` socket) and the broker process owns the child PTY, so
 an unexpected GUI crash does not terminate the shell. An intentional GUI close
 still terminates its tabs through the normal cleanup path. Multiple `-a`
@@ -219,9 +238,11 @@ is not normally invoked manually. Its framed Unix-socket protocol supports
 `LIST`, `INFO`, `ATTACH`, `MOVE`, `DETACH`, `RENAME`, `COMMAND`, `LOCAL_ON`,
 `LOCAL_OFF`, `KILL`, `IS_SSH`, `ECHO`, and `IS_ACTIVE`. Attached clients exchange
 length-prefixed frames containing terminal input/output, and can detach without
-stopping the broker. Reconnecting does not
-replay output produced before the new client attached; it receives subsequent
-terminal output only. The broker removes its socket after the shell exits.
+stopping the broker. On attach the broker replays the most recent child output
+(bounded to a fixed size) so the program's screen is repainted instead of
+appearing blank, then nudges the foreground program to redraw. A reconnect still
+cannot recover output older than that replay window. The broker removes its
+socket after the shell exits.
 
 The listing columns are `ID`, `NAME`, `TITLE`, `DIRECTORY`, `STATUS`,
 `APPLICATION`, and `APP_STATUS`. `APP_STATUS` is `running` while the command is

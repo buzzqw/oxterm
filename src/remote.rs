@@ -15,6 +15,12 @@ const GUI_FD: RawFd = 4;
 const MAX_FRAME: usize = 1024 * 1024;
 const MAX_PENDING: usize = 4 * 1024 * 1024;
 const MAX_CLIENTS: usize = 32;
+/// Child output kept for repainting a freshly attached client. It holds the
+/// most recent bytes, not a terminal screen model: replaying them from a
+/// clean screen reproduces what a full-screen program drew. The cap keeps the
+/// broker's memory bounded while staying far above one screen's worth of
+/// output, so an idle program's last full frame is always retained.
+const MAX_REPLAY: usize = 256 * 1024;
 
 /// Last winsize applied to the child PTY, packed as `(columns << 32) | rows`.
 /// `set_child_size` becomes a no-op when the size is unchanged so that the
@@ -517,55 +523,59 @@ fn choose_session(requested: Option<String>) -> Result<String, String> {
         return Ok(id);
     }
     let sessions = list_sessions();
-    match sessions.len() {
-        0 => Err("no active Oxterm terminals".to_string()),
-        1 => sessions[0]
-            .split('\t')
-            .next()
-            .map(str::to_string)
-            .ok_or_else(|| "invalid Oxterm session listing".to_string()),
-        _ => {
-            println!("Active Oxterm terminals:");
-            for (index, session) in sessions.iter().enumerate() {
-                let fields: Vec<&str> = session.split('\t').collect();
-                println!(
-                    "  {:>2}) {}  {}  {}  {} [{}]  |  {} [{}]",
-                    index + 1,
-                    fields.first().copied().unwrap_or(""),
-                    fields
-                        .get(1)
-                        .filter(|v| !v.is_empty())
-                        .copied()
-                        .unwrap_or("-"),
-                    fields.get(2).copied().unwrap_or(""),
-                    fields.get(3).copied().unwrap_or(""),
-                    fields.get(4).copied().unwrap_or(""),
-                    fields.get(5).copied().unwrap_or(""),
-                    fields.get(6).copied().unwrap_or("")
-                );
-            }
-            print!("Select terminal [1-{}]: ", sessions.len());
-            io::stdout()
-                .flush()
-                .map_err(|e| format!("could not display selection prompt: {}", e))?;
-            let mut answer = String::new();
-            io::stdin()
-                .read_line(&mut answer)
-                .map_err(|e| format!("could not read terminal selection: {}", e))?;
-            let selected = answer
-                .trim()
-                .parse::<usize>()
-                .map_err(|_| "invalid terminal selection".to_string())?;
-            if !(1..=sessions.len()).contains(&selected) {
-                return Err("terminal selection is out of range".to_string());
-            }
-            sessions[selected - 1]
-                .split('\t')
-                .next()
-                .map(str::to_string)
-                .ok_or_else(|| "invalid Oxterm session listing".to_string())
-        }
+    if sessions.is_empty() {
+        return Err("no active Oxterm terminals".to_string());
     }
+    // Attach and move never pick silently: always show the list and let the
+    // user choose, even when only one terminal is running.
+    println!("Active Oxterm terminals:");
+    for (index, session) in sessions.iter().enumerate() {
+        let fields: Vec<&str> = session.split('\t').collect();
+        println!(
+            "  {:>2}) {}  {}  {}  {} [{}]  |  {} [{}]",
+            index + 1,
+            fields.first().copied().unwrap_or(""),
+            fields
+                .get(1)
+                .filter(|v| !v.is_empty())
+                .copied()
+                .unwrap_or("-"),
+            fields.get(2).copied().unwrap_or(""),
+            fields.get(3).copied().unwrap_or(""),
+            fields.get(4).copied().unwrap_or(""),
+            fields.get(5).copied().unwrap_or(""),
+            fields.get(6).copied().unwrap_or("")
+        );
+    }
+    let only = (sessions.len() == 1).then_some(" [Enter]");
+    print!(
+        "Select terminal [1-{}]{}: ",
+        sessions.len(),
+        only.unwrap_or("")
+    );
+    io::stdout()
+        .flush()
+        .map_err(|e| format!("could not display selection prompt: {}", e))?;
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .map_err(|e| format!("could not read terminal selection: {}", e))?;
+    let answer = answer.trim();
+    let selected = if answer.is_empty() && sessions.len() == 1 {
+        1
+    } else {
+        answer
+            .parse::<usize>()
+            .map_err(|_| "invalid terminal selection".to_string())?
+    };
+    if !(1..=sessions.len()).contains(&selected) {
+        return Err("terminal selection is out of range".to_string());
+    }
+    sessions[selected - 1]
+        .split('\t')
+        .next()
+        .map(str::to_string)
+        .ok_or_else(|| "invalid Oxterm session listing".to_string())
 }
 
 fn control_request(path: &Path, command: &str) -> Result<String, String> {
@@ -1028,6 +1038,7 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         child_input: VecDeque::new(),
         child_input_offset: 0,
         child_input_pending: 0,
+        replay: VecDeque::new(),
     };
     let mut clients: Vec<Client> = Vec::new();
     let mut gui_output = VecDeque::new();
@@ -1137,6 +1148,7 @@ fn run_broker(path: &Path, id: &str) -> i32 {
                         state.local_on,
                         &bytes[..count as usize],
                     );
+                    record_replay(&mut state.replay, &bytes[..count as usize]);
                 } else if count == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EIO)
                 {
                     state.child_closed = true;
@@ -1247,6 +1259,9 @@ struct BrokerState {
     child_input: VecDeque<Vec<u8>>,
     child_input_offset: usize,
     child_input_pending: usize,
+    /// Most recent child output, replayed to a client when it attaches so the
+    /// screen is repainted instead of appearing blank.
+    replay: VecDeque<u8>,
 }
 
 fn bind_broker_socket(path: &Path, id: &str) -> Result<UnixListener, String> {
@@ -1399,12 +1414,20 @@ fn handle_command(
         "ECHO" => clients[index].queue(if child_echo_on() { b"OK\n1" } else { b"OK\n0" }),
         "ATTACH" => {
             clients[index].attached = true;
-            // A new client starts from an empty screen (the broker does not
-            // replay scrollback). Nudge the child with SIGWINCH so full-screen
-            // programs redraw and shells re-print their prompt, otherwise the
-            // freshly attached client looks frozen until new output arrives.
-            signal_child(state.child_pid, libc::SIGWINCH);
-            clients[index].queue(b"OK\nATTACH")
+            // A new client starts from an empty screen. First acknowledge the
+            // attach, then replay the recent child output so the program's
+            // screen reappears, and finally nudge it with SIGWINCH so
+            // full-screen programs redraw and shells re-print their prompt.
+            if !clients[index].queue(b"OK\nATTACH") {
+                return false;
+            }
+            if let Some(replay) = replay_frame(&state.replay) {
+                if !clients[index].queue(&replay) {
+                    return false;
+                }
+            }
+            nudge_child_redraw();
+            true
         }
         "DETACH" => {
             detach_attached_clients(clients);
@@ -1473,6 +1496,19 @@ fn signal_child(pid: i32, signal: i32) {
             if libc::killpg(pid, signal) != 0 {
                 libc::kill(pid, signal);
             }
+        }
+    }
+}
+
+/// Ask the child to redraw after a fresh attach without changing its size.
+/// Signalling the shell's process group (`state.child_pid`) misses a running
+/// full-screen program, which job control puts in its own foreground group, so
+/// signal the terminal's foreground group directly.
+fn nudge_child_redraw() {
+    let foreground = unsafe { libc::tcgetpgrp(CHILD_FD) };
+    if foreground > 0 {
+        unsafe {
+            libc::killpg(foreground, libc::SIGWINCH);
         }
     }
 }
@@ -1617,6 +1653,31 @@ fn sync_gui_size() {
         let size = unsafe { size.assume_init() };
         set_child_size(size.ws_col, size.ws_row);
     }
+}
+
+/// Keep the most recent child output for later repaints, discarding the
+/// oldest bytes once the cap is reached.
+fn record_replay(replay: &mut VecDeque<u8>, data: &[u8]) {
+    replay.extend(data.iter().copied());
+    let excess = replay.len().saturating_sub(MAX_REPLAY);
+    for _ in 0..excess {
+        replay.pop_front();
+    }
+}
+
+/// Build a `FRAME_OUTPUT` that repaints a client from the recorded output, or
+/// `None` when nothing has been received yet. The window may begin inside an
+/// escape sequence, so skip to the first escape byte; the full-frame redraw
+/// prompted by the attach `SIGWINCH` then clears any leftover.
+fn replay_frame(replay: &VecDeque<u8>) -> Option<Vec<u8>> {
+    if replay.is_empty() {
+        return None;
+    }
+    let start = replay.iter().position(|&byte| byte == 0x1b).unwrap_or(0);
+    let mut frame = Vec::with_capacity(replay.len() - start + 1);
+    frame.push(FRAME_OUTPUT);
+    frame.extend(replay.iter().skip(start).copied());
+    Some(frame)
 }
 
 fn broadcast_output(
@@ -1815,6 +1876,72 @@ mod tests {
         assert!(!client.queue(b"overflow"));
     }
 
+    fn test_state(replay: VecDeque<u8>) -> BrokerState {
+        BrokerState {
+            id: "test".to_string(),
+            name: String::new(),
+            title: String::new(),
+            cwd: String::new(),
+            last_command: String::new(),
+            command_running: false,
+            local_on: true,
+            gui_closed: false,
+            child_closed: false,
+            child_pid: 0,
+            interactive_shell: true,
+            kill_requested: false,
+            child_input: VecDeque::new(),
+            child_input_offset: 0,
+            child_input_pending: 0,
+            replay,
+        }
+    }
+
+    #[test]
+    fn replay_buffer_keeps_recent_output_and_starts_at_an_escape() {
+        let mut replay = VecDeque::new();
+        assert!(replay_frame(&replay).is_none());
+        record_replay(&mut replay, b"plain");
+        assert_eq!(replay_frame(&replay).unwrap(), b"\x00plain");
+
+        // A window that begins inside an escape sequence restarts at the first
+        // escape byte so the client is not fed a truncated sequence.
+        let mut replay = VecDeque::new();
+        record_replay(&mut replay, b"junk\x1b[2Jbody");
+        assert_eq!(replay_frame(&replay).unwrap(), b"\x00\x1b[2Jbody");
+
+        // Only the most recent bytes are retained.
+        let mut replay = VecDeque::new();
+        record_replay(&mut replay, &vec![b'x'; MAX_REPLAY]);
+        record_replay(&mut replay, b"tail");
+        assert_eq!(replay.len(), MAX_REPLAY);
+        let tail: Vec<u8> = replay.iter().rev().take(4).rev().copied().collect();
+        assert_eq!(tail, b"tail");
+    }
+
+    #[test]
+    fn attach_acknowledges_then_replays_the_screen() {
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let mut clients = vec![Client {
+            stream,
+            attached: false,
+            input: Vec::new(),
+            output: VecDeque::new(),
+            output_offset: 0,
+            output_pending: 0,
+        }];
+        let mut state = test_state(VecDeque::from(b"drawn".to_vec()));
+
+        assert!(handle_command(0, &mut clients, &mut state, b"ATTACH test"));
+
+        assert!(clients[0].attached);
+        let frames: Vec<&Vec<u8>> = clients[0].output.iter().collect();
+        // The relay reads the acknowledgement first, then the repaint frame.
+        assert!(frames[0].ends_with(b"OK\nATTACH"));
+        assert_eq!(&frames[1][4..5], &[FRAME_OUTPUT]);
+        assert!(frames[1].ends_with(b"drawn"));
+    }
+
     #[test]
     fn move_command_detaches_clients_and_disables_local_view() {
         let (command_stream, _command_peer) = UnixStream::pair().unwrap();
@@ -1853,6 +1980,7 @@ mod tests {
             child_input: VecDeque::new(),
             child_input_offset: 0,
             child_input_pending: 0,
+            replay: VecDeque::new(),
         };
 
         assert!(handle_command(0, &mut clients, &mut state, b"MOVE test"));
@@ -1889,6 +2017,7 @@ mod tests {
             child_input: VecDeque::new(),
             child_input_offset: 0,
             child_input_pending: 0,
+            replay: VecDeque::new(),
         };
         let mut output = VecDeque::from([b"pending".to_vec()]);
         let mut offset = 2;

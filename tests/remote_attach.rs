@@ -8,6 +8,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+const FRAME_OUTPUT: u8 = 0;
 const FRAME_INPUT: u8 = 1;
 const FRAME_DETACH: u8 = 2;
 
@@ -161,6 +162,112 @@ fn attach_forwards_input_and_detaches_cleanly() -> io::Result<()> {
     wait_for_exit(&mut child)?;
     assert_eq!(input, b"x");
 
+    unsafe { libc::close(master) };
+    let _ = std::fs::remove_file(socket);
+    Ok(())
+}
+
+#[test]
+fn attach_prints_the_replayed_screen() -> io::Result<()> {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock")
+        .as_nanos();
+    let home = dirs::home_dir().expect("home directory");
+    let remote_dir = home.join(".config/oxterm/remote");
+    std::fs::create_dir_all(&remote_dir)?;
+    let session_id = format!("attach-replay-{}-{}", std::process::id(), unique);
+    let socket = remote_dir.join(format!("oxterm-{}.sock", session_id));
+    let listener = UnixListener::bind(&socket)?;
+    let (attached_tx, attached_rx) = mpsc::channel();
+    let server_session_id = session_id.clone();
+    let server = thread::spawn(move || -> io::Result<()> {
+        let (mut stream, attach) = loop {
+            let (mut stream, _) = listener.accept()?;
+            match read_frame(&mut stream) {
+                Ok(attach) => break (stream, attach),
+                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => continue,
+                Err(error) => return Err(error),
+            }
+        };
+        assert_eq!(attach, format!("ATTACH {}", server_session_id).as_bytes());
+        write_frame(&mut stream, b"OK\nATTACH")?;
+        attached_tx.send(()).unwrap();
+        // The broker repaints a fresh client by replaying the last screen.
+        write_frame(
+            &mut stream,
+            &[FRAME_OUTPUT, b'S', b'C', b'R', b'E', b'E', b'N'],
+        )?;
+
+        let (mut query, _) = listener.accept()?;
+        let query_frame = read_frame(&mut query)?;
+        assert!(String::from_utf8_lossy(&query_frame).starts_with("IS_SSH"));
+        write_frame(&mut query, b"OK\n0")?;
+
+        loop {
+            let frame = read_frame(&mut stream)?;
+            if frame.first() == Some(&FRAME_DETACH) {
+                return Ok(());
+            }
+        }
+    });
+
+    let (master, slave) = open_pty()?;
+    let slave_for_child = slave;
+    let mut child = unsafe {
+        let mut command = Command::new(binary_path());
+        command
+            .args(["--attach", &session_id])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .pre_exec(move || {
+                if libc::dup2(slave_for_child, 0) < 0
+                    || libc::dup2(slave_for_child, 1) < 0
+                    || libc::dup2(slave_for_child, 2) < 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                libc::close(slave_for_child);
+                Ok(())
+            })
+            .spawn()?
+    };
+    unsafe { libc::close(slave) };
+
+    attached_rx
+        .recv_timeout(Duration::from_secs(2))
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "attach handshake timed out"))?;
+
+    // The replayed bytes must reach the relay's terminal unchanged.
+    let mut seen = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline && !seen.windows(6).any(|w| w == b"SCREEN") {
+        let mut poll = libc::pollfd {
+            fd: master,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut poll, 1, 50) } > 0 && poll.revents & libc::POLLIN != 0 {
+            let mut buffer = [0u8; 256];
+            let count = unsafe { libc::read(master, buffer.as_mut_ptr().cast(), buffer.len()) };
+            if count > 0 {
+                seen.extend_from_slice(&buffer[..count as usize]);
+            }
+        }
+    }
+    assert!(
+        seen.windows(6).any(|w| w == b"SCREEN"),
+        "replay did not reach the terminal: {:?}",
+        String::from_utf8_lossy(&seen)
+    );
+
+    write_fd(master, &[0x02, b'd'])?;
+    server
+        .join()
+        .map_err(|_| io::Error::other("attach server panicked"))??;
+    let _ = child.kill();
+    let _ = child.wait();
     unsafe { libc::close(master) };
     let _ = std::fs::remove_file(socket);
     Ok(())

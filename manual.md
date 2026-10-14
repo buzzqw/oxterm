@@ -107,15 +107,17 @@ oxterm -a
 directory, and the last command/application. `-a` attaches a framed client to
 the broker, so input and output
 continue from the remote computer without tmux. The local Oxterm window remains
-usable, and more than one remote client can attach to the same session. Client
+usable, and more than one remote client can attach to the same session. On
+attach the broker replays the session's most recent output, so the current
+screen is repainted instead of appearing empty. Client
 disconnects do not stop the shell or broker, so a later `-a SESSION_ID` can
 reconnect. An unexpected GUI crash also leaves the broker and shell running;
 an intentional GUI close follows the normal tab cleanup path and terminates
 its shell.
 
-With one active terminal, `oxterm -a` attaches immediately. With multiple active
-terminals it displays a numbered chooser. Use `oxterm -a SESSION_ID` to bypass
-the chooser.
+Without a `SESSION_ID`, `oxterm -a` and `oxterm -M` print the list of active
+terminals and ask which one to use. When only one terminal is running, pressing
+Enter selects it. Pass `SESSION_ID` to skip the chooser.
 
 `oxterm -M [SESSION_ID]` (or `--move`) works like `-a` but takes control instead
 of sharing: it detaches every remote controller and turns off the local GUI view,
@@ -134,9 +136,11 @@ The broker socket uses a `0700` directory and `0600` socket under
 owns the child PTY and accepts length-prefixed Unix-socket frames for
 `LIST`, `INFO`, `ATTACH`, `MOVE`, `DETACH`, `RENAME`, `COMMAND`, `LOCAL_ON`,
 `LOCAL_OFF`, and `KILL`. The GUI PTY is a separate endpoint, allowing its local
-forwarding to be disabled without releasing the shell session. A reconnect
-receives output from that point onward; Oxterm does not persist or replay
-terminal scrollback. When the shell exits, the broker removes the session socket.
+forwarding to be disabled without releasing the shell session. On attach the
+broker replays the most recent child output (bounded to a fixed size) to repaint
+the screen and then nudges the foreground program to redraw; output older than
+that window is not kept, so Oxterm does not persist full scrollback. When the
+shell exits, the broker removes the session socket.
 
 The listing columns are `ID`, `NAME`, `TITLE`, `DIRECTORY`, `STATUS`,
 `APPLICATION`, and `APP_STATUS`. The application column contains the latest
