@@ -224,7 +224,10 @@ current screen appears instead of an empty one. This makes them suitable for use
 through SSH. Broker sockets are private
 (`0700` directory, `0600` socket) and the broker process owns the child PTY, so
 an unexpected GUI crash does not terminate the shell. An intentional GUI close
-still terminates its tabs through the normal cleanup path. Multiple `-a`
+still terminates its attached tabs through the normal cleanup path, but a tab
+whose local view was switched off (`Ctrl+B`, `d`) or taken over with `oxterm -M`
+keeps running under its broker, so the session survives the close and can be
+reached again with `-a`/`-M` or reclaimed from the original window. Multiple `-a`
 clients may be connected at once; their input is forwarded to the same shell
 and output is broadcast to each client. `-M` instead takes control: it detaches
 every remote controller and turns off the local GUI view, so the chosen session

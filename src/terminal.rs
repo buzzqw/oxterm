@@ -1435,7 +1435,15 @@ impl TerminalBox {
         }
         self.imp().remote_pty.borrow_mut().take();
         if let Some(handle) = self.imp().remote_handle.borrow_mut().take() {
-            handle.kill();
+            // A session whose local view is off was detached with `Ctrl+B`, `d`
+            // or taken over elsewhere with `oxterm -M`. Its broker owns the
+            // shell now, so closing this window must leave it running instead
+            // of killing a session that is still in use in another terminal.
+            if handle.local_is_on() {
+                handle.kill();
+            } else {
+                LOGGER.warning("terminal_close_preserves_detached_session");
+            }
         } else {
             let pid = *self.imp().pid.borrow();
             if pid > 0 {

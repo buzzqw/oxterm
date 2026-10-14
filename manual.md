@@ -113,7 +113,9 @@ screen is repainted instead of appearing empty. Client
 disconnects do not stop the shell or broker, so a later `-a SESSION_ID` can
 reconnect. An unexpected GUI crash also leaves the broker and shell running;
 an intentional GUI close follows the normal tab cleanup path and terminates
-its shell.
+its shell, except for tabs whose local view is off (`Ctrl+B`, then `d`, or a
+session taken over with `-M`): those keep running under their broker and can be
+reached again with `-a`/`-M`.
 
 Without a `SESSION_ID`, `oxterm -a` and `oxterm -M` print the list of active
 terminals and ask which one to use. When only one terminal is running, pressing

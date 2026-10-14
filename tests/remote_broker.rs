@@ -194,7 +194,9 @@ impl Drop for Fixture {
         let _ = self.child.wait();
         unsafe {
             libc::close(self.child_slave);
-            libc::close(self.gui_master);
+            if self.gui_master >= 0 {
+                libc::close(self.gui_master);
+            }
         }
         let _ = std::fs::remove_file(&self.socket);
         let _ = std::fs::remove_dir_all(&self.directory);
@@ -374,6 +376,25 @@ fn broker_round_trips_control_and_terminal_traffic() -> io::Result<()> {
     assert!(
         replay.contains("local-again"),
         "replay missing local-again: {replay}"
+    );
+
+    // Closing the GUI endpoint must not stop a session whose local view is
+    // off. The broker owns the shell, so it keeps running for remote clients
+    // (and can be reclaimed later with LOCAL_ON) instead of exiting.
+    assert_eq!(
+        control_request(&fixture.socket, "LOCAL_OFF test-session")?,
+        b"OK"
+    );
+    unsafe { libc::close(fixture.gui_master) };
+    fixture.gui_master = -1;
+    write_fd(fixture.child_slave, b"orphan-alive")?;
+    for client in [&mut first, &mut second, &mut third] {
+        let output = read_frame(client)?;
+        assert_eq!(&output[1..], b"orphan-alive");
+    }
+    assert!(
+        String::from_utf8_lossy(&control_request(&fixture.socket, "INFO test-session")?)
+            .contains("\tlocal-off\t")
     );
 
     write_frame(&mut first, &[FRAME_DETACH])?;
