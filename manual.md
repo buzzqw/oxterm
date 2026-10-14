@@ -332,15 +332,27 @@ default filename in **Edit > Preferences > Notes**.
 
 The **Notes** menu (or `Ctrl+Shift+M`) lets you:
 
+- **Notes Panel** — show or hide the integrated panel (search, tag filter,
+  preview and a quick append box).
 - **New Note...** — compose a note and choose which file to save it to.
 - **Add Selection to Note...** — append the selected terminal text to a note.
 - **Copy All to Note...** — append the whole terminal buffer after a confirmation.
+- **Note Command Output...** — append the last command output (requires OSC 133
+  shell integration), recording the command and its exit status.
 - **Open Default Note** / **Open Note...** — open a note in the editor.
 - **Open Notes Folder** — open the notes directory in the file manager.
 
-Each entry can record a small context comment (source, working directory, host),
-which can be turned off in **Preferences > Notes**. The same actions are also
-available from the terminal context menu.
+**Notes panel.** The panel indexes every note with SQLite FTS5, so search is
+full-text across all entries. Use the search box to filter, the tag selector to
+restrict to a `#tag`, the list to browse, the preview to read an entry, and the
+bottom box to append a new entry to the selected (or default) note. Entries with
+`#tags` are indexed automatically.
+
+Each entry can record a small context comment (source, working directory, host,
+and for command output the command and exit status), which can be turned off in
+**Preferences > Notes**. A **template** (with `{date}`, `{time}`, `{cwd}`,
+`{host}`, `{command}` placeholders) can pre-fill new notes. The same actions are
+also available from the terminal context menu.
 
 From the prompt, `/wnotes` appends and `/onotes` opens a note:
 
@@ -396,8 +408,8 @@ variants, CP1252, CP850, ASCII, KOI8-R, Shift_JIS, EUC-JP, and GBK.
 ### Notes
 
 Configure the notes directory (empty means `~/.local/share/oxterm/notes`), the
-default Markdown filename, whether entries record terminal context, and the
-fallback editor.
+default Markdown filename, whether entries record terminal context, a template
+pre-filled in new notes, and the fallback editor.
 
 ## Shell Integration
 

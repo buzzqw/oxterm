@@ -243,8 +243,9 @@ Commands beginning with `/` are handled by Oxterm:
 | `/wnotes [-file.md] <text>` | Save a timestamped note |
 | `/onotes [-file.md]` | Open a notes file in the configured editor |
 
-The **Notes** menu also provides New Note, Add Selection to Note, Copy All to
-Note, Open Note, and Open Notes Folder actions (see the manual).
+The **Notes** menu also provides the integrated Notes panel (full-text search,
+tags, preview, append) plus New Note, Add Selection to Note, Copy All to Note,
+Note Command Output, Open Note, and Open Notes Folder actions (see the manual).
 | `/learn <file>` | Import commands into history without executing them |
 | `/optimize history` | Keep latest command/directory entries and optimize history in background |
 | `/session export NAME [FILE]` | Export a saved session as private JSON |

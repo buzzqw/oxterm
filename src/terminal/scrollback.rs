@@ -206,7 +206,7 @@ impl TerminalBox {
         }
     }
 
-    pub(super) fn get_command_output_range(&self) -> (Option<i64>, Option<i64>) {
+    pub(crate) fn get_command_output_range(&self) -> (Option<i64>, Option<i64>) {
         let (_, cur_row) = self.vte().cursor_position();
         let markers = self.imp().osc133_markers.borrow().clone();
         let mut cmd_start: Option<i64> = None;

@@ -1676,6 +1676,16 @@ impl TerminalBox {
             .unwrap_or_default()
     }
 
+    /// Text of the last command reported through OSC 133, if any.
+    pub fn last_command(&self) -> String {
+        self.imp().remote_command.borrow().clone()
+    }
+
+    /// Exit status of the last command reported through OSC 133.
+    pub fn last_exit_code(&self) -> i64 {
+        *self.imp().osc133_last_exit.borrow()
+    }
+
     pub fn is_ssh(&self) -> bool {
         let pid = *self.imp().pid.borrow();
         if pid <= 0 {

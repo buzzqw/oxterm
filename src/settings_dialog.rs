@@ -84,6 +84,7 @@ struct DialogState {
     entry_notes_file: gtk::Entry,
     entry_editor: gtk::Entry,
     chk_notes_context: gtk::CheckButton,
+    entry_notes_template: gtk::Entry,
 }
 
 pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
@@ -205,6 +206,7 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
         entry_notes_file: notes.1,
         entry_editor: notes.2,
         chk_notes_context: notes.3,
+        entry_notes_template: notes.4,
     };
 
     {
@@ -1121,7 +1123,13 @@ fn build_notes(
     s: &Settings,
 ) -> (
     gtk::Grid,
-    (gtk::Entry, gtk::Entry, gtk::Entry, gtk::CheckButton),
+    (
+        gtk::Entry,
+        gtk::Entry,
+        gtk::Entry,
+        gtk::CheckButton,
+        gtk::Entry,
+    ),
 ) {
     let grid = gtk::Grid::new();
     grid.set_margin_start(12);
@@ -1165,6 +1173,15 @@ fn build_notes(
     ));
     grid.attach(&chk_notes_context, 0, rr, 2, 1);
 
+    rr += 1;
+    let entry_notes_template = gtk::Entry::new();
+    entry_notes_template.set_text(&s.get_str("notes_template"));
+    entry_notes_template.set_placeholder_text(Some("e.g. Task: {command} (cwd {cwd})"));
+    entry_notes_template.set_tooltip_text(Some(
+        "Optional template pre-filled in new notes. Placeholders: {date} {time} {cwd} {host} {command}",
+    ));
+    row(&grid, rr, "New note template:", &entry_notes_template);
+
     (
         grid,
         (
@@ -1172,6 +1189,7 @@ fn build_notes(
             entry_notes_file,
             entry_editor,
             chk_notes_context,
+            entry_notes_template,
         ),
     )
 }
@@ -1332,6 +1350,7 @@ impl DialogState {
         s.set_str("notes_file", self.entry_notes_file.text().trim());
         s.set_str("editor_command", self.entry_editor.text().trim());
         s.set_bool("notes_record_context", self.chk_notes_context.is_active());
+        s.set_str("notes_template", self.entry_notes_template.text().trim());
 
         s.end_batch();
         s.notify_changed();

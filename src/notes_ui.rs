@@ -7,7 +7,7 @@ use crate::notes;
 
 /// Ask for a note composer (text + target file). Returns `(filename, text)`
 /// where `filename` is empty for the default note, or `None` when cancelled.
-pub fn compose_note(parent: &gtk::Window, title: &str) -> Option<(String, String)> {
+pub fn compose_note(parent: &gtk::Window, title: &str, initial: &str) -> Option<(String, String)> {
     let dialog = gtk::Dialog::with_buttons(
         Some(title),
         Some(parent),
@@ -33,6 +33,9 @@ pub fn compose_note(parent: &gtk::Window, title: &str) -> Option<(String, String
     content.pack_start(&gtk::Label::new(Some("Note text")), false, false, 0);
     let view = gtk::TextView::new();
     view.set_wrap_mode(gtk::WrapMode::WordChar);
+    if !initial.is_empty() {
+        view.buffer().expect("text view buffer").set_text(initial);
+    }
     let scroller = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
     scroller.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
     scroller.add(&view);

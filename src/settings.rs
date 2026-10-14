@@ -110,6 +110,7 @@ fn build_defaults() -> Value {
         "notes_file": "",
         "notes_dir": "",
         "notes_record_context": true,
+        "notes_template": "",
         "editor_command": editor,
         "snippets": {},
         "osc133": false,

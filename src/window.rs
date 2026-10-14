@@ -14,7 +14,6 @@ use zoha_vte::traits::TerminalExt;
 use crate::notes::{NoteContext, NotesManager};
 use crate::settings::settings;
 use crate::terminal::TerminalBox;
-
 pub const SIGNALS: &[(&str, i32)] = &[
     ("SIGHUP (1)", 1),
     ("SIGINT (2)", 2),
@@ -140,10 +139,56 @@ pub trait TerminalWindow {
     fn note_terminal(&self) -> Option<TerminalBox>;
     fn note_write(&self, text: String, filename: Option<String>, context: NoteContext);
 
-    /// Compose a new note from scratch.
+    /// Toggle the integrated notes panel (only the main window has one).
+    fn note_toggle_panel(&self) {
+        self.note_feedback("The Notes panel is available in the main window", true);
+    }
+
+    /// Refresh the notes panel after a note is written, when it is open.
+    fn note_refresh_panel_if_open(&self) {}
+
+    /// Append the last command output (OSC 133) to a note.
+    fn note_add_command_output(&self) {
+        let Some(term) = self.note_terminal() else {
+            return;
+        };
+        let (Some(start_row), Some(end_row)) = term.get_command_output_range() else {
+            self.note_feedback(
+                "No command output available (shell integration required)",
+                true,
+            );
+            return;
+        };
+        let end_row = end_row.min(start_row + 2000);
+        let (text, _) =
+            term.vte()
+                .text_range_format(zoha_vte::Format::Text, start_row, 0, end_row, 0);
+        let text = text.map(|t| t.to_string()).unwrap_or_default();
+        if text.trim().is_empty() {
+            self.note_feedback("No command output available", true);
+            return;
+        }
+        let window = self.note_window();
+        let Some(name) = crate::notes_ui::pick_note_file(&window, "Note command output") else {
+            return;
+        };
+        let filename = if name.is_empty() { None } else { Some(name) };
+        let command = term.last_command();
+        let exit_code = term.last_exit_code();
+        let context = NoteContext::from_command(&term.get_cwd(), &command, exit_code);
+        self.note_write(text, filename, context);
+    }
+
+    /// Compose a new note from scratch, pre-filled with the configured template.
     fn note_new(&self) {
         let window = self.note_window();
-        if let Some((name, text)) = crate::notes_ui::compose_note(&window, "New Note") {
+        let (cwd, command) = match self.note_terminal() {
+            Some(term) => (term.get_cwd(), term.last_command()),
+            None => (String::new(), String::new()),
+        };
+        let template =
+            crate::notes::expand_template(&settings().get_str("notes_template"), &cwd, &command);
+        if let Some((name, text)) = crate::notes_ui::compose_note(&window, "New Note", &template) {
             let filename = if name.is_empty() { None } else { Some(name) };
             self.note_write(text, filename, NoteContext::manual());
         }
@@ -900,6 +945,19 @@ impl DetachedWindow {
         let weak = crate::SendWeak::new(self);
         self.menu_item(
             &notes_menu,
+            "Notes Panel",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.note_toggle_panel();
+                }
+            }),
+            None,
+            Some("Show or hide the integrated notes panel"),
+        );
+        notes_menu.append(&gtk::SeparatorMenuItem::new());
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &notes_menu,
             "New Note...",
             Box::new(move || {
                 if let Some(w) = weak.upgrade() {
@@ -933,6 +991,18 @@ impl DetachedWindow {
             }),
             None,
             Some("Append the whole terminal buffer to a note after confirmation"),
+        );
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &notes_menu,
+            "Note Command Output...",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.note_add_command_output();
+                }
+            }),
+            None,
+            Some("Append the last command output (needs shell integration) to a note"),
         );
         notes_menu.append(&gtk::SeparatorMenuItem::new());
         let weak = crate::SendWeak::new(self);
@@ -1357,6 +1427,7 @@ mod main_imp {
         pub stats_box: RefCell<Option<gtk::Box>>,
         pub info_bar: RefCell<Option<gtk::InfoBar>>,
         pub info_label: RefCell<Option<gtk::Label>>,
+        pub notes_panel: RefCell<Option<crate::notes_panel::NotesPanel>>,
         pub stats_source_id: RefCell<Option<glib::SourceId>>,
         pub remote_stats_pending: RefCell<bool>,
         pub remote_stats_generation: RefCell<u64>,
@@ -1623,7 +1694,56 @@ impl MainWindow {
             false,
             0,
         );
-        vbox.pack_start(&paned, true, true, 0);
+        let notes_panel = crate::notes_panel::NotesPanel::build();
+        {
+            let weak = crate::SendWeak::new(self);
+            notes_panel.close.connect_clicked(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.set_notes_panel_visible(false);
+                }
+            });
+            let weak = crate::SendWeak::new(self);
+            notes_panel.refresh.connect_clicked(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.reload_notes_panel();
+                }
+            });
+            let weak = crate::SendWeak::new(self);
+            notes_panel.search.connect_search_changed(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.run_notes_search();
+                }
+            });
+            let weak = crate::SendWeak::new(self);
+            notes_panel.tag.connect_changed(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.run_notes_search();
+                }
+            });
+            let weak = crate::SendWeak::new(self);
+            notes_panel.list.connect_row_selected(move |_, row| {
+                if let (Some(w), Some(row)) = (weak.upgrade(), row) {
+                    w.notes_panel_preview(row.index());
+                }
+            });
+            let weak = crate::SendWeak::new(self);
+            notes_panel.append.connect_clicked(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.notes_panel_append();
+                }
+            });
+            let weak = crate::SendWeak::new(self);
+            notes_panel.entry.connect_activate(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.notes_panel_append();
+                }
+            });
+        }
+        let content_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        content_row.pack_start(&paned, true, true, 0);
+        content_row.pack_start(&notes_panel.root, false, false, 0);
+        vbox.pack_start(&content_row, true, true, 0);
+        *self.imp().notes_panel.borrow_mut() = Some(notes_panel);
         vbox.pack_end(&stats_box, false, false, 0);
         self.add(&vbox);
 
@@ -2749,6 +2869,19 @@ impl MainWindow {
         let weak = crate::SendWeak::new(self);
         self.menu_item(
             &notes_menu,
+            "Notes Panel",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.note_toggle_panel();
+                }
+            }),
+            None,
+            Some("Show or hide the integrated notes panel"),
+        );
+        notes_menu.append(&gtk::SeparatorMenuItem::new());
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &notes_menu,
             "New Note...",
             Box::new(move || {
                 if let Some(w) = weak.upgrade() {
@@ -2782,6 +2915,18 @@ impl MainWindow {
             }),
             None,
             Some("Append the whole terminal buffer to a note after confirmation"),
+        );
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &notes_menu,
+            "Note Command Output...",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.note_add_command_output();
+                }
+            }),
+            None,
+            Some("Append the last command output (needs shell integration) to a note"),
         );
         notes_menu.append(&gtk::SeparatorMenuItem::new());
         let weak = crate::SendWeak::new(self);
@@ -3778,6 +3923,131 @@ impl MainWindow {
         self.note_write(text, filename, context);
     }
 
+    // ── Notes panel ──────────────────────────────────────────
+
+    fn notes_panel_visible(&self) -> bool {
+        self.imp()
+            .notes_panel
+            .borrow()
+            .as_ref()
+            .map(|p| p.root.is_visible())
+            .unwrap_or(false)
+    }
+
+    fn set_notes_panel_visible(&self, visible: bool) {
+        if let Some(panel) = self.imp().notes_panel.borrow().as_ref() {
+            if visible {
+                panel.root.show_all();
+            } else {
+                panel.root.hide();
+            }
+        }
+    }
+
+    fn refresh_note_targets(&self) {
+        let notes = crate::notes::list_note_files();
+        if let Some(panel) = self.imp().notes_panel.borrow().as_ref() {
+            panel.set_targets(&notes);
+        }
+    }
+
+    fn reload_notes_panel(&self) {
+        self.refresh_note_targets();
+        self.set_panel_status("Indexing notes...");
+        let weak = crate::SendWeak::new(self);
+        crate::notes_index::refresh_async(move |result| {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(count) => {
+                    w.set_panel_status(&format!("{} entries indexed", count));
+                    w.run_notes_search();
+                    let weak = crate::SendWeak::new(&w);
+                    crate::notes_index::tags_async(move |tags| {
+                        if let (Some(w), Ok(tags)) = (weak.upgrade(), tags) {
+                            w.set_panel_tags(&tags);
+                        }
+                    });
+                }
+                Err(e) => w.set_panel_status(&format!("Index error: {}", e)),
+            }
+        });
+    }
+
+    fn run_notes_search(&self) {
+        let (query, tag) = match self.imp().notes_panel.borrow().as_ref() {
+            Some(panel) => (panel.search_query(), panel.active_tag()),
+            None => return,
+        };
+        let weak = crate::SendWeak::new(self);
+        crate::notes_index::search_async(query, tag, 200, move |result| {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(entries) => {
+                    let count = entries.len();
+                    w.set_panel_entries(entries);
+                    w.set_panel_status(&format!("{} results", count));
+                }
+                Err(e) => w.set_panel_status(&format!("Search error: {}", e)),
+            }
+        });
+    }
+
+    fn set_panel_status(&self, message: &str) {
+        if let Some(panel) = self.imp().notes_panel.borrow().as_ref() {
+            panel.set_status(message);
+        }
+    }
+
+    fn set_panel_entries(&self, entries: Vec<crate::notes_index::NoteEntry>) {
+        if let Some(panel) = self.imp().notes_panel.borrow().as_ref() {
+            panel.set_entries(entries);
+        }
+    }
+
+    fn set_panel_tags(&self, tags: &[String]) {
+        if let Some(panel) = self.imp().notes_panel.borrow().as_ref() {
+            panel.set_tags(tags);
+        }
+    }
+
+    fn notes_panel_preview(&self, index: i32) {
+        if let Some(panel) = self.imp().notes_panel.borrow().as_ref() {
+            panel.preview_index(index);
+        }
+    }
+
+    fn notes_panel_append(&self) {
+        let (text, target) = match self.imp().notes_panel.borrow().as_ref() {
+            Some(panel) => (panel.take_entry_text(), panel.selected_target()),
+            None => return,
+        };
+        if text.trim().is_empty() {
+            return;
+        }
+        let filename = if target.is_empty() {
+            None
+        } else {
+            Some(target)
+        };
+        let cwd = self
+            .current_terminal()
+            .map(|t| t.get_cwd())
+            .unwrap_or_default();
+        let context = if cwd.is_empty() {
+            NoteContext {
+                source: Some("panel".to_string()),
+                ..NoteContext::default()
+            }
+        } else {
+            NoteContext::from_terminal("panel", &cwd)
+        };
+        self.note_write(text, filename, context);
+    }
+
     fn show_about(&self) {
         crate::settings_dialog::show_about_dialog(Some(self.upcast_ref::<gtk::Window>()));
     }
@@ -4276,12 +4546,27 @@ impl TerminalWindow for MainWindow {
     fn note_terminal(&self) -> Option<TerminalBox> {
         self.current_terminal()
     }
+    fn note_toggle_panel(&self) {
+        let visible = self.notes_panel_visible();
+        self.set_notes_panel_visible(!visible);
+        if !visible {
+            self.reload_notes_panel();
+        }
+    }
+    fn note_refresh_panel_if_open(&self) {
+        if self.notes_panel_visible() {
+            self.reload_notes_panel();
+        }
+    }
     fn note_write(&self, text: String, filename: Option<String>, context: NoteContext) {
         let weak = crate::SendWeak::new(self);
         NotesManager::new().write_note_async(text, filename.as_deref(), context, move |result| {
             if let Some(w) = weak.upgrade() {
                 match result {
-                    Ok(path) => w.note_feedback(&format!("Saved to {}", path.display()), false),
+                    Ok(path) => {
+                        w.note_feedback(&format!("Saved to {}", path.display()), false);
+                        w.note_refresh_panel_if_open();
+                    }
                     Err(e) => w.note_feedback(&format!("Could not write note: {}", e), true),
                 }
             }

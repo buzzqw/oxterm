@@ -4,6 +4,8 @@ mod history;
 mod icons;
 mod logging;
 mod notes;
+mod notes_index;
+mod notes_panel;
 mod notes_ui;
 mod persistence;
 mod profiles;
@@ -383,8 +385,8 @@ impl App {
             let css_provider = gtk::CssProvider::new();
             let css = b"
                 vte-terminal { padding-left: 8px; padding-right: 4px; }
-                .oxterm-menu-row { background: alpha(@theme_fg_color, 0.05); padding: 1px 4px; }
-                .oxterm-menu-row button { padding: 3px 10px; }
+                .oxterm-notes-panel { border-left: 1px solid alpha(currentColor, 0.2); }
+                .oxterm-menu-row { background: alpha(@theme_fg_color, 0.05); padding: 1px 4px; }                .oxterm-menu-row button { padding: 3px 10px; }
                 .command-bar-frame { border: 1px solid alpha(currentColor, 0.3); background: alpha(@theme_bg_color, 0.95); }
                 .command-bar-frame entry { padding: 6px 10px; font-family: Monospace; }
                 .command-bar-frame list row { padding: 2px 10px; }

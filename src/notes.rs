@@ -110,6 +110,8 @@ pub struct NoteContext {
     pub source: Option<String>,
     pub cwd: Option<String>,
     pub host: Option<String>,
+    pub command: Option<String>,
+    pub exit_code: Option<i64>,
 }
 
 impl NoteContext {
@@ -127,8 +129,37 @@ impl NoteContext {
             source: Some(source.to_string()),
             cwd: Some(cwd.to_string()),
             host: hostname(),
+            ..NoteContext::default()
         }
     }
+
+    /// Context for the output of a command (OSC 133).
+    pub fn from_command(cwd: &str, command: &str, exit_code: i64) -> NoteContext {
+        NoteContext {
+            source: Some("command-output".to_string()),
+            cwd: Some(cwd.to_string()),
+            host: hostname(),
+            command: Some(command.to_string()),
+            exit_code: Some(exit_code),
+        }
+    }
+}
+
+/// Expand a note template, replacing `{date}`, `{time}`, `{cwd}`, `{host}` and
+/// `{command}` placeholders. Unknown placeholders are left untouched.
+pub fn expand_template(template: &str, cwd: &str, command: &str) -> String {
+    if template.trim().is_empty() {
+        return String::new();
+    }
+    let now = crate::logging::local_human_now();
+    let (date, time) = now.split_once(' ').unwrap_or((now.as_str(), ""));
+    let host = hostname().unwrap_or_default();
+    template
+        .replace("{date}", date)
+        .replace("{time}", time)
+        .replace("{cwd}", cwd)
+        .replace("{host}", &host)
+        .replace("{command}", command)
 }
 
 pub struct NotesManager {
@@ -271,6 +302,12 @@ fn append_note(target: NoteTarget, text: &str, context: NoteContext) -> Result<P
         }
         if let Some(host) = context.host.filter(|s| !s.trim().is_empty()) {
             fields.push(format!("host: {}", host.trim()));
+        }
+        if let Some(command) = context.command.filter(|s| !s.trim().is_empty()) {
+            fields.push(format!("command: {}", command.trim()));
+        }
+        if let Some(exit) = context.exit_code {
+            fields.push(format!("exit: {}", exit));
         }
         if !fields.is_empty() {
             entry.push_str(&format!("<!-- {} -->\n", fields.join(" | ")));
