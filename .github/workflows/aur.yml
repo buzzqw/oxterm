@@ -21,6 +21,9 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: archlinux:base-devel
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Check out source
@@ -32,7 +35,7 @@ jobs:
           useradd -m builder
           chown -R builder "$GITHUB_WORKSPACE"
 
-      - name: Check pkgver matches Cargo.toml and .SRCINFO is current
+      - name: Check pkgver matches Cargo.toml
         run: |
           set -euo pipefail
           cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
@@ -41,9 +44,15 @@ jobs:
             echo "::error::Cargo.toml version ($cargo_version) != PKGBUILD pkgver ($pkg_version)"
             exit 1
           fi
-          cd packaging/aur
-          makepkg --printsrcinfo > .SRCINFO.generated
-          diff -u .SRCINFO .SRCINFO.generated
+
+      - name: Check .SRCINFO is current
+        run: |
+          set -euo pipefail
+          metadata_dir="$(mktemp -d)"
+          cp packaging/aur/PKGBUILD "$metadata_dir/"
+          chown builder "$metadata_dir"
+          su builder -c "cd '$metadata_dir' && makepkg --printsrcinfo > .SRCINFO.generated"
+          diff -u packaging/aur/.SRCINFO "$metadata_dir/.SRCINFO.generated"
 
       - name: Build the package
         run: |
@@ -69,7 +78,10 @@ jobs:
             usr/share/zsh/site-functions/_oxterm \
             usr/share/fish/vendor_completions.d/oxterm.fish \
             usr/share/licenses/oxterm/LICENSE; do
-            grep -qx "$expected" <<<"$listing"
+            if ! grep -qx "$expected" <<<"$listing"; then
+              echo "::error::missing $expected in the package"
+              exit 1
+            fi
           done
 
       - name: Run the packaged binary
