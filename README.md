@@ -72,6 +72,18 @@ sudo pacman -S base-devel rust gtk3 vte3
 
 Install Rust with [rustup](https://rustup.rs/) if it is not already available.
 
+### Arch Linux (AUR)
+
+The `oxterm` package builds the latest tagged release from source with the
+system GTK3/VTE libraries. Once the package is published in the AUR:
+
+```bash
+yay -S oxterm        # or: paru -S oxterm
+```
+
+The `PKGBUILD` lives in [`packaging/aur`](packaging/aur) and is validated by CI
+on every change.
+
 ## Build and Run
 
 Clone the repository and build the optimized executable:

@@ -1,0 +1,81 @@
+name: AUR package
+
+on:
+  push:
+    paths:
+      - 'packaging/aur/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/aur.yml'
+  pull_request:
+    paths:
+      - 'packaging/aur/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/aur.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Validate PKGBUILD and build package
+    runs-on: ubuntu-24.04
+    container:
+      image: archlinux:base-devel
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Install dependencies and a build user
+        run: |
+          pacman -Syu --noconfirm --needed git rust gtk3 vte3 pkgconf
+          useradd -m builder
+          chown -R builder "$GITHUB_WORKSPACE"
+
+      - name: Check pkgver matches Cargo.toml and .SRCINFO is current
+        run: |
+          set -euo pipefail
+          cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
+          pkg_version="$(sed -n 's/^pkgver=//p' packaging/aur/PKGBUILD)"
+          if [ "$cargo_version" != "$pkg_version" ]; then
+            echo "::error::Cargo.toml version ($cargo_version) != PKGBUILD pkgver ($pkg_version)"
+            exit 1
+          fi
+          cd packaging/aur
+          makepkg --printsrcinfo > .SRCINFO.generated
+          diff -u .SRCINFO .SRCINFO.generated
+
+      - name: Build the package
+        run: |
+          set -euo pipefail
+          build_dir="$(mktemp -d)"
+          cp packaging/aur/PKGBUILD "$build_dir/"
+          chown builder "$build_dir"
+          su builder -c "cd '$build_dir' && makepkg -f --noconfirm --log"
+          package_file="$(ls "$build_dir"/oxterm-*.pkg.tar.zst)"
+          echo "PACKAGE_FILE=$package_file" >> "$GITHUB_ENV"
+
+      - name: Verify installed files
+        run: |
+          set -euo pipefail
+          listing="$(bsdtar -tf "$PACKAGE_FILE")"
+          printf '%s\n' "$listing"
+          for expected in \
+            usr/bin/oxterm \
+            usr/share/applications/oxterm.desktop \
+            usr/share/icons/hicolor/scalable/apps/oxterm.svg \
+            usr/share/licenses/oxterm/LICENSE; do
+            grep -qx "$expected" <<<"$listing"
+          done
+
+      - name: Run the packaged binary
+        run: |
+          set -euo pipefail
+          bsdtar -xf "$PACKAGE_FILE" -C /tmp
+          /tmp/usr/bin/oxterm --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oxterm-arch-package
+          path: ${{ env.PACKAGE_FILE }}
+          if-no-files-found: error

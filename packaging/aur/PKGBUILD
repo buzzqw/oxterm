@@ -1,0 +1,37 @@
+# Maintainer: Oxterm maintainers <https://github.com/buzzqw/oxterm/issues>
+pkgname=oxterm
+pkgver=1.1.11
+pkgrel=1
+pkgdesc="Lightweight GTK3/VTE terminal emulator with notes, command history and remote sessions"
+arch=('x86_64' 'aarch64')
+url="https://github.com/buzzqw/oxterm"
+license=('EUPL-1.2')
+depends=('gtk3' 'vte3')
+makedepends=('cargo' 'git' 'pkgconf')
+optdepends=(
+  'git: show the current Git branch in the status bar'
+  'openssh: remote attach/detach and SSH-aware session status'
+  'xdg-utils: open notes and links with the desktop default applications'
+)
+conflicts=("$pkgname-git" "$pkgname-bin")
+# Cargo sets its own fat-LTO profile; let it own the link step instead of
+# mixing makepkg's -flto with the bundled sqlite3 static archive.
+options=('!lto')
+source=("$pkgname::git+$url.git#tag=v$pkgver")
+sha256sums=('SKIP')
+
+build() {
+  cd "$pkgname"
+  export CARGO_TARGET_DIR="$srcdir/target"
+  cargo build --release --locked
+}
+
+package() {
+  cd "$pkgname"
+
+  install -Dm0755 "$srcdir/target/release/oxterm" "$pkgdir/usr/bin/oxterm"
+  install -Dm0644 packaging/oxterm.desktop "$pkgdir/usr/share/applications/oxterm.desktop"
+  install -Dm0644 packaging/oxterm.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/oxterm.svg"
+  install -Dm0644 manual.md "$pkgdir/usr/share/doc/$pkgname/manual.md"
+  install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
