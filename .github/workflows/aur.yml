@@ -61,7 +61,7 @@ jobs:
           cp packaging/aur/PKGBUILD "$build_dir/"
           chown builder "$build_dir"
           su builder -c "cd '$build_dir' && makepkg -f --noconfirm --log"
-          package_file="$(ls "$build_dir"/oxterm-*.pkg.tar.zst)"
+          package_file="$(find "$build_dir" -maxdepth 1 -name 'oxterm-[0-9]*.pkg.tar.zst' -print -quit)"
           echo "PACKAGE_FILE=$package_file" >> "$GITHUB_ENV"
 
       - name: Verify installed files

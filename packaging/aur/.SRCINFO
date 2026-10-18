@@ -17,6 +17,7 @@ pkgbase = oxterm
 	conflicts = oxterm-git
 	conflicts = oxterm-bin
 	options = !lto
+	options = !debug
 	source = oxterm::git+https://github.com/buzzqw/oxterm.git#tag=v1.1.12
 	sha256sums = SKIP
 

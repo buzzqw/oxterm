@@ -16,7 +16,7 @@ optdepends=(
 conflicts=("$pkgname-git" "$pkgname-bin")
 # Cargo sets its own fat-LTO profile; let it own the link step instead of
 # mixing makepkg's -flto with the bundled sqlite3 static archive.
-options=('!lto')
+options=('!lto' '!debug')
 source=("$pkgname::git+$url.git#tag=v$pkgver")
 sha256sums=('SKIP')
 
