@@ -1,10 +1,12 @@
 [Desktop Entry]
 Name=Oxterm Terminal
+GenericName=Terminal Emulator
 Comment=GTK3/VTE terminal emulator with history and notes
 Exec=oxterm %f
 Icon=oxterm
 Terminal=false
 Type=Application
+Keywords=terminal;shell;console;ssh;notes;
 Categories=System;TerminalEmulator;
 StartupWMClass=Oxterm
 MimeType=inode/directory;

@@ -1,6 +1,6 @@
 [package]
 name = "oxterm"
-version = "1.1.11"
+version = "1.1.12"
 edition = "2021"
 description = "Oxterm - a GTK3/VTE terminal emulator"
 license = "EUPL-1.2"
@@ -13,7 +13,10 @@ gdk = "0.18"
 gdk-pixbuf = "0.18"
 pango = "0.18"
 cairo-rs = "0.18"
-zoha-vte = { version = "0.6", features = ["v0_72"] }
+zoha-vte = { version = "0.6", features = ["v0_70"] }
+# Used for vte_terminal_get_text_range(), which is the only text-extraction
+# API available on VTE 0.70 (see src/terminal/text.rs).
+zoha-vte-sys = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.31", features = ["bundled", "hooks"] }

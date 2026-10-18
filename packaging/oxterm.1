@@ -1,0 +1,216 @@
+.TH OXTERM 1 "2026-10-18" "oxterm 1.1.12" "User Commands"
+.SH NAME
+oxterm \- GTK3/VTE terminal emulator with notes, history and remote sessions
+.SH SYNOPSIS
+.B oxterm
+.RI [ DIRECTORY ]
+.RI [ OPTIONS ]
+.RB [ \-e
+.IR CMD ...]
+.br
+.B oxterm
+.BR \-a | \-M
+.RI [ SESSION_ID ]
+.br
+.B oxterm
+.B \-\-detach
+.I SESSION_ID
+.br
+.B oxterm
+.B \-\-list
+.SH DESCRIPTION
+.B oxterm
+is a terminal emulator for Linux built on GTK3 and VTE. It provides tabs,
+splits, command history, Markdown notes, shell integration, profiles and
+persistent PTY sessions that can be attached to over SSH.
+.PP
+With no arguments a window is opened and the configured shell is started in
+.IR DIRECTORY ,
+the working directory of the caller, or the directory restored from the last
+session.
+.SH OPTIONS
+.TP
+.BR \-w ", " \-\-working\-directory " " DIR
+Working directory for the new terminal.
+.TP
+.BR \-T ", " \-\-title " " TITLE
+Set a fixed window title that applications cannot override.
+.TP
+.BR \-g ", " \-\-geometry " " COLSxROWS
+Initial size in character cells, for example
+.BR 120x40 .
+.TP
+.BR \-F ", " \-\-fullscreen
+Start in fullscreen mode.
+.TP
+.BR \-m ", " \-\-maximize
+Start maximized.
+.TP
+.BR \-\-class " " CLASS
+Set the class part of the WM_CLASS property.
+.TP
+.BR \-\-name " " NAME
+Set the instance part of the WM_CLASS property.
+.TP
+.BR \-p ", " \-\-profile " " NAME
+Start with a saved profile. The selection lasts for this session only.
+.TP
+.BR \-\-config " " FILE
+Use an alternative settings file instead of
+.IR ~/.config/oxterm/settings.json .
+.TP
+.BR \-o ", " \-\-option " " KEY=VALUE
+Override a setting for this session. May be repeated. Values are not written
+back to the settings file.
+.TP
+.BR \-\-font " " FAMILY
+Override the font family for this session.
+.TP
+.BR \-\-font\-size " " N
+Override the font size for this session.
+.TP
+.B \-\-new\-window
+Open a new window instead of reusing a running instance.
+.TP
+.B \-\-no\-restore
+Do not restore the last session.
+.TP
+.B \-\-hold
+Keep the terminal open after the command exits.
+.TP
+.BR \-e ", " \-\-execute " " CMD ...
+Run a command instead of the configured shell. All remaining arguments are
+passed to the command.
+.TP
+.B \-\-
+Treat the next argument as a directory even if it starts with a dash.
+.TP
+.B \-\-list
+List active Oxterm terminals. The first column is the session ID used by
+.BR \-a ,
+.BR \-M ,
+.B \-\-info
+and
+.BR \-\-detach .
+.TP
+.BR \-\-info " " SESSION_ID
+Show details about one active terminal.
+.TP
+.BR \-\-broker " " SOCKET " " ID
+Internal entry point that runs the persistent PTY broker. Not meant to be
+called directly.
+.TP
+.BR \-V ", " \-\-version
+Print the version, including the build commit count as SemVer build metadata
+(for example
+.BR 1.1.11+116 ),
+and exit.
+.TP
+.BR \-h ", " \-\-help
+Print the command line summary and exit.
+.SH REMOTE SESSIONS
+These commands act on a running Oxterm terminal on the same host, open no
+window and are safe to use over SSH. Without a
+.IR SESSION_ID ,
+.B \-a
+and
+.B \-M
+use the only session or show a list to choose from.
+.TP
+.BR \-a ", " \-\-attach " [" SESSION_ID "]"
+Add this terminal as another view of the session and repaint its current
+screen. The shell keeps running, the original window stays live, and every
+view shares the same input and output.
+.TP
+.BR \-M ", " \-\-move " [" SESSION_ID "]"
+Like
+.BR \-a ,
+but take control: every other remote client is disconnected and the original
+window's view is switched off. In that window, Ctrl+B then
+.B s
+or
+.B w
+brings the view back.
+.TP
+.BR \-\-detach " " SESSION_ID
+Release every remote client without stopping the shell, leaving the original
+window as the only view again.
+.SH FILES
+.TP
+.I ~/.config/oxterm/settings.json
+User settings. Written by the Preferences dialog and reloaded while the
+application is running.
+.TP
+.I ~/.config/oxterm/history.db
+SQLite database with the command history.
+.TP
+.I ~/.config/oxterm/remote/
+Private directory (mode 0700) with the Unix sockets of persistent sessions.
+.TP
+.I ~/.local/share/oxterm/notes/
+Default directory for Markdown notes, unless
+.B notes_dir
+is set to another directory.
+.TP
+.I /usr/share/doc/oxterm/manual.md
+Full user manual, including keyboard shortcuts and built-in commands.
+.SH ENVIRONMENT
+.TP
+.B TERM
+Set to
+.B xterm-256color
+for the child process.
+.TP
+.B COLORTERM
+Set to
+.B truecolor
+for the child process.
+.TP
+.B OXTERM\_SHELL\_INTEGRATION
+Set to
+.B 1
+for the child shell when OSC 133 shell integration is enabled in the
+settings. The shell scripts use it to install their prompt and pre-exec hooks.
+.TP
+.B OXTERM\_SSH\_SHARING
+Set to
+.B 1
+or
+.B 0
+for the child shell. The bundled SSH wrapper uses it to enable or disable
+ControlMaster connection sharing.
+.TP
+.B OXTERM\_OSC133\_FIFO
+Internal. Path of the private FIFO used by the shell integration to report
+prompt events without polluting the terminal output.
+.SH EXAMPLES
+.TP
+.B oxterm ~/src/project
+Open a terminal in a directory.
+.TP
+.B oxterm \-e make \-j8
+Run one command in the terminal.
+.TP
+.B oxterm \-T build \-g 120x40
+Open a terminal with a fixed title and size.
+.TP
+.B oxterm \-\-list
+Show active sessions and their IDs.
+.TP
+.B ssh server oxterm \-a
+Attach to a live session from another computer.
+.SH EXIT STATUS
+0 on success, 1 when a command line option or a remote session request fails,
+and 2 when the command line cannot be parsed.
+.SH SEE ALSO
+.BR tmux (1),
+.BR ssh (1),
+.BR script (1)
+.PP
+The project page is at https://github.com/buzzqw/oxterm.
+.SH LICENSE
+EUPL-1.2. See
+.I /usr/share/licenses/oxterm/LICENSE
+or the
+.I LICENSE
+file in the source tree.

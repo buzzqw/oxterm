@@ -13,6 +13,7 @@ mod hints;
 mod history_picker;
 mod scrollback;
 mod shell_scripts;
+pub(crate) mod text;
 mod vi_copy;
 
 pub use shell_scripts::{OSC133_FISH_SCRIPT, OSC133_SCRIPT};
@@ -2242,8 +2243,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         let scroll_top = self.vadjustment().value() as i64;
         let row = row + scroll_top;
         let vte = self.vte();
-        let (text, _) = vte.text_range_format(Format::Text, row, 0, row, -1);
-        let text = text.map(|t| t.to_string()).unwrap_or_default();
+        let text = text::range(&vte, row, 0, row, -1).unwrap_or_default();
         if text.is_empty() {
             return None;
         }
@@ -2514,9 +2514,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             return fallback.trim().to_string();
         };
         let (end_col, end_row) = self.vte().cursor_position();
-        let (text, _) =
-            self.vte()
-                .text_range_format(Format::Text, start_row, start_col, end_row, end_col);
+        let text = text::range(&self.vte(), start_row, start_col, end_row, end_col);
         match text {
             Some(t) if !t.is_empty() => t.trim().to_string(),
             _ => fallback.trim().to_string(),

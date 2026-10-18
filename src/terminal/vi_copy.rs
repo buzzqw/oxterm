@@ -185,11 +185,7 @@ impl TerminalBox {
             if end > start + 500 {
                 end = start + 500;
             }
-            let (text, _) = self
-                .vte()
-                .text_range_format(Format::Text, start, 0, end + 1, 0);
-            if let Some(text) = text {
-                let text = text.to_string();
+            if let Some(text) = super::text::range(&self.vte(), start, 0, end + 1, 0) {
                 let clipboard = gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD);
                 clipboard.set_text(&text);
                 let n = text.lines().count();

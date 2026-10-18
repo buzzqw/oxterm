@@ -1,0 +1,38 @@
+#compdef oxterm
+
+_oxterm_sessions() {
+    local -a sessions
+    sessions=(${(f)"$(oxterm --list 2>/dev/null | awk 'NR > 1 && NF { print $1 }')"})
+    _describe -t sessions 'session' sessions
+}
+
+_oxterm() {
+    _arguments -s -S \
+        '(-w --working-directory)'{-w,--working-directory}'[Working directory]:directory:_directories' \
+        '(-T --title)'{-T,--title}'[Fixed window title]:title:' \
+        '(-g --geometry)'{-g,--geometry}'[Initial size in cells]:geometry:(120x40)' \
+        '(-F --fullscreen)'{-F,--fullscreen}'[Start fullscreen]' \
+        '(-m --maximize)'{-m,--maximize}'[Start maximized]' \
+        '--class[WM_CLASS class]:class:' \
+        '--name[WM_CLASS instance name]:name:' \
+        '(-p --profile)'{-p,--profile}'[Saved profile]:profile:' \
+        '--config[Alternative settings file]:file:_files' \
+        '(-o --option)'{-o,--option}'[Session setting override KEY=VALUE]:key=value:' \
+        '--font[Font family override]:family:' \
+        '--font-size[Font size override]:size:' \
+        '--new-window[Open a new window]' \
+        '--no-restore[Do not restore the last session]' \
+        '--hold[Keep the terminal open after the command exits]' \
+        '(-e --execute)'{-e,--execute}'[Run a command]:command:_command_names -e' \
+        '--list[List active terminals]' \
+        '--info[Show one active terminal]:session:_oxterm_sessions' \
+        '--detach[Disconnect remote clients]:session:_oxterm_sessions' \
+        '--broker[Internal PTY broker]:socket:_files' \
+        '(-a --attach)'{-a,--attach}'[Share a live session]:session:_oxterm_sessions' \
+        '(-M --move)'{-M,--move}'[Take a live session over]:session:_oxterm_sessions' \
+        '(-V --version)'{-V,--version}'[Show version]' \
+        '(-h --help)'{-h,--help}'[Show help]' \
+        '*:directory:_directories'
+}
+
+_oxterm "$@"

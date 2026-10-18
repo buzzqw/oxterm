@@ -64,6 +64,10 @@ jobs:
             usr/bin/oxterm \
             usr/share/applications/oxterm.desktop \
             usr/share/icons/hicolor/scalable/apps/oxterm.svg \
+            usr/share/man/man1/oxterm.1.gz \
+            usr/share/bash-completion/completions/oxterm \
+            usr/share/zsh/site-functions/_oxterm \
+            usr/share/fish/vendor_completions.d/oxterm.fish \
             usr/share/licenses/oxterm/LICENSE; do
             grep -qx "$expected" <<<"$listing"
           done
@@ -72,7 +76,13 @@ jobs:
         run: |
           set -euo pipefail
           bsdtar -xf "$PACKAGE_FILE" -C /tmp
-          /tmp/usr/bin/oxterm --version
+          version="$(/tmp/usr/bin/oxterm --version)"
+          printf '%s\n' "$version"
+          pkg_version="$(sed -n 's/^pkgver=//p' packaging/aur/PKGBUILD)"
+          case "$version" in
+            "Oxterm $pkg_version" | "Oxterm $pkg_version+"*) ;;
+            *) echo "::error::unexpected version output: $version"; exit 1 ;;
+          esac
 
       - uses: actions/upload-artifact@v4
         with:

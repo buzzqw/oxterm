@@ -1,12 +1,12 @@
 # Maintainer: Oxterm maintainers <https://github.com/buzzqw/oxterm/issues>
 pkgname=oxterm
-pkgver=1.1.11
+pkgver=1.1.12
 pkgrel=1
 pkgdesc="Lightweight GTK3/VTE terminal emulator with notes, command history and remote sessions"
 arch=('x86_64' 'aarch64')
 url="https://github.com/buzzqw/oxterm"
 license=('EUPL-1.2')
-depends=('gtk3' 'vte3')
+depends=('gtk3' 'vte3>=0.70')
 makedepends=('cargo' 'git' 'pkgconf')
 optdepends=(
   'git: show the current Git branch in the status bar'
@@ -33,5 +33,13 @@ package() {
   install -Dm0644 packaging/oxterm.desktop "$pkgdir/usr/share/applications/oxterm.desktop"
   install -Dm0644 packaging/oxterm.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/oxterm.svg"
   install -Dm0644 manual.md "$pkgdir/usr/share/doc/$pkgname/manual.md"
+  install -Dm0644 packaging/oxterm.1 "$pkgdir/usr/share/man/man1/oxterm.1"
+  gzip -n "$pkgdir/usr/share/man/man1/oxterm.1"
+  install -Dm0644 packaging/completions/oxterm.bash \
+    "$pkgdir/usr/share/bash-completion/completions/oxterm"
+  install -Dm0644 packaging/completions/_oxterm \
+    "$pkgdir/usr/share/zsh/site-functions/_oxterm"
+  install -Dm0644 packaging/completions/oxterm.fish \
+    "$pkgdir/usr/share/fish/vendor_completions.d/oxterm.fish"
   install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

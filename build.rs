@@ -23,5 +23,14 @@ fn main() {
     }
 
     let commit_count = git(&["rev-list", "--count", "HEAD"]).unwrap_or_else(|| "0".into());
+    // Tarball builds have no Git metadata, so no suffix is added there; Git
+    // builds expose the commit count as SemVer build metadata (1.1.11+116).
+    let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into());
+    let full_version = if commit_count.trim() == "0" {
+        version
+    } else {
+        format!("{version}+{}", commit_count.trim())
+    };
+    println!("cargo:rustc-env=OXTERM_VERSION={full_version}");
     println!("cargo:rustc-env=OXTERM_COMMIT_COUNT={commit_count}");
 }

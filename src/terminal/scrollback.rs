@@ -228,11 +228,7 @@ impl TerminalBox {
     pub(super) fn copy_command_output(&self) {
         if let (Some(start_row), Some(mut end_row)) = self.get_command_output_range() {
             end_row = end_row.min(start_row + 500);
-            let (text, _) = self
-                .vte()
-                .text_range_format(Format::Text, start_row, 0, end_row, 0);
-            if let Some(text) = text {
-                let text = text.to_string();
+            if let Some(text) = super::text::range(&self.vte(), start_row, 0, end_row, 0) {
                 let clipboard = gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD);
                 clipboard.set_text(&text);
                 self.vte()

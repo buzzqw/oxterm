@@ -1,6 +1,6 @@
 pkgbase = oxterm
 	pkgdesc = Lightweight GTK3/VTE terminal emulator with notes, command history and remote sessions
-	pkgver = 1.1.11
+	pkgver = 1.1.12
 	pkgrel = 1
 	url = https://github.com/buzzqw/oxterm
 	arch = x86_64
@@ -10,14 +10,14 @@ pkgbase = oxterm
 	makedepends = git
 	makedepends = pkgconf
 	depends = gtk3
-	depends = vte3
+	depends = vte3>=0.70
 	optdepends = git: show the current Git branch in the status bar
 	optdepends = openssh: remote attach/detach and SSH-aware session status
 	optdepends = xdg-utils: open notes and links with the desktop default applications
 	conflicts = oxterm-git
 	conflicts = oxterm-bin
 	options = !lto
-	source = oxterm::git+https://github.com/buzzqw/oxterm.git#tag=v1.1.11
+	source = oxterm::git+https://github.com/buzzqw/oxterm.git#tag=v1.1.12
 	sha256sums = SKIP
 
 pkgname = oxterm

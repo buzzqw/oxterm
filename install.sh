@@ -24,22 +24,29 @@ if [[ ! -x "${SOURCE_BIN}" ]]; then
     exit 1
 fi
 
-install_command=(install -m 0755 "${SOURCE_BIN}" "${INSTALL_BIN}")
-install_icon_command=(install -Dm644 "${ROOT_DIR}/packaging/oxterm.svg" "${INSTALL_ICON}")
-install_desktop_command=(install -Dm644 "${ROOT_DIR}/packaging/oxterm.desktop" "${INSTALL_DESKTOP}")
-if [[ -w "$(dirname "${INSTALL_BIN}")" &&
-    -w "$(dirname "${INSTALL_ICON}")" &&
-    -w "$(dirname "${INSTALL_DESKTOP}")" ]]; then
-    "${install_command[@]}"
-    "${install_icon_command[@]}"
-    "${install_desktop_command[@]}"
-elif command -v sudo >/dev/null 2>&1; then
-    sudo "${install_command[@]}"
-    sudo "${install_icon_command[@]}"
-    sudo "${install_desktop_command[@]}"
-else
-    printf '%s\n' "Oxterm: write access to the system installation directories is required (sudo not found)" >&2
-    exit 1
-fi
+install_file() {
+    local mode="$1" source_file="$2" target_file="$3"
+    if [[ -w "$(dirname "${target_file}")" ]]; then
+        install -D "-m${mode}" "${source_file}" "${target_file}"
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo install -D "-m${mode}" "${source_file}" "${target_file}"
+    else
+        printf '%s\n' "Oxterm: write access to the system installation directories is required (sudo not found)" >&2
+        exit 1
+    fi
+}
 
-printf '%s\n' "Oxterm: installed ${INSTALL_BIN} and desktop launcher"
+install_file 0755 "${SOURCE_BIN}" "${INSTALL_BIN}"
+install_file 0644 "${ROOT_DIR}/packaging/oxterm.svg" "${INSTALL_ICON}"
+install_file 0644 "${ROOT_DIR}/packaging/oxterm.desktop" "${INSTALL_DESKTOP}"
+install_file 0644 "${ROOT_DIR}/packaging/oxterm.1" "/usr/share/man/man1/oxterm.1"
+if [[ -w "/usr/share/man/man1" ]]; then
+    gzip -nf "/usr/share/man/man1/oxterm.1"
+elif command -v sudo >/dev/null 2>&1; then
+    sudo gzip -nf "/usr/share/man/man1/oxterm.1"
+fi
+install_file 0644 "${ROOT_DIR}/packaging/completions/oxterm.bash" "/usr/share/bash-completion/completions/oxterm"
+install_file 0644 "${ROOT_DIR}/packaging/completions/_oxterm" "/usr/share/zsh/site-functions/_oxterm"
+install_file 0644 "${ROOT_DIR}/packaging/completions/oxterm.fish" "/usr/share/fish/vendor_completions.d/oxterm.fish"
+
+printf '%s\n' "Oxterm: installed ${INSTALL_BIN}, desktop launcher, manual page and shell completions"

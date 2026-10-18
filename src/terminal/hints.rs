@@ -161,10 +161,7 @@ impl TerminalBox {
         }
         let first_row = (scroll_top - 1).max(0);
         let last_row = scroll_top + page_size + 1;
-        let (text, _) = self
-            .vte()
-            .text_range_format(Format::Text, first_row, 0, last_row, 0);
-        let text = text.map(|t| t.to_string()).unwrap_or_default();
+        let text = super::text::range(&self.vte(), first_row, 0, last_row, 0).unwrap_or_default();
         if text.is_empty() {
             return Vec::new();
         }

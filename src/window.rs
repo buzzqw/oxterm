@@ -49,7 +49,7 @@ pub const ENCODINGS: &[&str] = &[
 
 pub const EUPL_LICENSE_TEXT: &str = "Licensed under the European Union Public Licence (EUPL) v. 1.2.\n\nCopyright (c) 2026 Andres Zanzani.\n\nThe complete licence text is distributed in the LICENSE file and is available at:\nhttps://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12\n";
 
-pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), ".", env!("OXTERM_COMMIT_COUNT"));
+pub const VERSION: &str = env!("OXTERM_VERSION");
 pub const APP_NAME: &str = "Oxterm";
 pub const APP_TITLE: &str = "Oxterm Terminal";
 
@@ -160,10 +160,8 @@ pub trait TerminalWindow {
             return;
         };
         let end_row = end_row.min(start_row + 2000);
-        let (text, _) =
-            term.vte()
-                .text_range_format(zoha_vte::Format::Text, start_row, 0, end_row, 0);
-        let text = text.map(|t| t.to_string()).unwrap_or_default();
+        let text =
+            crate::terminal::text::range(&term.vte(), start_row, 0, end_row, 0).unwrap_or_default();
         if text.trim().is_empty() {
             self.note_feedback("No command output available", true);
             return;
@@ -226,8 +224,8 @@ pub trait TerminalWindow {
         let vadj = term.vadjustment();
         let first_row = vadj.lower() as i64;
         let last_row = (vadj.upper() as i64).max(first_row);
-        let (text, _) = vte.text_range_format(zoha_vte::Format::Text, first_row, 0, last_row, 0);
-        let text = text.map(|t| t.to_string()).unwrap_or_default();
+        let text =
+            crate::terminal::text::range(&vte, first_row, 0, last_row, 0).unwrap_or_default();
         if text.trim().is_empty() {
             self.note_feedback("Nothing to copy from the terminal", true);
             return;
@@ -3900,8 +3898,8 @@ impl MainWindow {
         let vadj = term.vadjustment();
         let first_row = vadj.lower() as i64;
         let last_row = (vadj.upper() as i64).max(first_row);
-        let (text, _) = vte.text_range_format(zoha_vte::Format::Text, first_row, 0, last_row, 0);
-        let text = text.map(|t| t.to_string()).unwrap_or_default();
+        let text =
+            crate::terminal::text::range(&vte, first_row, 0, last_row, 0).unwrap_or_default();
         if text.trim().is_empty() {
             self.note_feedback("Nothing to copy from the terminal", true);
             return;
