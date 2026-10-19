@@ -134,7 +134,10 @@ without stopping the broker. `Ctrl+B`, then `d` turns local forwarding off;
 `Ctrl+B`, then `s` or `w` and selecting the terminal turns it on again.
 
 The broker socket uses a `0700` directory and `0600` socket under
-`~/.config/oxterm/remote/`. The internal `oxterm --broker SOCKET SESSION_ID` mode
+`~/.config/oxterm/remote/`. If that path would exceed the Unix socket limit
+(for example with a long `$HOME`), Oxterm uses `/tmp/oxterm-<uid>/remote/`
+instead, with the same permissions. The internal
+`oxterm --broker SOCKET SESSION_ID` mode
 owns the child PTY and accepts length-prefixed Unix-socket frames for
 `LIST`, `INFO`, `ATTACH`, `MOVE`, `DETACH`, `RENAME`, `COMMAND`, `LOCAL_ON`,
 `LOCAL_OFF`, and `KILL`. The GUI PTY is a separate endpoint, allowing its local
@@ -508,6 +511,9 @@ remote tmux detaches instead of the local terminal.
 ~/.config/oxterm/profiles/
 ~/.config/oxterm/remote/
 ```
+
+Broker sockets move to `/tmp/oxterm-<uid>/remote/` when the configured path is
+too long for a Unix socket.
 
 The directory is shared with the original application by design. Oxterm keeps
 the previous valid settings file as `settings.json.bak` when replacing

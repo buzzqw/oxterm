@@ -4843,6 +4843,7 @@ pub mod test_scenario {
             "close-last-tab" => close_last_tab(app, win),
             "close-split-pane" => close_split_pane(app, win),
             "detach-from-split" => detach_from_split(app, win),
+            "detach-local-view" => detach_local_view(app, win),
             "new-window" => new_window(app, win),
             other => Err(format!("unknown test scenario: {other}")),
         }
@@ -5012,6 +5013,23 @@ pub mod test_scenario {
         }
         if *win.imp().split_mode.borrow() != "single" {
             return Err("the now-empty split was not collapsed".to_string());
+        }
+        Ok(())
+    }
+
+    fn detach_local_view(app: &gtk::Application, win: &MainWindow) -> Result<(), String> {
+        let term = win
+            .current_terminal()
+            .ok_or_else(|| "no current terminal".to_string())?;
+        term.detach_local_terminal();
+        term.reattach_local();
+        if app.windows().len() != 1 {
+            return Err(
+                "detaching/reattaching the local view changed the window count".to_string(),
+            );
+        }
+        if !term.has_active_process() {
+            return Err("the shell did not survive detaching the local view".to_string());
         }
         Ok(())
     }

@@ -21,6 +21,7 @@ const SCENARIOS: &[&str] = &[
     "close-last-tab",
     "close-split-pane",
     "detach-from-split",
+    "detach-local-view",
     "new-window",
 ];
 
@@ -32,6 +33,9 @@ impl TempHome {
             .duration_since(UNIX_EPOCH)
             .expect("system clock")
             .as_nanos();
+        // Deliberately longer than a Unix socket path allows once the config
+        // directory is appended. This exercises the /tmp socket fallback
+        // (regression test for the crash with a long $HOME).
         let path = std::env::temp_dir().join(format!(
             "oxterm-gui-test-{}-{}-{}",
             name,
@@ -84,31 +88,20 @@ fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Result<(), String>
 
 fn run_scenario(scenario: &str) -> Result<(), String> {
     let home = TempHome::new(scenario);
-    let mut command = Command::new("sh");
-    command
-        .arg("-c")
-        .arg("\"$0\" --no-restore -e sleep 30")
-        .arg(env!("CARGO_BIN_EXE_oxterm"))
+    let child = Command::new(env!("CARGO_BIN_EXE_oxterm"))
+        .arg("--no-restore")
+        .args(["-e", "sleep", "30"])
         .env("HOME", home.path())
         .env("XDG_RUNTIME_DIR", home.path())
         .env("OXTERM_TEST_SCENARIO", scenario)
         .env("NO_AT_BRIDGE", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if std::env::var_os("OXTERM_GUI_TEST_VERBOSE").is_some() {
-        eprintln!(
-            "starting {} with HOME={} DISPLAY={:?}",
-            env!("CARGO_BIN_EXE_oxterm"),
-            home.path().display(),
-            std::env::var_os("DISPLAY")
-        );
-        command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
-    }
-    let mut child = command
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("could not start Oxterm: {error}"))?;
 
+    let mut child = child;
     let waited = wait_with_timeout(&mut child, Duration::from_secs(20));
     let output = child
         .wait_with_output()
@@ -135,6 +128,10 @@ fn run_scenario(scenario: &str) -> Result<(), String> {
 #[test]
 fn window_lifecycle_scenarios() {
     if !gui_tests_enabled() {
+        return;
+    }
+    if !cfg!(debug_assertions) {
+        eprintln!("skipping GUI lifecycle tests: OXTERM_TEST_SCENARIO is debug-only");
         return;
     }
 

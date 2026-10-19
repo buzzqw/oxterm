@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, RawFd};
-use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -207,14 +207,77 @@ fn invalid_id(value: &str) -> bool {
     value.is_empty() || value.chars().any(|c| c.is_control() || c.is_whitespace())
 }
 
+/// Unix-domain socket paths are limited to ~108 bytes on Linux. Session names
+/// contain a PID and two nonces, so keep enough room for the longest realistic
+/// name and fall back to a short `/tmp/oxterm-<uid>` directory when the
+/// configured directory is too deep (for example with a long `$HOME`).
+const MAX_SOCKET_PATH: usize = 107;
+const MAX_SESSION_ID: usize = 49;
+
+fn socket_fits(base: &Path) -> bool {
+    let probe = base
+        .join("remote")
+        .join(format!("oxterm-{}.sock", "0".repeat(MAX_SESSION_ID)));
+    probe.as_os_str().as_encoded_bytes().len() <= MAX_SOCKET_PATH
+}
+
+/// Base directory that holds the `remote` socket directory.
+///
+/// The configured config directory is used when the resulting socket path
+/// fits. Otherwise fall back to `/tmp/oxterm-<uid>`, which is stable across
+/// shells (so `--list`, `-a` and `-M` over SSH resolve the same path) and
+/// short enough for a Unix socket.
+fn remote_base_dir() -> PathBuf {
+    let configured = settings::config_dir();
+    if socket_fits(&configured) {
+        configured
+    } else {
+        PathBuf::from("/tmp").join(format!("oxterm-{}", unsafe { libc::geteuid() }))
+    }
+}
+
 fn remote_dir() -> PathBuf {
-    settings::config_dir().join("remote")
+    remote_base_dir().join("remote")
+}
+
+/// Create a directory that must be private to this user. Used for the /tmp
+/// fallback, where another user could otherwise pre-create a symlink.
+fn create_private_dir(path: &Path) -> io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true).mode(0o700);
+    match builder.create(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "remote socket path is not a directory",
+        ));
+    }
+    if metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "remote socket directory belongs to another user",
+        ));
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 
 fn ensure_remote_dir() -> io::Result<()> {
-    std::fs::create_dir_all(remote_dir())?;
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(remote_dir(), std::fs::Permissions::from_mode(0o700))
+    let configured = settings::config_dir();
+    let base = remote_base_dir();
+    if base == configured {
+        std::fs::create_dir_all(&base)?;
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700))?;
+    } else {
+        create_private_dir(&base)?;
+    }
+    let remote = base.join("remote");
+    std::fs::create_dir_all(&remote)?;
+    std::fs::set_permissions(&remote, std::fs::Permissions::from_mode(0o700))
 }
 
 fn field(value: &str) -> String {

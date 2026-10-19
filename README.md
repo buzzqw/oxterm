@@ -236,7 +236,10 @@ Attaching repaints the session by replaying its most recent output, so the
 current screen appears instead of an empty one. This makes them suitable for use
 through SSH. Broker sockets are private
 (`0700` directory, `0600` socket) and the broker process owns the child PTY, so
-an unexpected GUI crash does not terminate the shell. An intentional GUI close
+an unexpected GUI crash does not terminate the shell. When the configured
+directory would make the Unix socket path too long, Oxterm falls back to
+`/tmp/oxterm-<uid>/remote/` (also `0700`) so sessions keep working with a long
+`$HOME`. An intentional GUI close
 still terminates its attached tabs through the normal cleanup path, but a tab
 whose local view was switched off (`Ctrl+B`, `d`) or taken over with `oxterm -M`
 keeps running under its broker, so the session survives the close and can be
@@ -347,6 +350,7 @@ Oxterm intentionally uses the existing shared data directory:
 ~/.config/oxterm/sessions/       Saved sessions
 ~/.config/oxterm/profiles/       Named profiles
 ~/.config/oxterm/remote/         Private broker sockets
+/tmp/oxterm-<uid>/remote/        Fallback broker sockets when that path is too long
 ```
 
 Open **Edit > Preferences** to configure the terminal, appearance, colors,

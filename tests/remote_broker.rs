@@ -209,11 +209,11 @@ fn broker_round_trips_control_and_terminal_traffic() -> io::Result<()> {
         .duration_since(UNIX_EPOCH)
         .expect("system clock")
         .as_nanos();
-    let directory = std::env::temp_dir().join(format!(
-        "oxterm-broker-test-{}-{}",
-        std::process::id(),
-        unique
-    ));
+    // Keep the path short: the test passes an explicit socket under
+    // `$HOME/.config/oxterm/remote`, and Oxterm only falls back to
+    // `/tmp/oxterm-<uid>` when that Unix socket path would be too long.
+    let directory =
+        std::env::temp_dir().join(format!("ob{}{:06}", std::process::id(), unique % 1_000_000));
     std::fs::create_dir(&directory)?;
     let socket = directory
         .join(".config/oxterm/remote")

@@ -1371,7 +1371,10 @@ impl TerminalBox {
                     libc::close(child_slave);
                     libc::close(gui_slave);
                 }
-                vte.set_pty(None);
+                // Do not reset the PTY to NULL: libvte 0.84 dereferences the
+                // null PTY here. Leaving the GUI PTY attached is harmless
+                // because this terminal has no child and is about to show the
+                // spawn error.
                 return Err(error.to_string());
             }
         };
@@ -1392,7 +1395,7 @@ impl TerminalBox {
                     libc::killpg(child_pid, libc::SIGTERM);
                     libc::close(gui_slave);
                 }
-                vte.set_pty(None);
+                // See the comment above: set_pty(NULL) crashes libvte 0.84.
                 return Err(error);
             }
         };
@@ -1560,7 +1563,7 @@ impl TerminalBox {
         self.vte().grab_focus();
     }
 
-    fn detach_local_terminal(&self) {
+    pub(crate) fn detach_local_terminal(&self) {
         if self.imp().remote_pty.borrow().is_some() {
             return;
         }
@@ -1568,7 +1571,17 @@ impl TerminalBox {
         let Some(pty) = vte.pty() else {
             return;
         };
-        vte.set_pty(None);
+        // libvte 0.84 crashes when the terminal's PTY is set to NULL, which is
+        // what "detaching" the local view used to do. Park an idle PTY in the
+        // widget instead and keep the real one for the broker/reattach.
+        let idle = match vte.pty_new_sync(PtyFlags::DEFAULT, None::<&gio::Cancellable>) {
+            Ok(pty) => pty,
+            Err(error) => {
+                LOGGER.error(&format!("remote_pty_replace_failed error={}", error));
+                return;
+            }
+        };
+        vte.set_pty(Some(&idle));
         *self.imp().remote_pty.borrow_mut() = Some(pty);
         if let Some(handle) = self.imp().remote_handle.borrow().as_ref() {
             handle.local_off();
