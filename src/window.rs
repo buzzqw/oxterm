@@ -3962,6 +3962,13 @@ impl MainWindow {
         let title = self.get_tab_text(&term);
         // Removing the final page closes the now-empty source window. That is
         // a consequence of detaching, not a user-requested window close.
+        //
+        // Keep the application alive across that gap: destroying the last
+        // window drops GtkApplication's hold, and without this extra hold the
+        // main loop would exit before the detached window is registered,
+        // taking every tab with it.
+        let app = self.application();
+        let _app_hold = app.as_ref().map(|app| app.hold());
         *self.imp().skip_close_confirm.borrow_mut() = true;
         nb.remove_page(Some(idx));
         *self.imp().skip_close_confirm.borrow_mut() = false;
@@ -3972,8 +3979,10 @@ impl MainWindow {
 
         let new_win = DetachedWindow::new(&term, &title);
         // Register with the application so the process (and this tab's
-        // shell) keeps running when the last main window goes away.
-        if let Some(app) = self.application() {
+        // shell) keeps running when the last main window goes away. The
+        // source window may already be destroyed here, which clears its
+        // `application` pointer, so use the reference captured above.
+        if let Some(app) = app.as_ref() {
             app.add_window(&new_win);
         }
         term.set_window_ref(&new_win);
