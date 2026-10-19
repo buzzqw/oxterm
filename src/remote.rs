@@ -1110,6 +1110,11 @@ fn run_broker(path: &Path, id: &str) -> i32 {
     let mut poll_fds = Vec::with_capacity(3);
     set_nonblocking(CHILD_FD);
     set_nonblocking(GUI_FD);
+    // A burst of output makes the allocator keep large free blocks. Once the
+    // queues drain, return them to the OS instead of keeping several MB per
+    // broker resident for the rest of the session.
+    let mut output_since_trim = 0usize;
+    let mut trim_pending = false;
 
     loop {
         // Only the GUI drives the child size while no remote client is
@@ -1168,9 +1173,33 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         }
         // Every broker input is represented by a file descriptor. Sleeping
         // until readiness avoids ten needless wakeups per second when idle.
-        let status = unsafe { libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as _, -1) };
+        // When a burst has left memory behind, wait for a short quiet period
+        // before trimming so continuous output does not pay for it.
+        let queues_empty = gui_output.is_empty()
+            && state.child_input.is_empty()
+            && clients.iter().all(|client| client.output.is_empty());
+        let timeout = if trim_pending && queues_empty {
+            500
+        } else {
+            -1
+        };
+        let status = unsafe { libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as _, timeout) };
         if status < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
             break;
+        }
+        if status == 0 {
+            if trim_pending {
+                gui_output.shrink_to_fit();
+                for client in &mut clients {
+                    client.output.shrink_to_fit();
+                }
+                #[cfg(target_env = "gnu")]
+                unsafe {
+                    libc::malloc_trim(0);
+                }
+                trim_pending = false;
+            }
+            continue;
         }
 
         if poll_fds[0].revents & libc::POLLIN != 0 {
@@ -1212,6 +1241,11 @@ fn run_broker(path: &Path, id: &str) -> i32 {
                         &bytes[..count as usize],
                     );
                     record_replay(&mut state.replay, &bytes[..count as usize]);
+                    output_since_trim += count as usize;
+                    if output_since_trim >= 512 * 1024 {
+                        output_since_trim = 0;
+                        trim_pending = true;
+                    }
                 } else if count == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EIO)
                 {
                     state.child_closed = true;
