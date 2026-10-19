@@ -522,6 +522,10 @@ impl App {
             );
             app.add_window(&win);
             win.present();
+            #[cfg(debug_assertions)]
+            if let Some(scenario) = std::env::var_os("OXTERM_TEST_SCENARIO") {
+                window::test_scenario::schedule(app, &win, scenario.to_string_lossy().into_owned());
+            }
             0
         });
         // With HANDLES_COMMAND_LINE every launch goes through the
@@ -543,7 +547,12 @@ impl App {
                 glib::ControlFlow::Break
             });
         }
-        self.app.run_with_args(&args).value()
+        let code = self.app.run_with_args(&args).value();
+        #[cfg(debug_assertions)]
+        if window::test_scenario::failed() {
+            return 1;
+        }
+        code
     }
 }
 

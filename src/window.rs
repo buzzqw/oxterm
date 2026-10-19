@@ -1437,6 +1437,11 @@ mod main_imp {
         pub remote_stats_pending: RefCell<bool>,
         pub remote_stats_generation: RefCell<u64>,
         pub split_mode: RefCell<String>,
+        /// True while `move_tab_between` is detaching a page from its old
+        /// notebook. The page is appended to the destination only afterwards,
+        /// so `page-removed` must not mistake the temporary empty state for
+        /// "every tab is gone" and close the window.
+        pub moving_tab: RefCell<bool>,
         pub tab_base_titles: RefCell<std::collections::HashMap<TerminalBox, String>>,
         /// Tabs explicitly renamed by the user. Their title is kept as-is and
         /// is not replaced by OSC titles coming from the running program.
@@ -3101,6 +3106,10 @@ impl MainWindow {
             return;
         };
         let title = self.get_tab_text(&term);
+        // Keep `page-removed` from closing the window in the short window
+        // between removing the page here and appending it to `dst` below.
+        *self.imp().moving_tab.borrow_mut() = true;
+        let _moving = SplitGuard(&self.imp().moving_tab);
         src.remove_page(Some(idx));
         let (lbl_box, lbl) = self.make_tab_label(&title, &term);
         self.imp()
@@ -3353,14 +3362,19 @@ impl MainWindow {
     }
 
     fn on_page_removed(&self) {
-        if *self.imp().restoring_session.borrow() {
+        if *self.imp().restoring_session.borrow() || *self.imp().moving_tab.borrow() {
             return;
         }
         let nb = self.imp().notebook.borrow().clone().unwrap();
         let nb2 = self.imp().notebook2.borrow().clone().unwrap();
         if nb.n_pages() == 0 && nb2.n_pages() == 0 {
             self.on_close(self);
-        } else if nb2.n_pages() == 0 && *self.imp().split_mode.borrow() != "single" {
+        } else if *self.imp().split_mode.borrow() != "single"
+            && (nb.n_pages() == 0 || nb2.n_pages() == 0)
+        {
+            // Collapse the split when either pane runs out of tabs. Without
+            // this, closing one side leaves an empty pane and collapsing it
+            // later would briefly make both notebooks empty.
             self.set_split("single", false);
         }
     }
@@ -4762,5 +4776,263 @@ fn spawn_new_process(new_window: bool) {
     }
     if let Ok(child) = cmd.spawn() {
         crate::notes::reap_in_background(child);
+    }
+}
+
+/// Debug-only scenarios used by `tests/gui_lifecycle.rs`.
+///
+/// The integration test starts the real binary with `OXTERM_TEST_SCENARIO`
+/// set, so the scenario runs on the actual GTK main thread with the real
+/// application event loop. Release builds do not contain this module.
+#[cfg(debug_assertions)]
+pub mod test_scenario {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    static FAILED: AtomicBool = AtomicBool::new(false);
+
+    pub fn failed() -> bool {
+        FAILED.load(Ordering::SeqCst)
+    }
+
+    pub fn schedule(app: &gtk::Application, win: &MainWindow, scenario: String) {
+        let app = app.clone();
+        let win = win.clone();
+        let mut attempts = 0u32;
+        glib::timeout_add_local(Duration::from_millis(50), move || {
+            if win.total_tabs() == 0 {
+                attempts += 1;
+                if attempts < 100 {
+                    return glib::ControlFlow::Continue;
+                }
+                finish(Err("the initial terminal tab was not created".into()), &app);
+                return glib::ControlFlow::Break;
+            }
+            finish(run(&app, &win, &scenario), &app);
+            glib::ControlFlow::Break
+        });
+    }
+
+    fn finish(result: Result<(), String>, app: &gtk::Application) {
+        match result {
+            Ok(()) => eprintln!("OXTERM TEST SCENARIO OK"),
+            Err(error) => {
+                FAILED.store(true, Ordering::SeqCst);
+                eprintln!("OXTERM TEST SCENARIO FAILED: {error}");
+            }
+        }
+        close_all(app);
+        app.quit();
+    }
+
+    fn close_all(app: &gtk::Application) {
+        for window in app.windows() {
+            if let Some(win) = window.downcast_ref::<MainWindow>() {
+                win.shutdown();
+            } else if let Some(win) = window.downcast_ref::<DetachedWindow>() {
+                win.shutdown();
+            }
+        }
+    }
+
+    fn run(app: &gtk::Application, win: &MainWindow, scenario: &str) -> Result<(), String> {
+        match scenario {
+            "detach-last-tab" => detach_last_tab(app, win),
+            "detach-multi-tab" => detach_multi_tab(app, win),
+            "close-last-tab" => close_last_tab(app, win),
+            "close-split-pane" => close_split_pane(app, win),
+            "detach-from-split" => detach_from_split(app, win),
+            "new-window" => new_window(app, win),
+            other => Err(format!("unknown test scenario: {other}")),
+        }
+    }
+
+    fn notebook(win: &MainWindow, right: bool) -> Result<gtk::Notebook, String> {
+        if right {
+            win.imp()
+                .notebook2
+                .borrow()
+                .clone()
+                .ok_or_else(|| "right notebook is missing".to_string())
+        } else {
+            win.imp()
+                .notebook
+                .borrow()
+                .clone()
+                .ok_or_else(|| "left notebook is missing".to_string())
+        }
+    }
+
+    fn term_at(notebook: &gtk::Notebook, index: u32) -> Result<TerminalBox, String> {
+        notebook
+            .nth_page(Some(index))
+            .ok_or_else(|| format!("no notebook page at index {index}"))?
+            .downcast::<TerminalBox>()
+            .map_err(|_| format!("page at index {index} is not a terminal"))
+    }
+
+    fn add_sleep_tab(
+        win: &MainWindow,
+        target: Option<&gtk::Notebook>,
+        title: &str,
+    ) -> Result<TerminalBox, String> {
+        let command = vec!["sleep".to_string(), "30".to_string()];
+        if win.total_tabs() >= 100 {
+            return Err("too many tabs".to_string());
+        }
+        Ok(win.add_new_tab(
+            Some("/tmp"),
+            target,
+            Some(title),
+            Some(title),
+            Some(&command),
+        ))
+    }
+
+    fn detach_last_tab(app: &gtk::Application, win: &MainWindow) -> Result<(), String> {
+        let term = win
+            .current_terminal()
+            .ok_or_else(|| "no current terminal".to_string())?;
+        win.detach_tab(Some(&term));
+
+        let windows = app.windows();
+        if windows.len() != 1 {
+            return Err(format!(
+                "detaching the last tab left {} window(s), expected 1",
+                windows.len()
+            ));
+        }
+        let detached = windows[0]
+            .downcast_ref::<DetachedWindow>()
+            .ok_or_else(|| "the remaining window is not detached".to_string())?;
+        let attached = detached.imp().terminal.borrow().clone();
+        if attached.as_ref() != Some(&term) {
+            return Err("the detached window does not own the moved tab".to_string());
+        }
+        if !term.has_active_process() {
+            return Err("the shell did not survive the detach".to_string());
+        }
+        Ok(())
+    }
+
+    fn detach_multi_tab(app: &gtk::Application, win: &MainWindow) -> Result<(), String> {
+        let left = notebook(win, false)?;
+        let first = term_at(&left, 0)?;
+        add_sleep_tab(win, None, "second")?;
+        win.detach_tab(Some(&first));
+
+        let windows = app.windows();
+        if windows.len() != 2 {
+            return Err(format!(
+                "expected the source and detached windows, found {}",
+                windows.len()
+            ));
+        }
+        if windows.iter().filter(|w| w.is::<MainWindow>()).count() != 1 {
+            return Err("the source MainWindow disappeared".to_string());
+        }
+        if windows.iter().filter(|w| w.is::<DetachedWindow>()).count() != 1 {
+            return Err("the DetachedWindow was not registered".to_string());
+        }
+        if win.total_tabs() != 1 {
+            return Err(format!(
+                "source window should keep one tab, has {}",
+                win.total_tabs()
+            ));
+        }
+        Ok(())
+    }
+
+    fn close_last_tab(app: &gtk::Application, win: &MainWindow) -> Result<(), String> {
+        settings()
+            .set("confirm_close", serde_json::json!(false))
+            .map_err(|e| format!("disable confirm_close: {e}"))?;
+        let term = win
+            .current_terminal()
+            .ok_or_else(|| "no current terminal".to_string())?;
+        win.close_tab(Some(&term));
+        if !app.windows().is_empty() {
+            return Err("closing the last tab did not close the window".to_string());
+        }
+        Ok(())
+    }
+
+    fn close_split_pane(app: &gtk::Application, win: &MainWindow) -> Result<(), String> {
+        let left = notebook(win, false)?;
+        let first = term_at(&left, 0)?;
+        win.set_split("vertical", false);
+        let right = notebook(win, true)?;
+        add_sleep_tab(win, Some(&right), "right")?;
+
+        win.close_tab(Some(&first));
+
+        if app.windows().len() != 1 {
+            return Err("closing one split pane closed the whole window".to_string());
+        }
+        if win.total_tabs() != 1 {
+            return Err(format!(
+                "expected one surviving tab, found {}",
+                win.total_tabs()
+            ));
+        }
+        if left.n_pages() != 1 || right.n_pages() != 0 {
+            return Err(format!(
+                "tabs were not moved out of the split: left={}, right={}",
+                left.n_pages(),
+                right.n_pages()
+            ));
+        }
+        if *win.imp().split_mode.borrow() != "single" {
+            return Err("the split was not collapsed".to_string());
+        }
+        Ok(())
+    }
+
+    fn detach_from_split(app: &gtk::Application, win: &MainWindow) -> Result<(), String> {
+        win.set_split("vertical", false);
+        let right = notebook(win, true)?;
+        let term = add_sleep_tab(win, Some(&right), "right")?;
+        win.detach_tab(Some(&term));
+
+        if app.windows().len() != 2 {
+            return Err(format!(
+                "expected the source and detached windows, found {}",
+                app.windows().len()
+            ));
+        }
+        if win.total_tabs() != 1 {
+            return Err(format!(
+                "the source window should keep one tab, has {}",
+                win.total_tabs()
+            ));
+        }
+        if right.n_pages() != 0 {
+            return Err("the detached tab is still in the right notebook".to_string());
+        }
+        if *win.imp().split_mode.borrow() != "single" {
+            return Err("the now-empty split was not collapsed".to_string());
+        }
+        Ok(())
+    }
+
+    fn new_window(app: &gtk::Application, win: &MainWindow) -> Result<(), String> {
+        win.on_new_window();
+        if app.windows().len() != 2 {
+            return Err(format!(
+                "new window was not registered, found {} window(s)",
+                app.windows().len()
+            ));
+        }
+        if app
+            .windows()
+            .iter()
+            .filter(|w| w.is::<MainWindow>())
+            .count()
+            != 2
+        {
+            return Err("the new window is not a MainWindow".to_string());
+        }
+        Ok(())
     }
 }
