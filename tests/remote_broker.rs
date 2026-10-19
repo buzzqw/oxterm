@@ -84,6 +84,28 @@ fn set_echo(fd: RawFd, enabled: bool) -> io::Result<()> {
     Ok(())
 }
 
+fn set_winsize(fd: RawFd, columns: u16, rows: u16) -> io::Result<()> {
+    let size = libc::winsize {
+        ws_row: rows,
+        ws_col: columns,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    if unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &size) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn winsize(fd: RawFd) -> io::Result<(u16, u16)> {
+    let mut size = std::mem::MaybeUninit::<libc::winsize>::zeroed();
+    if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, size.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let size = unsafe { size.assume_init() };
+    Ok((size.ws_col, size.ws_row))
+}
+
 fn write_fd(fd: RawFd, mut data: &[u8]) -> io::Result<()> {
     while !data.is_empty() {
         let count = unsafe { libc::write(fd, data.as_ptr().cast(), data.len()) };
@@ -203,8 +225,7 @@ impl Drop for Fixture {
     }
 }
 
-#[test]
-fn broker_round_trips_control_and_terminal_traffic() -> io::Result<()> {
+fn start_broker() -> io::Result<Fixture> {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock")
@@ -256,6 +277,46 @@ fn broker_round_trips_control_and_terminal_traffic() -> io::Result<()> {
         directory,
     };
     wait_for_socket(&fixture.socket, &mut fixture.child)?;
+    Ok(fixture)
+}
+
+fn wait_for_size(fd: RawFd, expected: (u16, u16), timeout: Duration) -> io::Result<(u16, u16)> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let size = winsize(fd)?;
+        if size == expected || Instant::now() >= deadline {
+            return Ok(size);
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn broker_tracks_gui_resizes_without_terminal_io() -> io::Result<()> {
+    let fixture = start_broker()?;
+    // Let the broker settle after the probe connection used by
+    // `wait_for_socket`, so the resize below is the only thing that can wake it.
+    thread::sleep(Duration::from_millis(150));
+
+    set_winsize(fixture.gui_master, 137, 41)?;
+    assert_eq!(
+        wait_for_size(fixture.child_slave, (137, 41), Duration::from_secs(2))?,
+        (137, 41),
+        "child PTY did not follow the GUI PTY resize"
+    );
+
+    set_winsize(fixture.gui_master, 90, 30)?;
+    assert_eq!(
+        wait_for_size(fixture.child_slave, (90, 30), Duration::from_secs(2))?,
+        (90, 30),
+        "child PTY did not follow a second GUI PTY resize"
+    );
+    Ok(())
+}
+
+#[test]
+fn broker_round_trips_control_and_terminal_traffic() -> io::Result<()> {
+    let mut fixture = start_broker()?;
 
     set_echo(fixture.child_slave, true)?;
     assert_eq!(

@@ -21,6 +21,11 @@ const MAX_CLIENTS: usize = 32;
 /// broker's memory bounded while staying far above one screen's worth of
 /// output, so an idle program's last full frame is always retained.
 const MAX_REPLAY: usize = 256 * 1024;
+/// How often the broker re-reads the GUI PTY size while the local window is
+/// the active endpoint. A PTY resize does not wake any of the descriptors the
+/// broker polls, so this is the only way to notice a window resize before the
+/// next keystroke or output burst.
+const GUI_SIZE_POLL_MS: i32 = 100;
 
 /// Last winsize applied to the child PTY, packed as `(columns << 32) | rows`.
 /// `set_child_size` becomes a no-op when the size is unchanged so that the
@@ -1121,7 +1126,8 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         // attached. Once a remote client attaches it sends its own
         // FRAME_RESIZE frames, which would otherwise be reverted on the next
         // iteration by the GUI's size.
-        if !state.gui_closed && !clients.iter().any(|client| client.attached) {
+        let gui_drives_size = !state.gui_closed && !clients.iter().any(|client| client.attached);
+        if gui_drives_size {
             sync_gui_size();
         }
         poll_fds.clear();
@@ -1172,13 +1178,18 @@ fn run_broker(path: &Path, id: &str) -> i32 {
             });
         }
         // Every broker input is represented by a file descriptor. Sleeping
-        // until readiness avoids ten needless wakeups per second when idle.
-        // When a burst has left memory behind, wait for a short quiet period
-        // before trimming so continuous output does not pay for it.
+        // until readiness avoids needless wakeups when idle. The exception is
+        // the GUI-driven child size: changing a PTY's winsize does not make
+        // any polled descriptor readable, so the broker must wake up on its own
+        // to notice that the window was resized. When a burst has left memory
+        // behind, wait for a short quiet period before trimming so continuous
+        // output does not pay for it.
         let queues_empty = gui_output.is_empty()
             && state.child_input.is_empty()
             && clients.iter().all(|client| client.output.is_empty());
-        let timeout = if trim_pending && queues_empty {
+        let timeout = if gui_drives_size {
+            GUI_SIZE_POLL_MS
+        } else if trim_pending && queues_empty {
             500
         } else {
             -1
@@ -1188,7 +1199,7 @@ fn run_broker(path: &Path, id: &str) -> i32 {
             break;
         }
         if status == 0 {
-            if trim_pending {
+            if trim_pending && queues_empty {
                 gui_output.shrink_to_fit();
                 for client in &mut clients {
                     client.output.shrink_to_fit();
@@ -1260,6 +1271,12 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         }
 
         if poll_fds[2].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+            // Apply a pending resize before forwarding keystrokes, so a
+            // command started right after resizing the window already sees the
+            // new width instead of wrapping at the previous one.
+            if gui_drives_size {
+                sync_gui_size();
+            }
             let mut bytes = [0u8; 8192];
             loop {
                 let count =
