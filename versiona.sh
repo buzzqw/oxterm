@@ -4,7 +4,8 @@
 # Flow:
 #   1. Calculate or accept the next Cargo semver version.
 #   2. Generate release notes from commits after the last tag.
-#   3. Update Cargo.toml, create a release commit and annotated tag.
+#   3. Update Cargo.toml and the AUR metadata, create a release commit and
+#      annotated tag.
 #   4. Push the branch and tag, then create the GitHub release.
 #   5. Build and install the local binary the user launches (skip with --no-install).
 #
@@ -99,6 +100,24 @@ detect_main_branch() {
     git branch --show-current
 }
 
+# Keep packaging/aur in sync with the Cargo version; the "AUR package"
+# workflow fails when PKGBUILD or .SRCINFO lag behind a release.
+sync_aur_version() {
+    local pkgbuild="packaging/aur/PKGBUILD"
+    local srcinfo="packaging/aur/.SRCINFO"
+
+    [[ -f "$pkgbuild" ]] || return 0
+
+    sed -i -E "s/^pkgver=.*/pkgver=${VERSION}/" "$pkgbuild"
+
+    if [[ -f "$srcinfo" ]]; then
+        sed -i -E \
+            -e "s/^(\tpkgver = ).*/\1${VERSION}/" \
+            -e "s|^(\tsource = .*#tag=v)[0-9.]*$|\1${VERSION}|" \
+            "$srcinfo"
+    fi
+}
+
 MAIN_BRANCH="$(detect_main_branch)"
 CURRENT_VERSION="$(sed -n 's/^version = "\([0-9][0-9.]*\)"/\1/p' Cargo.toml | head -n 1)"
 [[ "$CURRENT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || \
@@ -170,7 +189,16 @@ if [[ "$CURRENT_VERSION" != "$VERSION" ]]; then
     cargo update -p oxterm --offline
 fi
 
-git add Cargo.toml Cargo.lock
+sync_aur_version
+
+AUR_FILES=()
+for file in packaging/aur/PKGBUILD packaging/aur/.SRCINFO; do
+    if [[ -f "$file" ]]; then
+        AUR_FILES+=("$file")
+    fi
+done
+
+git add Cargo.toml Cargo.lock "${AUR_FILES[@]}"
 git commit -m "chore: release ${VERSION}"
 git tag -a "$TAG_VERSION" -m "Oxterm ${VERSION}" -m "$CHANGELOG"
 git push origin "$MAIN_BRANCH"
