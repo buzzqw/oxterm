@@ -2633,7 +2633,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 return glib::Propagation::Stop;
             }
             if key == K::n || key == K::N {
-                self.call_window(|win| win.new_tab_signal());
+                self.call_window(|win| win.new_window_signal());
                 return glib::Propagation::Stop;
             }
             if key == K::t || key == K::T {

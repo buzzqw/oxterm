@@ -119,6 +119,7 @@ fn show_note_feedback(
 /// host window without knowing which concrete kind it is.
 pub trait TerminalWindow {
     fn new_tab_signal(&self);
+    fn new_window_signal(&self);
     fn close_tab_signal(&self, term: Option<&TerminalBox>);
     fn close_window_signal(&self);
     fn set_title_dialog(&self);
@@ -1085,7 +1086,10 @@ impl DetachedWindow {
     }
 
     fn on_new_window(&self) {
-        spawn_new_process(false);
+        match self.application() {
+            Some(app) => open_new_main_window(&app),
+            None => spawn_new_process(true),
+        }
     }
 
     fn open_fm(&self) {
@@ -1345,6 +1349,9 @@ impl DetachedWindow {
 
 impl TerminalWindow for DetachedWindow {
     fn new_tab_signal(&self) {
+        self.on_new_window();
+    }
+    fn new_window_signal(&self) {
         self.on_new_window();
     }
     fn close_tab_signal(&self, _term: Option<&TerminalBox>) {
@@ -3685,7 +3692,10 @@ impl MainWindow {
     }
 
     fn on_new_window(&self) {
-        spawn_new_process(true);
+        match self.application() {
+            Some(app) => open_new_main_window(&app),
+            None => spawn_new_process(true),
+        }
     }
 
     fn on_open_fm(&self) {
@@ -4229,6 +4239,10 @@ impl MainWindow {
         self.add_new_tab(None, None, None, None, None);
     }
 
+    pub fn new_window_signal(&self) {
+        self.on_new_window();
+    }
+
     pub fn close_tab_signal(&self, term: Option<&TerminalBox>) {
         *self.imp().skip_close_confirm.borrow_mut() = true;
         self.close_tab(term);
@@ -4606,6 +4620,9 @@ impl TerminalWindow for MainWindow {
     fn new_tab_signal(&self) {
         MainWindow::new_tab_signal(self);
     }
+    fn new_window_signal(&self) {
+        MainWindow::new_window_signal(self);
+    }
     fn close_tab_signal(&self, term: Option<&TerminalBox>) {
         MainWindow::close_tab_signal(self, term);
     }
@@ -4709,10 +4726,29 @@ fn window_size_for((cols, rows, font_size): (i64, i64, i64)) -> (i32, i32) {
     (cols as i32 * cw + 60, rows as i32 * ch + 120)
 }
 
-fn spawn_new_process(_new_window: bool) {
-    let current_exe = std::env::current_exe().unwrap_or_default();
+/// Open a new main window inside the current process.
+///
+/// Spawning a second process re-executes the binary from disk; if the
+/// executable was rebuilt or replaced in the meantime (a normal occurrence
+/// while working on Oxterm), the new process can map a half-written file and
+/// crash right after showing its window. Creating the window in-process avoids
+/// that race and is also noticeably faster.
+fn open_new_main_window(app: &gtk::Application) {
+    let start_dir = std::env::current_dir()
+        .ok()
+        .map(|path| path.to_string_lossy().to_string());
+    let win = MainWindow::new(Some(app), start_dir, None, false, WindowOptions::default());
+    app.add_window(&win);
+    win.present();
+}
+
+fn spawn_new_process(new_window: bool) {
+    // `/proc/self/exe` always points at the running image, even when the file
+    // on disk has since been replaced (for example by a rebuild). Re-executing
+    // that inode is safer than resolving the old path again.
+    let current_exe = std::path::PathBuf::from("/proc/self/exe");
     let mut cmd = std::process::Command::new(&current_exe);
-    if _new_window {
+    if new_window {
         cmd.arg("--new-window");
     }
     if let Ok(child) = cmd.spawn() {
