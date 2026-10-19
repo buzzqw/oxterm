@@ -305,7 +305,7 @@ completion.
 | `Ctrl+Shift+Q` | Close window |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / paste |
 | `Ctrl+Shift+A` | Select all |
-| `Ctrl+Shift+S` | Set tab title |
+| `Ctrl+Shift+S` | Rename tab |
 | `Ctrl+Shift+R` | Reset terminal |
 | `Ctrl+Shift+X` | Reset and clear terminal |
 | `Ctrl+Shift+F` | Search the scrollback (Enter/Shift+Enter = next/prev) |

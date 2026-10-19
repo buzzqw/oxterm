@@ -1431,6 +1431,9 @@ mod main_imp {
         pub remote_stats_generation: RefCell<u64>,
         pub split_mode: RefCell<String>,
         pub tab_base_titles: RefCell<std::collections::HashMap<TerminalBox, String>>,
+        /// Tabs explicitly renamed by the user. Their title is kept as-is and
+        /// is not replaced by OSC titles coming from the running program.
+        pub tab_custom_titles: RefCell<std::collections::HashMap<TerminalBox, String>>,
         pub tab_labels:
             RefCell<std::collections::HashMap<TerminalBox, (gtk::EventBox, gtk::Label)>>,
         pub next_tab_number: RefCell<i64>,
@@ -2676,14 +2679,14 @@ impl MainWindow {
         let weak = crate::SendWeak::new(self);
         self.menu_item(
             &term_menu,
-            "Set Title...",
+            "Rename Tab...",
             Box::new(move || {
                 if let Some(w) = weak.upgrade() {
                     w.set_title_dialog();
                 }
             }),
             Some("<Primary><Shift>S"),
-            Some("Set a custom title for the current tab"),
+            Some("Rename the current tab (or double-click a tab)"),
         );
         term_menu.append(&gtk::SeparatorMenuItem::new());
 
@@ -3193,6 +3196,10 @@ impl MainWindow {
                     win.on_tab_button_press(&term2);
                     return glib::Propagation::Stop;
                 }
+                if ev.button() == 1 && ev.event_type() == gdk::EventType::DoubleButtonPress {
+                    win.rename_tab_dialog(&term2);
+                    return glib::Propagation::Stop;
+                }
             }
             glib::Propagation::Proceed
         });
@@ -3222,6 +3229,27 @@ impl MainWindow {
 
     fn on_tab_button_press(&self, term: &TerminalBox) {
         let menu = gtk::Menu::new();
+        let weak = crate::SendWeak::new(self);
+        let term_c = term.clone();
+        let item_rename = gtk::MenuItem::with_label("Rename Tab...");
+        item_rename.connect_activate(move |_| {
+            if let Some(w) = weak.upgrade() {
+                w.rename_tab_dialog(&term_c);
+            }
+        });
+        menu.append(&item_rename);
+        if self.imp().tab_custom_titles.borrow().contains_key(term) {
+            let weak = crate::SendWeak::new(self);
+            let term_c = term.clone();
+            let item_reset = gtk::MenuItem::with_label("Reset Tab Title");
+            item_reset.connect_activate(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.reset_tab_title(&term_c);
+                }
+            });
+            menu.append(&item_reset);
+        }
+        menu.append(&gtk::SeparatorMenuItem::new());
         let weak = crate::SendWeak::new(self);
         let term_c = term.clone();
         let item_close = gtk::MenuItem::with_label("Close Tab");
@@ -3311,6 +3339,7 @@ impl MainWindow {
             term.terminate();
             self.imp().tab_labels.borrow_mut().remove(&term);
             self.imp().tab_base_titles.borrow_mut().remove(&term);
+            self.imp().tab_custom_titles.borrow_mut().remove(&term);
             nb.remove_page(Some(idx));
             self.update_tabs_menu();
         }
@@ -3337,6 +3366,11 @@ impl MainWindow {
             if self.total_tabs() == 1 {
                 self.update_title(&forced);
             }
+            return;
+        }
+        // Once the user has renamed a tab, keep that name: shell prompts and
+        // other OSC title updates must not overwrite an explicit choice.
+        if self.imp().tab_custom_titles.borrow().contains_key(term) {
             return;
         }
         let base = self
@@ -3705,32 +3739,89 @@ impl MainWindow {
     }
 
     fn open_set_title_dialog(&self) {
+        if let Some(term) = self.current_terminal() {
+            self.rename_tab_dialog(&term);
+        }
+    }
+
+    fn rename_tab_dialog(&self, term: &TerminalBox) {
+        // Renaming an inactive tab is allowed from its context menu: bring it
+        // to the front first so the dialog refers to a visible page.
+        if let Some((notebook, page)) = self.find_terminal(term) {
+            self.jump_to_tab(&notebook, page);
+        }
         let dialog = gtk::Dialog::with_buttons(
-            Some("Set Tab Title"),
+            Some("Rename Tab"),
             Some(self),
             gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
             &[
                 ("Cancel", gtk::ResponseType::Cancel),
-                ("Set", gtk::ResponseType::Ok),
+                ("Rename", gtk::ResponseType::Ok),
             ],
         );
         let entry = gtk::Entry::new();
-        if let Some(term) = self.current_terminal() {
-            entry.set_text(&self.get_tab_text(&term));
-        }
+        entry.set_text(&self.get_tab_text(term));
+        entry.set_position(-1);
+        entry.select_region(0, -1);
+        entry.set_activates_default(true);
         dialog.content_area().pack_start(&entry, true, true, 8);
+        dialog.set_default_response(gtk::ResponseType::Ok);
         dialog.show_all();
         if dialog.run() == gtk::ResponseType::Ok {
-            let title = entry.text().trim().to_string();
-            if !title.is_empty() {
-                self.update_title(&format!("{} - {}", APP_NAME, title));
-                if let Some(term) = self.current_terminal() {
-                    self.set_tab_text(&term, &title);
-                    self.imp().tab_base_titles.borrow_mut().insert(term, title);
-                }
-            }
+            self.rename_tab(term, entry.text().as_str());
         }
         dialog.close();
+    }
+
+    fn rename_tab(&self, term: &TerminalBox, title: &str) {
+        let title: String = title.trim().chars().take(200).collect();
+        if title.is_empty() {
+            return;
+        }
+        self.imp()
+            .tab_custom_titles
+            .borrow_mut()
+            .insert(term.clone(), title.clone());
+        self.set_tab_text(term, &title);
+        if self
+            .current_terminal()
+            .is_some_and(|current| &current == term)
+        {
+            self.update_title(&format!("{} - {}", APP_NAME, title));
+        }
+        self.update_tabs_menu();
+    }
+
+    fn reset_tab_title(&self, term: &TerminalBox) {
+        if self
+            .imp()
+            .tab_custom_titles
+            .borrow_mut()
+            .remove(term)
+            .is_none()
+        {
+            return;
+        }
+        let base = self
+            .imp()
+            .tab_base_titles
+            .borrow()
+            .get(term)
+            .cloned()
+            .unwrap_or_else(|| settings().get_str("tab_title"));
+        let title = term
+            .vte()
+            .window_title()
+            .map(|t| t.to_string())
+            .unwrap_or(base);
+        self.set_tab_title_from_terminal(term, &title);
+        if self
+            .current_terminal()
+            .is_some_and(|current| &current == term)
+        {
+            self.update_title(&format!("{} - {}", APP_NAME, self.get_tab_text(term)));
+        }
+        self.update_tabs_menu();
     }
 
     fn save_profile_dialog(&self) {
@@ -3866,6 +3957,7 @@ impl MainWindow {
         *self.imp().skip_close_confirm.borrow_mut() = false;
         self.imp().tab_labels.borrow_mut().remove(&term);
         self.imp().tab_base_titles.borrow_mut().remove(&term);
+        self.imp().tab_custom_titles.borrow_mut().remove(&term);
         self.update_tabs_menu();
 
         let new_win = DetachedWindow::new(&term, &title);
@@ -4353,10 +4445,12 @@ impl MainWindow {
                     .unwrap_or_else(|| self.get_tab_text(&term));
                 let title = self.get_tab_text(&term);
                 let cwd = term.get_cwd();
+                let custom_title = self.imp().tab_custom_titles.borrow().contains_key(&term);
                 target.push(crate::session::TabEntry {
                     base_title,
                     title,
                     cwd,
+                    custom_title,
                 });
             }
         }
@@ -4412,37 +4506,50 @@ impl MainWindow {
         let tabs_right = data.tabs_right.clone();
         if !tabs_left.is_empty() {
             let first = &tabs_left[0];
-            self.add_new_tab(
+            let term = self.add_new_tab(
                 Some(&first.cwd),
                 None,
                 Some(&first.base_title),
                 Some(&first.title),
                 None,
             );
+            self.remember_restored_custom_title(&term, first);
             for tab in &tabs_left[1..] {
-                self.add_new_tab(
+                let term = self.add_new_tab(
                     Some(&tab.cwd),
                     None,
                     Some(&tab.base_title),
                     Some(&tab.title),
                     None,
                 );
+                self.remember_restored_custom_title(&term, tab);
             }
         }
         if !tabs_right.is_empty() && split != "single" {
             let nb2 = self.imp().notebook2.borrow().clone().unwrap();
             self.set_split(&split, false);
             for tab in &tabs_right {
-                self.add_new_tab(
+                let term = self.add_new_tab(
                     Some(&tab.cwd),
                     Some(&nb2),
                     Some(&tab.base_title),
                     Some(&tab.title),
                     None,
                 );
+                self.remember_restored_custom_title(&term, tab);
             }
         } else if split == "single" {
             self.set_split("single", false);
+        }
+    }
+
+    fn remember_restored_custom_title(&self, term: &TerminalBox, tab: &crate::session::TabEntry) {
+        if tab.custom_title {
+            self.imp()
+                .tab_custom_titles
+                .borrow_mut()
+                .insert(term.clone(), tab.title.clone());
+            self.set_tab_text(term, &tab.title);
         }
     }
 
@@ -4462,6 +4569,7 @@ impl MainWindow {
         }
         self.imp().tab_labels.borrow_mut().clear();
         self.imp().tab_base_titles.borrow_mut().clear();
+        self.imp().tab_custom_titles.borrow_mut().clear();
         self.imp().current_pages.borrow_mut().clear();
         *self.imp().split_mode.borrow_mut() = "single".to_string();
         nb2.hide();

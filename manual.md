@@ -194,6 +194,11 @@ Zoom the font at any time with `Ctrl++`, `Ctrl+-`, and `Ctrl+0` to reset.
 Use **File > New Tab** or `Ctrl+Shift+T`. Tabs can be reordered, renamed, moved
 between panes, detached into a window, or closed independently.
 
+Rename a tab with `Ctrl+Shift+S`, by double-clicking its label, or with
+**Rename Tab...** in the tab's right-click menu. A custom name is preserved
+when the shell changes the terminal title; use **Reset Tab Title** in the same
+menu to return to automatic titles.
+
 `View > Always Show Tabs` controls whether the tab bar remains visible when only
 one tab is open.
 
@@ -468,7 +473,7 @@ remote tmux detaches instead of the local terminal.
 | `Ctrl+Shift+C` | Copy |
 | `Ctrl+Shift+V` | Paste |
 | `Ctrl+Shift+A` | Select all |
-| `Ctrl+Shift+S` | Set title |
+| `Ctrl+Shift+S` | Rename tab |
 | `Ctrl+Shift+R` | Reset terminal |
 | `Ctrl+Shift+X` | Reset and clear |
 | `Ctrl+R` | Interactive history search; repeat to cycle matches |

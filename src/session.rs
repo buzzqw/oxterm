@@ -32,6 +32,9 @@ pub struct TabEntry {
     pub base_title: String,
     pub title: String,
     pub cwd: String,
+    /// True when the user renamed the tab explicitly; the custom title then
+    /// takes precedence over titles set by the running program (OSC escapes).
+    pub custom_title: bool,
 }
 
 #[derive(Clone, Default, PartialEq)]
@@ -54,10 +57,20 @@ pub fn save_session(name: &str, data: &SessionData) -> bool {
         "timestamp": crate::logging::utc_iso_now(),
         "split_mode": data.split_mode,
         "tabs_left": data.tabs_left.iter().map(|t| {
-            json!({"base_title": t.base_title, "title": t.title, "cwd": t.cwd})
+            json!({
+                "base_title": t.base_title,
+                "title": t.title,
+                "cwd": t.cwd,
+                "custom_title": t.custom_title
+            })
         }).collect::<Vec<_>>(),
         "tabs_right": data.tabs_right.iter().map(|t| {
-            json!({"base_title": t.base_title, "title": t.title, "cwd": t.cwd})
+            json!({
+                "base_title": t.base_title,
+                "title": t.title,
+                "cwd": t.cwd,
+                "custom_title": t.custom_title
+            })
         }).collect::<Vec<_>>(),
     });
     let path = match session_path(name) {
@@ -116,10 +129,15 @@ fn validate_tab(v: &Value) -> Option<TabEntry> {
         .and_then(|x| x.as_str())
         .unwrap_or(base_title.as_str())
         .to_string();
+    let custom_title = obj
+        .get("custom_title")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false);
     Some(TabEntry {
         cwd,
         base_title: base_title.chars().take(200).collect(),
         title: title.chars().take(200).collect(),
+        custom_title,
     })
 }
 
