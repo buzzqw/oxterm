@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+#
+# install.sh - Build and install Oxterm system-wide (/usr/bin).
+#
+# Usage:
+#   ./install.sh              # build the release binary, then install it
+#   ./install.sh --no-build   # install the binary already in target/release
+#
+# The installer writes the executable, desktop launcher, manual page, shell
+# completions, documentation and icon. It uses sudo only when the target
+# directories are not writable.
+
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -7,20 +18,45 @@ INSTALL_BIN="/usr/bin/oxterm"
 INSTALL_ICON="/usr/share/icons/hicolor/scalable/apps/oxterm.svg"
 INSTALL_DESKTOP="/usr/share/applications/oxterm.desktop"
 
-if ! command -v cargo >/dev/null 2>&1; then
-    printf '%s\n' "Oxterm: cargo is required (install Rust from https://rustup.rs/)" >&2
-    exit 1
+BUILD=true
+for arg in "$@"; do
+    case "$arg" in
+        --no-build) BUILD=false ;;
+        -h | --help)
+            sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0
+            ;;
+        *)
+            printf 'Oxterm: unknown option: %s\n' "$arg" >&2
+            exit 1
+            ;;
+    esac
+done
+
+if git -C "${ROOT_DIR}" rev-parse --git-dir >/dev/null 2>&1; then
+    git -C "${ROOT_DIR}" config core.hooksPath .githooks 2>/dev/null || true
 fi
 
-# shellcheck source=packaging/install-deps.sh
-. "${ROOT_DIR}/packaging/install-deps.sh"
-oxterm_install_build_deps
+if [[ "$BUILD" == true ]]; then
+    if ! command -v cargo >/dev/null 2>&1; then
+        printf '%s\n' "Oxterm: cargo is required (install Rust from https://rustup.rs/)" >&2
+        exit 1
+    fi
 
-printf '%s\n' "Oxterm: building release binary..."
-cargo build --release --locked --manifest-path "${ROOT_DIR}/Cargo.toml"
+    # shellcheck source=packaging/install-deps.sh
+    . "${ROOT_DIR}/packaging/install-deps.sh"
+    oxterm_install_build_deps
+
+    printf '%s\n' "Oxterm: building release binary..."
+    cargo build --release --locked --manifest-path "${ROOT_DIR}/Cargo.toml"
+fi
 
 if [[ ! -x "${SOURCE_BIN}" ]]; then
-    printf '%s\n' "Oxterm: release binary was not produced" >&2
+    if [[ "$BUILD" == true ]]; then
+        printf '%s\n' "Oxterm: release binary was not produced" >&2
+    else
+        printf '%s\n' "Oxterm: ${SOURCE_BIN} is missing; run ./install.sh without --no-build" >&2
+    fi
     exit 1
 fi
 
@@ -39,6 +75,7 @@ install_file() {
 install_file 0755 "${SOURCE_BIN}" "${INSTALL_BIN}"
 install_file 0644 "${ROOT_DIR}/packaging/oxterm.svg" "${INSTALL_ICON}"
 install_file 0644 "${ROOT_DIR}/packaging/oxterm.desktop" "${INSTALL_DESKTOP}"
+install_file 0644 "${ROOT_DIR}/manual.md" "/usr/share/doc/oxterm/manual.md"
 install_file 0644 "${ROOT_DIR}/packaging/oxterm.1" "/usr/share/man/man1/oxterm.1"
 if [[ -w "/usr/share/man/man1" ]]; then
     gzip -nf "/usr/share/man/man1/oxterm.1"
@@ -49,4 +86,4 @@ install_file 0644 "${ROOT_DIR}/packaging/completions/oxterm.bash" "/usr/share/ba
 install_file 0644 "${ROOT_DIR}/packaging/completions/_oxterm" "/usr/share/zsh/site-functions/_oxterm"
 install_file 0644 "${ROOT_DIR}/packaging/completions/oxterm.fish" "/usr/share/fish/vendor_completions.d/oxterm.fish"
 
-printf '%s\n' "Oxterm: installed ${INSTALL_BIN}, desktop launcher, manual page and shell completions"
+printf '%s\n' "Oxterm: installed ${INSTALL_BIN}, desktop launcher, manual, man page and shell completions"

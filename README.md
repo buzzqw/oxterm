@@ -118,8 +118,9 @@ The repository includes local build hooks. Configure them with
 of its per-user installation. After each commit, the hook builds
 `oxterm-linux-x86-64` in the project root. The generated file is ignored by
 Git. The displayed Oxterm version uses the Cargo version plus the total Git
-commit count as its fourth component, for example
-`MAJOR.MINOR.PATCH.<commit-count>`.
+commit count as SemVer build metadata, for example
+`MAJOR.MINOR.PATCH+<commit-count>`. Builds without Git metadata show the
+plain release version.
 
 Install the binary and desktop entry under `~/.local`:
 
@@ -141,9 +142,32 @@ To build and install the current source version system-wide as `/usr/bin/oxterm`
 
 The script always rebuilds the release binary before installing it and asks for
 `sudo` only when it needs permission to write the system installation
-directories. It installs the executable, desktop launcher, and Oxterm ox
-icon system-wide. Run it again after building a newer version so the system
-command and launcher point to the new binary.
+directories. It installs the executable, desktop launcher, manual page, shell
+completions, documentation, and Oxterm ox icon system-wide. Run it again after
+building a newer version so the system command and launcher point to the new
+binary.
+
+### Updating an existing clone
+
+Compiled binaries are not tracked by Git, so a plain `git pull` only updates
+the sources. Use the update helper instead:
+
+```bash
+./update.sh
+```
+
+`update.sh` pulls the latest changes, builds the release binary, refreshes
+`oxterm-linux-x86-64`, and installs the executable (`/usr/bin` when writable or
+via `sudo`, otherwise `~/.local/bin`). It accepts `--user` to force the per-user
+install, `--no-pull` to build the current checkout, and `--no-install` to stop
+after the build.
+
+`./setup.sh`, `./install.sh`, and `./update.sh` enable the repository hooks, so
+later `git pull` commands rebuild automatically through the `post-merge` hook.
+The hook refreshes a per-user installation directly and a system-wide
+installation only when `sudo` needs no password; otherwise run `./update.sh`
+after the pull. When Oxterm is installed from the AUR package, `yay -Syu`
+updates it instead.
 
 ## Command Line
 

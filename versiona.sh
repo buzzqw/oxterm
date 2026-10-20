@@ -100,11 +100,16 @@ detect_main_branch() {
     git branch --show-current
 }
 
-# Keep packaging/aur in sync with the Cargo version; the "AUR package"
+# Keep packaging metadata in sync with the Cargo version; the "AUR package"
 # workflow fails when PKGBUILD or .SRCINFO lag behind a release.
-sync_aur_version() {
+sync_packaging_version() {
     local pkgbuild="packaging/aur/PKGBUILD"
     local srcinfo="packaging/aur/.SRCINFO"
+    local manpage="packaging/oxterm.1"
+
+    if [[ -f "$manpage" ]]; then
+        sed -i -E "0,/^\.TH OXTERM 1 \"[^\"]*\" \"oxterm [0-9.]*\"/s//.TH OXTERM 1 \"$(date +%F)\" \"oxterm ${VERSION}\"/" "$manpage"
+    fi
 
     [[ -f "$pkgbuild" ]] || return 0
 
@@ -189,16 +194,16 @@ if [[ "$CURRENT_VERSION" != "$VERSION" ]]; then
     cargo update -p oxterm --offline
 fi
 
-sync_aur_version
+sync_packaging_version
 
-AUR_FILES=()
-for file in packaging/aur/PKGBUILD packaging/aur/.SRCINFO; do
+PACKAGING_FILES=()
+for file in packaging/aur/PKGBUILD packaging/aur/.SRCINFO packaging/oxterm.1; do
     if [[ -f "$file" ]]; then
-        AUR_FILES+=("$file")
+        PACKAGING_FILES+=("$file")
     fi
 done
 
-git add Cargo.toml Cargo.lock "${AUR_FILES[@]}"
+git add Cargo.toml Cargo.lock "${PACKAGING_FILES[@]}"
 git commit -m "chore: release ${VERSION}"
 git tag -a "$TAG_VERSION" -m "Oxterm ${VERSION}" -m "$CHANGELOG"
 git push origin "$MAIN_BRANCH"

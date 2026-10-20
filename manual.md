@@ -38,9 +38,11 @@ oxterm
 ```
 
 `install.sh` always rebuilds the release binary and installs `/usr/bin/oxterm`,
-the system desktop launcher, and the Oxterm ox icon. It uses `sudo` only when
+the system desktop launcher, the `oxterm(1)` man page, bash/zsh/fish
+completions, the manual, and the Oxterm ox icon. It uses `sudo` only when
 needed. Run it again after compiling a newer version to update the installed
-command and launcher. For a per-user installation, use `./setup.sh` instead.
+command and launcher. For a per-user installation, use `./setup.sh` instead;
+it installs the same files under `~/.local` (or `$PREFIX`).
 
 You can start in a directory, open a new window, skip session restoration, or
 execute a command directly:
