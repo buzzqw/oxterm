@@ -7,5 +7,5 @@ build fails.
 
 Run `./setup.sh` once after cloning to configure Git to use the repository
 hooks. The `post-commit` hook then updates the release executable in
-`oxterm-linux-x86-64`, and `post-merge` rebuilds after a `git pull` and
-refreshes an existing per-user installation.
+`oxterm-linux-x86-64`, and `post-merge`/`post-rewrite` rebuild after a `git
+pull` (merge or rebase) and refresh an existing per-user installation.

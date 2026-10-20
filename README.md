@@ -165,11 +165,11 @@ install, `--no-pull` to build the current checkout, and `--no-install` to stop
 after the build.
 
 `./setup.sh`, `./install.sh`, and `./update.sh` enable the repository hooks, so
-later `git pull` commands rebuild automatically through the `post-merge` hook.
-The hook refreshes a per-user installation directly and a system-wide
-installation only when `sudo` needs no password; otherwise run `./update.sh`
-after the pull. When Oxterm is installed from the AUR package, `yay -Syu`
-updates it instead.
+later `git pull` commands rebuild automatically through the `post-merge` (or
+`post-rewrite` for rebased pulls) hook. The hook refreshes a per-user
+installation directly and a system-wide installation only when `sudo` needs no
+password; otherwise run `./update.sh` after the pull. When Oxterm is installed
+from the AUR package, `yay -Syu` updates it instead.
 
 ## Command Line
 

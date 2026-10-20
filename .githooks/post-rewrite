@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# post-rewrite - refresh the build after a rebased pull or an amended commit.
+
+set -u
+
+[[ "${OXTERM_SKIP_HOOKS:-0}" == "1" ]] && exit 0
+
+case "${1:-}" in
+    rebase|amend)
+        HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+        exec "$HOOK_DIR/post-merge"
+        ;;
+esac
