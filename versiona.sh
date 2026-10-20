@@ -4,8 +4,8 @@
 # Flow:
 #   1. Calculate or accept the next Cargo semver version.
 #   2. Generate release notes from commits after the last tag.
-#   3. Update Cargo.toml and the AUR metadata, create a release commit and
-#      annotated tag.
+#   3. Update Cargo.toml and the packaging metadata (AUR package and man
+#      page), create a release commit and annotated tag.
 #   4. Push the branch and tag, then create the GitHub release.
 #   5. Build and install the local binary the user launches (skip with --no-install).
 #
@@ -101,7 +101,8 @@ detect_main_branch() {
 }
 
 # Keep packaging metadata in sync with the Cargo version; the "AUR package"
-# workflow fails when PKGBUILD or .SRCINFO lag behind a release.
+# workflow fails when PKGBUILD or .SRCINFO lag behind a release, and the man
+# page records the version too.
 sync_packaging_version() {
     local pkgbuild="packaging/aur/PKGBUILD"
     local srcinfo="packaging/aur/.SRCINFO"
@@ -138,7 +139,9 @@ fi
     err "Version must use MAJOR.MINOR.PATCH format."
 
 TAG_VERSION="v${VERSION}"
-LATEST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+# Ignore the rolling lightweight `latest` tag published by CI; only release
+# tags (v1.2.3) delimit the commits that belong to a release.
+LATEST_TAG="$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)"
 if [[ -n "$LATEST_TAG" ]]; then
     RAW_COMMITS="$(git log "${LATEST_TAG}..HEAD" --pretty=format:'%s' --no-merges || true)"
 else
@@ -212,9 +215,17 @@ git push origin "$TAG_VERSION"
 NOTES_FILE="$(mktemp)"
 trap 'rm -f "$NOTES_FILE"' EXIT
 printf '%s\n' "$CHANGELOG" > "$NOTES_FILE"
-gh release create "$TAG_VERSION" \
-    --title "Oxterm ${VERSION}" \
-    --notes-file "$NOTES_FILE"
+# The tag push also starts the release workflow, which may create the release
+# first; update it instead of failing when that happens.
+if gh release view "$TAG_VERSION" >/dev/null 2>&1; then
+    gh release edit "$TAG_VERSION" \
+        --title "Oxterm ${VERSION}" \
+        --notes-file "$NOTES_FILE"
+else
+    gh release create "$TAG_VERSION" \
+        --title "Oxterm ${VERSION}" \
+        --notes-file "$NOTES_FILE"
+fi
 
 ok "Oxterm ${VERSION} released as ${TAG_VERSION}."
 

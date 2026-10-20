@@ -5,7 +5,7 @@
 # Usage:
 #   ./setup.sh              # build the release binary, then install it
 #   ./setup.sh --no-build   # install the binary already in target/release
-#   PREFIX=/usr/local ./setup.sh
+#   PREFIX="${HOME}/.local/opt" ./setup.sh
 #
 # The default prefix is ~/.local. The installer writes the executable, desktop
 # launcher, manual page, shell completions, documentation and icon.
@@ -31,7 +31,7 @@ for arg in "$@"; do
 done
 
 if git -C "${ROOT_DIR}" rev-parse --git-dir >/dev/null 2>&1; then
-    git -C "${ROOT_DIR}" config core.hooksPath .githooks
+    git -C "${ROOT_DIR}" config core.hooksPath .githooks 2>/dev/null || true
 fi
 
 if [[ "$BUILD" == true ]]; then

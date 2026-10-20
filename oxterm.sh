@@ -17,7 +17,8 @@ needs_rebuild() {
     if ! command -v cargo >/dev/null 2>&1; then
         return 1
     fi
-    find "$SCRIPT_DIR/src" "$SCRIPT_DIR/Cargo.toml" "$SCRIPT_DIR/Cargo.lock" \
+    find "$SCRIPT_DIR/src" "$SCRIPT_DIR/build.rs" \
+        "$SCRIPT_DIR/Cargo.toml" "$SCRIPT_DIR/Cargo.lock" \
         -newer "$BIN" -print -quit 2>/dev/null | grep -q .
 }
 

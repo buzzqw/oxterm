@@ -122,16 +122,18 @@ commit count as SemVer build metadata, for example
 `MAJOR.MINOR.PATCH+<commit-count>`. Builds without Git metadata show the
 plain release version.
 
-Install the binary and desktop entry under `~/.local`:
+Install the executable, desktop entry, manual page, shell completions, and
+documentation under `~/.local`:
 
 ```bash
 ./setup.sh
 ```
 
-The installation prefix can be changed with `PREFIX`:
+The installation prefix can be changed with `PREFIX`; it must be a directory
+writable by your user (use `./install.sh` for `/usr/bin`):
 
 ```bash
-PREFIX=/usr/local ./setup.sh
+PREFIX="${HOME}/.local/opt" ./setup.sh
 ```
 
 To build and install the current source version system-wide as `/usr/bin/oxterm`, run:
@@ -157,8 +159,8 @@ the sources. Use the update helper instead:
 ```
 
 `update.sh` pulls the latest changes, builds the release binary, refreshes
-`oxterm-linux-x86-64`, and installs the executable (`/usr/bin` when writable or
-via `sudo`, otherwise `~/.local/bin`). It accepts `--user` to force the per-user
+`oxterm-linux-x86-64`, and runs the installer (`/usr/bin` when writable or via
+`sudo`, otherwise `~/.local`). It accepts `--user` to force the per-user
 install, `--no-pull` to build the current checkout, and `--no-install` to stop
 after the build.
 

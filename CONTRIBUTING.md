@@ -6,5 +6,6 @@ must pass a release build. The repository hook `.githooks/pre-commit` runs
 build fails.
 
 Run `./setup.sh` once after cloning to configure Git to use the repository
-hooks. The existing `post-commit` hook then updates the release executable in
-`oxterm-linux-x86-64`.
+hooks. The `post-commit` hook then updates the release executable in
+`oxterm-linux-x86-64`, and `post-merge` rebuilds after a `git pull` and
+refreshes an existing per-user installation.
