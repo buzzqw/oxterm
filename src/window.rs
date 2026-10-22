@@ -130,6 +130,16 @@ pub trait TerminalWindow {
     fn prev_tab_signal(&self);
     fn next_tab_signal(&self);
     fn session_list_signal(&self);
+    /// Rename the tab that owns `term`. Windows without tabs (a detached
+    /// terminal) leave this as a no-op.
+    fn rename_tab_signal(&self, term: &TerminalBox) {
+        let _ = term;
+    }
+    /// Move `term` into a separate window. Only the tabbed main window
+    /// implements this.
+    fn detach_tab_signal(&self, term: &TerminalBox) {
+        let _ = term;
+    }
     fn set_tab_title_from_terminal(&self, term: &TerminalBox, title: &str);
     fn broadcast_feed(&self, source: &TerminalBox, data: &[u8]);
 
@@ -1433,6 +1443,10 @@ mod main_imp {
         pub info_bar: RefCell<Option<gtk::InfoBar>>,
         pub info_label: RefCell<Option<gtk::Label>>,
         pub notes_panel: RefCell<Option<crate::notes_panel::NotesPanel>>,
+        /// Container that receives the notes panel the first time it is shown.
+        pub notes_slot: RefCell<Option<gtk::Box>>,
+        /// Menu popups are built once, after the first terminal is up.
+        pub menus_built: Cell<bool>,
         pub stats_source_id: RefCell<Option<glib::SourceId>>,
         pub remote_stats_pending: RefCell<bool>,
         pub remote_stats_generation: RefCell<u64>,
@@ -1707,56 +1721,15 @@ impl MainWindow {
             false,
             0,
         );
-        let notes_panel = crate::notes_panel::NotesPanel::build();
-        {
-            let weak = crate::SendWeak::new(self);
-            notes_panel.close.connect_clicked(move |_| {
-                if let Some(w) = weak.upgrade() {
-                    w.set_notes_panel_visible(false);
-                }
-            });
-            let weak = crate::SendWeak::new(self);
-            notes_panel.refresh.connect_clicked(move |_| {
-                if let Some(w) = weak.upgrade() {
-                    w.reload_notes_panel();
-                }
-            });
-            let weak = crate::SendWeak::new(self);
-            notes_panel.search.connect_search_changed(move |_| {
-                if let Some(w) = weak.upgrade() {
-                    w.run_notes_search();
-                }
-            });
-            let weak = crate::SendWeak::new(self);
-            notes_panel.tag.connect_changed(move |_| {
-                if let Some(w) = weak.upgrade() {
-                    w.run_notes_search();
-                }
-            });
-            let weak = crate::SendWeak::new(self);
-            notes_panel.list.connect_row_selected(move |_, row| {
-                if let (Some(w), Some(row)) = (weak.upgrade(), row) {
-                    w.notes_panel_preview(row.index());
-                }
-            });
-            let weak = crate::SendWeak::new(self);
-            notes_panel.append.connect_clicked(move |_| {
-                if let Some(w) = weak.upgrade() {
-                    w.notes_panel_append();
-                }
-            });
-            let weak = crate::SendWeak::new(self);
-            notes_panel.entry.connect_activate(move |_| {
-                if let Some(w) = weak.upgrade() {
-                    w.notes_panel_append();
-                }
-            });
-        }
+        // The notes panel is lazy: its (fairly large) widget tree is created
+        // the first time it is shown. The empty slot keeps its place in the
+        // layout so the paned terminal area keeps the same size.
         let content_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         content_row.pack_start(&paned, true, true, 0);
-        content_row.pack_start(&notes_panel.root, false, true, 0);
+        let notes_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        content_row.pack_start(&notes_slot, false, true, 0);
+        *self.imp().notes_slot.borrow_mut() = Some(notes_slot);
         vbox.pack_start(&content_row, true, true, 0);
-        *self.imp().notes_panel.borrow_mut() = Some(notes_panel);
         vbox.pack_end(&stats_box, false, false, 0);
         self.add(&vbox);
 
@@ -1776,13 +1749,6 @@ impl MainWindow {
         });
 
         self.show_all();
-        let weak = crate::SendWeak::new(self);
-        glib::idle_add_local(move || {
-            if let Some(w) = weak.upgrade() {
-                w.populate_menus();
-            }
-            glib::ControlFlow::Break
-        });
 
         self.apply_ui_visibility();
         self.apply_tab_colors();
@@ -1821,6 +1787,19 @@ impl MainWindow {
             if let Some(w) = weak.upgrade() {
                 w.fix_paned_position();
                 w.initialize_terminal(sd.as_deref(), &cmd, restore_session);
+            }
+            glib::ControlFlow::Break
+        });
+
+        // Menus are 70+ items with closures, tooltips and accelerators. Build
+        // them only after the first terminal has been started (and the first
+        // frame is on its way), not as the very first idle callback. Clicking
+        // a menu button earlier calls `ensure_menus` synchronously, so the
+        // popup is never empty.
+        let weak = crate::SendWeak::new(self);
+        glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
+            if let Some(w) = weak.upgrade() {
+                w.ensure_menus();
             }
             glib::ControlFlow::Break
         });
@@ -2228,6 +2207,22 @@ impl MainWindow {
             let btn = gtk::MenuButton::new();
             btn.set_label(label);
             btn.set_relief(gtk::ReliefStyle::None);
+            // The menus are built lazily after startup; make sure they exist
+            // before the button's own handler tries to show the popup.
+            let weak = crate::SendWeak::new(self);
+            btn.connect_button_press_event(move |_, _| {
+                if let Some(w) = weak.upgrade() {
+                    w.ensure_menus();
+                }
+                glib::Propagation::Proceed
+            });
+            let weak = crate::SendWeak::new(self);
+            btn.connect_key_press_event(move |_, _| {
+                if let Some(w) = weak.upgrade() {
+                    w.ensure_menus();
+                }
+                glib::Propagation::Proceed
+            });
             menubar.pack_start(&btn, false, false, 0);
             buttons.push(btn);
         }
@@ -3015,13 +3010,27 @@ impl MainWindow {
         menus
     }
 
-    fn populate_menus(&self) {
+    /// Build the header-bar menus once. Callers may reach this either from the
+    /// delayed startup timeout or directly when a menu button is pressed
+    /// before that timeout fired.
+    fn ensure_menus(&self) {
+        if self.imp().menus_built.get() {
+            return;
+        }
+        self.imp().menus_built.set(true);
         let menus = self.build_menu();
         let buttons = self.imp().menu_buttons.borrow().clone();
-        for (btn, (_label, menu)) in buttons.iter().zip(menus.iter()) {
-            btn.set_popup(Some(menu));
+        for btn in &buttons {
+            let label = btn.label().unwrap_or_default().to_string();
+            if let Some((_, menu)) = menus.iter().find(|(name, _)| *name == label) {
+                btn.set_popup(Some(menu));
+            }
         }
-        self.imp().menu_buttons.borrow_mut().clear();
+        // The Tabs menu is generated from the live notebook; fill it now that
+        // it exists (tab changes before this point had no menu to update).
+        if let Some(menu) = self.imp().tabs_menu.borrow().clone() {
+            self.populate_tab_menu(&menu);
+        }
     }
 
     // ── Split modes ──────────────────────────────────────────
@@ -4048,6 +4057,66 @@ impl MainWindow {
 
     // ── Notes panel ──────────────────────────────────────────
 
+    /// Build the notes panel the first time it is needed. Keeping this out of
+    /// `init` avoids creating a dozen widgets (and an empty list/text view) in
+    /// every window that never opens the panel.
+    fn ensure_notes_panel(&self) -> bool {
+        if self.imp().notes_panel.borrow().is_some() {
+            return true;
+        }
+        let Some(slot) = self.imp().notes_slot.borrow().clone() else {
+            return false;
+        };
+        let panel = crate::notes_panel::NotesPanel::build();
+        {
+            let weak = crate::SendWeak::new(self);
+            panel.close.connect_clicked(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.set_notes_panel_visible(false);
+                }
+            });
+            let weak = crate::SendWeak::new(self);
+            panel.refresh.connect_clicked(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.reload_notes_panel();
+                }
+            });
+            let weak = crate::SendWeak::new(self);
+            panel.search.connect_search_changed(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.run_notes_search();
+                }
+            });
+            let weak = crate::SendWeak::new(self);
+            panel.tag.connect_changed(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.run_notes_search();
+                }
+            });
+            let weak = crate::SendWeak::new(self);
+            panel.list.connect_row_selected(move |_, row| {
+                if let (Some(w), Some(row)) = (weak.upgrade(), row) {
+                    w.notes_panel_preview(row.index());
+                }
+            });
+            let weak = crate::SendWeak::new(self);
+            panel.append.connect_clicked(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.notes_panel_append();
+                }
+            });
+            let weak = crate::SendWeak::new(self);
+            panel.entry.connect_activate(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.notes_panel_append();
+                }
+            });
+        }
+        slot.pack_start(&panel.root, false, true, 0);
+        *self.imp().notes_panel.borrow_mut() = Some(panel);
+        true
+    }
+
     fn notes_panel_visible(&self) -> bool {
         self.imp()
             .notes_panel
@@ -4058,6 +4127,9 @@ impl MainWindow {
     }
 
     fn set_notes_panel_visible(&self, visible: bool) {
+        if visible && !self.ensure_notes_panel() {
+            return;
+        }
         if let Some(panel) = self.imp().notes_panel.borrow().as_ref() {
             if visible {
                 // The panel carries `no_show_all` so the window's own
@@ -4675,6 +4747,12 @@ impl TerminalWindow for MainWindow {
     }
     fn session_list_signal(&self) {
         MainWindow::session_list_signal(self);
+    }
+    fn rename_tab_signal(&self, term: &TerminalBox) {
+        self.rename_tab_dialog(term);
+    }
+    fn detach_tab_signal(&self, term: &TerminalBox) {
+        self.detach_tab(Some(term));
     }
     fn set_tab_title_from_terminal(&self, term: &TerminalBox, title: &str) {
         MainWindow::set_tab_title_from_terminal(self, term, title);

@@ -192,6 +192,27 @@ which is different from `/history` (a database of the commands you ran).
 
 Zoom the font at any time with `Ctrl++`, `Ctrl+-`, and `Ctrl+0` to reset.
 
+### Terminal context menu
+
+Right-clicking a terminal opens a context menu with the actions that depend on
+the current selection and cursor position:
+
+- Clipboard: **Copy**, **Copy as HTML**, **Copy All**, **Copy Last Command**,
+  **Paste**, and **Paste Selection**.
+- Selection and notes: **Select All**, **Add Selection to Note...**, and
+  **Copy Command Output** (when OSC 133 shell integration is active).
+- Links and files: **Open File Manager Here**, plus **Copy URL** / **Open URL
+  in Browser** when the cursor is over a link.
+- Tabs and window: **New Tab**, **Close Tab**, **Rename Tab...**, **Detach
+  Tab**, the **Split** submenu (vertical, horizontal, unsplit), **Broadcast
+  Input**, and **Read-Only**.
+- View: **Zoom In/Out/Reset** and **Full Screen**.
+- Tools: **Search Scrollback...**, **Command Bar...**, **History Search...**,
+  a **Quickmarks** submenu, **Insert Snippet** (saved `/snippet` entries),
+  **Reset Terminal**, and **Clear Scrollback**.
+- Notes: **Notes Panel**, **New Note...**, **Note Command Output...**, and
+  **Open Notes Folder**.
+
 ## Tabs, Windows, and Splits
 
 ### Tabs

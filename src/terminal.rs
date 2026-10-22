@@ -126,6 +126,62 @@ fn safe_web_url(raw: &str) -> Option<String> {
     Some(url)
 }
 
+/// Append a menu item that runs `action` on this terminal. The item holds only
+/// a weak reference, so a menu that outlives its terminal is harmless.
+fn menu_action<F>(menu: &gtk::Menu, term: &TerminalBox, label: &str, action: F) -> gtk::MenuItem
+where
+    F: Fn(&TerminalBox) + 'static,
+{
+    let item = gtk::MenuItem::with_label(label);
+    let weak = crate::SendWeak::new(term);
+    item.connect_activate(move |_| {
+        if let Some(t) = weak.upgrade() {
+            action(&t);
+        }
+    });
+    menu.append(&item);
+    item
+}
+
+/// Same as [`menu_action`], but for window-level actions (tabs, split, …).
+fn menu_window_action<F>(
+    menu: &gtk::Menu,
+    term: &TerminalBox,
+    label: &str,
+    action: F,
+) -> gtk::MenuItem
+where
+    F: Fn(&dyn crate::window::TerminalWindow) + 'static,
+{
+    let item = gtk::MenuItem::with_label(label);
+    let weak = crate::SendWeak::new(term);
+    item.connect_activate(move |_| {
+        if let Some(t) = weak.upgrade() {
+            t.call_window(|w| action(w));
+        }
+    });
+    menu.append(&item);
+    item
+}
+
+/// Add a submenu and return the (empty) menu to fill.
+fn menu_submenu(menu: &gtk::Menu, label: &str) -> gtk::Menu {
+    let item = gtk::MenuItem::with_label(label);
+    let submenu = gtk::Menu::new();
+    item.set_submenu(Some(&submenu));
+    menu.append(&item);
+    submenu
+}
+
+/// Shorten long labels (URLs, commands) so the menu stays readable.
+fn ellipsize(text: &str, max: usize) -> String {
+    if text.chars().count() > max {
+        format!("{}...", text.chars().take(max).collect::<String>())
+    } else {
+        text.to_string()
+    }
+}
+
 fn open_pty_slave(master: RawFd) -> Result<RawFd, String> {
     let name = unsafe { libc::ptsname(master) };
     if name.is_null() {
@@ -609,88 +665,10 @@ impl TerminalBox {
 
         self.apply_scrollbar_position();
 
-        let cmd_bar_revealer = gtk::Revealer::new();
-        cmd_bar_revealer.set_transition_type(gtk::RevealerTransitionType::SlideUp);
-        cmd_bar_revealer.set_transition_duration(150);
-        cmd_bar_revealer.set_halign(gtk::Align::Fill);
-        cmd_bar_revealer.set_valign(gtk::Align::End);
-        cmd_bar_revealer.set_vexpand(false);
-        cmd_bar_revealer.set_reveal_child(false);
-        overlay.add_overlay(&cmd_bar_revealer);
-        *self.imp().cmd_bar_revealer.borrow_mut() = Some(cmd_bar_revealer.clone());
-
-        let cmd_bar = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        cmd_bar.set_hexpand(true);
-        cmd_bar.set_vexpand(false);
-        cmd_bar_revealer.add(&cmd_bar);
-        *self.imp().cmd_bar.borrow_mut() = Some(cmd_bar.clone());
-
-        let outer_frame = gtk::Frame::new(None);
-        outer_frame.set_shadow_type(gtk::ShadowType::EtchedOut);
-        outer_frame.set_hexpand(true);
-        outer_frame.set_vexpand(false);
-        outer_frame.style_context().add_class("command-bar-frame");
-        cmd_bar.pack_start(&outer_frame, true, true, 0);
-
-        let inner = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        outer_frame.add(&inner);
-
-        let cmd_entry = gtk::Entry::new();
-        cmd_entry.set_has_frame(false);
-        cmd_entry.set_hexpand(true);
-        cmd_entry.set_size_request(-1, 36);
-        cmd_entry.set_placeholder_text(Some("/command [args]…"));
-        let weak = crate::SendWeak::new(self);
-        cmd_entry.connect_changed(move |_e| {
-            if let Some(t) = weak.upgrade() {
-                t.on_cmd_bar_changed();
-            }
-        });
-        let weak = crate::SendWeak::new(self);
-        cmd_entry.connect_activate(move |_e| {
-            if let Some(t) = weak.upgrade() {
-                t.execute_from_bar();
-            }
-        });
-        let weak = crate::SendWeak::new(self);
-        cmd_entry.connect_key_press_event(move |_w, ev| {
-            if let Some(t) = weak.upgrade() {
-                return t.on_cmd_bar_key(ev);
-            }
-            glib::Propagation::Proceed
-        });
-        inner.pack_start(&cmd_entry, false, false, 0);
-        *self.imp().cmd_entry.borrow_mut() = Some(cmd_entry);
-
-        let cmd_list = gtk::ListBox::new();
-        cmd_list.set_selection_mode(gtk::SelectionMode::Single);
-        cmd_list.set_vexpand(false);
-        let weak = crate::SendWeak::new(self);
-        cmd_list.connect_row_activated(move |_l, row| {
-            if let Some(t) = weak.upgrade() {
-                t.on_cmd_bar_row_activated(row);
-            }
-        });
-        let cmd_scroll =
-            gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
-        cmd_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-        cmd_scroll.set_hexpand(true);
-        cmd_scroll.set_vexpand(false);
-        cmd_scroll.set_propagate_natural_height(true);
-        cmd_scroll.set_max_content_height(200);
-        cmd_scroll.add(&cmd_list);
-        inner.pack_start(&cmd_scroll, true, true, 0);
-        *self.imp().cmd_list.borrow_mut() = Some(cmd_list);
-
-        let search_revealer = gtk::Revealer::new();
-        search_revealer.set_transition_type(gtk::RevealerTransitionType::SlideDown);
-        search_revealer.set_transition_duration(150);
-        search_revealer.set_halign(gtk::Align::Fill);
-        search_revealer.set_valign(gtk::Align::Start);
-        search_revealer.set_reveal_child(false);
-        overlay.add_overlay(&search_revealer);
-        *self.imp().search_revealer.borrow_mut() = Some(search_revealer.clone());
-
+        // The command bar and the scrollback search bar are only needed when
+        // the user asks for them. Building them lazily keeps each new tab (and
+        // session restore) much cheaper while saving a sizeable widget tree
+        // when they are never used. See `ensure_command_bar`/`ensure_search_bar`.
         let hints_fixed = gtk::Fixed::new();
         hints_fixed.set_no_show_all(true);
         hints_fixed.hide();
@@ -709,61 +687,6 @@ impl TerminalBox {
         });
         overlay.add_overlay(&vi_overlay_area);
         *self.imp().vi_overlay_area.borrow_mut() = Some(vi_overlay_area);
-
-        let search_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        search_box.set_size_request(-1, 32);
-        let search_frame = gtk::Frame::new(None);
-        search_frame.set_shadow_type(gtk::ShadowType::EtchedOut);
-        search_frame.style_context().add_class("command-bar-frame");
-        search_frame.add(&search_box);
-        search_revealer.add(&search_frame);
-
-        let search_entry = gtk::SearchEntry::new();
-        search_entry.set_placeholder_text(Some(
-            "Search scrollback (Enter=next, Shift+Enter=prev, Esc=close)...",
-        ));
-        let weak = crate::SendWeak::new(self);
-        search_entry.connect_search_changed(move |_e| {
-            if let Some(t) = weak.upgrade() {
-                t.do_search();
-            }
-        });
-        let weak = crate::SendWeak::new(self);
-        search_entry.connect_key_press_event(move |_w, ev| {
-            if let Some(t) = weak.upgrade() {
-                return t.on_search_key(ev);
-            }
-            glib::Propagation::Proceed
-        });
-        search_box.pack_start(&search_entry, true, true, 0);
-        *self.imp().search_entry.borrow_mut() = Some(search_entry);
-
-        let search_label = gtk::Label::new(Some(""));
-        search_label.set_halign(gtk::Align::Start);
-        search_box.pack_start(&search_label, false, false, 6);
-        *self.imp().search_label.borrow_mut() = Some(search_label);
-
-        let search_case_btn = gtk::ToggleButton::with_label("Aa");
-        search_case_btn.set_tooltip_text(Some("Match case"));
-        let weak = crate::SendWeak::new(self);
-        search_case_btn.connect_clicked(move |_b| {
-            if let Some(t) = weak.upgrade() {
-                t.do_search();
-            }
-        });
-        search_box.pack_start(&search_case_btn, false, false, 0);
-        *self.imp().search_case_btn.borrow_mut() = Some(search_case_btn);
-
-        let search_regex_btn = gtk::ToggleButton::with_label(".*");
-        search_regex_btn.set_tooltip_text(Some("Regular expression"));
-        let weak = crate::SendWeak::new(self);
-        search_regex_btn.connect_clicked(move |_b| {
-            if let Some(t) = weak.upgrade() {
-                t.do_search();
-            }
-        });
-        search_box.pack_start(&search_regex_btn, false, false, 0);
-        *self.imp().search_regex_btn.borrow_mut() = Some(search_regex_btn);
 
         // VTE signals
         {
@@ -1069,8 +992,7 @@ impl TerminalBox {
 
         let mut env: Vec<(String, String)> = std::env::vars().collect();
         if command.is_none() && s.get_bool("osc133") {
-            self.write_osc133_script();
-            self.write_osc133_fish_script();
+            self.write_shell_scripts_once();
             self.prepare_shell_integration(&mut argv, &mut env);
         }
         env.push(("TERM".to_string(), "xterm-256color".to_string()));
@@ -1402,6 +1324,19 @@ impl TerminalBox {
         unsafe { libc::close(gui_slave) };
         *self.imp().remote_handle.borrow_mut() = Some(broker);
         Ok(child_pid)
+    }
+
+    fn write_shell_scripts_once(&self) {
+        // The scripts are identical for every tab and only depend on the
+        // config directory, so write them once per process instead of once
+        // per new terminal/restored tab.
+        static WRITTEN: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        if WRITTEN.get().is_some() {
+            return;
+        }
+        self.write_osc133_script();
+        self.write_osc133_fish_script();
+        let _ = WRITTEN.set(());
     }
 
     fn write_osc133_script(&self) {
@@ -2298,159 +2233,238 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
     fn show_context_menu(&self, px: f64, py: f64) {
         let menu = gtk::Menu::new();
         let vte = self.vte();
-        let has_sel = vte.has_selection();
+        let has_selection = vte.has_selection();
+        let read_only = !vte.is_input_enabled();
+        let last_command = self.last_command();
+        let has_command_output = self.get_command_output_range().0.is_some();
 
-        let copy_item = gtk::MenuItem::with_label("Copy");
-        copy_item.set_sensitive(has_sel);
-        let weak = crate::SendWeak::new(self);
-        copy_item.connect_activate(move |_| {
-            if let Some(t) = weak.upgrade() {
-                t.copy();
-            }
-        });
-        menu.append(&copy_item);
+        // ── Clipboard ────────────────────────────────────────
+        let copy_item = menu_action(&menu, self, "Copy", |t| t.copy());
+        copy_item.set_sensitive(has_selection);
+        copy_item.set_tooltip_text(Some("Copy the selection (Ctrl+Shift+C)"));
 
-        let paste_item = gtk::MenuItem::with_label("Paste");
-        let weak = crate::SendWeak::new(self);
-        paste_item.connect_activate(move |_| {
-            if let Some(t) = weak.upgrade() {
-                t.paste();
-            }
+        let copy_html_item = menu_action(&menu, self, "Copy as HTML", |t| {
+            t.vte().copy_clipboard_format(Format::Html)
         });
-        menu.append(&paste_item);
+        copy_html_item.set_sensitive(has_selection);
+        copy_html_item.set_tooltip_text(Some("Copy the selection with its colours and styles"));
+
+        menu_action(&menu, self, "Copy All", |t| {
+            t.select_all();
+            t.copy();
+        })
+        .set_tooltip_text(Some("Copy the whole scrollback to the clipboard"));
+
+        if !last_command.is_empty() {
+            let last = last_command.clone();
+            menu_action(&menu, self, "Copy Last Command", move |_t| {
+                gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).set_text(&last);
+            })
+            .set_tooltip_text(Some("Copy the last command line to the clipboard"));
+        }
 
         menu.append(&gtk::SeparatorMenuItem::new());
+        menu_action(&menu, self, "Paste", |t| t.paste())
+            .set_tooltip_text(Some("Paste the clipboard contents (Ctrl+Shift+V)"));
+        menu_action(&menu, self, "Paste Selection", |t| t.paste_selection())
+            .set_tooltip_text(Some("Paste the primary selection (middle-click paste)"));
 
-        let add_note_item = gtk::MenuItem::with_label("Add Selection to Note...");
-        add_note_item.set_sensitive(has_sel);
+        menu.append(&gtk::SeparatorMenuItem::new());
+        menu_action(&menu, self, "Select All", |t| t.select_all())
+            .set_tooltip_text(Some("Select the whole scrollback (Ctrl+Shift+A)"));
+
+        let add_note_item = menu_action(&menu, self, "Add Selection to Note...", |t| {
+            t.add_selection_to_note()
+        });
+        add_note_item.set_sensitive(has_selection);
         add_note_item.set_tooltip_text(Some("Append the selected text to a notes file"));
-        if has_sel {
-            let weak = crate::SendWeak::new(self);
-            add_note_item.connect_activate(move |_| {
-                if let Some(t) = weak.upgrade() {
-                    t.add_selection_to_note();
-                }
-            });
-        }
-        menu.append(&add_note_item);
 
-        if !self.imp().osc133_markers.borrow().is_empty() {
-            menu.append(&gtk::SeparatorMenuItem::new());
-            let copy_out_item = gtk::MenuItem::with_label("Copy Command Output");
-            copy_out_item
-                .set_tooltip_text(Some("Copy the output of the last command to the clipboard"));
-            let weak = crate::SendWeak::new(self);
-            copy_out_item.connect_activate(move |_| {
-                if let Some(t) = weak.upgrade() {
-                    t.copy_command_output();
-                }
-            });
-            menu.append(&copy_out_item);
+        if has_command_output {
+            menu_action(&menu, self, "Copy Command Output", |t| {
+                t.copy_command_output()
+            })
+            .set_tooltip_text(Some(
+                "Copy the output of the last command (shell integration)",
+            ));
         }
 
-        let fm_item = gtk::MenuItem::with_label("Open File Manager Here");
-        let weak = crate::SendWeak::new(self);
-        fm_item.connect_activate(move |_| {
-            if let Some(t) = weak.upgrade() {
-                t.open_fm();
-            }
-        });
-        menu.append(&fm_item);
+        // ── Files and links ──────────────────────────────────
+        menu.append(&gtk::SeparatorMenuItem::new());
+        menu_action(&menu, self, "Open File Manager Here", |t| t.open_fm())
+            .set_tooltip_text(Some("Open the working directory in the file manager"));
 
-        let url = self
+        if let Some(url) = self
             .url_at_position(px, py)
-            .or_else(|| self.url_from_text_at(px, py));
-        if let Some(url) = url {
-            menu.append(&gtk::SeparatorMenuItem::new());
-            let label = if url.chars().count() > 60 {
-                format!("Copy URL: {}...", url.chars().take(60).collect::<String>())
-            } else {
-                format!("Copy URL: {}", url)
-            };
-            let copy_url_item = gtk::MenuItem::with_label(&label);
+            .or_else(|| self.url_from_text_at(px, py))
+        {
+            let url_copy = url.clone();
+            let copy_url_item = menu_action(
+                &menu,
+                self,
+                &format!("Copy URL: {}", ellipsize(&url, 60)),
+                move |t| t.copy_url(&url_copy),
+            );
             copy_url_item.set_tooltip_text(Some("Copy this URL to the clipboard"));
-            let url_c = url.clone();
-            let weak = crate::SendWeak::new(self);
-            copy_url_item.connect_activate(move |_| {
-                if let Some(t) = weak.upgrade() {
-                    t.copy_url(&url_c);
-                }
-            });
-            menu.append(&copy_url_item);
 
-            let open_url_item = gtk::MenuItem::with_label("Open URL in Browser");
-            let url_c = url;
-            let weak = crate::SendWeak::new(self);
-            open_url_item.connect_activate(move |_| {
-                if let Some(t) = weak.upgrade() {
-                    t.open_url(&url_c);
-                }
+            menu_action(&menu, self, "Open URL in Browser", move |t| {
+                t.open_url(&url)
             });
-            menu.append(&open_url_item);
         }
 
+        // ── Tabs and window ──────────────────────────────────
         menu.append(&gtk::SeparatorMenuItem::new());
+        menu_window_action(&menu, self, "New Tab", |w| w.new_tab_signal());
 
-        let sel_all_item = gtk::MenuItem::with_label("Select All");
+        let close_tab_item = gtk::MenuItem::with_label("Close Tab");
         let weak = crate::SendWeak::new(self);
-        sel_all_item.connect_activate(move |_| {
+        close_tab_item.connect_activate(move |_| {
             if let Some(t) = weak.upgrade() {
-                t.select_all();
+                t.call_window(|w| w.close_tab_signal(Some(&t)));
             }
         });
-        menu.append(&sel_all_item);
+        menu.append(&close_tab_item);
 
-        menu.append(&gtk::SeparatorMenuItem::new());
-
-        let srch_item = gtk::MenuItem::with_label("Search Scrollback...");
-        srch_item.set_tooltip_text(Some("Search in the scrollback buffer (Ctrl+Shift+F)"));
+        let rename_tab_item = gtk::MenuItem::with_label("Rename Tab...");
         let weak = crate::SendWeak::new(self);
-        srch_item.connect_activate(move |_| {
+        rename_tab_item.connect_activate(move |_| {
             if let Some(t) = weak.upgrade() {
-                t.show_search();
+                t.call_window(|w| w.rename_tab_signal(&t));
             }
         });
-        menu.append(&srch_item);
+        menu.append(&rename_tab_item);
 
-        let qm_item = gtk::MenuItem::with_label("Set Quickmark");
-        qm_item.set_tooltip_text(Some("Bookmark this position (Ctrl+Shift+M)"));
+        let detach_tab_item = gtk::MenuItem::with_label("Detach Tab");
+        detach_tab_item.set_tooltip_text(Some("Move this tab into its own window"));
         let weak = crate::SendWeak::new(self);
-        qm_item.connect_activate(move |_| {
+        detach_tab_item.connect_activate(move |_| {
             if let Some(t) = weak.upgrade() {
-                t.set_quickmark();
+                t.call_window(|w| w.detach_tab_signal(&t));
             }
         });
-        menu.append(&qm_item);
+        menu.append(&detach_tab_item);
 
-        if !self.imp().quickmarks.borrow().is_empty() {
-            let count = self.imp().quickmarks.borrow().len();
-            let clear_qm_item =
-                gtk::MenuItem::with_label(&format!("Clear All Quickmarks ({})", count));
-            let weak = crate::SendWeak::new(self);
-            clear_qm_item.connect_activate(move |_| {
-                if let Some(t) = weak.upgrade() {
-                    t.remove_all_quickmarks();
-                }
-            });
-            menu.append(&clear_qm_item);
-        }
+        let split_menu = menu_submenu(&menu, "Split");
+        menu_window_action(&split_menu, self, "Split Vertically", |w| {
+            w.split_signal("vertical")
+        });
+        menu_window_action(&split_menu, self, "Split Horizontally", |w| {
+            w.split_signal("horizontal")
+        });
+        menu_window_action(&split_menu, self, "Unsplit", |w| w.split_signal("single"));
 
-        menu.append(&gtk::SeparatorMenuItem::new());
-
-        let broadcast_on = settings().get_bool("broadcast_input");
         let cast_item = gtk::CheckMenuItem::with_label("Broadcast Input");
-        cast_item.set_active(broadcast_on);
+        cast_item.set_active(settings().get_bool("broadcast_input"));
+        cast_item.set_tooltip_text(Some("Send typed input to every terminal in this window"));
         let weak = crate::SendWeak::new(self);
         cast_item.connect_activate(move |b| {
-            if let Some(t) = weak.upgrade() {
+            if weak.upgrade().is_some() {
                 let s = settings();
                 let _ = s.set("broadcast_input", serde_json::Value::Bool(b.is_active()));
                 // Refresh every terminal's cached broadcast flag.
                 s.notify_changed();
-                let _ = t;
             }
         });
         menu.append(&cast_item);
+
+        let ro_item = gtk::CheckMenuItem::with_label("Read-Only");
+        ro_item.set_active(read_only);
+        ro_item.set_tooltip_text(Some("Block keyboard input to this terminal"));
+        let weak = crate::SendWeak::new(self);
+        ro_item.connect_activate(move |b| {
+            if let Some(t) = weak.upgrade() {
+                t.set_read_only(b.is_active());
+            }
+        });
+        menu.append(&ro_item);
+
+        // ── View ─────────────────────────────────────────────
+        menu.append(&gtk::SeparatorMenuItem::new());
+        menu_action(&menu, self, "Zoom In", |t| t.zoom_in())
+            .set_tooltip_text(Some("Increase the font size (Ctrl++)"));
+        menu_action(&menu, self, "Zoom Out", |t| t.zoom_out())
+            .set_tooltip_text(Some("Decrease the font size (Ctrl+-)"));
+        menu_action(&menu, self, "Reset Zoom", |t| t.zoom_reset())
+            .set_tooltip_text(Some("Reset the font scale to 100% (Ctrl+0)"));
+
+        menu_action(&menu, self, "Full Screen", |t| {
+            if let Some(win) = t.toplevel().and_then(|w| w.downcast::<gtk::Window>().ok()) {
+                let fullscreen = win
+                    .window()
+                    .map(|gw| gw.state().contains(gdk::WindowState::FULLSCREEN))
+                    .unwrap_or(false);
+                if fullscreen {
+                    win.unfullscreen();
+                } else {
+                    win.fullscreen();
+                }
+            }
+        })
+        .set_tooltip_text(Some("Toggle full-screen mode (F11)"));
+
+        // ── Tools ────────────────────────────────────────────
+        menu.append(&gtk::SeparatorMenuItem::new());
+        menu_action(&menu, self, "Search Scrollback...", |t| t.show_search())
+            .set_tooltip_text(Some("Search in the scrollback buffer (Ctrl+Shift+F)"));
+        menu_action(&menu, self, "Command Bar...", |t| t.show_command_bar())
+            .set_tooltip_text(Some("Run an Oxterm /command (Ctrl+Shift+P)"));
+        menu_action(&menu, self, "History Search...", |t| {
+            t.start_history_search()
+        })
+        .set_tooltip_text(Some("Search command history (Ctrl+R)"));
+
+        let quickmarks = menu_submenu(&menu, "Quickmarks");
+        menu_action(&quickmarks, self, "Set Quickmark", |t| t.set_quickmark())
+            .set_tooltip_text(Some("Bookmark this position (Ctrl+Shift+M)"));
+        let mark_count = self.imp().quickmarks.borrow().len();
+        if mark_count > 0 {
+            menu_action(&quickmarks, self, "Jump to Next Quickmark", |t| {
+                t.jump_next_quickmark()
+            });
+            let clear_label = format!("Clear All Quickmarks ({})", mark_count);
+            menu_action(&quickmarks, self, &clear_label, |t| {
+                t.remove_all_quickmarks()
+            });
+        }
+
+        let snippets = crate::settings::json_to_str_map(&settings().get_obj("snippets"));
+        if !snippets.is_empty() {
+            let snippet_menu = menu_submenu(&menu, "Insert Snippet");
+            for (name, command) in snippets {
+                let label = format!("{}  —  {}", name, ellipsize(&command, 42));
+                let item = gtk::MenuItem::with_label(&label);
+                item.set_tooltip_text(Some(&command));
+                let weak = crate::SendWeak::new(self);
+                item.connect_activate(move |_| {
+                    if let Some(t) = weak.upgrade() {
+                        // Replace whatever is on the prompt, like /snippet does.
+                        t.feed_command_bytes(b"\x15");
+                        *t.imp().input_shadow.borrow_mut() = command.clone();
+                        t.vte().feed_child(command.as_bytes());
+                        t.vte().grab_focus();
+                    }
+                });
+                snippet_menu.append(&item);
+            }
+        }
+
+        menu.append(&gtk::SeparatorMenuItem::new());
+        menu_action(&menu, self, "Reset Terminal", |t| t.reset(false))
+            .set_tooltip_text(Some("Reset the terminal state (Ctrl+Shift+R)"));
+        menu_action(&menu, self, "Clear Scrollback", |t| t.reset(true)).set_tooltip_text(Some(
+            "Reset the terminal and clear the scrollback (Ctrl+Shift+X)",
+        ));
+
+        // ── Notes ────────────────────────────────────────────
+        let notes_menu = menu_submenu(&menu, "Notes");
+        menu_window_action(&notes_menu, self, "Notes Panel", |w| w.note_toggle_panel());
+        menu_window_action(&notes_menu, self, "New Note...", |w| w.note_new());
+        let output_item = menu_window_action(&notes_menu, self, "Note Command Output...", |w| {
+            w.note_add_command_output()
+        });
+        output_item.set_sensitive(has_command_output);
+        menu_window_action(&notes_menu, self, "Open Notes Folder", |w| {
+            w.note_open_folder()
+        });
 
         menu.show_all();
         crate::popup_transient_menu(&menu);
@@ -3005,10 +3019,182 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         glib::Propagation::Stop
     }
 
+    // ── Lazily built overlays ────────────────────────────────
+
+    /// Build the command bar on first use. It is hidden by default, so there
+    /// is no reason to pay for its widgets (entry, list, scroller, frame) in
+    /// every terminal tab at startup.
+    fn ensure_command_bar(&self) -> bool {
+        if self.imp().cmd_entry.borrow().is_some() {
+            return true;
+        }
+        let Some(overlay) = self.imp().overlay.borrow().clone() else {
+            return false;
+        };
+
+        let cmd_bar_revealer = gtk::Revealer::new();
+        cmd_bar_revealer.set_transition_type(gtk::RevealerTransitionType::SlideUp);
+        cmd_bar_revealer.set_transition_duration(150);
+        cmd_bar_revealer.set_halign(gtk::Align::Fill);
+        cmd_bar_revealer.set_valign(gtk::Align::End);
+        cmd_bar_revealer.set_vexpand(false);
+        cmd_bar_revealer.set_reveal_child(false);
+        overlay.add_overlay(&cmd_bar_revealer);
+        *self.imp().cmd_bar_revealer.borrow_mut() = Some(cmd_bar_revealer.clone());
+
+        let cmd_bar = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        cmd_bar.set_hexpand(true);
+        cmd_bar.set_vexpand(false);
+        cmd_bar_revealer.add(&cmd_bar);
+        *self.imp().cmd_bar.borrow_mut() = Some(cmd_bar.clone());
+
+        let outer_frame = gtk::Frame::new(None);
+        outer_frame.set_shadow_type(gtk::ShadowType::EtchedOut);
+        outer_frame.set_hexpand(true);
+        outer_frame.set_vexpand(false);
+        outer_frame.style_context().add_class("command-bar-frame");
+        cmd_bar.pack_start(&outer_frame, true, true, 0);
+
+        let inner = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        outer_frame.add(&inner);
+
+        let cmd_entry = gtk::Entry::new();
+        cmd_entry.set_has_frame(false);
+        cmd_entry.set_hexpand(true);
+        cmd_entry.set_size_request(-1, 36);
+        cmd_entry.set_placeholder_text(Some("/command [args]…"));
+        let weak = crate::SendWeak::new(self);
+        cmd_entry.connect_changed(move |_e| {
+            if let Some(t) = weak.upgrade() {
+                t.on_cmd_bar_changed();
+            }
+        });
+        let weak = crate::SendWeak::new(self);
+        cmd_entry.connect_activate(move |_e| {
+            if let Some(t) = weak.upgrade() {
+                t.execute_from_bar();
+            }
+        });
+        let weak = crate::SendWeak::new(self);
+        cmd_entry.connect_key_press_event(move |_w, ev| {
+            if let Some(t) = weak.upgrade() {
+                return t.on_cmd_bar_key(ev);
+            }
+            glib::Propagation::Proceed
+        });
+        inner.pack_start(&cmd_entry, false, false, 0);
+        *self.imp().cmd_entry.borrow_mut() = Some(cmd_entry);
+
+        let cmd_list = gtk::ListBox::new();
+        cmd_list.set_selection_mode(gtk::SelectionMode::Single);
+        cmd_list.set_vexpand(false);
+        let weak = crate::SendWeak::new(self);
+        cmd_list.connect_row_activated(move |_l, row| {
+            if let Some(t) = weak.upgrade() {
+                t.on_cmd_bar_row_activated(row);
+            }
+        });
+        let cmd_scroll =
+            gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
+        cmd_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        cmd_scroll.set_hexpand(true);
+        cmd_scroll.set_vexpand(false);
+        cmd_scroll.set_propagate_natural_height(true);
+        cmd_scroll.set_max_content_height(200);
+        cmd_scroll.add(&cmd_list);
+        inner.pack_start(&cmd_scroll, true, true, 0);
+        *self.imp().cmd_list.borrow_mut() = Some(cmd_list);
+
+        cmd_bar_revealer.show_all();
+        cmd_bar_revealer.set_reveal_child(false);
+        true
+    }
+
+    /// Build the scrollback search bar on first use (Ctrl+Shift+F / menu).
+    fn ensure_search_bar(&self) -> bool {
+        if self.imp().search_entry.borrow().is_some() {
+            return true;
+        }
+        let Some(overlay) = self.imp().overlay.borrow().clone() else {
+            return false;
+        };
+
+        let search_revealer = gtk::Revealer::new();
+        search_revealer.set_transition_type(gtk::RevealerTransitionType::SlideDown);
+        search_revealer.set_transition_duration(150);
+        search_revealer.set_halign(gtk::Align::Fill);
+        search_revealer.set_valign(gtk::Align::Start);
+        search_revealer.set_reveal_child(false);
+        overlay.add_overlay(&search_revealer);
+        *self.imp().search_revealer.borrow_mut() = Some(search_revealer.clone());
+
+        let search_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        search_box.set_size_request(-1, 32);
+        let search_frame = gtk::Frame::new(None);
+        search_frame.set_shadow_type(gtk::ShadowType::EtchedOut);
+        search_frame.style_context().add_class("command-bar-frame");
+        search_frame.add(&search_box);
+        search_revealer.add(&search_frame);
+
+        let search_entry = gtk::SearchEntry::new();
+        search_entry.set_placeholder_text(Some(
+            "Search scrollback (Enter=next, Shift+Enter=prev, Esc=close)...",
+        ));
+        let weak = crate::SendWeak::new(self);
+        search_entry.connect_search_changed(move |_e| {
+            if let Some(t) = weak.upgrade() {
+                t.do_search();
+            }
+        });
+        let weak = crate::SendWeak::new(self);
+        search_entry.connect_key_press_event(move |_w, ev| {
+            if let Some(t) = weak.upgrade() {
+                return t.on_search_key(ev);
+            }
+            glib::Propagation::Proceed
+        });
+        search_box.pack_start(&search_entry, true, true, 0);
+        *self.imp().search_entry.borrow_mut() = Some(search_entry);
+
+        let search_label = gtk::Label::new(Some(""));
+        search_label.set_halign(gtk::Align::Start);
+        search_box.pack_start(&search_label, false, false, 6);
+        *self.imp().search_label.borrow_mut() = Some(search_label);
+
+        let search_case_btn = gtk::ToggleButton::with_label("Aa");
+        search_case_btn.set_tooltip_text(Some("Match case"));
+        let weak = crate::SendWeak::new(self);
+        search_case_btn.connect_clicked(move |_b| {
+            if let Some(t) = weak.upgrade() {
+                t.do_search();
+            }
+        });
+        search_box.pack_start(&search_case_btn, false, false, 0);
+        *self.imp().search_case_btn.borrow_mut() = Some(search_case_btn);
+
+        let search_regex_btn = gtk::ToggleButton::with_label(".*");
+        search_regex_btn.set_tooltip_text(Some("Regular expression"));
+        let weak = crate::SendWeak::new(self);
+        search_regex_btn.connect_clicked(move |_b| {
+            if let Some(t) = weak.upgrade() {
+                t.do_search();
+            }
+        });
+        search_box.pack_start(&search_regex_btn, false, false, 0);
+        *self.imp().search_regex_btn.borrow_mut() = Some(search_regex_btn);
+
+        search_revealer.show_all();
+        search_revealer.set_reveal_child(false);
+        true
+    }
+
     // ── Command bar ──────────────────────────────────────────
 
     pub fn show_command_bar(&self) {
         if *self.imp().cmd_bar_visible.borrow() {
+            return;
+        }
+        if !self.ensure_command_bar() {
             return;
         }
         *self.imp().cmd_bar_visible.borrow_mut() = true;
@@ -3031,11 +3217,17 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
     }
 
     fn on_cmd_bar_changed(&self) {
+        if !self.ensure_command_bar() {
+            return;
+        }
         let entry = self.imp().cmd_entry.borrow().clone().unwrap();
         self.build_cmd_list(&entry.text());
     }
 
     fn build_cmd_list(&self, query: &str) {
+        if !self.ensure_command_bar() {
+            return;
+        }
         let list = self.imp().cmd_list.borrow().clone().unwrap();
         for child in list.children() {
             list.remove(&child);

@@ -413,12 +413,15 @@ pub fn spawn_broker(
         exited_for_waiter.store(true, Ordering::Release);
     });
     let mut ready = false;
-    for _ in 0..200 {
+    for attempt in 0..200 {
         if UnixStream::connect(&path).is_ok() {
             ready = true;
             break;
         }
-        std::thread::sleep(Duration::from_millis(5));
+        // Poll tightly at first (the broker is usually ready in ~1ms) and back
+        // off afterwards instead of blocking the GUI thread for 5ms per try.
+        let delay = if attempt < 40 { 1 } else { 5 };
+        std::thread::sleep(Duration::from_millis(delay));
     }
     if !ready {
         if !exited.load(Ordering::Acquire) {

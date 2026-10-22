@@ -6,6 +6,9 @@ impl TerminalBox {
     // ── Scrollback search ────────────────────────────────────
 
     pub(super) fn show_search(&self) {
+        if !self.ensure_search_bar() {
+            return;
+        }
         let revealer = self.imp().search_revealer.borrow().clone().unwrap();
         if revealer.property::<bool>("reveal-child") {
             return;
@@ -31,6 +34,9 @@ impl TerminalBox {
     }
 
     pub(super) fn do_search(&self) {
+        if !self.ensure_search_bar() {
+            return;
+        }
         self.clear_search_highlights();
         self.imp().search_results.borrow_mut().clear();
         *self.imp().search_index.borrow_mut() = 0;
