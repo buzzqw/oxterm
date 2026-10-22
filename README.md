@@ -34,8 +34,9 @@ memory footprint and the memory-safety guarantees of Rust.
 - Timestamped Markdown notes with an in-app Notes menu, per-entry context, and configurable editor integration
 - OSC 133 shell integration for prompts, command boundaries, and exit status
 - Session restore, named sessions, profiles, command palette, quickmarks, and hints
-- Rich right-click menu: clipboard (text/HTML/all/last command), links, tabs,
-  splits, zoom, read-only, quickmarks, snippets, and notes actions
+- Compact right-click menu with submenus for clipboard (text/HTML/all/last
+  command), links, tabs, splits, tools, zoom, read-only, quickmarks, snippets,
+  and notes actions
 - Persistent PTY broker with SSH-friendly remote attach/detach, session listing, and multi-client terminal sharing
 - Parameterized snippets and JSON export for saved sessions
 - System statistics and SSH-aware status information

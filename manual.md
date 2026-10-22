@@ -195,25 +195,26 @@ Zoom the font at any time with `Ctrl++`, `Ctrl+-`, and `Ctrl+0` to reset.
 ### Terminal context menu
 
 Right-clicking a terminal opens a context menu with the actions that depend on
-the current selection and cursor position. Items such as **Copy Last Command**,
-**Copy Command Output**, **Copy URL**, and **Insert Snippet** only appear when
-there is something to act on.
+the current selection and cursor position. Everyday actions stay at the top
+level and the rest is grouped into submenus, so the menu stays short. Items
+such as **Copy Link**, **Copy As > Last Command**, and **Tools > Insert
+Snippet** only appear when there is something to act on.
 
-- Clipboard: **Copy**, **Copy as HTML**, **Copy All**, **Copy Last Command**
-  (with OSC 133 shell integration), **Paste**, and **Paste Selection**.
-- Selection and notes: **Select All**, **Add Selection to Note...**, and
-  **Copy Command Output** (when OSC 133 shell integration is active).
-- Links and files: **Open File Manager Here**, plus **Copy URL** / **Open URL
-  in Browser** when the cursor is over a link.
-- Tabs and window: **New Tab**, **Close Tab**, **Rename Tab...**, **Detach
-  Tab**, the **Split** submenu (vertical, horizontal, unsplit), **Broadcast
-  Input**, and **Read-Only**.
-- View: **Zoom In/Out/Reset** and **Full Screen**.
-- Tools: **Search Scrollback...**, **Command Bar...**, **History Search...**,
-  a **Quickmarks** submenu, **Insert Snippet** (saved `/snippet` entries),
-  **Reset Terminal**, and **Clear Scrollback**.
-- Notes: **Notes Panel**, **New Note...**, **Note Command Output...**, and
-  **Open Notes Folder**.
+- Top level: **Copy**, **Paste**, **Paste Selection**, and **Select All**,
+  followed by **Copy Link** / **Open Link in Browser** when the cursor is over
+  a link.
+- **Copy As**: **HTML**, **Whole Scrollback**, and, when available, **Last
+  Command** and **Last Command Output**.
+- **Notes**: **Add Selection to Note...**, **Note Command Output...**,
+  **New Note...**, **Toggle Notes Panel**, and **Open Notes Folder**.
+- **Tab**: **New Tab**, **Rename Tab...**, **Detach Tab**, **Close Tab**, and a
+  **Split** submenu (vertical, horizontal, unsplit).
+- **Tools**: **Search Scrollback...**, **Command Bar...**, **History
+  Search...**, a **Quickmarks** submenu, **Insert Snippet** (saved `/snippet`
+  entries), **Open File Manager Here**, **Reset Terminal**, and **Clear
+  Scrollback**.
+- **View**: **Zoom In/Out/Reset** and **Full Screen**.
+- Bottom toggles: **Broadcast Input** and **Read-Only**.
 
 ## Tabs, Windows, and Splits
 

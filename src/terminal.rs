@@ -2237,50 +2237,50 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         let read_only = !vte.is_input_enabled();
         let last_command = self.last_command();
         let has_command_output = self.get_command_output_range().0.is_some();
+        let url = self
+            .url_at_position(px, py)
+            .or_else(|| self.url_from_text_at(px, py));
 
         // ── Clipboard ────────────────────────────────────────
+        // The few actions used all the time stay at the top level; the rest is
+        // grouped into submenus so the menu never turns into a long list.
         let copy_item = menu_action(&menu, self, "Copy", |t| t.copy());
         copy_item.set_sensitive(has_selection);
         copy_item.set_tooltip_text(Some("Copy the selection (Ctrl+Shift+C)"));
 
-        let copy_html_item = menu_action(&menu, self, "Copy as HTML", |t| {
+        menu_action(&menu, self, "Paste", |t| t.paste())
+            .set_tooltip_text(Some("Paste the clipboard contents (Ctrl+Shift+V)"));
+        menu_action(&menu, self, "Paste Selection", |t| t.paste_selection())
+            .set_tooltip_text(Some("Paste the primary selection (middle-click paste)"));
+        menu_action(&menu, self, "Select All", |t| t.select_all())
+            .set_tooltip_text(Some("Select the whole scrollback (Ctrl+Shift+A)"));
+
+        // ── Clipboard variants ───────────────────────────────
+        let copy_menu = menu_submenu(&menu, "Copy As");
+        let copy_html_item = menu_action(&copy_menu, self, "HTML", |t| {
             t.vte().copy_clipboard_format(Format::Html)
         });
         copy_html_item.set_sensitive(has_selection);
         copy_html_item.set_tooltip_text(Some("Copy the selection with its colours and styles"));
 
-        menu_action(&menu, self, "Copy All", |t| {
+        menu_action(&copy_menu, self, "Whole Scrollback", |t| {
             t.select_all();
             t.copy();
         })
         .set_tooltip_text(Some("Copy the whole scrollback to the clipboard"));
 
+        if !last_command.is_empty() || has_command_output {
+            copy_menu.append(&gtk::SeparatorMenuItem::new());
+        }
         if !last_command.is_empty() {
             let last = last_command.clone();
-            menu_action(&menu, self, "Copy Last Command", move |_t| {
+            menu_action(&copy_menu, self, "Last Command", move |_t| {
                 gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).set_text(&last);
             })
             .set_tooltip_text(Some("Copy the last command line to the clipboard"));
         }
-
-        menu.append(&gtk::SeparatorMenuItem::new());
-        menu_action(&menu, self, "Paste", |t| t.paste())
-            .set_tooltip_text(Some("Paste the clipboard contents (Ctrl+Shift+V)"));
-        menu_action(&menu, self, "Paste Selection", |t| t.paste_selection())
-            .set_tooltip_text(Some("Paste the primary selection (middle-click paste)"));
-
-        menu.append(&gtk::SeparatorMenuItem::new());
-        menu_action(&menu, self, "Select All", |t| t.select_all())
-            .set_tooltip_text(Some("Select the whole scrollback (Ctrl+Shift+A)"));
-
-        let add_note_item = menu_action(&menu, self, "Add Selection to Note...", |t| {
-            t.add_selection_to_note()
-        });
-        add_note_item.set_sensitive(has_selection);
-        add_note_item.set_tooltip_text(Some("Append the selected text to a notes file"));
-
         if has_command_output {
-            menu_action(&menu, self, "Copy Command Output", |t| {
+            menu_action(&copy_menu, self, "Last Command Output", |t| {
                 t.copy_command_output()
             })
             .set_tooltip_text(Some(
@@ -2288,41 +2288,42 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             ));
         }
 
-        // ── Files and links ──────────────────────────────────
-        menu.append(&gtk::SeparatorMenuItem::new());
-        menu_action(&menu, self, "Open File Manager Here", |t| t.open_fm())
-            .set_tooltip_text(Some("Open the working directory in the file manager"));
-
-        if let Some(url) = self
-            .url_at_position(px, py)
-            .or_else(|| self.url_from_text_at(px, py))
-        {
+        // ── Links (contextual) ───────────────────────────────
+        if let Some(url) = url {
+            menu.append(&gtk::SeparatorMenuItem::new());
             let url_copy = url.clone();
-            let copy_url_item = menu_action(
-                &menu,
-                self,
-                &format!("Copy URL: {}", ellipsize(&url, 60)),
-                move |t| t.copy_url(&url_copy),
-            );
-            copy_url_item.set_tooltip_text(Some("Copy this URL to the clipboard"));
+            let copy_url_item =
+                menu_action(&menu, self, "Copy Link", move |t| t.copy_url(&url_copy));
+            copy_url_item.set_tooltip_text(Some(&format!("Copy this URL: {}", url)));
 
-            menu_action(&menu, self, "Open URL in Browser", move |t| {
+            menu_action(&menu, self, "Open Link in Browser", move |t| {
                 t.open_url(&url)
             });
         }
 
-        // ── Tabs and window ──────────────────────────────────
-        menu.append(&gtk::SeparatorMenuItem::new());
-        menu_window_action(&menu, self, "New Tab", |w| w.new_tab_signal());
-
-        let close_tab_item = gtk::MenuItem::with_label("Close Tab");
-        let weak = crate::SendWeak::new(self);
-        close_tab_item.connect_activate(move |_| {
-            if let Some(t) = weak.upgrade() {
-                t.call_window(|w| w.close_tab_signal(Some(&t)));
-            }
+        // ── Notes ────────────────────────────────────────────
+        let notes_menu = menu_submenu(&menu, "Notes");
+        let add_note_item = menu_action(&notes_menu, self, "Add Selection to Note...", |t| {
+            t.add_selection_to_note()
         });
-        menu.append(&close_tab_item);
+        add_note_item.set_sensitive(has_selection);
+        add_note_item.set_tooltip_text(Some("Append the selected text to a notes file"));
+        let output_item = menu_window_action(&notes_menu, self, "Note Command Output...", |w| {
+            w.note_add_command_output()
+        });
+        output_item.set_sensitive(has_command_output);
+        notes_menu.append(&gtk::SeparatorMenuItem::new());
+        menu_window_action(&notes_menu, self, "New Note...", |w| w.note_new());
+        menu_window_action(&notes_menu, self, "Toggle Notes Panel", |w| {
+            w.note_toggle_panel()
+        });
+        menu_window_action(&notes_menu, self, "Open Notes Folder", |w| {
+            w.note_open_folder()
+        });
+
+        // ── Tabs and panes ───────────────────────────────────
+        let tab_menu = menu_submenu(&menu, "Tab");
+        menu_window_action(&tab_menu, self, "New Tab", |w| w.new_tab_signal());
 
         let rename_tab_item = gtk::MenuItem::with_label("Rename Tab...");
         let weak = crate::SendWeak::new(self);
@@ -2331,7 +2332,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 t.call_window(|w| w.rename_tab_signal(&t));
             }
         });
-        menu.append(&rename_tab_item);
+        tab_menu.append(&rename_tab_item);
 
         let detach_tab_item = gtk::MenuItem::with_label("Detach Tab");
         detach_tab_item.set_tooltip_text(Some("Move this tab into its own window"));
@@ -2341,17 +2342,112 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 t.call_window(|w| w.detach_tab_signal(&t));
             }
         });
-        menu.append(&detach_tab_item);
+        tab_menu.append(&detach_tab_item);
 
-        let split_menu = menu_submenu(&menu, "Split");
-        menu_window_action(&split_menu, self, "Split Vertically", |w| {
+        let close_tab_item = gtk::MenuItem::with_label("Close Tab");
+        let weak = crate::SendWeak::new(self);
+        close_tab_item.connect_activate(move |_| {
+            if let Some(t) = weak.upgrade() {
+                t.call_window(|w| w.close_tab_signal(Some(&t)));
+            }
+        });
+        tab_menu.append(&close_tab_item);
+
+        tab_menu.append(&gtk::SeparatorMenuItem::new());
+        let split_menu = menu_submenu(&tab_menu, "Split");
+        menu_window_action(&split_menu, self, "Vertically", |w| {
             w.split_signal("vertical")
         });
-        menu_window_action(&split_menu, self, "Split Horizontally", |w| {
+        menu_window_action(&split_menu, self, "Horizontally", |w| {
             w.split_signal("horizontal")
         });
         menu_window_action(&split_menu, self, "Unsplit", |w| w.split_signal("single"));
 
+        // ── Tools ────────────────────────────────────────────
+        let tools_menu = menu_submenu(&menu, "Tools");
+        menu_action(&tools_menu, self, "Search Scrollback...", |t| {
+            t.show_search()
+        })
+        .set_tooltip_text(Some("Search in the scrollback buffer (Ctrl+Shift+F)"));
+        menu_action(&tools_menu, self, "Command Bar...", |t| {
+            t.show_command_bar()
+        })
+        .set_tooltip_text(Some("Run an Oxterm /command (Ctrl+Shift+P)"));
+        menu_action(&tools_menu, self, "History Search...", |t| {
+            t.start_history_search()
+        })
+        .set_tooltip_text(Some("Search command history (Ctrl+R)"));
+
+        let quickmarks = menu_submenu(&tools_menu, "Quickmarks");
+        menu_action(&quickmarks, self, "Set Quickmark", |t| t.set_quickmark())
+            .set_tooltip_text(Some("Bookmark this position (Ctrl+Shift+M)"));
+        let mark_count = self.imp().quickmarks.borrow().len();
+        if mark_count > 0 {
+            menu_action(&quickmarks, self, "Jump to Next Quickmark", |t| {
+                t.jump_next_quickmark()
+            });
+            let clear_label = format!("Clear All Quickmarks ({})", mark_count);
+            menu_action(&quickmarks, self, &clear_label, |t| {
+                t.remove_all_quickmarks()
+            });
+        }
+
+        let snippets = crate::settings::json_to_str_map(&settings().get_obj("snippets"));
+        if !snippets.is_empty() {
+            let snippet_menu = menu_submenu(&tools_menu, "Insert Snippet");
+            for (name, command) in snippets {
+                let label = format!("{}  —  {}", name, ellipsize(&command, 42));
+                let item = gtk::MenuItem::with_label(&label);
+                item.set_tooltip_text(Some(&command));
+                let weak = crate::SendWeak::new(self);
+                item.connect_activate(move |_| {
+                    if let Some(t) = weak.upgrade() {
+                        // Replace whatever is on the prompt, like /snippet does.
+                        t.feed_command_bytes(b"\x15");
+                        *t.imp().input_shadow.borrow_mut() = command.clone();
+                        t.vte().feed_child(command.as_bytes());
+                        t.vte().grab_focus();
+                    }
+                });
+                snippet_menu.append(&item);
+            }
+        }
+
+        tools_menu.append(&gtk::SeparatorMenuItem::new());
+        menu_action(&tools_menu, self, "Open File Manager Here", |t| t.open_fm())
+            .set_tooltip_text(Some("Open the working directory in the file manager"));
+        menu_action(&tools_menu, self, "Reset Terminal", |t| t.reset(false))
+            .set_tooltip_text(Some("Reset the terminal state (Ctrl+Shift+R)"));
+        menu_action(&tools_menu, self, "Clear Scrollback", |t| t.reset(true)).set_tooltip_text(
+            Some("Reset the terminal and clear the scrollback (Ctrl+Shift+X)"),
+        );
+
+        // ── View ─────────────────────────────────────────────
+        let view_menu = menu_submenu(&menu, "View");
+        menu_action(&view_menu, self, "Zoom In", |t| t.zoom_in())
+            .set_tooltip_text(Some("Increase the font size (Ctrl++)"));
+        menu_action(&view_menu, self, "Zoom Out", |t| t.zoom_out())
+            .set_tooltip_text(Some("Decrease the font size (Ctrl+-)"));
+        menu_action(&view_menu, self, "Reset Zoom", |t| t.zoom_reset())
+            .set_tooltip_text(Some("Reset the font scale to 100% (Ctrl+0)"));
+        view_menu.append(&gtk::SeparatorMenuItem::new());
+        menu_action(&view_menu, self, "Full Screen", |t| {
+            if let Some(win) = t.toplevel().and_then(|w| w.downcast::<gtk::Window>().ok()) {
+                let fullscreen = win
+                    .window()
+                    .map(|gw| gw.state().contains(gdk::WindowState::FULLSCREEN))
+                    .unwrap_or(false);
+                if fullscreen {
+                    win.unfullscreen();
+                } else {
+                    win.fullscreen();
+                }
+            }
+        })
+        .set_tooltip_text(Some("Toggle full-screen mode (F11)"));
+
+        // ── Terminal modes ───────────────────────────────────
+        menu.append(&gtk::SeparatorMenuItem::new());
         let cast_item = gtk::CheckMenuItem::with_label("Broadcast Input");
         cast_item.set_active(settings().get_bool("broadcast_input"));
         cast_item.set_tooltip_text(Some("Send typed input to every terminal in this window"));
@@ -2376,95 +2472,6 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             }
         });
         menu.append(&ro_item);
-
-        // ── View ─────────────────────────────────────────────
-        menu.append(&gtk::SeparatorMenuItem::new());
-        menu_action(&menu, self, "Zoom In", |t| t.zoom_in())
-            .set_tooltip_text(Some("Increase the font size (Ctrl++)"));
-        menu_action(&menu, self, "Zoom Out", |t| t.zoom_out())
-            .set_tooltip_text(Some("Decrease the font size (Ctrl+-)"));
-        menu_action(&menu, self, "Reset Zoom", |t| t.zoom_reset())
-            .set_tooltip_text(Some("Reset the font scale to 100% (Ctrl+0)"));
-
-        menu_action(&menu, self, "Full Screen", |t| {
-            if let Some(win) = t.toplevel().and_then(|w| w.downcast::<gtk::Window>().ok()) {
-                let fullscreen = win
-                    .window()
-                    .map(|gw| gw.state().contains(gdk::WindowState::FULLSCREEN))
-                    .unwrap_or(false);
-                if fullscreen {
-                    win.unfullscreen();
-                } else {
-                    win.fullscreen();
-                }
-            }
-        })
-        .set_tooltip_text(Some("Toggle full-screen mode (F11)"));
-
-        // ── Tools ────────────────────────────────────────────
-        menu.append(&gtk::SeparatorMenuItem::new());
-        menu_action(&menu, self, "Search Scrollback...", |t| t.show_search())
-            .set_tooltip_text(Some("Search in the scrollback buffer (Ctrl+Shift+F)"));
-        menu_action(&menu, self, "Command Bar...", |t| t.show_command_bar())
-            .set_tooltip_text(Some("Run an Oxterm /command (Ctrl+Shift+P)"));
-        menu_action(&menu, self, "History Search...", |t| {
-            t.start_history_search()
-        })
-        .set_tooltip_text(Some("Search command history (Ctrl+R)"));
-
-        let quickmarks = menu_submenu(&menu, "Quickmarks");
-        menu_action(&quickmarks, self, "Set Quickmark", |t| t.set_quickmark())
-            .set_tooltip_text(Some("Bookmark this position (Ctrl+Shift+M)"));
-        let mark_count = self.imp().quickmarks.borrow().len();
-        if mark_count > 0 {
-            menu_action(&quickmarks, self, "Jump to Next Quickmark", |t| {
-                t.jump_next_quickmark()
-            });
-            let clear_label = format!("Clear All Quickmarks ({})", mark_count);
-            menu_action(&quickmarks, self, &clear_label, |t| {
-                t.remove_all_quickmarks()
-            });
-        }
-
-        let snippets = crate::settings::json_to_str_map(&settings().get_obj("snippets"));
-        if !snippets.is_empty() {
-            let snippet_menu = menu_submenu(&menu, "Insert Snippet");
-            for (name, command) in snippets {
-                let label = format!("{}  —  {}", name, ellipsize(&command, 42));
-                let item = gtk::MenuItem::with_label(&label);
-                item.set_tooltip_text(Some(&command));
-                let weak = crate::SendWeak::new(self);
-                item.connect_activate(move |_| {
-                    if let Some(t) = weak.upgrade() {
-                        // Replace whatever is on the prompt, like /snippet does.
-                        t.feed_command_bytes(b"\x15");
-                        *t.imp().input_shadow.borrow_mut() = command.clone();
-                        t.vte().feed_child(command.as_bytes());
-                        t.vte().grab_focus();
-                    }
-                });
-                snippet_menu.append(&item);
-            }
-        }
-
-        menu.append(&gtk::SeparatorMenuItem::new());
-        menu_action(&menu, self, "Reset Terminal", |t| t.reset(false))
-            .set_tooltip_text(Some("Reset the terminal state (Ctrl+Shift+R)"));
-        menu_action(&menu, self, "Clear Scrollback", |t| t.reset(true)).set_tooltip_text(Some(
-            "Reset the terminal and clear the scrollback (Ctrl+Shift+X)",
-        ));
-
-        // ── Notes ────────────────────────────────────────────
-        let notes_menu = menu_submenu(&menu, "Notes");
-        menu_window_action(&notes_menu, self, "Notes Panel", |w| w.note_toggle_panel());
-        menu_window_action(&notes_menu, self, "New Note...", |w| w.note_new());
-        let output_item = menu_window_action(&notes_menu, self, "Note Command Output...", |w| {
-            w.note_add_command_output()
-        });
-        output_item.set_sensitive(has_command_output);
-        menu_window_action(&notes_menu, self, "Open Notes Folder", |w| {
-            w.note_open_folder()
-        });
 
         menu.show_all();
         crate::popup_transient_menu(&menu);
