@@ -310,10 +310,6 @@ Commands beginning with `/` are handled by Oxterm:
 | `/history :sql SELECT ...` | Run a read-only history query |
 | `/wnotes [-file.md] <text>` | Save a timestamped note |
 | `/onotes [-file.md]` | Open a notes file in the configured editor |
-
-The **Notes** menu also provides the integrated Notes panel (full-text search,
-tags, preview, append) plus New Note, Add Selection to Note, Copy All to Note,
-Note Command Output, Open Note, and Open Notes Folder actions (see the manual).
 | `/learn <file>` | Import commands into history without executing them |
 | `/optimize history` | Keep latest command/directory entries and optimize history in background |
 | `/session export NAME [FILE]` | Export a saved session as private JSON |
@@ -322,6 +318,12 @@ Note Command Output, Open Note, and Open Notes Folder actions (see the manual).
 | `/snippet add NAME COMMAND` | Save a parameterized command snippet |
 | `/snippet NAME [ARGS...]` | Expand a snippet into the prompt without executing it |
 | `/snippet list` | List saved snippets |
+| `/snippet delete NAME` | Remove a saved snippet |
+| `/clear` / `/cls` | Clear the terminal screen |
+
+The **Notes** menu also provides the integrated Notes panel (full-text search,
+tags, preview, append) plus New Note, Add Selection to Note, Copy All to Note,
+Note Command Output, Open Note, and Open Notes Folder actions (see the manual).
 
 Press `Ctrl+Shift+P` for the command palette and `Tab` after `/` for command
 completion.

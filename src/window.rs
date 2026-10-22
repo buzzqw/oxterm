@@ -973,7 +973,7 @@ impl DetachedWindow {
                     w.note_new();
                 }
             }),
-            Some("<Primary><Shift>M"),
+            None,
             Some("Compose a new note and save it to a Markdown file"),
         );
         notes_menu.append(&gtk::SeparatorMenuItem::new());
@@ -2896,7 +2896,7 @@ impl MainWindow {
                     w.note_new();
                 }
             }),
-            Some("<Primary><Shift>M"),
+            None,
             Some("Compose a new note and save it to a Markdown file"),
         );
         notes_menu.append(&gtk::SeparatorMenuItem::new());

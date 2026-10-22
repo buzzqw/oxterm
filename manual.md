@@ -195,10 +195,12 @@ Zoom the font at any time with `Ctrl++`, `Ctrl+-`, and `Ctrl+0` to reset.
 ### Terminal context menu
 
 Right-clicking a terminal opens a context menu with the actions that depend on
-the current selection and cursor position:
+the current selection and cursor position. Items such as **Copy Last Command**,
+**Copy Command Output**, **Copy URL**, and **Insert Snippet** only appear when
+there is something to act on.
 
-- Clipboard: **Copy**, **Copy as HTML**, **Copy All**, **Copy Last Command**,
-  **Paste**, and **Paste Selection**.
+- Clipboard: **Copy**, **Copy as HTML**, **Copy All**, **Copy Last Command**
+  (with OSC 133 shell integration), **Paste**, and **Paste Selection**.
 - Selection and notes: **Select All**, **Add Selection to Note...**, and
   **Copy Command Output** (when OSC 133 shell integration is active).
 - Links and files: **Open File Manager Here**, plus **Copy URL** / **Open URL
@@ -367,7 +369,7 @@ Notes are Markdown files with timestamped entries (in local time). They are
 stored, by default, in `~/.local/share/oxterm/notes/`; change the directory and
 default filename in **Edit > Preferences > Notes**.
 
-The **Notes** menu (or `Ctrl+Shift+M`) lets you:
+The **Notes** menu lets you:
 
 - **Notes Panel** — show or hide the integrated panel (search, tag filter,
   preview and a quick append box).
@@ -502,6 +504,13 @@ remote tmux detaches instead of the local terminal.
 | `Ctrl+Shift+S` | Rename tab |
 | `Ctrl+Shift+R` | Reset terminal |
 | `Ctrl+Shift+X` | Reset and clear |
+| `Ctrl+Shift+F` | Search the scrollback (Enter/Shift+Enter = next/prev) |
+| `Ctrl++` / `Ctrl+-` / `Ctrl+0` | Zoom font in / out / reset |
+| `Ctrl+Shift+E` / `Ctrl+Shift+D` | Vertical / horizontal split |
+| `Ctrl+Shift+M` / `Ctrl+M` | Set / jump to next quickmark |
+| `Ctrl+Shift+H` | Hint mode for URLs, paths, and Git SHAs |
+| `Ctrl+Shift+Y` | VI-style copy mode |
+| `Ctrl+Shift+B` | Toggle broadcast input |
 | `Ctrl+R` | Interactive history search; repeat to cycle matches |
 | `Ctrl+U` | Kill line; clear history filter while its picker is open |
 | `Ctrl+W` | Kill word; remove last history filter term while its picker is open |
