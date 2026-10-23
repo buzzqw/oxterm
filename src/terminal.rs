@@ -34,6 +34,11 @@ use crate::session;
 use crate::settings::{self, settings};
 use crate::window::MainWindow;
 
+/// Width of the OSC 133 gutter drawn left of the terminal. The space is
+/// reserved from the first allocation so the grid never changes size when the
+/// first prompt marker shows up.
+const OSC133_GUTTER_WIDTH: i32 = 6;
+
 pub const OXTERM_COMMANDS: &[&str] = &[
     "history", "wnotes", "onotes", "learn", "optimize", "session", "snippet", "help", "clear",
     "cls",
@@ -620,9 +625,15 @@ impl TerminalBox {
         *self.imp().scroll_follow.borrow_mut() = true;
 
         let osc133_margin = gtk::DrawingArea::new();
-        osc133_margin.set_size_request(6, -1);
+        osc133_margin.set_size_request(OSC133_GUTTER_WIDTH, -1);
         osc133_margin.set_no_show_all(true);
-        osc133_margin.set_visible(false);
+        // Reserve the gutter up front when the shell integration is enabled.
+        // Showing it lazily on the first marker (the first prompt that is not
+        // on row 0, i.e. after the first command) shrank the grid by up to a
+        // column mid-session: VTE then re-wrapped every full-width line that
+        // was already on screen, moving the last character of each one to the
+        // next row.
+        osc133_margin.set_visible(s.get_bool("osc133"));
         {
             let weak = crate::SendWeak::new(self);
             osc133_margin.connect_draw(move |area, cr| {
@@ -805,6 +816,11 @@ impl TerminalBox {
         *self.imp().cached_delete_binding.borrow_mut() = s.get_str("delete_binding");
         *self.imp().cached_broadcast_input.borrow_mut() = s.get_bool("broadcast_input");
         *self.imp().cached_scroll_on_output.borrow_mut() = s.get_bool("scroll_on_output");
+        // Toggling the shell integration in the settings dialog adds or
+        // removes the gutter; keep the grid consistent with it.
+        self.set_osc133_gutter_visible(
+            *self.imp().interactive_shell.borrow() && s.get_bool("osc133"),
+        );
     }
 
     fn apply_font(&self) {
@@ -976,6 +992,10 @@ impl TerminalBox {
     pub fn launch(&self, cwd: Option<&str>, command: Option<&Vec<String>>) {
         let s = settings();
         *self.imp().interactive_shell.borrow_mut() = command.is_none();
+        // Shell integration (and therefore the gutter markers) only exists for
+        // an interactive shell; a terminal started with an explicit command
+        // keeps the full width for text.
+        self.set_osc133_gutter_visible(command.is_none() && s.get_bool("osc133"));
         let mut argv: Vec<String> = if let Some(cmd) = command {
             cmd.clone()
         } else {
@@ -2074,6 +2094,17 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             if let Some(margin) = self.imp().osc133_margin.borrow().clone() {
                 margin.set_visible(true);
                 margin.queue_draw();
+            }
+        }
+    }
+
+    /// Show or hide the OSC 133 gutter. Hiding it after it has been reserved
+    /// gives the width back to the terminal, so this is only used for
+    /// terminals that never receive prompt markers (see `launch`).
+    fn set_osc133_gutter_visible(&self, visible: bool) {
+        if let Some(margin) = self.imp().osc133_margin.borrow().clone() {
+            if margin.is_visible() != visible {
+                margin.set_visible(visible);
             }
         }
     }
