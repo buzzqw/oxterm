@@ -1,5 +1,6 @@
 #![recursion_limit = "256"]
 
+mod control;
 mod history;
 mod icons;
 mod logging;
@@ -360,6 +361,13 @@ fn usage() -> &'static str {
         "  -V, --version                Show the Oxterm version\n",
         "  -h, --help                   Show this help\n",
         "\n",
+        "Scriptable control (acts on a running Oxterm, opens no window):\n",
+        "  new [--cwd DIR] [--title T] [-- CMD...]     Open a tab, print its pane id\n",
+        "  split [--pane ID] [--vertical|--horizontal]  Split a single-pane window\n",
+        "  send [--pane ID] [--enter] TEXT...|-         Type into a pane\n",
+        "  capture [--pane ID] [--scrollback N|--all]   Print a pane's text\n",
+        "  wait [--pane ID] [--timeout SECS]            Wait for the next command to finish\n",
+        "\n",
         "Remote sessions (SESSION_ID is the first column printed by --list):\n",
         "  -a, --attach [SESSION_ID]    Share a live session in this terminal\n",
         "  -M, --move [SESSION_ID]      Take a live session over in this terminal\n",
@@ -413,6 +421,10 @@ impl App {
                 .oxterm-tab-menu menuitem { padding: 6px 12px; min-height: 24px; }
                 .oxterm-stats-label { font-size: 0.85em; font-family: Monospace; color: alpha(@theme_fg_color, 0.6); background: alpha(@theme_bg_color, 0.5); padding: 2px 12px; }
                 .oxterm-hint-label { background: #fce94f; color: #000000; font-family: Monospace; font-weight: bold; font-size: 0.85em; padding: 1px 3px; border-radius: 2px; }
+                .oxterm-sticky-header { background: alpha(@theme_bg_color, 0.94); border-bottom: 1px solid alpha(currentColor, 0.25); padding: 2px 8px; font-family: Monospace; font-size: 0.88em; }
+                .oxterm-sticky-ok { color: #4faa5a; }
+                .oxterm-sticky-fail { color: #cc4b4b; }
+                .oxterm-sticky-run { color: #c9971f; }
             ";
             let _ = css_provider.load_from_data(css);
             if let Some(screen) = gdk::Screen::default() {
@@ -547,6 +559,8 @@ impl App {
                 glib::ControlFlow::Break
             });
         }
+        control::init(app.clone());
+        control::start_server();
         let code = self.app.run_with_args(&args).value();
         #[cfg(debug_assertions)]
         if window::test_scenario::failed() {
@@ -727,6 +741,11 @@ mod tests {
             "-M, --move",
             "--detach",
             "--broker",
+            "new [--cwd",
+            "split [--pane",
+            "send [--pane",
+            "capture [--pane",
+            "wait [--pane",
             "--",
             "-V, --version",
             "-h, --help",
@@ -823,6 +842,16 @@ fn main() {
     if let Some(mode) = remote::parse_cli_mode(&args) {
         let code = match mode {
             Ok(mode) => remote::run_cli(mode),
+            Err(error) => {
+                eprintln!("oxterm: {}", error);
+                2
+            }
+        };
+        std::process::exit(code);
+    }
+    if let Some(mode) = control::parse_cli_mode(&args) {
+        let code = match mode {
+            Ok(mode) => control::run_cli(mode),
             Err(error) => {
                 eprintln!("oxterm: {}", error);
                 2

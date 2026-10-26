@@ -1,0 +1,286 @@
+//! End-to-end tests for the `oxterm new|split|send|capture|wait` control API.
+//!
+//! Like the window lifecycle tests, these open a real window and are skipped
+//! unless `OXTERM_GUI_TESTS=1`; CI runs them under Xvfb.
+
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+struct TempHome(PathBuf);
+
+impl TempHome {
+    fn new() -> TempHome {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        // Keep the path short enough that Oxterm's broker sockets (whose id can
+        // be 49 characters) stay under the Unix socket limit, so both the
+        // broker and the control socket live in the temporary HOME.
+        let path =
+            std::env::temp_dir().join(format!("oc{}{:06}", std::process::id(), unique % 1_000_000));
+        std::fs::create_dir_all(&path).expect("create test home");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+            .expect("make test home private");
+        TempHome(path)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempHome {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn gui_tests_enabled() -> bool {
+    if std::env::var_os("OXTERM_GUI_TESTS").is_none() {
+        eprintln!("skipping control API tests: set OXTERM_GUI_TESTS=1 and run with a display");
+        return false;
+    }
+    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        panic!("OXTERM_GUI_TESTS is set but DISPLAY and WAYLAND_DISPLAY are both unset");
+    }
+    true
+}
+
+fn binary() -> &'static str {
+    env!("CARGO_BIN_EXE_oxterm")
+}
+
+fn socket_dir(home: &Path) -> PathBuf {
+    let configured = home.join(".config/oxterm/remote");
+    let probe = configured.join(format!("control-{}.sock", "9".repeat(20)));
+    if probe.as_os_str().len() <= 107 {
+        configured
+    } else {
+        PathBuf::from("/tmp")
+            .join(format!("oxterm-{}", unsafe { libc::geteuid() }))
+            .join("remote")
+    }
+}
+
+fn wait_for_control_socket(home: &Path, child: &mut Child) -> PathBuf {
+    let directory = socket_dir(home);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        if let Ok(entries) = std::fs::read_dir(&directory) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("control-"))
+                {
+                    return path;
+                }
+            }
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            panic!("Oxterm exited before creating its control socket: {status}");
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    panic!(
+        "Oxterm did not create a control socket in {}",
+        directory.display()
+    );
+}
+
+fn run_cli(home: &Path, args: &[&str]) -> Output {
+    Command::new(binary())
+        .args(args)
+        .env("HOME", home)
+        .env("NO_AT_BRIDGE", "1")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run oxterm")
+}
+
+fn cli_stdout(output: &Output) -> String {
+    assert!(
+        output.status.success(),
+        "command failed: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn first_pane(home: &Path) -> String {
+    let output = run_cli(home, &["--list"]);
+    let text = cli_stdout(&output);
+    text.lines()
+        .nth(1)
+        .and_then(|line| line.split('\t').next())
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| panic!("no pane in --list output: {text}"))
+        .to_string()
+}
+
+fn spawn_wait(home: &Path, pane: &str, timeout: &str) -> Child {
+    Command::new(binary())
+        .args(["wait", "--pane", pane, "--timeout", timeout])
+        .env("HOME", home)
+        .env("NO_AT_BRIDGE", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn oxterm wait")
+}
+
+fn wait_status(child: Child) -> i32 {
+    let output = child.wait_with_output().expect("wait for oxterm wait");
+    output.status.code().unwrap_or(-1)
+}
+
+struct Fixture {
+    child: Child,
+    home: TempHome,
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn control_api_drives_tabs_panes_and_commands() {
+    if !gui_tests_enabled() {
+        return;
+    }
+    let home = TempHome::new();
+    let child = Command::new(binary())
+        .args([
+            "--no-restore",
+            "-o",
+            "osc133=true",
+            "-o",
+            "login_shell=false",
+            "-o",
+            "shell_command=/bin/bash",
+        ])
+        .env("HOME", home.path())
+        .env("XDG_RUNTIME_DIR", home.path())
+        .env("NO_AT_BRIDGE", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start Oxterm");
+    let mut fixture = Fixture { child, home };
+    wait_for_control_socket(fixture.home.path(), &mut fixture.child);
+    // Let the shell print its first prompt and initialise the integration.
+    thread::sleep(Duration::from_millis(800));
+
+    let pane = first_pane(fixture.home.path());
+
+    // send --enter + wait: the command's own status is the wait exit status.
+    let waiting = spawn_wait(fixture.home.path(), &pane, "10");
+    thread::sleep(Duration::from_millis(300));
+    cli_stdout(&run_cli(
+        fixture.home.path(),
+        &["send", "--pane", &pane, "--enter", "printf ctl-ok"],
+    ));
+    assert_eq!(wait_status(waiting), 0, "successful command should exit 0");
+
+    let capture = cli_stdout(&run_cli(
+        fixture.home.path(),
+        &["capture", "--pane", &pane, "--scrollback", "50"],
+    ));
+    assert!(capture.contains("ctl-ok"), "capture: {capture:?}");
+
+    // A failing command makes wait exit with its status.
+    let waiting = spawn_wait(fixture.home.path(), &pane, "10");
+    thread::sleep(Duration::from_millis(300));
+    cli_stdout(&run_cli(
+        fixture.home.path(),
+        &["send", "--pane", &pane, "--enter", "false"],
+    ));
+    assert_eq!(wait_status(waiting), 1, "failed command should exit 1");
+
+    // stdin is a supported send source.
+    let mut sender = Command::new(binary())
+        .args(["send", "--pane", &pane, "--enter", "-"])
+        .env("HOME", fixture.home.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn oxterm send");
+    sender
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(b"printf from-stdin")
+        .expect("write stdin");
+    let output = sender.wait_with_output().expect("wait for send");
+    assert!(
+        output.status.success(),
+        "send - failed: {:?}",
+        output.status
+    );
+    thread::sleep(Duration::from_millis(400));
+    let capture = cli_stdout(&run_cli(
+        fixture.home.path(),
+        &["capture", "--pane", &pane, "--scrollback", "50"],
+    ));
+    assert!(capture.contains("from-stdin"), "capture: {capture:?}");
+
+    // new runs a command in its own tab.
+    let new_pane = cli_stdout(&run_cli(
+        fixture.home.path(),
+        &[
+            "new",
+            "--title",
+            "ctl-new",
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf new-tab-ok; sleep 10",
+        ],
+    ));
+    thread::sleep(Duration::from_millis(400));
+    let capture = cli_stdout(&run_cli(
+        fixture.home.path(),
+        &["capture", "--pane", &new_pane],
+    ));
+    assert!(capture.contains("new-tab-ok"), "capture: {capture:?}");
+
+    // split only works while the window still has a single pane.
+    let split_pane = cli_stdout(&run_cli(
+        fixture.home.path(),
+        &["split", "--pane", &pane, "--vertical"],
+    ));
+    assert_ne!(split_pane, pane);
+    let again = run_cli(fixture.home.path(), &["split", "--pane", &pane]);
+    assert_eq!(again.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&again.stderr).contains("already has two panes"),
+        "stderr: {}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+
+    // Unknown pane and usage errors have dedicated exit statuses.
+    let missing = run_cli(
+        fixture.home.path(),
+        &["capture", "--pane", "does-not-exist"],
+    );
+    assert_eq!(missing.status.code(), Some(3));
+    assert_eq!(
+        run_cli(fixture.home.path(), &["capture", "--bogus"])
+            .status
+            .code(),
+        Some(2)
+    );
+}

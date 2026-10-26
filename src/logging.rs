@@ -30,6 +30,10 @@ impl Logger {
     pub fn warning(logger: &str, event: &str) {
         Self::log("WARNING", logger, event, None);
     }
+
+    pub fn info(logger: &str, event: &str) {
+        Self::log("INFO", logger, event, None);
+    }
 }
 
 static LOGGER_NAME: OnceLock<&'static str> = OnceLock::new();
@@ -118,6 +122,9 @@ impl ScopedLogger {
     }
     pub fn warning(&self, event: &str) {
         Logger::warning(self.name, event);
+    }
+    pub fn info(&self, event: &str) {
+        Logger::info(self.name, event);
     }
 }
 

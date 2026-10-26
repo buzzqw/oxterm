@@ -34,10 +34,10 @@ jobs:
       - name: Run tests
         run: cargo test --all-targets --locked
 
-      - name: Run GUI lifecycle tests
+      - name: Run GUI tests
         env:
           OXTERM_GUI_TESTS: "1"
-        run: xvfb-run -a cargo test --locked --test gui_lifecycle
+        run: xvfb-run -a cargo test --locked --test gui_lifecycle --test control_api
 
       - name: Build release executable
         run: cargo build --release --locked

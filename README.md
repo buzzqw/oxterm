@@ -33,6 +33,9 @@ memory footprint and the memory-safety guarantees of Rust.
 - SQLite command history with reverse search, filters, read-only SQL, replay, command duration, and Git branch metadata
 - Timestamped Markdown notes with an in-app Notes menu, per-entry context, and configurable editor integration
 - OSC 133 shell integration for prompts, command boundaries, and exit status
+- Sticky command header, failure marks on the scrollbar, and open-output-in-pager
+- Scriptable control API: `new`, `split`, `send`, `capture`, and `wait` against a running window
+- VI copy mode with motions, text objects, visual block selection, scrolloff, and bookmarks
 - Session restore, named sessions, profiles, command palette, quickmarks, and hints
 - Compact right-click menu with submenus for clipboard (text/HTML/all/last
   command), links, tabs, splits, tools, zoom, read-only, quickmarks, snippets,

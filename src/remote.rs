@@ -241,7 +241,7 @@ fn remote_base_dir() -> PathBuf {
     }
 }
 
-fn remote_dir() -> PathBuf {
+pub(crate) fn remote_dir() -> PathBuf {
     remote_base_dir().join("remote")
 }
 
@@ -271,7 +271,7 @@ fn create_private_dir(path: &Path) -> io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 
-fn ensure_remote_dir() -> io::Result<()> {
+pub(crate) fn ensure_remote_dir() -> io::Result<()> {
     let configured = settings::config_dir();
     let base = remote_base_dir();
     if base == configured {
@@ -441,7 +441,7 @@ pub fn spawn_broker(
 
 /// Defence in depth on top of the 0700 socket directory: only accept
 /// connections from processes running as our own user.
-fn peer_is_same_user(stream: &UnixStream) -> bool {
+pub(crate) fn peer_is_same_user(stream: &UnixStream) -> bool {
     let mut cred = libc::ucred {
         pid: 0,
         uid: u32::MAX,

@@ -158,6 +158,52 @@ The Oxterm binary running the GUI must already include this feature. An Oxterm
 process started with an older binary cannot be discovered retroactively because
 it never created the private session socket.
 
+### Scriptable control
+
+A running Oxterm window also publishes a private control socket. It lets
+scripts, editors and coding agents drive tabs and panes without a browser or a
+GUI toolkit:
+
+```text
+oxterm new [--cwd DIR] [--title TITLE] [-- COMMAND...]
+oxterm split [--pane ID] [--vertical|--horizontal] [--cwd DIR] [--title TITLE]
+oxterm send [--pane ID] [--enter] TEXT...        # or: ... - (read stdin)
+oxterm capture [--pane ID] [--scrollback N | --all]
+oxterm wait [--pane ID] [--timeout SECONDS]
+```
+
+`new` prints the id of the new pane; `split` prints the id of the new pane and
+refuses to split a window that already has two panes. `send` types into the
+target pane and, with `--enter`, submits the line. `capture` prints the visible
+screen by default, the last `N` lines of history with `--scrollback`, or the
+whole buffer with `--all`. `wait` waits for the next command in the pane to
+finish and exits with that command's status (clamped to 0–255), which makes it
+possible to chain a build and read its result:
+
+```sh
+pane=$(oxterm split --horizontal --cwd ~/src/app)
+oxterm send --pane "$pane" --enter 'make test'
+oxterm wait --pane "$pane" --timeout 600
+status=$?
+oxterm capture --pane "$pane" --scrollback 200
+exit "$status"
+```
+
+The target pane can be given with `--pane`; otherwise Oxterm uses
+`$OXTERM_PANE`, and falls back to the only open pane when there is just one.
+Every shell started by Oxterm exports `OXTERM_PANE` and `OXTERM_CONTROL`, so a
+tool running in a pane can address itself:
+
+```sh
+oxterm send --pane "$OXTERM_PANE" --enter 'git status'
+```
+
+Exit statuses are `0` for success, `1` for a failed operation, `2` for a usage
+error, `3` when the pane is not found and `4` when no running Oxterm window can
+be reached. The socket lives next to the broker sockets (`0700` directory,
+`0600` socket), accepts only peers with the same user id, and never listens on
+the network. `send` respects read-only mode.
+
 ## The Interface
 
 ### Menu bar
@@ -191,6 +237,45 @@ and regular-expression modes. This searches the on-screen text and scrollback,
 which is different from `/history` (a database of the commands you ran).
 
 Zoom the font at any time with `Ctrl++`, `Ctrl+-`, and `Ctrl+0` to reset.
+
+### Command blocks and history chrome
+
+With shell integration enabled (**Preferences > Compatibility > OSC 133**),
+Oxterm records each command as a block: its command line, exit status, start
+time and duration. While you scroll back into a block, a pinned header at the
+top shows which command produced the visible output and how it ended (running,
+successful, or failed with its exit code). Click the header to jump back to the
+command. The scrollbar marks running commands in amber, failures in red, and
+bookmarks in blue.
+
+Press `Ctrl+Shift+G` (or use **Copy As > Open Last Output in Pager**) to open
+the last command's output in a new tab with `less -R`. Set `pager_command` in
+`settings.json` to use another pager. The temporary file is removed when the
+pager exits.
+
+### VI copy mode
+
+Enable it in **Preferences > General** and press `Ctrl+Shift+Y`. The terminal
+cursor becomes a block you move with `h`, `j`, `k`, `l`, `w`, `b`, `e`, `0`,
+`^`, `$`, `gg`, `G`, `{` and `}` (previous/next prompt), with optional counts
+(`10j`, `3w`). `Ctrl+U`/`Ctrl+D` scroll half a page and `Ctrl+F`/`Ctrl+B` a
+whole page. The view keeps a few lines of context around the cursor.
+
+- `v` selects characters, `V` lines and `Ctrl+V` a rectangular block. Extend
+  the selection with any motion; `y` yanks it to the clipboard.
+- `yy`/`Y` yank the current line, and `y` followed by a motion (`yw`, `y$`,
+  `yj`, `yG`, …) yanks that range.
+- Text objects work in visual mode and after `y`: `iw`/`aw`, `iW`/`aW`,
+  `i"`/`a"`, `i'`/`a'`, `` i` ``/`` a` ``, `i(`/`a(`, `i[`/`a[`, `i{`/`a{`,
+  `i<`/`a<`. `im`/`am` use the lines between two prompt/bookmark marks.
+- `mm` sets or clears a bookmark on the cursor line; `]m` and `[m` jump to the
+  next and previous prompt or bookmark. Bookmarks appear as blue diamonds in
+  the gutter and as blue ticks on the scrollbar.
+- `/` or `?` open the scrollback search, and `Esc` leaves visual mode or the
+  copy mode.
+
+Selections are not limited to a fixed number of lines: the whole scrollback
+can be yanked.
 
 ### Terminal context menu
 
@@ -511,6 +596,7 @@ remote tmux detaches instead of the local terminal.
 | `Ctrl+Shift+M` / `Ctrl+M` | Set / jump to next quickmark |
 | `Ctrl+Shift+H` | Hint mode for URLs, paths, and Git SHAs |
 | `Ctrl+Shift+Y` | VI-style copy mode |
+| `Ctrl+Shift+G` | Open the last command's output in a pager |
 | `Ctrl+Shift+B` | Toggle broadcast input |
 | `Ctrl+R` | Interactive history search; repeat to cycle matches |
 | `Ctrl+U` | Kill line; clear history filter while its picker is open |

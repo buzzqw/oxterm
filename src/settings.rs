@@ -141,6 +141,7 @@ fn build_defaults() -> Value {
         "window_padding_horizontal": 2,
         "window_padding_vertical": 2,
         "bell_notification": false,
+        "pager_command": "less -R",
         "undercurl_style": "single",
         "broadcast_input": false,
         "active_profile": "",

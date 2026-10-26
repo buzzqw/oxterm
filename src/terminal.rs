@@ -1,6 +1,6 @@
 #![allow(deprecated)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::os::fd::RawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, Instant};
@@ -38,6 +38,31 @@ use crate::window::MainWindow;
 /// reserved from the first allocation so the grid never changes size when the
 /// first prompt marker shows up.
 const OSC133_GUTTER_WIDTH: i32 = 6;
+
+/// Selection shape while VI copy mode is active.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ViVisualMode {
+    #[default]
+    None,
+    Char,
+    Line,
+    Block,
+}
+
+/// One command as reported by the shell integration: the prompt it started
+/// at, the command line, its exit status and how long it took. Used by the
+/// sticky command header and the scrollbar marks.
+#[derive(Clone, Debug, Default)]
+pub struct CommandBlock {
+    pub prompt_row: i64,
+    pub command_row: i64,
+    pub end_row: i64,
+    pub command: String,
+    pub exit_code: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub started_at: Option<Instant>,
+    pub finished: bool,
+}
 
 pub const OXTERM_COMMANDS: &[&str] = &[
     "history", "wnotes", "onotes", "learn", "optimize", "session", "snippet", "help", "clear",
@@ -473,8 +498,6 @@ mod imp {
         pub osc133_buf: RefCell<Vec<u8>>,
         pub osc133_last_exit: RefCell<i64>,
         pub osc133_cmd_start_row: RefCell<i64>,
-        pub osc133_timer_pending: RefCell<bool>,
-        pub osc133_pending_lines: RefCell<Vec<String>>,
         pub osc133_integration_active: RefCell<bool>,
         pub osc133_last_history_id: RefCell<Option<u64>>,
         pub osc133_command_started_at: RefCell<Option<Instant>>,
@@ -491,11 +514,33 @@ mod imp {
         pub hints_map: RefCell<std::collections::BTreeMap<String, (String, String)>>,
 
         pub vi_copy_active: RefCell<bool>,
-        pub vi_visual_active: RefCell<bool>,
-        pub vi_selection_start: RefCell<i64>,
-        pub vi_selection_end: RefCell<i64>,
+        pub vi_cursor_row: Cell<i64>,
+        pub vi_cursor_col: Cell<i64>,
+        pub vi_anchor_row: Cell<i64>,
+        pub vi_anchor_col: Cell<i64>,
+        pub vi_visual_mode: Cell<ViVisualMode>,
+        pub vi_pending: RefCell<String>,
+        pub vi_count: RefCell<String>,
+        pub vi_user_marks: RefCell<Vec<i64>>,
         pub vi_last_key: RefCell<Option<gdk::keys::Key>>,
         pub vi_last_key_time: RefCell<i64>,
+
+        /// Command blocks seen through OSC 133, newest last.
+        pub command_blocks: RefCell<Vec<CommandBlock>>,
+        /// Row of the most recent prompt (OSC 133 ; A).
+        pub last_prompt_row: Cell<i64>,
+        /// Incremented every time a command finishes; `wait` watches it.
+        pub command_generation: Cell<u64>,
+        /// Row where the output of the command currently being submitted
+        /// starts, captured on Enter. Negative when no command was submitted
+        /// through a keystroke (for example a shell hook).
+        pub pending_command_row: Cell<i64>,
+        /// Duration captured when the `D` event arrived (before its handler is
+        /// deferred), or -1 when it must be measured in the handler.
+        pub pending_duration_ms: Cell<i64>,
+        pub sticky_header: RefCell<Option<gtk::EventBox>>,
+        pub sticky_label: RefCell<Option<gtk::Label>>,
+        pub scrollbar_marks: RefCell<Option<gtk::DrawingArea>>,
 
         pub cached_backspace_binding: RefCell<String>,
         pub cached_delete_binding: RefCell<String>,
@@ -674,8 +719,6 @@ impl TerminalBox {
         self.pack_start(&overlay, true, true, 0);
         *self.imp().overlay.borrow_mut() = Some(overlay.clone());
 
-        self.apply_scrollbar_position();
-
         // The command bar and the scrollback search bar are only needed when
         // the user asks for them. Building them lazily keeps each new tab (and
         // session restore) much cheaper while saving a sizeable widget tree
@@ -688,6 +731,10 @@ impl TerminalBox {
 
         let vi_overlay_area = gtk::DrawingArea::new();
         vi_overlay_area.set_no_show_all(true);
+        vi_overlay_area.set_hexpand(true);
+        vi_overlay_area.set_vexpand(true);
+        vi_overlay_area.set_halign(gtk::Align::Fill);
+        vi_overlay_area.set_valign(gtk::Align::Fill);
         vi_overlay_area.hide();
         let weak = crate::SendWeak::new(self);
         vi_overlay_area.connect_draw(move |area, cr| {
@@ -698,6 +745,65 @@ impl TerminalBox {
         });
         overlay.add_overlay(&vi_overlay_area);
         *self.imp().vi_overlay_area.borrow_mut() = Some(vi_overlay_area);
+
+        // Sticky header: pinned over the top of the page while the user is
+        // scrolled back into a command's output. It is an EventBox so a click
+        // can jump to the command that produced the visible lines.
+        let sticky = gtk::EventBox::new();
+        sticky.set_halign(gtk::Align::Fill);
+        sticky.set_valign(gtk::Align::Start);
+        sticky.set_hexpand(true);
+        sticky.set_no_show_all(true);
+        sticky.hide();
+        sticky.style_context().add_class("oxterm-sticky-header");
+        let sticky_label = gtk::Label::new(None);
+        sticky_label.set_xalign(0.0);
+        sticky_label.set_ellipsize(pango::EllipsizeMode::End);
+        sticky_label.set_single_line_mode(true);
+        sticky.add(&sticky_label);
+        {
+            let weak = crate::SendWeak::new(self);
+            sticky.connect_button_press_event(move |_w, ev| {
+                if ev.button() == 1 {
+                    if let Some(t) = weak.upgrade() {
+                        t.scroll_to_sticky_block();
+                    }
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
+            });
+        }
+        overlay.add_overlay(&sticky);
+        *self.imp().sticky_header.borrow_mut() = Some(sticky);
+        *self.imp().sticky_label.borrow_mut() = Some(sticky_label);
+
+        // Scrollbar marks: a thin pass-through strip over the scrollbar that
+        // shows where commands (and their failures) are. Pass-through keeps
+        // the real scrollbar draggable underneath.
+        let scrollbar_marks = gtk::DrawingArea::new();
+        scrollbar_marks.set_size_request(10, 1);
+        scrollbar_marks.set_hexpand(false);
+        scrollbar_marks.set_vexpand(true);
+        scrollbar_marks.set_halign(gtk::Align::End);
+        scrollbar_marks.set_valign(gtk::Align::Fill);
+        scrollbar_marks.set_no_show_all(true);
+        scrollbar_marks.hide();
+        {
+            let weak = crate::SendWeak::new(self);
+            scrollbar_marks.connect_draw(move |area, cr| {
+                if let Some(t) = weak.upgrade() {
+                    t.draw_scrollbar_marks(area, cr);
+                }
+                glib::Propagation::Proceed
+            });
+        }
+        overlay.add_overlay(&scrollbar_marks);
+        overlay.set_overlay_pass_through(&scrollbar_marks, true);
+        *self.imp().scrollbar_marks.borrow_mut() = Some(scrollbar_marks);
+
+        // Configure the scrollbar (and the marks strip drawn over it) now that
+        // both exist. Doing this before the strip was created left it hidden.
+        self.apply_scrollbar_position();
 
         // VTE signals
         {
@@ -786,6 +892,8 @@ impl TerminalBox {
         *self.imp().settings_handler.borrow_mut() = Some(handler);
 
         *self.imp().cmd_bar_visible.borrow_mut() = false;
+        self.imp().pending_command_row.set(-1);
+        self.imp().pending_duration_ms.set(-1);
 
         self.show_all();
     }
@@ -963,6 +1071,20 @@ impl TerminalBox {
                 vsb.show();
             }
         }
+        if let Some(marks) = self.imp().scrollbar_marks.borrow().clone() {
+            if pos == "left" {
+                marks.set_halign(gtk::Align::Start);
+                marks.set_margin_start(OSC133_GUTTER_WIDTH);
+            } else {
+                marks.set_halign(gtk::Align::End);
+                marks.set_margin_start(0);
+            }
+            if pos == "disabled" {
+                marks.hide();
+            } else {
+                marks.set_visible(true);
+            }
+        }
     }
 
     pub fn update_font(&self) {
@@ -1017,6 +1139,13 @@ impl TerminalBox {
         }
         env.push(("TERM".to_string(), "xterm-256color".to_string()));
         env.push(("COLORTERM".to_string(), "truecolor".to_string()));
+        // A tool running in this pane can address it without knowing the
+        // session id, and can reach its GUI's control socket directly.
+        env.push(("OXTERM_PANE".to_string(), self.remote_id()));
+        env.push((
+            "OXTERM_CONTROL".to_string(),
+            crate::control::socket_path().to_string_lossy().into_owned(),
+        ));
         if s.get_bool("osc133") {
             env.push(("OXTERM_SHELL_INTEGRATION".to_string(), "1".to_string()));
             let fifo_path = settings::config_dir().join(format!(
@@ -1934,6 +2063,49 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         }
     }
 
+    /// Type into the pane from the control API. Unlike keystrokes this does
+    /// not go through broadcast input: a script targets exactly one pane.
+    pub fn control_send(&self, text: &str, enter: bool) {
+        if enter && !text.contains(['\n', '\r']) {
+            // The shell integration reports the command start without a row;
+            // remember where the output will begin so the block is accurate
+            // even when the command finishes before the GUI reads its output.
+            let (_, row) = self.vte().cursor_position();
+            self.imp().pending_command_row.set(row + 1);
+        }
+        let mut bytes = text.as_bytes().to_vec();
+        if enter {
+            bytes.push(b'\r');
+        }
+        self.vte().feed_child(&bytes);
+    }
+
+    /// Text for `oxterm capture`: visible screen, N lines of history, or all.
+    pub fn capture_text(&self, scope: &str, lines: usize) -> String {
+        let vadj = self.vadjustment();
+        let lower = vadj.lower();
+        let upper = vadj.upper();
+        let page = vadj.page_size();
+        let start = match scope {
+            "all" => lower,
+            "lines" => (upper - page - lines as f64).max(lower),
+            _ => (upper - page).max(lower),
+        };
+        text::range(&self.vte(), start as i64, 0, upper as i64, 0).unwrap_or_default()
+    }
+
+    pub fn command_generation(&self) -> u64 {
+        self.imp().command_generation.get()
+    }
+
+    pub fn command_running(&self) -> bool {
+        *self.imp().remote_command_running.borrow()
+    }
+
+    pub fn is_alive(&self) -> bool {
+        *self.imp().pid.borrow() > 0
+    }
+
     fn broadcast_to_others(&self, data: &[u8]) {
         self.call_window(|win| win.broadcast_feed(self, data));
     }
@@ -1944,6 +2116,10 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         if let Some(margin) = self.imp().osc133_margin.borrow().clone() {
             margin.queue_draw();
         }
+        if let Some(marks) = self.imp().scrollbar_marks.borrow().clone() {
+            marks.queue_draw();
+        }
+        self.update_sticky_header();
         let bottom = (adj.upper() - adj.page_size()).max(0.0);
         *self.imp().scroll_follow.borrow_mut() = adj.value() >= bottom - 0.5;
     }
@@ -1956,6 +2132,12 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 margin.queue_draw();
             }
         }
+        if let Some(marks) = self.imp().scrollbar_marks.borrow().as_ref() {
+            if marks.is_visible() {
+                marks.queue_draw();
+            }
+        }
+        self.update_sticky_header();
         if !*self.imp().cached_scroll_on_output.borrow() {
             return;
         }
@@ -2007,38 +2189,65 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         if line.is_empty() {
             return;
         }
-        self.imp()
-            .osc133_pending_lines
-            .borrow_mut()
-            .push(line.to_string());
-        if !*self.imp().osc133_timer_pending.borrow() {
-            *self.imp().osc133_timer_pending.borrow_mut() = true;
-            let weak = crate::SendWeak::new(self);
-            glib::timeout_add_local(std::time::Duration::from_millis(30), move || {
-                if let Some(t) = weak.upgrade() {
-                    *t.imp().osc133_timer_pending.borrow_mut() = false;
-                    let lines: Vec<String> =
-                        std::mem::take(&mut *t.imp().osc133_pending_lines.borrow_mut());
-                    for pending in lines {
-                        t.osc133_handle_event(&pending);
-                    }
-                }
-                glib::ControlFlow::Break
-            });
-        }
+        // Handle each event as soon as it arrives. Batching these for even a
+        // few milliseconds moved prompt/command rows to where the cursor had
+        // already scrolled by the time the batch ran, which made fast commands
+        // report the wrong block range.
+        self.osc133_handle_event(line);
     }
 
     fn osc133_handle_event(&self, line: &str) {
+        // Prompt boundaries and command ends are only meaningful once VTE has
+        // consumed the output that precedes them. Handle them after a short
+        // delay; the command start (`C`) itself must be handled immediately so
+        // its row comes from the pending keystroke, not from the output.
+        let command = line.chars().next();
+        if matches!(command, Some('A') | Some('D')) {
+            // Duration must be measured when the event arrives, not when the
+            // deferred handler runs, or every fast command gains the delay.
+            if command == Some('D') {
+                let duration = self
+                    .imp()
+                    .osc133_command_started_at
+                    .borrow_mut()
+                    .take()
+                    .map(|started| started.elapsed().as_millis().min(i64::MAX as u128) as i64)
+                    .unwrap_or(-1);
+                self.imp().pending_duration_ms.set(duration);
+            }
+            let line = line.to_string();
+            let weak = crate::SendWeak::new(self);
+            // An idle callback can run before VTE has read the command's output
+            // from the PTY, which would put the prompt on the command's first
+            // row. A short timeout reliably covers the hand-off for local
+            // output while staying far below human perception.
+            glib::timeout_add_local_once(std::time::Duration::from_millis(30), move || {
+                if let Some(term) = weak.upgrade() {
+                    term.osc133_handle_event_now(&line);
+                }
+            });
+            return;
+        }
+        self.osc133_handle_event_now(line);
+    }
+
+    fn osc133_handle_event_now(&self, line: &str) {
         if *self.imp().pid.borrow() <= 0 {
             return;
         }
         *self.imp().osc133_integration_active.borrow_mut() = true;
-        let (col, row) = self.vte().cursor_position();
+        let (col, cursor_row) = self.vte().cursor_position();
         let _ = col;
         let Some((cmd, rest)) = osc133_event_parts(line) else {
             return;
         };
         if cmd == 'C' {
+            let pending_row = self.imp().pending_command_row.replace(-1);
+            let row = if pending_row >= 0 {
+                pending_row
+            } else {
+                cursor_row
+            };
             *self.imp().osc133_cmd_start_row.borrow_mut() = row;
             *self.imp().osc133_command_started_at.borrow_mut() = Some(Instant::now());
             self.imp()
@@ -2049,6 +2258,25 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             let command_text = rest.trim().to_string();
             self.set_remote_command(&command_text, true);
             *self.imp().osc133_last_history_id.borrow_mut() = None;
+            {
+                let prompt_row = self.imp().last_prompt_row.get();
+                let mut blocks = self.imp().command_blocks.borrow_mut();
+                blocks.push(CommandBlock {
+                    prompt_row: if prompt_row >= 0 { prompt_row } else { row },
+                    command_row: row,
+                    end_row: row,
+                    command: command_text.clone(),
+                    exit_code: None,
+                    duration_ms: None,
+                    started_at: Some(Instant::now()),
+                    finished: false,
+                });
+                if blocks.len() > 1000 {
+                    let drain = blocks.len() - 1000;
+                    blocks.drain(0..drain);
+                }
+            }
+            self.refresh_command_marks();
             if !command_text.is_empty()
                 && !self.is_oxterm_command(&command_text)
                 && settings().get_bool("history_enabled")
@@ -2058,15 +2286,40 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 *self.imp().input_shadow.borrow_mut() = String::new();
             }
         } else if cmd == 'D' {
+            self.imp().pending_command_row.set(-1);
             let exit_code = rest.trim().parse::<i64>().unwrap_or(0);
             *self.imp().osc133_last_exit.borrow_mut() = exit_code;
             self.set_remote_command_state(false);
-            let duration_ms = self
-                .imp()
-                .osc133_command_started_at
-                .borrow_mut()
-                .take()
-                .map(|started| started.elapsed().as_millis().min(i64::MAX as u128) as i64);
+            let pending = self.imp().pending_duration_ms.replace(-1);
+            let duration_ms = if pending >= 0 {
+                Some(pending)
+            } else {
+                self.imp()
+                    .osc133_command_started_at
+                    .borrow_mut()
+                    .take()
+                    .map(|started| started.elapsed().as_millis().min(i64::MAX as u128) as i64)
+            };
+            {
+                let (_, end_row) = self.vte().cursor_position();
+                if let Some(block) = self
+                    .imp()
+                    .command_blocks
+                    .borrow_mut()
+                    .iter_mut()
+                    .rev()
+                    .find(|block| !block.finished)
+                {
+                    block.exit_code = Some(exit_code);
+                    block.end_row = end_row;
+                    block.duration_ms = duration_ms;
+                    block.finished = true;
+                }
+            }
+            self.imp()
+                .command_generation
+                .set(self.imp().command_generation.get() + 1);
+            self.refresh_command_marks();
             if let Some(id) = self.imp().osc133_last_history_id.borrow_mut().take() {
                 history().set_command_result_async(id, exit_code, duration_ms);
             }
@@ -2074,18 +2327,22 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 *self.imp().bell_notify_cmd_running.borrow_mut() = false;
                 self.trigger_bell_notification(exit_code);
             }
-        } else if cmd == 'A' && row > 0 {
+        } else if cmd == 'A' {
             *self.imp().osc133_cmd_start_row.borrow_mut() = -1;
+            self.imp().pending_command_row.set(-1);
+            self.imp().last_prompt_row.set(cursor_row);
             let last_exit = *self.imp().osc133_last_exit.borrow();
-            {
+            if cursor_row > 0 {
                 let mut markers = self.imp().osc133_markers.borrow_mut();
-                markers.push((row, "prompt".into(), last_exit));
+                markers.push((cursor_row, "prompt".into(), last_exit));
                 if markers.len() > 1000 {
                     let drain = markers.len() - 1000;
                     markers.drain(0..drain);
                 }
+                drop(markers);
+                self.update_margin_visibility();
             }
-            self.update_margin_visibility();
+            self.refresh_command_marks();
         }
     }
 
@@ -2150,6 +2407,208 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             }
             cr.rectangle(1.0, y, width - 2.0, char_height);
             let _ = cr.fill();
+        }
+        drop(markers);
+
+        // User bookmarks set from VI copy mode (`mm`) are drawn as a small
+        // diamond in the same gutter, so prompts and bookmarks can be told
+        // apart at a glance.
+        for row in self.imp().vi_user_marks.borrow().iter() {
+            let rel_row = *row as f64 - top;
+            if rel_row < -1.0 || rel_row > page {
+                continue;
+            }
+            let y = rel_row * char_height + char_height / 2.0;
+            let cx = width / 2.0;
+            cr.set_source_rgba(0.30, 0.78, 0.95, 0.9);
+            cr.move_to(cx, y - 3.0);
+            cr.line_to(cx + 3.0, y);
+            cr.line_to(cx, y + 3.0);
+            cr.line_to(cx - 3.0, y);
+            cr.close_path();
+            let _ = cr.fill();
+        }
+    }
+
+    /// Refresh the two chrome pieces driven by OSC 133 command blocks.
+    fn refresh_command_marks(&self) {
+        if let Some(margin) = self.imp().osc133_margin.borrow().clone() {
+            margin.queue_draw();
+        }
+        if let Some(marks) = self.imp().scrollbar_marks.borrow().clone() {
+            marks.queue_draw();
+        }
+        self.update_sticky_header();
+    }
+
+    /// Text for the pinned header, kept free of terminal control characters so
+    /// a command line cannot smuggle markup into the label.
+    fn sticky_header_text(block: &CommandBlock) -> String {
+        let mut command: String = block
+            .command
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        command = command.split_whitespace().collect::<Vec<_>>().join(" ");
+        if command.is_empty() {
+            command = "(shell)".to_string();
+        }
+        if command.chars().count() > 160 {
+            command = command.chars().take(159).collect::<String>() + "…";
+        }
+        if !block.finished {
+            let elapsed = block
+                .started_at
+                .map(|started| started.elapsed().as_millis().min(i64::MAX as u128) as i64)
+                .unwrap_or(0);
+            return format!("● {}  —  running {}", command, format_duration_ms(elapsed));
+        }
+        let exit = block.exit_code.unwrap_or(0);
+        if exit == 0 {
+            match block.duration_ms {
+                Some(ms) => format!("✓ {}  —  {}", command, format_duration_ms(ms)),
+                None => format!("✓ {}", command),
+            }
+        } else {
+            match block.duration_ms {
+                Some(ms) => format!(
+                    "✗ {}  —  exit {} · {}",
+                    command,
+                    exit,
+                    format_duration_ms(ms)
+                ),
+                None => format!("✗ {}  —  exit {}", command, exit),
+            }
+        }
+    }
+
+    /// The command block whose output is at the top of the viewport. When the
+    /// viewport is above the oldest block, the oldest one is used so the header
+    /// still says where the visible output came from.
+    fn sticky_block(&self) -> Option<CommandBlock> {
+        let blocks = self.imp().command_blocks.borrow();
+        if blocks.is_empty() {
+            return None;
+        }
+        let top = self.vadjustment().value() as i64;
+        blocks
+            .iter()
+            .rev()
+            .find(|block| block.prompt_row <= top || block.command_row <= top)
+            .or_else(|| blocks.first())
+            .cloned()
+    }
+
+    fn update_sticky_header(&self) {
+        let (Some(header), Some(label)) = (
+            self.imp().sticky_header.borrow().clone(),
+            self.imp().sticky_label.borrow().clone(),
+        ) else {
+            return;
+        };
+        let vadj = self.vadjustment();
+        let page = vadj.page_size();
+        let upper = vadj.upper();
+        let top = vadj.value();
+        let block = {
+            let blocks = self.imp().command_blocks.borrow();
+            if blocks.is_empty() {
+                if header.is_visible() {
+                    header.hide();
+                }
+                return;
+            }
+            // Show only while scrolled back from the live end of the buffer,
+            // and never on the alternate screen (where there is no scrollback).
+            let follow_start = (upper - page).max(0.0);
+            if upper <= page + 0.5 || top + 0.5 >= follow_start {
+                if header.is_visible() {
+                    header.hide();
+                }
+                return;
+            }
+            let row = top as i64;
+            blocks
+                .iter()
+                .rev()
+                .find(|block| block.prompt_row <= row || block.command_row <= row)
+                .or_else(|| blocks.first())
+                .cloned()
+        };
+        let Some(block) = block else {
+            header.hide();
+            return;
+        };
+        let ok = block.finished && block.exit_code.unwrap_or(0) == 0;
+        for class in [
+            "oxterm-sticky-ok",
+            "oxterm-sticky-fail",
+            "oxterm-sticky-run",
+        ] {
+            label.style_context().remove_class(class);
+        }
+        label.style_context().add_class(if !block.finished {
+            "oxterm-sticky-run"
+        } else if ok {
+            "oxterm-sticky-ok"
+        } else {
+            "oxterm-sticky-fail"
+        });
+        label.set_text(&Self::sticky_header_text(&block));
+        if !header.is_visible() {
+            header.show();
+            label.show();
+        }
+        header.queue_draw();
+    }
+
+    fn scroll_to_sticky_block(&self) {
+        if let Some(block) = self.sticky_block() {
+            let vadj = self.vadjustment();
+            let bottom = (vadj.upper() - vadj.page_size()).max(0.0);
+            let target = block.command_row.max(block.prompt_row) as f64;
+            vadj.set_value(target.clamp(0.0, bottom));
+        }
+    }
+
+    fn draw_scrollbar_marks(&self, area: &gtk::DrawingArea, cr: &cairo::Context) {
+        let width = area.allocated_width() as f64;
+        let height = area.allocated_height() as f64;
+        if width < 2.0 || height < 4.0 {
+            return;
+        }
+        let vadj = self.vadjustment();
+        let lower = vadj.lower();
+        let upper = vadj.upper();
+        let page = vadj.page_size();
+        let total = upper - lower;
+        if total <= page + 0.5 {
+            return;
+        }
+        let y_of = |row: i64| {
+            let rel = (row as f64 - lower) / total;
+            (rel * height).clamp(0.0, (height - 2.0).max(0.0))
+        };
+        let x = if settings().get_str("scrollbar_position") == "left" {
+            1.0
+        } else {
+            (width - 5.0).max(0.0)
+        };
+        let draw = |row: i64, color: (f64, f64, f64, f64)| {
+            let y = y_of(row);
+            cr.set_source_rgba(color.0, color.1, color.2, color.3);
+            cr.rectangle(x, y, 4.0, 3.0);
+            let _ = cr.fill();
+        };
+        for block in self.imp().command_blocks.borrow().iter() {
+            if !block.finished {
+                draw(block.prompt_row, (0.95, 0.78, 0.25, 0.95));
+            } else if block.exit_code.unwrap_or(0) != 0 {
+                draw(block.prompt_row, (0.90, 0.30, 0.30, 0.95));
+            }
+        }
+        for row in self.imp().vi_user_marks.borrow().iter() {
+            draw(*row, (0.30, 0.78, 0.95, 0.95));
         }
     }
 
@@ -2316,6 +2775,12 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             })
             .set_tooltip_text(Some(
                 "Copy the output of the last command (shell integration)",
+            ));
+            menu_action(&copy_menu, self, "Open Last Output in Pager", |t| {
+                t.open_command_output_in_pager()
+            })
+            .set_tooltip_text(Some(
+                "Open the last command's output in a new tab with the configured pager (Ctrl+Shift+G)",
             ));
         }
 
@@ -2749,6 +3214,10 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 self.set_quickmark();
                 return glib::Propagation::Stop;
             }
+            if key == K::g || key == K::G {
+                self.open_command_output_in_pager();
+                return glib::Propagation::Stop;
+            }
             if key == K::b || key == K::B {
                 let current = settings().get_bool("broadcast_input");
                 let s = settings();
@@ -2963,6 +3432,8 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 }
             }
             *self.imp().input_shadow.borrow_mut() = String::new();
+            let (_, row) = self.vte().cursor_position();
+            self.imp().pending_command_row.set(row + 1);
         }
 
         if key == K::BackSpace {
@@ -3654,4 +4125,51 @@ fn mono_us() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod command_block_tests {
+    use super::*;
+
+    fn block(command: &str, finished: bool, exit: i64, duration: i64) -> CommandBlock {
+        CommandBlock {
+            command: command.to_string(),
+            finished,
+            exit_code: Some(exit),
+            duration_ms: Some(duration),
+            ..CommandBlock::default()
+        }
+    }
+
+    #[test]
+    fn sticky_header_summarises_success_and_failure() {
+        assert_eq!(
+            TerminalBox::sticky_header_text(&block("make -j8", true, 0, 1234)),
+            "✓ make -j8  —  1.2s"
+        );
+        assert_eq!(
+            TerminalBox::sticky_header_text(&block("make -j8", true, 2, 65_000)),
+            "✗ make -j8  —  exit 2 · 1m 5s"
+        );
+        assert_eq!(
+            TerminalBox::sticky_header_text(&block("", true, 0, 0)),
+            "✓ (shell)  —  0ms"
+        );
+    }
+
+    #[test]
+    fn sticky_header_flattens_control_characters() {
+        assert_eq!(
+            TerminalBox::sticky_header_text(&block("echo\u{1b}[31mred\nnow", true, 0, 10)),
+            "✓ echo [31mred now  —  10ms"
+        );
+    }
+
+    #[test]
+    fn sticky_header_marks_a_running_command() {
+        let mut running = block("cargo build", false, 0, 0);
+        running.started_at = Some(Instant::now());
+        let text = TerminalBox::sticky_header_text(&running);
+        assert!(text.starts_with("● cargo build  —  running"), "{text}");
+    }
 }

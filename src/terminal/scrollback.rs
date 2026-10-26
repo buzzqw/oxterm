@@ -1,5 +1,7 @@
 //! Scrollback search, quickmarks and OSC 133 prompt navigation.
 
+use std::io::Write;
+
 use super::*;
 
 impl TerminalBox {
@@ -232,8 +234,7 @@ impl TerminalBox {
     }
 
     pub(super) fn copy_command_output(&self) {
-        if let (Some(start_row), Some(mut end_row)) = self.get_command_output_range() {
-            end_row = end_row.min(start_row + 500);
+        if let (Some(start_row), Some(end_row)) = self.get_command_output_range() {
             if let Some(text) = super::text::range(&self.vte(), start_row, 0, end_row, 0) {
                 let clipboard = gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD);
                 clipboard.set_text(&text);
@@ -242,5 +243,68 @@ impl TerminalBox {
                 self.vte().feed_child(b"\r");
             }
         }
+    }
+
+    /// Open the last command's output in the configured pager (`less -R` by
+    /// default) in a new tab. The text goes through a private temporary file,
+    /// which the pager wrapper removes when it exits.
+    pub(super) fn open_command_output_in_pager(&self) {
+        let (Some(start_row), Some(end_row)) = self.get_command_output_range() else {
+            self.call_window(|win| {
+                win.status_message(
+                    "No command output available (shell integration required)",
+                    true,
+                )
+            });
+            return;
+        };
+        let text = super::text::range(&self.vte(), start_row, 0, end_row, 0).unwrap_or_default();
+        if text.trim().is_empty() {
+            self.call_window(|win| win.status_message("The last command produced no output", true));
+            return;
+        }
+        let dir = dirs::cache_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("oxterm")
+            .join("pager");
+        let path = dir.join(format!("output-{}-{}.txt", std::process::id(), mono_us()));
+        let written = (|| -> std::io::Result<()> {
+            std::fs::create_dir_all(&dir)?;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)?;
+            file.write_all(text.as_bytes())
+        })();
+        if let Err(error) = written {
+            self.call_window(|win| {
+                win.status_message(&format!("Could not prepare the pager: {}", error), true)
+            });
+            return;
+        }
+        let pager = settings().get_str_default("pager_command", "less -R");
+        let pager = if pager.trim().is_empty() {
+            "less -R".to_string()
+        } else {
+            pager
+        };
+        let script = format!("{} \"$1\"; status=$?; rm -f -- \"$1\"; exit $status", pager);
+        let command = vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            script,
+            "oxterm-pager".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        let command_line = self.last_command();
+        let title = if command_line.is_empty() {
+            "Command Output".to_string()
+        } else {
+            format!("Output: {}", ellipsize(&command_line, 40))
+        };
+        let cwd = self.get_cwd();
+        self.call_window(|win| win.open_command_tab(&cwd, command, &title));
     }
 }

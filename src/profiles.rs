@@ -65,6 +65,7 @@ const PROFILE_KEYS: &[&str] = &[
     "window_padding_horizontal",
     "window_padding_vertical",
     "bell_notification",
+    "pager_command",
     "undercurl_style",
 ];
 

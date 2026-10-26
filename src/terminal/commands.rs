@@ -524,7 +524,9 @@ impl TerminalBox {
   \x1b[90mCtrl+Plus/Minus/0\x1b[0m     Zoom in / out / reset\r\n\
   \x1b[90mCtrl+Shift+M, Ctrl+M\x1b[0m  Set / jump to quickmark\r\n\
   \x1b[90mCtrl+Shift+H\x1b[0m          Hint mode for URLs, paths and commits\r\n\
-  \x1b[90mCtrl+Shift+Y\x1b[0m          VI copy mode\r\n\
+  \x1b[90mCtrl+Shift+Y\x1b[0m          VI copy mode (hjkl, v/V/Ctrl+V, y, mm/]m)\r\n\
+  \x1b[90mCtrl+Shift+G\x1b[0m          Open the last command output in a pager\r\n\
+  \x1b[90moxterm send/wait\x1b[0m      Script this pane (see `oxterm --help`)\r\n\
 \x1b[36m------------------------\x1b[0m\r\n";
         self.vte().feed(help_text.as_bytes());
     }

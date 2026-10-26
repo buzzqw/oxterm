@@ -150,6 +150,13 @@ pub trait TerminalWindow {
     fn note_terminal(&self) -> Option<TerminalBox>;
     fn note_write(&self, text: String, filename: Option<String>, context: NoteContext);
 
+    /// Show a transient message in the window's info bar.
+    fn status_message(&self, message: &str, is_error: bool);
+
+    /// Open a new tab running `command` in `cwd`. Used by the command-output
+    /// pager; windows without tabs simply ignore it.
+    fn open_command_tab(&self, _cwd: &str, _command: Vec<String>, _title: &str) {}
+
     /// Toggle the integrated notes panel (only the main window has one).
     fn note_toggle_panel(&self) {
         self.note_feedback("The Notes panel is available in the main window", true);
@@ -339,6 +346,10 @@ glib::wrapper! {
 }
 
 impl DetachedWindow {
+    pub fn terminal_box(&self) -> Option<TerminalBox> {
+        self.imp().terminal.borrow().clone()
+    }
+
     pub fn new(terminal: &TerminalBox, title: &str) -> DetachedWindow {
         let this: DetachedWindow = glib::Object::new();
         this.update_title(&format!("{} - {}", APP_NAME, title));
@@ -1401,6 +1412,9 @@ impl TerminalWindow for DetachedWindow {
             is_error,
         );
     }
+    fn status_message(&self, message: &str, is_error: bool) {
+        self.note_feedback(message, is_error);
+    }
     fn note_window(&self) -> gtk::Window {
         self.clone().upcast()
     }
@@ -1905,6 +1919,27 @@ impl MainWindow {
         nb.current_page()
             .and_then(|idx| nb.nth_page(Some(idx)))
             .and_then(|w| w.downcast::<TerminalBox>().ok())
+    }
+
+    /// Every pane of this window, in both halves of a split.
+    pub fn all_terminals(&self) -> Vec<TerminalBox> {
+        let mut terminals = Vec::new();
+        for notebook in [
+            self.imp().notebook.borrow().clone(),
+            self.imp().notebook2.borrow().clone(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            for index in 0..notebook.n_pages() {
+                if let Some(page) = notebook.nth_page(Some(index)) {
+                    if let Ok(term) = page.downcast::<TerminalBox>() {
+                        terminals.push(term);
+                    }
+                }
+            }
+        }
+        terminals
     }
 
     fn find_terminal(&self, term: &TerminalBox) -> Option<(gtk::Notebook, u32)> {
@@ -3036,8 +3071,22 @@ impl MainWindow {
     // ── Split modes ──────────────────────────────────────────
 
     fn set_split(&self, mode: &str, create_tab: bool) {
+        let _ = self.set_split_with(mode, create_tab, None, None, None);
+    }
+
+    /// Split this window and return the terminal for the new pane. `mode` must
+    /// be `vertical` or `horizontal`; callers that need a single pane use
+    /// `set_split`. Used by the menu, the control API and session restore.
+    fn set_split_with(
+        &self,
+        mode: &str,
+        create_tab: bool,
+        cwd: Option<&str>,
+        command: Option<&Vec<String>>,
+        title: Option<&str>,
+    ) -> Option<TerminalBox> {
         if *self.imp().splitting.borrow() {
-            return;
+            return None;
         }
         let _split_guard = SplitGuard(&self.imp().splitting);
         *self.imp().splitting.borrow_mut() = true;
@@ -3045,6 +3094,7 @@ impl MainWindow {
         let nb = self.imp().notebook.borrow().clone().unwrap();
         let nb2 = self.imp().notebook2.borrow().clone().unwrap();
         let paned = self.imp().paned.borrow().clone().unwrap();
+        let mut created = None;
         if mode == "single" {
             while nb2.n_pages() > 0 {
                 self.move_tab_between(&nb2, &nb, 0u32);
@@ -3065,7 +3115,7 @@ impl MainWindow {
             paned.set_orientation(gtk::Orientation::Horizontal);
             if nb2.n_pages() == 0 && create_tab {
                 nb2.show();
-                self.add_new_tab(None, Some(&nb2), None, None, None);
+                created = Some(self.add_new_tab(cwd, Some(&nb2), None, title, command));
             } else {
                 nb2.show();
             }
@@ -3085,7 +3135,7 @@ impl MainWindow {
             paned.set_orientation(gtk::Orientation::Vertical);
             if nb2.n_pages() == 0 && create_tab {
                 nb2.show();
-                self.add_new_tab(None, Some(&nb2), None, None, None);
+                created = Some(self.add_new_tab(cwd, Some(&nb2), None, title, command));
             } else {
                 nb2.show();
             }
@@ -3101,7 +3151,32 @@ impl MainWindow {
             let (_w, h) = self.size();
             paned.set_position((h / 2).max(100));
         }
+        let result = created.or_else(|| {
+            if mode == "single" {
+                None
+            } else {
+                nb2.current_page()
+                    .and_then(|index| nb2.nth_page(Some(index)))
+                    .and_then(|page| page.downcast::<TerminalBox>().ok())
+            }
+        });
         self.update_tabs_menu();
+        result
+    }
+
+    /// Public entry point for the control API: split only when the window is
+    /// still showing a single pane.
+    pub fn split_terminal(
+        &self,
+        mode: &str,
+        cwd: Option<&str>,
+        command: Option<&Vec<String>>,
+        title: Option<&str>,
+    ) -> Option<TerminalBox> {
+        if *self.imp().split_mode.borrow() != "single" {
+            return None;
+        }
+        self.set_split_with(mode, true, cwd, command, title)
     }
 
     fn move_tab_between(&self, src: &gtk::Notebook, dst: &gtk::Notebook, idx: u32) {
@@ -4748,6 +4823,11 @@ impl TerminalWindow for MainWindow {
     fn session_list_signal(&self) {
         MainWindow::session_list_signal(self);
     }
+    fn open_command_tab(&self, cwd: &str, command: Vec<String>, title: &str) {
+        let term = self.add_new_tab(Some(cwd), None, Some(title), Some(title), Some(&command));
+        // Keep the tab after the pager exits so its output is still readable.
+        term.set_hold(true);
+    }
     fn rename_tab_signal(&self, term: &TerminalBox) {
         self.rename_tab_dialog(term);
     }
@@ -4768,6 +4848,9 @@ impl TerminalWindow for MainWindow {
             message,
             is_error,
         );
+    }
+    fn status_message(&self, message: &str, is_error: bool) {
+        self.note_feedback(message, is_error);
     }
     fn note_window(&self) -> gtk::Window {
         self.clone().upcast()
