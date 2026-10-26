@@ -369,9 +369,11 @@ completion.
 | `Alt+1` ... `Alt+9` | Replay one of the 9 most recent history entries (at the shell prompt) |
 | `F11` | Fullscreen |
 
-Any other key after `Ctrl+B` is passed to the running program together with
-`Ctrl+B`. The prefix can be turned off under Preferences → General →
-"Ctrl+B prefix keys" for programs that need `Ctrl+B` themselves.
+Any other key after the prefix is passed to the running program together with
+the prefix. The prefix defaults to `Ctrl+B` and can be changed under
+Preferences → General → "tmux-style prefix keys" and the "Prefix key (Ctrl+)"
+field. Set it to `Ctrl+A` (or turn the prefix off) when you use tmux or screen
+inside Oxterm and need `Ctrl+B` to reach them.
 
 ## Configuration and Data
 

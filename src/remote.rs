@@ -793,6 +793,7 @@ fn relay_terminal(path: &Path, session_id: &str, label: &str, move_first: bool) 
     forward_resize(&mut writer, stdin_fd, &mut last_size);
     let mut input_buffer = Vec::new();
     let mut tmux_prefix = false;
+    let prefix_byte = settings::tmux_prefix_byte();
     let mut detached = false;
     let result = 'relay: loop {
         let mut poll_fds = [
@@ -818,7 +819,7 @@ fn relay_terminal(path: &Path, session_id: &str, label: &str, move_first: bool) 
                 let _ = write_frame(&mut writer, &[FRAME_DETACH]);
                 break 0;
             }
-            match relay_input(&bytes[..count as usize], &mut tmux_prefix) {
+            match relay_input(&bytes[..count as usize], &mut tmux_prefix, prefix_byte) {
                 RelayAction::Forward(forwarded) => {
                     if !forwarded.is_empty() && send_input(&mut writer, &forwarded).is_err() {
                         break 0;
@@ -901,7 +902,7 @@ enum RelayAction {
     },
 }
 
-fn relay_input(bytes: &[u8], prefix: &mut bool) -> RelayAction {
+fn relay_input(bytes: &[u8], prefix: &mut bool, prefix_byte: u8) -> RelayAction {
     let mut forwarded = Vec::with_capacity(bytes.len());
     for byte in bytes {
         if *prefix {
@@ -921,10 +922,11 @@ fn relay_input(bytes: &[u8], prefix: &mut bool) -> RelayAction {
             if *byte == 0x04 {
                 return RelayAction::Detach(forwarded);
             }
-            if *byte == 0x02 || *byte == b'b' || *byte == b'B' {
-                forwarded.push(0x02);
+            // Pressing the prefix twice sends it literally, as tmux does.
+            if *byte == prefix_byte || (prefix_byte == 0x02 && (*byte == b'b' || *byte == b'B')) {
+                forwarded.push(prefix_byte);
             }
-        } else if *byte == 0x02 {
+        } else if *byte == prefix_byte {
             *prefix = true;
         } else {
             forwarded.push(*byte);
@@ -2153,46 +2155,66 @@ mod tests {
     fn relay_input_forwards_keys_and_handles_detach_prefix() {
         let mut prefix = false;
         assert!(matches!(
-            relay_input(b"nano", &mut prefix),
+            relay_input(b"nano", &mut prefix, 0x02),
             RelayAction::Forward(ref v) if v == b"nano"
         ));
         assert!(!prefix);
 
         assert!(matches!(
-            relay_input(&[0x02], &mut prefix),
+            relay_input(&[0x02], &mut prefix, 0x02),
             RelayAction::Forward(ref v) if v.is_empty()
         ));
         assert!(prefix);
         assert!(matches!(
-            relay_input(b"d", &mut prefix),
+            relay_input(b"d", &mut prefix, 0x02),
             RelayAction::PrefixDetach { upper: false, ref forwarded } if forwarded.is_empty()
         ));
         assert!(!prefix);
 
-        relay_input(&[0x02], &mut prefix);
+        relay_input(&[0x02], &mut prefix, 0x02);
         assert!(prefix);
         assert!(matches!(
-            relay_input(b"D", &mut prefix),
+            relay_input(b"D", &mut prefix, 0x02),
             RelayAction::PrefixDetach { upper: true, ref forwarded } if forwarded.is_empty()
         ));
         assert!(!prefix);
 
         assert!(matches!(
-            relay_input(&[0x02, 0x02], &mut prefix),
+            relay_input(&[0x02, 0x02], &mut prefix, 0x02),
             RelayAction::Forward(ref v) if v == &[0x02]
         ));
         assert!(!prefix);
 
-        relay_input(&[0x02], &mut prefix);
+        relay_input(&[0x02], &mut prefix, 0x02);
         assert!(matches!(
-            relay_input(&[0x04], &mut prefix),
+            relay_input(&[0x04], &mut prefix, 0x02),
             RelayAction::Detach(ref v) if v.is_empty()
         ));
 
         // Bytes typed before the Ctrl+B prefix are preserved and forwarded.
         assert!(matches!(
-            relay_input(b"ls\x02d", &mut prefix),
+            relay_input(b"ls\x02d", &mut prefix, 0x02),
             RelayAction::PrefixDetach { upper: false, ref forwarded } if forwarded == b"ls"
+        ));
+    }
+
+    #[test]
+    fn relay_input_honors_a_custom_prefix_key() {
+        let mut prefix = false;
+        // Ctrl+A is the prefix, so plain Ctrl+B reaches the program untouched.
+        assert!(matches!(
+            relay_input(&[0x01], &mut prefix, 0x01),
+            RelayAction::Forward(ref v) if v.is_empty()
+        ));
+        assert!(prefix);
+        assert!(matches!(
+            relay_input(&[0x01], &mut prefix, 0x01),
+            RelayAction::Forward(ref v) if v == &[0x01]
+        ));
+        assert!(!prefix);
+        assert!(matches!(
+            relay_input(b"ls\x02w", &mut prefix, 0x01),
+            RelayAction::Forward(ref v) if v == b"ls\x02w"
         ));
     }
 }

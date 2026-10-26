@@ -55,6 +55,7 @@ struct DialogState {
     chk_hint_mode: gtk::CheckButton,
     chk_vi_copy: gtk::CheckButton,
     chk_tmux_prefix: gtk::CheckButton,
+    entry_tmux_prefix_key: gtk::Entry,
     chk_ssh_sharing: gtk::CheckButton,
     // Appearance
     font_btn: gtk::FontButton,
@@ -180,7 +181,8 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
         chk_hint_mode: general.17,
         chk_vi_copy: general.18,
         chk_tmux_prefix: general.19,
-        chk_ssh_sharing: general.20,
+        entry_tmux_prefix_key: general.20,
+        chk_ssh_sharing: general.21,
         font_btn: appearance.0,
         chk_bold: appearance.1,
         combo_scheme: appearance.2,
@@ -407,6 +409,7 @@ fn build_general(
         gtk::CheckButton,
         gtk::CheckButton,
         gtk::CheckButton,
+        gtk::Entry,
         gtk::CheckButton,
     ),
 ) {
@@ -593,9 +596,24 @@ fn build_general(
     let chk_tmux_prefix = gtk::CheckButton::new();
     chk_tmux_prefix.set_active(s.get_bool("tmux_prefix_enabled"));
     chk_tmux_prefix.set_tooltip_text(Some(
-        "Use Ctrl+B as a tmux-style prefix for tab and split shortcuts. Disable to pass Ctrl+B to programs",
+        "Use a Ctrl+letter prefix for tab and split shortcuts. Disable to pass that key to programs",
     ));
-    r = row(&grid, r, "Ctrl+B prefix keys:", &chk_tmux_prefix);
+    r = row(&grid, r, "tmux-style prefix keys:", &chk_tmux_prefix);
+
+    let entry_tmux_prefix_key = gtk::Entry::new();
+    entry_tmux_prefix_key.set_text(&s.get_str_default("tmux_prefix_key", "b"));
+    entry_tmux_prefix_key.set_max_length(1);
+    entry_tmux_prefix_key.set_width_chars(3);
+    entry_tmux_prefix_key.set_max_width_chars(3);
+    entry_tmux_prefix_key.set_sensitive(chk_tmux_prefix.is_active());
+    entry_tmux_prefix_key.set_tooltip_text(Some(
+        "Letter pressed with Ctrl as the prefix (default b). Change it to keep Ctrl+B for tmux or screen",
+    ));
+    {
+        let entry = entry_tmux_prefix_key.clone();
+        chk_tmux_prefix.connect_toggled(move |chk| entry.set_sensitive(chk.is_active()));
+    }
+    r = row(&grid, r, "Prefix key (Ctrl+):", &entry_tmux_prefix_key);
 
     let chk_ssh_sharing = gtk::CheckButton::new();
     chk_ssh_sharing.set_active(s.get_bool("ssh_connection_sharing"));
@@ -628,6 +646,7 @@ fn build_general(
             chk_hint_mode,
             chk_vi_copy,
             chk_tmux_prefix,
+            entry_tmux_prefix_key,
             chk_ssh_sharing,
         ),
     )
@@ -1238,6 +1257,15 @@ impl DialogState {
         s.set_bool("hint_mode_enabled", self.chk_hint_mode.is_active());
         s.set_bool("vi_copy_mode_enabled", self.chk_vi_copy.is_active());
         s.set_bool("tmux_prefix_enabled", self.chk_tmux_prefix.is_active());
+        let prefix_key = self
+            .entry_tmux_prefix_key
+            .text()
+            .trim()
+            .chars()
+            .find(|c| c.is_ascii_alphabetic())
+            .map(|c| c.to_ascii_lowercase().to_string())
+            .unwrap_or_else(|| "b".to_string());
+        s.set_str("tmux_prefix_key", &prefix_key);
         s.set_bool("ssh_connection_sharing", self.chk_ssh_sharing.is_active());
 
         let font_name = self

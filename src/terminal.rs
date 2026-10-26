@@ -3111,9 +3111,10 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             *self.imp().tmux_prefix.borrow_mut() = false;
             return self.handle_tmux_prefix_key(event);
         }
+        let prefix_key = gdk::keys::Key::from_unicode(settings::tmux_prefix_char());
         if ctrl
             && !shift
-            && (key == K::b || key == K::B)
+            && (key == prefix_key || key == prefix_key.to_upper())
             && settings().get_bool("tmux_prefix_enabled")
         {
             *self.imp().tmux_prefix.borrow_mut() = true;
@@ -3479,11 +3480,14 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
     fn handle_tmux_prefix_key(&self, event: &gdk::EventKey) -> glib::Propagation {
         let key = event.keyval();
         let text = event_text(event);
+        let prefix = settings::tmux_prefix_char();
+        let prefix_key = gdk::keys::Key::from_unicode(prefix);
+        let prefix_byte = settings::tmux_prefix_byte();
         if key == K::Escape {
             return glib::Propagation::Stop;
         }
-        if key == K::b || key == K::B {
-            self.feed_command_bytes(b"\x02");
+        if key == prefix_key || key == prefix_key.to_upper() {
+            self.feed_command_bytes(&[prefix_byte]);
         } else if key == K::c || key == K::C {
             self.call_window(|win| win.new_tab_signal());
         } else if key == K::n || key == K::N {
@@ -3501,21 +3505,22 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         } else if text == "\"" {
             self.call_window(|win| win.split_signal("horizontal"));
         } else if (key == K::d || key == K::D) && self.foreground_process_is_ssh() {
-            if key == K::D {
-                self.vte().feed_child(b"\x02D");
-            } else {
-                self.vte().feed_child(b"\x02d");
-            }
+            let seq = [prefix_byte, if key == K::D { b'D' } else { b'd' }];
+            self.vte().feed_child(&seq);
         } else if key == K::d || key == K::D {
             self.detach_local_terminal();
         } else if key == K::question {
             self.vte().feed(
-                b"\r\n\x1b[36mCtrl+B commands: c new tab, n/p next/previous tab, %/\" split, o other pane, d detach, x close, ? help\x1b[0m\r\n",
+                format!(
+                    "\r\n\x1b[36mCtrl+{} commands: c new tab, n/p next/previous tab, %/\" split, o other pane, s/w terminal list, d detach, x close, ? help\x1b[0m\r\n",
+                    prefix.to_ascii_uppercase()
+                )
+                .as_bytes(),
             );
         } else {
-            // Not one of ours: hand Ctrl+B and this key to the program (emacs,
-            // readline, a nested tmux) instead of silently eating both.
-            self.feed_command_bytes(b"\x02");
+            // Not one of ours: hand the prefix and this key to the program
+            // (emacs, readline, a nested tmux) instead of silently eating both.
+            self.feed_command_bytes(&[prefix_byte]);
             return glib::Propagation::Proceed;
         }
         glib::Propagation::Stop

@@ -150,6 +150,7 @@ fn build_defaults() -> Value {
         "hint_mode_enabled": true,
         "vi_copy_mode_enabled": false,
         "tmux_prefix_enabled": true,
+        "tmux_prefix_key": "b",
         "ssh_connection_sharing": true,
     })
 }
@@ -434,6 +435,23 @@ fn preserve_unreadable_settings(path: &Path) {
 
 pub fn settings() -> Settings {
     SETTINGS.with(|slot| slot.get_or_init(Settings::default).clone())
+}
+
+/// The letter used with Ctrl as Oxterm's tmux-style prefix. Falls back to `b`
+/// when the setting is missing or invalid.
+pub fn tmux_prefix_char() -> char {
+    settings()
+        .get_str_default("tmux_prefix_key", "b")
+        .chars()
+        .next()
+        .map(|c| c.to_ascii_lowercase())
+        .filter(|c| c.is_ascii_alphabetic())
+        .unwrap_or('b')
+}
+
+/// The control byte sent by the prefix key (Ctrl+A = 0x01, Ctrl+B = 0x02...).
+pub fn tmux_prefix_byte() -> u8 {
+    (tmux_prefix_char() as u8) & 0x1f
 }
 
 impl Settings {
@@ -813,6 +831,13 @@ impl Settings {
                 ) {
                     return is_hex_color(s);
                 }
+                if key == "tmux_prefix_key" {
+                    return s.chars().count() == 1
+                        && s.chars()
+                            .next()
+                            .map(|c| c.is_ascii_alphabetic())
+                            .unwrap_or(false);
+                }
                 true
             }
             Value::Null => match key {
@@ -873,6 +898,15 @@ mod tests {
         assert!(!Settings::valid_value("opacity", &json!(0.09)));
         assert!(Settings::valid_value("foreground_color", &json!("#abcdef")));
         assert!(!Settings::valid_value("foreground_color", &json!("#abc")));
+    }
+
+    #[test]
+    fn validates_tmux_prefix_key() {
+        assert!(Settings::valid_value("tmux_prefix_key", &json!("a")));
+        assert!(Settings::valid_value("tmux_prefix_key", &json!("B")));
+        assert!(!Settings::valid_value("tmux_prefix_key", &json!("")));
+        assert!(!Settings::valid_value("tmux_prefix_key", &json!("ab")));
+        assert!(!Settings::valid_value("tmux_prefix_key", &json!("1")));
     }
 
     #[test]

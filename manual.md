@@ -622,6 +622,11 @@ remote tmux detaches instead of the local terminal.
 | `F11` | Fullscreen |
 | `Click` | Open a detected URL |
 
+The tmux-style prefix defaults to `Ctrl+B`. Change it under Preferences →
+General → "tmux-style prefix keys" and the "Prefix key (Ctrl+)" field, for
+example to `Ctrl+A` when you use tmux or screen inside Oxterm. Any other key
+after the prefix is passed to the running program together with the prefix.
+
 ## Configuration Files
 
 ```text
