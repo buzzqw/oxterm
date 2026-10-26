@@ -1993,6 +1993,7 @@ impl MainWindow {
 
     fn set_tab_text(&self, term: &TerminalBox, text: &str) {
         if let Some((_box, lbl)) = self.imp().tab_labels.borrow().get(term) {
+            lbl.set_tooltip_text(Some(text));
             let s = settings();
             let active_color = s.get_str("tab_active_title_color");
             let title_color = s.get_str("tab_title_color");
@@ -3305,6 +3306,13 @@ impl MainWindow {
         });
         let box_ = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         let lbl = gtk::Label::new(Some(name));
+        // Long terminal titles (user@host:/deep/path) must not become the
+        // notebook's minimum width: a split pane would then refuse to shrink
+        // and the older terminal would be clipped instead of reflowing.
+        lbl.set_ellipsize(pango::EllipsizeMode::End);
+        lbl.set_max_width_chars(28);
+        lbl.set_single_line_mode(true);
+        lbl.set_tooltip_text(Some(name));
         let btn = gtk::Button::new();
         btn.set_relief(gtk::ReliefStyle::None);
         btn.set_focus_on_click(false);

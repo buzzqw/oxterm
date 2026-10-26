@@ -311,7 +311,9 @@ between panes, detached into a window, or closed independently.
 Rename a tab with `Ctrl+Shift+S`, by double-clicking its label, or with
 **Rename Tab...** in the tab's right-click menu. A custom name is preserved
 when the shell changes the terminal title; use **Reset Tab Title** in the same
-menu to return to automatic titles.
+menu to return to automatic titles. Long titles are ellipsized so a tab never
+forces the window (or a split pane) wider than the terminal; hover the label to
+see the full title.
 
 `View > Always Show Tabs` controls whether the tab bar remains visible when only
 one tab is open.
