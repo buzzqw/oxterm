@@ -149,8 +149,29 @@ struct Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = self.child.kill();
+        // SIGTERM goes through Oxterm's shutdown path, which closes the
+        // terminals and their persistent PTY brokers. SIGKILL would leave the
+        // brokers running after the test.
+        if matches!(self.child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        unsafe {
+            libc::kill(self.child.id() as i32, libc::SIGTERM);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
+                _ => {
+                    let _ = self.child.kill();
+                    break;
+                }
+            }
+        }
         let _ = self.child.wait();
+        // Give the brokers a moment to notice the closed sessions.
+        thread::sleep(Duration::from_millis(200));
     }
 }
 
