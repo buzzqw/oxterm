@@ -115,14 +115,36 @@ fn cli_stdout(output: &Output) -> String {
 }
 
 fn first_pane(home: &Path) -> String {
-    let output = run_cli(home, &["--list"]);
-    let text = cli_stdout(&output);
-    text.lines()
-        .nth(1)
-        .and_then(|line| line.split('\t').next())
-        .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| panic!("no pane in --list output: {text}"))
-        .to_string()
+    // The broker socket appears only after the GUI has spawned its shell, and
+    // startup can take a while on a loaded CI runner. Poll instead of relying
+    // on a fixed sleep.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let output = run_cli(home, &["--list"]);
+        let text = cli_stdout(&output);
+        if let Some(id) = text
+            .lines()
+            .nth(1)
+            .and_then(|line| line.split('\t').next())
+            .filter(|id| !id.is_empty())
+        {
+            return id.to_string();
+        }
+        if Instant::now() >= deadline {
+            eprintln!(
+                "remote directory: {:?}",
+                std::fs::read_dir(socket_dir(home))
+                    .map(|entries| entries.flatten().map(|e| e.file_name()).collect::<Vec<_>>())
+            );
+            eprintln!(
+                "GUI log:\n{}",
+                std::fs::read_to_string(home.join("gui.log")).unwrap_or_default()
+            );
+            eprintln!("--list output:\n{text}");
+            panic!("no pane in --list output: {text}");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 fn spawn_wait(home: &Path, pane: &str, timeout: &str) -> Child {
@@ -181,6 +203,8 @@ fn control_api_drives_tabs_panes_and_commands() {
         return;
     }
     let home = TempHome::new();
+    let log = std::fs::File::create(home.path().join("gui.log")).expect("create gui log");
+    let log_err = log.try_clone().expect("clone gui log");
     let child = Command::new(binary())
         .args([
             "--no-restore",
@@ -195,8 +219,8 @@ fn control_api_drives_tabs_panes_and_commands() {
         .env("XDG_RUNTIME_DIR", home.path())
         .env("NO_AT_BRIDGE", "1")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(log)
+        .stderr(log_err)
         .spawn()
         .expect("start Oxterm");
     let mut fixture = Fixture { child, home };

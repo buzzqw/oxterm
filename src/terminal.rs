@@ -535,9 +535,6 @@ mod imp {
         /// starts, captured on Enter. Negative when no command was submitted
         /// through a keystroke (for example a shell hook).
         pub pending_command_row: Cell<i64>,
-        /// Duration captured when the `D` event arrived (before its handler is
-        /// deferred), or -1 when it must be measured in the handler.
-        pub pending_duration_ms: Cell<i64>,
         pub sticky_header: RefCell<Option<gtk::EventBox>>,
         pub sticky_label: RefCell<Option<gtk::Label>>,
         pub scrollbar_marks: RefCell<Option<gtk::DrawingArea>>,
@@ -893,7 +890,6 @@ impl TerminalBox {
 
         *self.imp().cmd_bar_visible.borrow_mut() = false;
         self.imp().pending_command_row.set(-1);
-        self.imp().pending_duration_ms.set(-1);
 
         self.show_all();
     }
@@ -2205,16 +2201,18 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         if matches!(command, Some('A') | Some('D')) {
             // Duration must be measured when the event arrives, not when the
             // deferred handler runs, or every fast command gains the delay.
-            if command == Some('D') {
-                let duration = self
-                    .imp()
+            // `None` means the shell reported a prompt without having started
+            // a command first, such as the marker emitted when the integration
+            // script loads. Such an event must not complete an `oxterm wait`.
+            let duration = if command == Some('D') {
+                self.imp()
                     .osc133_command_started_at
                     .borrow_mut()
                     .take()
                     .map(|started| started.elapsed().as_millis().min(i64::MAX as u128) as i64)
-                    .unwrap_or(-1);
-                self.imp().pending_duration_ms.set(duration);
-            }
+            } else {
+                None
+            };
             let line = line.to_string();
             let weak = crate::SendWeak::new(self);
             // An idle callback can run before VTE has read the command's output
@@ -2223,15 +2221,15 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             // output while staying far below human perception.
             glib::timeout_add_local_once(std::time::Duration::from_millis(30), move || {
                 if let Some(term) = weak.upgrade() {
-                    term.osc133_handle_event_now(&line);
+                    term.osc133_handle_event_now(&line, duration);
                 }
             });
             return;
         }
-        self.osc133_handle_event_now(line);
+        self.osc133_handle_event_now(line, None);
     }
 
-    fn osc133_handle_event_now(&self, line: &str) {
+    fn osc133_handle_event_now(&self, line: &str, duration_ms: Option<i64>) {
         if *self.imp().pid.borrow() <= 0 {
             return;
         }
@@ -2290,16 +2288,6 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             let exit_code = rest.trim().parse::<i64>().unwrap_or(0);
             *self.imp().osc133_last_exit.borrow_mut() = exit_code;
             self.set_remote_command_state(false);
-            let pending = self.imp().pending_duration_ms.replace(-1);
-            let duration_ms = if pending >= 0 {
-                Some(pending)
-            } else {
-                self.imp()
-                    .osc133_command_started_at
-                    .borrow_mut()
-                    .take()
-                    .map(|started| started.elapsed().as_millis().min(i64::MAX as u128) as i64)
-            };
             {
                 let (_, end_row) = self.vte().cursor_position();
                 if let Some(block) = self
@@ -2316,9 +2304,14 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                     block.finished = true;
                 }
             }
-            self.imp()
-                .command_generation
-                .set(self.imp().command_generation.get() + 1);
+            // Only a command that actually started (an OSC 133 `C`) completes
+            // a `wait`. The prompt marker for the initial shell prompt has no
+            // preceding command and must stay invisible to it.
+            if duration_ms.is_some() {
+                self.imp()
+                    .command_generation
+                    .set(self.imp().command_generation.get() + 1);
+            }
             self.refresh_command_marks();
             if let Some(id) = self.imp().osc133_last_history_id.borrow_mut().take() {
                 history().set_command_result_async(id, exit_code, duration_ms);
