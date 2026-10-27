@@ -585,6 +585,7 @@ remote tmux detaches instead of the local terminal.
 
 ## Keyboard Shortcuts
 
+<!-- BEGIN GENERATED KEYBINDS -->
 | Shortcut | Action |
 | --- | --- |
 | `Ctrl+Shift+T` | New tab |
@@ -598,10 +599,10 @@ remote tmux detaches instead of the local terminal.
 | `Ctrl+Shift+R` | Reset terminal |
 | `Ctrl+Shift+X` | Reset and clear |
 | `Ctrl+Shift+F` | Search the scrollback (Enter/Shift+Enter = next/prev) |
-| `Ctrl++` / `Ctrl+-` / `Ctrl+0` | Zoom font in / out / reset |
-| `Ctrl+Shift+E` / `Ctrl+Shift+D` | Vertical / horizontal split |
-| `Ctrl+Shift+M` / `Ctrl+M` | Set / jump to next quickmark |
-| `Ctrl+Shift+H` | Hint mode for URLs, paths, and Git SHAs |
+| `Ctrl++ / Ctrl+- / Ctrl+0` | Zoom font in / out / reset |
+| `Ctrl+Shift+E / Ctrl+Shift+D` | Vertical / horizontal split |
+| `Ctrl+Shift+M / Ctrl+M` | Set / jump to next quickmark |
+| `Ctrl+Shift+H` | Hint mode for URLs, paths and Git SHAs |
 | `Ctrl+Shift+Y` | VI-style copy mode |
 | `Ctrl+Shift+G` | Open the last command's output in a pager |
 | `Ctrl+Shift+B` | Toggle broadcast input |
@@ -611,21 +612,22 @@ remote tmux detaches instead of the local terminal.
 | `Ctrl+L` | Clear screen |
 | `Ctrl+C` | Interrupt or cancel history mode |
 | `Ctrl+D` | EOF; closes an empty shell tab on exit |
-| `Ctrl+PageUp` / `Ctrl+PageDown` | Previous / next tab |
-| `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` | Move tab |
+| `Ctrl+PageUp / Ctrl+PageDown` | Previous / next tab |
+| `Ctrl+Shift+PageUp / Ctrl+Shift+PageDown` | Move tab |
 | `Ctrl+Alt+PageUp` | Switch split pane |
-| `Ctrl+Shift+Up` / `Ctrl+Shift+Down` | Previous / next prompt |
+| `Ctrl+Shift+Up / Ctrl+Shift+Down` | Previous / next prompt |
 | `Ctrl+Shift+P` | Command palette |
-| `Ctrl+B`, then `c` | New tab (tmux-compatible) |
-| `Ctrl+B`, then `n` / `p` | Next / previous tab |
-| `Ctrl+B`, then `%` / `"` | Vertical / horizontal split |
-| `Ctrl+B`, then `o` | Switch split pane |
-| `Ctrl+B`, then `s` / `w` | Show the interactive terminal list |
-| `Ctrl+B`, then `d` | Detach the local terminal PTY; passed through when `ssh` is foreground |
-| `Ctrl+B`, then `x` | Close tab |
-| `Alt+1` ... `Alt+9` | Replay history entry |
+| `Ctrl+B, then c` | New tab (tmux-compatible) |
+| `Ctrl+B, then n / p` | Next / previous tab |
+| `Ctrl+B, then % / "` | Vertical / horizontal split |
+| `Ctrl+B, then o` | Switch split pane |
+| `Ctrl+B, then s / w` | Show the interactive terminal list |
+| `Ctrl+B, then d` | Detach the local terminal PTY; passed through when ssh is foreground |
+| `Ctrl+B, then x` | Close tab |
+| `Alt+1 ... Alt+9` | Replay history entry |
 | `F11` | Fullscreen |
 | `Click` | Open a detected URL |
+<!-- END GENERATED KEYBINDS -->
 
 The tmux-style prefix defaults to `Ctrl+B`. Change it under Preferences →
 General → "tmux-style prefix keys" and the "Prefix key (Ctrl+)" field, for
@@ -650,6 +652,27 @@ The directory is shared with the original application by design. Oxterm keeps
 the previous valid settings file as `settings.json.bak` when replacing
 Preferences. Back up the whole directory before manually editing settings or
 migrating between versions.
+
+Every setting, its type, range and default is listed in
+[docs/settings.md](docs/settings.md). The same information is available from a
+terminal without opening a window:
+
+```text
+oxterm --list-settings
+oxterm --show-config                 # effective values as JSON
+oxterm --show-config --default       # built-in defaults
+oxterm --validate-config FILE        # check a file before using it
+oxterm --list-themes
+oxterm --list-keybinds
+oxterm --list-actions
+oxterm --diagnostics
+```
+
+`--validate-config` reports unknown keys as warnings and invalid values as
+errors, with the expected type or range for each key. `--show-config` applies
+`-o KEY=VALUE` overrides but never writes them back. `--diagnostics` prints
+versions, paths, file permissions and the enforced limits, never settings
+values, so it is safe to include in a bug report.
 
 ## Troubleshooting
 

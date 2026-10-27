@@ -12,9 +12,11 @@ use crate::settings;
 
 const CHILD_FD: RawFd = 3;
 const GUI_FD: RawFd = 4;
-const MAX_FRAME: usize = 1024 * 1024;
-const MAX_PENDING: usize = 4 * 1024 * 1024;
-const MAX_CLIENTS: usize = 32;
+// Limits live in the headless core so `--diagnostics` and docs/settings.md
+// report the values the broker actually enforces.
+const MAX_FRAME: usize = crate::headless::framing::MAX_BROKER_FRAME;
+const MAX_PENDING: usize = crate::headless::framing::MAX_BROKER_PENDING;
+const MAX_CLIENTS: usize = crate::headless::framing::MAX_BROKER_CLIENTS;
 /// Child output kept for repainting a freshly attached client. It holds the
 /// most recent bytes, not a terminal screen model: replaying them from a
 /// clean screen reproduces what a full-screen program drew. The cap keeps the

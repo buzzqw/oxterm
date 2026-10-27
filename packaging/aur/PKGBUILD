@@ -33,6 +33,7 @@ package() {
   install -Dm0644 packaging/oxterm.desktop "$pkgdir/usr/share/applications/oxterm.desktop"
   install -Dm0644 packaging/oxterm.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/oxterm.svg"
   install -Dm0644 manual.md "$pkgdir/usr/share/doc/$pkgname/manual.md"
+  install -Dm0644 docs/settings.md "$pkgdir/usr/share/doc/$pkgname/settings.md"
   install -Dm0644 packaging/oxterm.1 "$pkgdir/usr/share/man/man1/oxterm.1"
   gzip -n "$pkgdir/usr/share/man/man1/oxterm.1"
   install -Dm0644 packaging/completions/oxterm.bash \

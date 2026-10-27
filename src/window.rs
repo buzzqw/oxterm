@@ -1076,6 +1076,22 @@ impl DetachedWindow {
             None,
             Some("Show Oxterm commands, shortcuts and remote session help"),
         );
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &help_menu,
+            "Diagnostics",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    let panes = usize::from(w.terminal_box().is_some());
+                    crate::settings_dialog::show_diagnostics_dialog(
+                        Some(w.upcast_ref::<gtk::Window>()),
+                        panes,
+                    );
+                }
+            }),
+            None,
+            Some("Show versions, paths, limits and session details for bug reports"),
+        );
         help_menu.append(&gtk::SeparatorMenuItem::new());
         let weak = crate::SendWeak::new(self);
         self.menu_item(
@@ -3025,6 +3041,22 @@ impl MainWindow {
             }),
             None,
             Some("Show Oxterm commands, shortcuts and remote session help"),
+        );
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &help_menu,
+            "Diagnostics",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    let panes = w.all_terminals().len();
+                    crate::settings_dialog::show_diagnostics_dialog(
+                        Some(w.upcast_ref::<gtk::Window>()),
+                        panes,
+                    );
+                }
+            }),
+            None,
+            Some("Show versions, paths, limits and session details for bug reports"),
         );
         help_menu.append(&gtk::SeparatorMenuItem::new());
         let weak = crate::SendWeak::new(self);

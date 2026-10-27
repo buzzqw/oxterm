@@ -22,229 +22,18 @@ use serde_json::{json, Value};
 use gtk::prelude::*;
 use zoha_vte::traits::TerminalExt;
 
+use crate::headless::control_cli::{CaptureScope, CliMode};
+use crate::headless::framing;
 use crate::logging::LOGGER;
 use crate::remote;
 use crate::terminal::TerminalBox;
 use crate::window::{DetachedWindow, MainWindow};
 
-/// Capture may legitimately return a few megabytes of scrollback, so the
-/// control protocol has its own, larger frame limit than the PTY broker.
-const MAX_FRAME: usize = 64 * 1024 * 1024;
+// The parsing half lives in the headless core so it can be tested without a
+// display; re-export it for `main`.
+pub use crate::headless::control_cli::parse_cli_mode;
+
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(30);
-
-#[derive(Debug, PartialEq)]
-pub enum CaptureScope {
-    Screen,
-    Lines(usize),
-    All,
-}
-
-#[derive(Debug, PartialEq)]
-pub enum CliMode {
-    Help(&'static str),
-    New {
-        cwd: Option<String>,
-        title: Option<String>,
-        command: Vec<String>,
-    },
-    Split {
-        pane: Option<String>,
-        vertical: bool,
-        cwd: Option<String>,
-        title: Option<String>,
-        command: Vec<String>,
-    },
-    Send {
-        pane: Option<String>,
-        enter: bool,
-        text: String,
-    },
-    Capture {
-        pane: Option<String>,
-        scope: CaptureScope,
-    },
-    Wait {
-        pane: Option<String>,
-        timeout: Option<Duration>,
-    },
-}
-
-// ── CLI parsing ──────────────────────────────────────────────
-
-pub fn parse_cli_mode(args: &[String]) -> Option<Result<CliMode, String>> {
-    let verb = args.get(1)?.as_str();
-    if !matches!(verb, "new" | "split" | "send" | "capture" | "wait") {
-        return None;
-    }
-    Some(parse_verb(&args[1..]))
-}
-
-fn parse_verb(args: &[String]) -> Result<CliMode, String> {
-    let verb = &args[0];
-    let mut cwd: Option<String> = None;
-    let mut title: Option<String> = None;
-    let mut pane: Option<String> = None;
-    let mut vertical = true;
-    let mut enter = false;
-    let mut scope = CaptureScope::Screen;
-    let mut timeout: Option<Duration> = None;
-    let mut command: Vec<String> = Vec::new();
-    let mut text_parts: Vec<String> = Vec::new();
-    let mut read_stdin = false;
-    let mut i = 1;
-    while i < args.len() {
-        let arg = &args[i];
-        match arg.as_str() {
-            "-h" | "--help" => return Ok(CliMode::Help(verb_usage(verb))),
-            "--cwd" if verb == "new" || verb == "split" => {
-                i += 1;
-                let value = args.get(i).ok_or("--cwd requires a directory")?;
-                cwd = Some(expand_dir(value)?);
-            }
-            "--title" if verb == "new" || verb == "split" => {
-                i += 1;
-                title = Some(args.get(i).ok_or("--title requires a value")?.to_string());
-            }
-            "--pane" if verb != "new" => {
-                i += 1;
-                pane = Some(args.get(i).ok_or("--pane requires a session id")?.clone());
-            }
-            "--vertical" if verb == "split" => vertical = true,
-            "--horizontal" if verb == "split" => vertical = false,
-            "--enter" if verb == "send" => enter = true,
-            "--all" if verb == "capture" => scope = CaptureScope::All,
-            "--scrollback" if verb == "capture" => {
-                i += 1;
-                let value = args.get(i).ok_or("--scrollback requires a line count")?;
-                let lines = value
-                    .parse::<usize>()
-                    .map_err(|_| format!("invalid --scrollback '{}'", value))?;
-                scope = CaptureScope::Lines(lines);
-            }
-            "--timeout" if verb == "wait" => {
-                i += 1;
-                let value = args.get(i).ok_or("--timeout requires seconds")?;
-                let secs = value
-                    .parse::<u64>()
-                    .map_err(|_| format!("invalid --timeout '{}': expected seconds", value))?;
-                timeout = Some(Duration::from_secs(secs));
-            }
-            "--" if verb == "new" || verb == "split" => {
-                command = args[i + 1..].to_vec();
-                if command.is_empty() {
-                    return Err("-- must be followed by a command".to_string());
-                }
-                break;
-            }
-            "--" if verb == "send" => {
-                text_parts = args[i + 1..].to_vec();
-                break;
-            }
-            _ if verb == "send" => {
-                if arg == "-" {
-                    read_stdin = true;
-                } else if arg.starts_with('-') {
-                    return Err(format!("unknown option: {}", arg));
-                } else {
-                    text_parts.push(arg.clone());
-                }
-            }
-            _ if verb == "new" && !arg.starts_with('-') => {
-                // `oxterm new DIR` is a convenient shorthand for --cwd.
-                if cwd.is_some() {
-                    return Err(format!("unexpected argument: {}", arg));
-                }
-                cwd = Some(expand_dir(arg)?);
-            }
-            _ => return Err(format!("unknown option: {}", arg)),
-        }
-        i += 1;
-    }
-
-    match verb.as_str() {
-        "new" => Ok(CliMode::New {
-            cwd,
-            title,
-            command,
-        }),
-        "split" => Ok(CliMode::Split {
-            pane,
-            vertical,
-            cwd,
-            title,
-            command,
-        }),
-        "send" => {
-            let text = if read_stdin {
-                let mut buffer = String::new();
-                std::io::stdin()
-                    .read_to_string(&mut buffer)
-                    .map_err(|e| format!("cannot read standard input: {}", e))?;
-                buffer
-            } else {
-                text_parts.join(" ")
-            };
-            if text.is_empty() && !enter {
-                return Err("nothing to send".to_string());
-            }
-            Ok(CliMode::Send { pane, enter, text })
-        }
-        "capture" => Ok(CliMode::Capture { pane, scope }),
-        "wait" => Ok(CliMode::Wait { pane, timeout }),
-        _ => unreachable!(),
-    }
-}
-
-fn expand_dir(raw: &str) -> Result<String, String> {
-    let expanded = if let Some(rest) = raw.strip_prefix("~/") {
-        dirs::home_dir()
-            .map(|home| home.join(rest))
-            .unwrap_or_default()
-    } else if raw == "~" {
-        dirs::home_dir().unwrap_or_default()
-    } else {
-        PathBuf::from(raw)
-    };
-    if !expanded.is_dir() {
-        return Err(format!("not a directory: {}", raw));
-    }
-    std::fs::canonicalize(&expanded)
-        .map(|path| path.to_string_lossy().to_string())
-        .map_err(|e| format!("cannot resolve {}: {}", raw, e))
-}
-
-fn verb_usage(verb: &str) -> &'static str {
-    match verb {
-        "new" => {
-            "Usage: oxterm new [DIR] [--cwd DIR] [--title TITLE] [-- COMMAND...]\n\n\
-             Open a new tab in the running Oxterm and print its pane id. DIR is a\n\
-             shorthand for --cwd.\n"
-        }
-        "split" => {
-            "Usage: oxterm split [--pane ID] [--vertical|--horizontal] [--cwd DIR]\n\
-             \x20            [--title TITLE] [-- COMMAND...]\n\n\
-             Split the target pane's window (which must be unsplit) and print the\n\
-             new pane id. Defaults to the pane in $OXTERM_PANE and to a vertical split.\n"
-        }
-        "send" => {
-            "Usage: oxterm send [--pane ID] [--enter] TEXT...\n\
-             \x20      oxterm send [--pane ID] [--enter] -\n\n\
-             Type TEXT into the target pane, or standard input with '-'. --enter\n\
-             appends a carriage return, as if Enter had been pressed.\n"
-        }
-        "capture" => {
-            "Usage: oxterm capture [--pane ID] [--scrollback N | --all]\n\n\
-             Print the target pane's text: the visible screen by default, N lines\n\
-             of history with --scrollback, or the whole buffer with --all.\n"
-        }
-        "wait" => {
-            "Usage: oxterm wait [--pane ID] [--timeout SECONDS]\n\n\
-             Wait for the next command in the pane to finish and exit with its\n\
-             status. Without a timeout it waits indefinitely.\n"
-        }
-        _ => "Usage: oxterm new|split|send|capture|wait\n",
-    }
-}
 
 // ── Client ───────────────────────────────────────────────────
 
@@ -301,6 +90,16 @@ pub fn run_cli(mode: CliMode) -> i32 {
             }
         }
         CliMode::Send { pane, enter, text } => {
+            let text = match text {
+                Some(text) => text,
+                None => {
+                    let mut buffer = String::new();
+                    if let Err(error) = std::io::stdin().read_to_string(&mut buffer) {
+                        return fail(1, "send", &format!("cannot read standard input: {}", error));
+                    }
+                    buffer
+                }
+            };
             let target = match resolve_pane(pane.as_deref()) {
                 Ok(target) => target,
                 Err(error) => return fail(error.0, "send", &error.1),
@@ -531,26 +330,11 @@ fn request_at_with_timeout(
 }
 
 fn write_json(stream: &mut impl Write, value: &Value) -> Result<(), String> {
-    let payload = serde_json::to_vec(value).map_err(|e| e.to_string())?;
-    if payload.len() > MAX_FRAME {
-        return Err("control request is too large".to_string());
-    }
-    stream
-        .write_all(&(payload.len() as u32).to_be_bytes())
-        .and_then(|_| stream.write_all(&payload))
-        .map_err(|e| e.to_string())
+    framing::write_json(stream, value, framing::MAX_RESPONSE_FRAME)
 }
 
 fn read_json(stream: &mut impl Read) -> Result<Value, String> {
-    let mut length = [0u8; 4];
-    stream.read_exact(&mut length).map_err(|e| e.to_string())?;
-    let length = u32::from_be_bytes(length) as usize;
-    if length > MAX_FRAME {
-        return Err("control frame is too large".to_string());
-    }
-    let mut payload = vec![0u8; length];
-    stream.read_exact(&mut payload).map_err(|e| e.to_string())?;
-    serde_json::from_slice(&payload).map_err(|e| e.to_string())
+    framing::read_json(stream, framing::MAX_REQUEST_FRAME)
 }
 
 // ── GUI server ───────────────────────────────────────────────
@@ -564,6 +348,20 @@ thread_local! {
 /// loop starts; requests are answered from that same thread.
 pub fn init(app: gtk::Application) {
     APP.with(|slot| *slot.borrow_mut() = Some(app));
+}
+
+static ACTIVE_CONNECTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn active_connections() -> usize {
+    ACTIVE_CONNECTIONS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+struct ConnectionGuard;
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        ACTIVE_CONNECTIONS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 pub fn start_server() {
@@ -594,7 +392,24 @@ pub fn start_server() {
                     if !remote::peer_is_same_user(&stream) {
                         continue;
                     }
-                    thread::spawn(move || handle_connection(stream));
+                    // Bound the threads a local process can make us spawn: a
+                    // peer that opens many idle connections is simply refused.
+                    if active_connections() >= framing::MAX_CONTROL_CLIENTS {
+                        LOGGER.warning("control_client_limit_reached");
+                        continue;
+                    }
+                    ACTIVE_CONNECTIONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let spawned = thread::Builder::new()
+                        .name("oxterm-control-client".to_string())
+                        .spawn(move || {
+                            let _guard = ConnectionGuard;
+                            handle_connection(stream);
+                        });
+                    if let Err(error) = spawned {
+                        // The closure (and its guard) was never run.
+                        ACTIVE_CONNECTIONS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                        LOGGER.warning(&format!("control_thread_spawn_failed error={}", error));
+                    }
                 }
             })
             .ok();
@@ -627,7 +442,9 @@ fn clean_stale_sockets() {
 }
 
 fn handle_connection(mut stream: std::os::unix::net::UnixStream) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(
+        framing::CONTROL_READ_TIMEOUT_SECS,
+    )));
     let _ = stream.set_write_timeout(Some(CLIENT_TIMEOUT));
     let reply = match read_json(&mut stream) {
         Ok(request) => {
@@ -802,95 +619,4 @@ fn pane_info(term: &TerminalBox) -> Value {
         "generation": term.command_generation(),
         "alive": term.is_alive(),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn args(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| (*value).to_string()).collect()
-    }
-
-    #[test]
-    fn parses_new_with_cwd_title_and_command() {
-        let mode = parse_verb(&args(&[
-            "new", "--cwd", "/tmp", "--title", "Build", "--", "make", "test",
-        ]))
-        .unwrap();
-        assert_eq!(
-            mode,
-            CliMode::New {
-                cwd: Some("/tmp".to_string()),
-                title: Some("Build".to_string()),
-                command: args(&["make", "test"]),
-            }
-        );
-    }
-
-    #[test]
-    fn parses_split_defaults_and_orientation() {
-        let mode = parse_verb(&args(&["split", "--horizontal", "--pane", "123"])).unwrap();
-        assert_eq!(
-            mode,
-            CliMode::Split {
-                pane: Some("123".to_string()),
-                vertical: false,
-                cwd: None,
-                title: None,
-                command: Vec::new(),
-            }
-        );
-        assert!(matches!(
-            parse_verb(&args(&["split"])).unwrap(),
-            CliMode::Split { vertical: true, .. }
-        ));
-    }
-
-    #[test]
-    fn parses_send_text_and_options() {
-        let mode = parse_verb(&args(&["send", "--pane", "1", "--enter", "make", "test"])).unwrap();
-        assert_eq!(
-            mode,
-            CliMode::Send {
-                pane: Some("1".to_string()),
-                enter: true,
-                text: "make test".to_string(),
-            }
-        );
-        assert!(parse_verb(&args(&["send"])).is_err());
-    }
-
-    #[test]
-    fn parses_capture_scopes_and_wait_timeout() {
-        assert_eq!(
-            parse_verb(&args(&["capture", "--scrollback", "500"])).unwrap(),
-            CliMode::Capture {
-                pane: None,
-                scope: CaptureScope::Lines(500),
-            }
-        );
-        assert_eq!(
-            parse_verb(&args(&["capture", "--all"])).unwrap(),
-            CliMode::Capture {
-                pane: None,
-                scope: CaptureScope::All,
-            }
-        );
-        assert_eq!(
-            parse_verb(&args(&["wait", "--timeout", "5"])).unwrap(),
-            CliMode::Wait {
-                pane: None,
-                timeout: Some(Duration::from_secs(5)),
-            }
-        );
-    }
-
-    #[test]
-    fn rejects_unknown_options_and_missing_values() {
-        assert!(parse_verb(&args(&["split", "--bogus"])).is_err());
-        assert!(parse_verb(&args(&["send", "--pane"])).is_err());
-        assert!(parse_verb(&args(&["capture", "--scrollback", "many"])).is_err());
-        assert!(parse_verb(&args(&["new", "--cwd", "/definitely/not/a/dir"])).is_err());
-    }
 }

@@ -67,32 +67,42 @@ _oxterm() {
         return
     fi
 
-    _arguments -s -S \
-        '(-w --working-directory)'{-w,--working-directory}'[Working directory]:directory:_directories' \
-        '(-T --title)'{-T,--title}'[Fixed window title]:title:' \
-        '(-g --geometry)'{-g,--geometry}'[Initial size in cells]:geometry:(120x40)' \
-        '(-F --fullscreen)'{-F,--fullscreen}'[Start fullscreen]' \
-        '(-m --maximize)'{-m,--maximize}'[Start maximized]' \
-        '--class[WM_CLASS class]:class:' \
-        '--name[WM_CLASS instance name]:name:' \
-        '(-p --profile)'{-p,--profile}'[Saved profile]:profile:' \
-        '--config[Alternative settings file]:file:_files' \
-        '(-o --option)'{-o,--option}'[Session setting override KEY=VALUE]:key=value:' \
-        '--font[Font family override]:family:' \
-        '--font-size[Font size override]:size:' \
-        '--new-window[Open a new window]' \
-        '--no-restore[Do not restore the last session]' \
-        '--hold[Keep the terminal open after the command exits]' \
-        '(-e --execute)'{-e,--execute}'[Run a command]:command:_command_names -e' \
-        '--list[List active terminals]' \
-        '--info[Show one active terminal]:session:_oxterm_sessions' \
-        '--detach[Disconnect remote clients]:session:_oxterm_sessions' \
-        '--broker[Internal PTY broker]:socket:_files' \
-        '(-a --attach)'{-a,--attach}'[Share a live session]:session:_oxterm_sessions' \
-        '(-M --move)'{-M,--move}'[Take a live session over]:session:_oxterm_sessions' \
-        '(-V --version)'{-V,--version}'[Show version]' \
-        '(-h --help)'{-h,--help}'[Show help]' \
-        '*:directory:_directories'
-}
+_oxterm_global_options=(
+    # BEGIN GENERATED OPTIONS
+    '(-w --working-directory)'{-w,--working-directory}'[Working directory for the new terminal]:directory:_directories'
+    '--new-window[Open a new window instead of reusing a running instance]'
+    '--no-restore[Do not restore the last session]'
+    '(-T --title)'{-T,--title}'[Set a fixed window title (apps cannot override it)]:title:'
+    '(-g --geometry)'{-g,--geometry}'[Initial size in character cells (e.g. 120x40)]:colsxrows:'
+    '(-F --fullscreen)'{-F,--fullscreen}'[Start in fullscreen mode]'
+    '(-m --maximize)'{-m,--maximize}'[Start maximized]'
+    '--class[Set the WM_CLASS class part (window manager rules)]:class:'
+    '--name[Set the WM_CLASS instance name]:name:'
+    '(-p --profile)'{-p,--profile}'[Start with a saved profile (session only)]:profile:'
+    '--config[Use an alternative settings file]:file:_files'
+    '(-o --option)'{-o,--option}'[Override a setting for this session (repeatable)]:key=value:'
+    '--font[Override the font family for this session]:family:'
+    '--font-size[Override the font size for this session]:number:'
+    '--hold[Keep the terminal open after the command exits]'
+    '(-e --execute)'{-e,--execute}'[Run a command instead of the configured shell]:command:_command_names -e'
+    '--list[List active Oxterm terminals (first column is the session ID)]'
+    '--info[Show one active terminal]:session:_oxterm_sessions'
+    '(-a --attach)'{-a,--attach}'[Share a live session in this terminal]:session:_oxterm_sessions'
+    '(-M --move)'{-M,--move}'[Take a live session over in this terminal]:session:_oxterm_sessions'
+    '--detach[Disconnect every remote client of a session]:session:_oxterm_sessions'
+    '--broker[Run the persistent PTY broker (internal)]:file:_files'
+    '--show-config[Print the effective settings as JSON and exit]'
+    '--default[With --show-config, print the built-in defaults]'
+    '--validate-config[Validate a settings file and exit]:file:_files'
+    '--list-settings[List every setting with its type and default]'
+    '--list-themes[List the built-in color schemes]'
+    '--list-keybinds[List the keyboard shortcuts]'
+    '--list-actions[List the scriptable control actions]'
+    '--diagnostics[Print environment, paths and limits for bug reports]'
+    '(-V --version)'{-V,--version}'[Show the Oxterm version]'
+    '(-h --help)'{-h,--help}'[Show this help]'
+    # END GENERATED OPTIONS
+)
 
-_oxterm "$@"
+    _arguments -s -S "${_oxterm_global_options[@]}" \
+        '*:directory:_directories'

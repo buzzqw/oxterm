@@ -31,85 +31,110 @@ With no arguments a window is opened and the configured shell is started in
 the working directory of the caller, or the directory restored from the last
 session.
 .SH OPTIONS
+.\" BEGIN GENERATED OPTIONS
+.SS Window and terminal options
 .TP
 .BR \-w ", " \-\-working\-directory " " DIR
-Working directory for the new terminal.
-.TP
-.BR \-T ", " \-\-title " " TITLE
-Set a fixed window title that applications cannot override.
-.TP
-.BR \-g ", " \-\-geometry " " COLSxROWS
-Initial size in character cells, for example
-.BR 120x40 .
-.TP
-.BR \-F ", " \-\-fullscreen
-Start in fullscreen mode.
-.TP
-.BR \-m ", " \-\-maximize
-Start maximized.
-.TP
-.BR \-\-class " " CLASS
-Set the class part of the WM_CLASS property.
-.TP
-.BR \-\-name " " NAME
-Set the instance part of the WM_CLASS property.
-.TP
-.BR \-p ", " \-\-profile " " NAME
-Start with a saved profile. The selection lasts for this session only.
-.TP
-.BR \-\-config " " FILE
-Use an alternative settings file instead of
-.IR ~/.config/oxterm/settings.json .
-.TP
-.BR \-o ", " \-\-option " " KEY=VALUE
-Override a setting for this session. May be repeated. Values are not written
-back to the settings file.
-.TP
-.BR \-\-font " " FAMILY
-Override the font family for this session.
-.TP
-.BR \-\-font\-size " " N
-Override the font size for this session.
+Working directory for the new terminal
 .TP
 .B \-\-new\-window
-Open a new window instead of reusing a running instance.
+Open a new window instead of reusing a running instance
 .TP
 .B \-\-no\-restore
-Do not restore the last session.
+Do not restore the last session
+.TP
+.BR \-T ", " \-\-title " " TITLE
+Set a fixed window title (apps cannot override it)
+.TP
+.BR \-g ", " \-\-geometry " " COLSxROWS
+Initial size in character cells (e.g. 120x40)
+.TP
+.BR \-F ", " \-\-fullscreen
+Start in fullscreen mode
+.TP
+.BR \-m ", " \-\-maximize
+Start maximized
+.TP
+.BR \-\-class " " CLASS
+Set the WM_CLASS class part (window manager rules)
+.TP
+.BR \-\-name " " NAME
+Set the WM_CLASS instance name
+.TP
+.BR \-p ", " \-\-profile " " NAME
+Start with a saved profile (session only)
+.TP
+.BR \-\-config " " FILE
+Use an alternative settings file instead of \fI~/.config/oxterm/settings.json\fR.
+.TP
+.BR \-o ", " \-\-option " " KEY=VALUE
+Override a setting for this session. May be repeated. Values are not written back to the settings file.
+.TP
+.BR \-\-font " " FAMILY
+Override the font family for this session
+.TP
+.BR \-\-font\-size " " N
+Override the font size for this session
 .TP
 .B \-\-hold
-Keep the terminal open after the command exits.
+Keep the terminal open after the command exits
 .TP
-.BR \-e ", " \-\-execute " " CMD ...
-Run a command instead of the configured shell. All remaining arguments are
-passed to the command.
+.BR \-e ", " \-\-execute " " CMD...
+Run a command instead of the configured shell. All remaining arguments are passed to the command.
+.TP
+.BR \-V ", " \-\-version
+Print the version, including the build commit count as SemVer build metadata, and exit.
+.TP
+.BR \-h ", " \-\-help
+Print this summary and exit.
 .TP
 .B \-\-
 Treat the next argument as a directory even if it starts with a dash.
+.SS Remote sessions and live queries
 .TP
 .B \-\-list
-List active Oxterm terminals. The first column is the session ID used by
-.BR \-a ,
-.BR \-M ,
-.B \-\-info
-and
-.BR \-\-detach .
+List active Oxterm terminals. The first column is the session ID used by \fB-a\fR, \fB-M\fR, \fB--info\fR and \fB--detach\fR.
 .TP
 .BR \-\-info " " SESSION_ID
 Show details about one active terminal.
 .TP
-.BR \-\-broker " " SOCKET " " ID
-Internal entry point that runs the persistent PTY broker. Not meant to be
-called directly.
+.BR \-a ", " \-\-attach " " [SESSION_ID]
+Add this terminal as another view of the session. The shell keeps running and every view shares input and output.
 .TP
-.BR \-V ", " \-\-version
-Print the version, including the build commit count as SemVer build metadata
-(for example
-.BR 1.1.11+116 ),
-and exit.
+.BR \-M ", " \-\-move " " [SESSION_ID]
+Like --attach, but take control: other remote clients are disconnected and the original window's view is switched off.
 .TP
-.BR \-h ", " \-\-help
-Print the command line summary and exit.
+.BR \-\-detach " " SESSION_ID
+Release every remote client without stopping the shell, leaving the original window as the only view.
+.TP
+.BR \-\-broker " " SOCKET ID
+Internal entry point that runs the persistent PTY broker. Not meant to be called directly.
+.SS Inspection commands
+.TP
+.B \-\-show\-config
+Print the effective settings as JSON and exit. Reads the file given with --config, if any.
+.TP
+.B \-\-default
+With --show-config, print the built-in defaults
+.TP
+.BR \-\-validate\-config " " [FILE]
+Check a settings file for invalid or unknown keys and exit. Without FILE, validates the file Oxterm would load.
+.TP
+.B \-\-list\-settings
+List every setting with its type and default
+.TP
+.B \-\-list\-themes
+List the built-in color schemes
+.TP
+.B \-\-list\-keybinds
+List the keyboard shortcuts
+.TP
+.B \-\-list\-actions
+List the scriptable control actions
+.TP
+.B \-\-diagnostics
+Print versions, paths, permissions and enforced limits, without settings values, for bug reports.
+.\" END GENERATED OPTIONS
 .SH CONTROL API
 These subcommands act on a running Oxterm window on the same host and open no
 window, so they are safe to use over SSH. Each prints its result on standard

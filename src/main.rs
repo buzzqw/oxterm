@@ -18,9 +18,16 @@ mod system_stats;
 mod terminal;
 mod window;
 
+// The headless core lives in the library target so the docgen tool, the tests
+// and the GUI share one implementation. Re-export it at the crate root so the
+// GUI modules can keep using `crate::headless::...`.
+pub use oxterm::headless;
+
 use glib::prelude::*;
 use gtk::gdk;
 use gtk::prelude::*;
+
+use oxterm::headless::{cli, control_cli, diagnostics, settings as headless_settings, spec};
 
 use crate::settings::settings;
 use crate::window::MainWindow;
@@ -66,329 +73,6 @@ pub fn popup_transient_menu(menu: &gtk::Menu) {
 pub struct Sendable<T>(pub T);
 unsafe impl<T> Send for Sendable<T> {}
 unsafe impl<T> Sync for Sendable<T> {}
-
-struct CliOptions {
-    start_dir: Option<String>,
-    requested_dir: bool,
-    new_window: bool,
-    no_restore: bool,
-    execute: Option<Vec<String>>,
-    title: Option<String>,
-    hold: bool,
-    fullscreen: bool,
-    maximize: bool,
-    geometry: Option<(i32, i32)>,
-    /// `--class` / `--name`: WM_CLASS class and instance name for the window,
-    /// used by window managers for tiling rules, icons and .desktop matching.
-    wm_class: Option<String>,
-    wm_name: Option<String>,
-    /// `-p/--profile`: profile to apply on startup (session-only).
-    profile: Option<String>,
-    /// `--config`: alternative settings file.
-    config: Option<String>,
-    /// `-o/--option key=value`: session-only settings overrides.
-    options: Vec<(String, serde_json::Value)>,
-    version: bool,
-    help: bool,
-}
-
-/// Turn the right-hand side of `-o key=value` into a JSON value, matching the
-/// type users expect: booleans, integers and floats are parsed as such, and
-/// anything else stays a string (e.g. `opacity=0.9`, `login_shell=false`).
-fn parse_override_value(raw: &str) -> serde_json::Value {
-    match raw {
-        "true" => return serde_json::Value::Bool(true),
-        "false" => return serde_json::Value::Bool(false),
-        _ => {}
-    }
-    if let Ok(i) = raw.parse::<i64>() {
-        return serde_json::json!(i);
-    }
-    if let Ok(f) = raw.parse::<f64>() {
-        return serde_json::json!(f);
-    }
-    serde_json::Value::String(raw.to_string())
-}
-
-/// Parse a `key=value` override string used by `-o/--option`, `--font` and
-/// `--font-size`.
-fn parse_option_kv(s: &str) -> Result<(String, serde_json::Value), String> {
-    let (k, v) = s
-        .split_once('=')
-        .ok_or_else(|| format!("invalid option '{}': expected key=value", s))?;
-    let key = k.trim();
-    if key.is_empty() {
-        return Err(format!("invalid option '{}': empty key", s));
-    }
-    Ok((key.to_string(), parse_override_value(v)))
-}
-
-/// Parse a `COLSxROWS` geometry string (e.g. `120x40`), as used by many
-/// modern terminals. Columns and rows must both be positive integers.
-fn parse_geometry(s: &str) -> Result<(i32, i32), String> {
-    const MAX_GEOMETRY: i32 = 1_000;
-    let lower = s.to_ascii_lowercase();
-    let (c, r) = lower
-        .split_once('x')
-        .ok_or_else(|| format!("invalid geometry '{}': expected COLSxROWS (e.g. 120x40)", s))?;
-    let cols: i32 = c
-        .trim()
-        .parse()
-        .map_err(|_| format!("invalid geometry '{}': columns must be a number", s))?;
-    let rows: i32 = r
-        .trim()
-        .parse()
-        .map_err(|_| format!("invalid geometry '{}': rows must be a number", s))?;
-    if cols < 1 || rows < 1 || cols > MAX_GEOMETRY || rows > MAX_GEOMETRY {
-        return Err(format!(
-            "invalid geometry '{}': columns and rows must be between 1 and {}",
-            s, MAX_GEOMETRY
-        ));
-    }
-    Ok((cols, rows))
-}
-
-fn parse_cli(args: &[String]) -> Result<CliOptions, String> {
-    let mut start_dir: Option<String> = None;
-    let mut requested_dir = false;
-    let mut new_window = false;
-    let mut no_restore = false;
-    let mut execute: Option<Vec<String>> = None;
-    let mut title: Option<String> = None;
-    let mut hold = false;
-    let mut fullscreen = false;
-    let mut maximize = false;
-    let mut geometry: Option<(i32, i32)> = None;
-    let mut wm_class: Option<String> = None;
-    let mut wm_name: Option<String> = None;
-    let mut profile: Option<String> = None;
-    let mut config: Option<String> = None;
-    let mut options: Vec<(String, serde_json::Value)> = Vec::new();
-    let mut version = false;
-    let mut help = false;
-    let mut no_more_opts = false;
-    let mut i = 0;
-    while i < args.len() {
-        let arg = &args[i];
-        if no_more_opts {
-            if start_dir.is_some() {
-                return Err("directory and --working-directory cannot be used together".into());
-            }
-            start_dir = Some(arg.clone());
-            requested_dir = true;
-            i += 1;
-            continue;
-        }
-        match arg.as_str() {
-            "--" => {
-                no_more_opts = true;
-            }
-            "-w" | "--working-directory" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("--working-directory requires an argument".into());
-                }
-                if start_dir.is_some() {
-                    return Err("directory and --working-directory cannot be used together".into());
-                }
-                start_dir = Some(args[i].clone());
-                requested_dir = true;
-            }
-            "--new-window" => new_window = true,
-            "--no-restore" => no_restore = true,
-            "--hold" => hold = true,
-            "--fullscreen" | "-F" => fullscreen = true,
-            "--maximize" | "-m" => maximize = true,
-            "-T" | "--title" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("--title requires an argument".into());
-                }
-                title = Some(args[i].clone());
-            }
-            "-g" | "--geometry" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("--geometry requires an argument".into());
-                }
-                geometry = Some(parse_geometry(&args[i])?);
-            }
-            "--class" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("--class requires an argument".into());
-                }
-                wm_class = Some(args[i].clone());
-            }
-            "--name" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("--name requires an argument".into());
-                }
-                wm_name = Some(args[i].clone());
-            }
-            "-p" | "--profile" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("--profile requires an argument".into());
-                }
-                profile = Some(args[i].clone());
-            }
-            "--config" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("--config requires an argument".into());
-                }
-                config = Some(args[i].clone());
-            }
-            "-o" | "--option" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("--option requires an argument".into());
-                }
-                options.push(parse_option_kv(&args[i])?);
-            }
-            "--font" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("--font requires an argument".into());
-                }
-                options.push((
-                    "font_name".to_string(),
-                    serde_json::Value::String(args[i].clone()),
-                ));
-            }
-            "--font-size" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("--font-size requires an argument".into());
-                }
-                let sz: i64 = args[i]
-                    .parse()
-                    .map_err(|_| format!("invalid --font-size '{}': expected a number", args[i]))?;
-                if !(4..=128).contains(&sz) {
-                    return Err(format!(
-                        "invalid --font-size '{}': must be between 4 and 128",
-                        args[i]
-                    ));
-                }
-                options.push(("font_size".to_string(), serde_json::json!(sz)));
-            }
-            "-e" | "--execute" => {
-                i += 1;
-                let mut cmd = Vec::new();
-                while i < args.len() {
-                    cmd.push(args[i].clone());
-                    i += 1;
-                }
-                if cmd.is_empty() {
-                    return Err("--execute requires a command".into());
-                }
-                execute = Some(cmd);
-            }
-            "--version" | "-V" => version = true,
-            "--help" | "-h" => help = true,
-            _ => {
-                if arg.starts_with('-') {
-                    return Err(format!("Unknown option: {}", arg));
-                }
-                if start_dir.is_some() {
-                    return Err("directory and --working-directory cannot be used together".into());
-                }
-                start_dir = Some(arg.clone());
-                requested_dir = true;
-            }
-        }
-        i += 1;
-    }
-    start_dir = match start_dir {
-        Some(dir) => Some(expand_dir(dir)?),
-        None => Some(
-            std::env::current_dir()
-                .map_err(|e| format!("cannot determine current directory: {}", e))?
-                .to_string_lossy()
-                .to_string(),
-        ),
-    };
-    if fullscreen && maximize {
-        return Err("--fullscreen and --maximize cannot be used together".into());
-    }
-    Ok(CliOptions {
-        start_dir,
-        requested_dir,
-        new_window,
-        no_restore,
-        execute,
-        title,
-        hold,
-        fullscreen,
-        maximize,
-        geometry,
-        wm_class,
-        wm_name,
-        profile,
-        config,
-        options,
-        version,
-        help,
-    })
-}
-
-fn usage() -> &'static str {
-    concat!(
-        "Usage: oxterm [DIRECTORY] [OPTIONS] [-e CMD...]\n\n",
-        "Options:\n",
-        "  -w, --working-directory DIR  Working directory for the new terminal\n",
-        "  -T, --title TITLE            Set a fixed window title (apps cannot override it)\n",
-        "  -g, --geometry COLSxROWS     Initial size in character cells (e.g. 120x40)\n",
-        "  -F, --fullscreen             Start in fullscreen mode\n",
-        "  -m, --maximize               Start maximized\n",
-        "      --class CLASS            Set the WM_CLASS class part (window manager rules)\n",
-        "      --name NAME             Set the WM_CLASS instance name\n",
-        "  -p, --profile NAME          Start with a saved profile (session only)\n",
-        "      --config FILE           Use an alternative settings file\n",
-        "  -o, --option KEY=VALUE      Override a setting for this session (repeatable)\n",
-        "      --font FAMILY           Override the font family for this session\n",
-        "      --font-size N           Override the font size for this session\n",
-        "      --new-window             Open a new window\n",
-        "      --no-restore             Do not restore the last session\n",
-        "      --hold                   Keep the terminal open after the command exits\n",
-        "  -e, --execute CMD...         Run a command instead of the configured shell\n",
-        "      --list                   List active Oxterm terminals\n",
-        "      --info SESSION_ID        Show one active terminal\n",
-        "      --broker SOCKET ID       Run the persistent PTY broker (internal)\n",
-        "      --                       Treat the next argument as the directory\n",
-        "  -V, --version                Show the Oxterm version\n",
-        "  -h, --help                   Show this help\n",
-        "\n",
-        "Scriptable control (acts on a running Oxterm, opens no window):\n",
-        "  new [--cwd DIR] [--title T] [-- CMD...]      Open a tab, print its pane id\n",
-        "  split [--pane ID] [--vertical|--horizontal] [--cwd DIR]\n",
-        "        [--title T] [-- CMD...]                Split a single-pane window\n",
-        "  send [--pane ID] [--enter] TEXT...|-         Type into a pane\n",
-        "  capture [--pane ID] [--scrollback N|--all]   Print a pane's text\n",
-        "  wait [--pane ID] [--timeout SECS]            Wait for the next command to finish\n",
-        "\n",
-        "Remote sessions (SESSION_ID is the first column printed by --list):\n",
-        "  -a, --attach [SESSION_ID]    Share a live session in this terminal\n",
-        "  -M, --move [SESSION_ID]      Take a live session over in this terminal\n",
-        "      --detach SESSION_ID      Disconnect every remote client of a session\n",
-        "\n",
-        "  These headless commands act on a running Oxterm terminal on the same\n",
-        "  host and open no window, so they are safe to use over SSH. Without a\n",
-        "  SESSION_ID, -a and -M use the only session or show a list to choose from.\n",
-        "\n",
-        "  attach  Adds this terminal as another view of the session, repainting\n",
-        "          its current screen. The shell keeps running and its original\n",
-        "          window stays live; every view shares the same input and output.\n",
-        "  move    Like attach but takes control: it disconnects every other remote\n",
-        "          client and switches off the original window's view, so the\n",
-        "          session is shown only here. In that window, Ctrl+B then s or w\n",
-        "          brings the view back.\n",
-        "  detach  Releases every remote client (attach or move) without stopping\n",
-        "          the shell, leaving the original window as the only view again.\n",
-    )
-}
 
 struct App {
     app: gtk::Application,
@@ -442,16 +126,6 @@ impl App {
 
     fn run(&mut self, args: Vec<String>) -> i32 {
         let app = self.app.clone();
-        if let Ok(options) = parse_cli(&args[1..]) {
-            if options.help {
-                print!("{}", usage());
-                return 0;
-            }
-            if options.version {
-                println!("{} {}", window::APP_NAME, window::VERSION);
-                return 0;
-            }
-        }
         app.connect_command_line(move |app, cmdline| {
             let args: Vec<String> = cmdline
                 .arguments()
@@ -459,7 +133,7 @@ impl App {
                 .skip(1)
                 .map(|s| s.to_string_lossy().to_string())
                 .collect();
-            let opts = match parse_cli(&args) {
+            let opts = match cli::parse_cli(&args) {
                 Ok(o) => o,
                 Err(e) => {
                     eprintln!("{}: {}", window::APP_NAME, e);
@@ -471,8 +145,11 @@ impl App {
                 return 0;
             }
             if opts.help {
-                print!("{}", usage());
+                print!("{}", cli::usage());
                 return 0;
+            }
+            if let Some(inspection) = opts.inspection() {
+                return run_inspection(&opts, inspection);
             }
             // Apply command-line configuration before any window (and therefore
             // any settings read) is created: alternative config file first, then
@@ -571,272 +248,6 @@ impl App {
     }
 }
 
-fn expand_dir(d: String) -> Result<String, String> {
-    let expanded = if let Some(rest) = d.strip_prefix("~/") {
-        dirs::home_dir()
-            .map(|p| p.join(rest).to_string_lossy().to_string())
-            .unwrap_or_default()
-    } else if d == "~" {
-        dirs::home_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default()
-    } else {
-        d
-    };
-    if std::path::Path::new(&expanded).is_dir() {
-        std::fs::canonicalize(&expanded)
-            .map(|p| p.to_string_lossy().to_string())
-            .map_err(|e| format!("cannot resolve directory {}: {}", expanded, e))
-    } else {
-        Err(format!("not a directory: {}", expanded))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn args(values: &[&str]) -> Vec<String> {
-        values.iter().map(|v| (*v).to_string()).collect()
-    }
-
-    #[test]
-    fn cli_defaults_to_current_directory_without_explicit_open() {
-        let options = parse_cli(&[]).unwrap();
-        assert!(!options.requested_dir);
-        assert_eq!(
-            options.start_dir,
-            Some(
-                std::env::current_dir()
-                    .unwrap()
-                    .to_string_lossy()
-                    .to_string()
-            )
-        );
-    }
-
-    #[test]
-    fn cli_rejects_missing_directories_and_supports_help() {
-        assert!(parse_cli(&args(&["/definitely/not/a/dir"])).is_err());
-        assert!(parse_cli(&args(&["--help"])).unwrap().help);
-    }
-
-    #[test]
-    fn cli_parses_modern_options() {
-        let o = parse_cli(&args(&[
-            "-T",
-            "My Term",
-            "--geometry",
-            "120x40",
-            "--fullscreen",
-            "--hold",
-        ]))
-        .unwrap();
-        assert_eq!(o.title.as_deref(), Some("My Term"));
-        assert_eq!(o.geometry, Some((120, 40)));
-        assert!(o.fullscreen);
-        assert!(o.hold);
-        assert!(!o.maximize);
-        assert!(parse_cli(&args(&["-V"])).unwrap().version);
-    }
-
-    #[test]
-    fn cli_parses_all_window_and_command_options() {
-        let o = parse_cli(&args(&[
-            "-w",
-            "/tmp",
-            "--new-window",
-            "--no-restore",
-            "--hold",
-            "--execute",
-            "sh",
-            "-c",
-            "printf '%s' ok",
-        ]))
-        .unwrap();
-        assert_eq!(o.start_dir.as_deref(), Some("/tmp"));
-        assert!(o.requested_dir);
-        assert!(o.new_window);
-        assert!(o.no_restore);
-        assert!(o.hold);
-        assert_eq!(o.execute, Some(args(&["sh", "-c", "printf '%s' ok"])));
-
-        let o = parse_cli(&args(&[
-            "--working-directory",
-            "/tmp",
-            "-e",
-            "printf",
-            "%s",
-            "ok",
-        ]))
-        .unwrap();
-        assert_eq!(o.start_dir.as_deref(), Some("/tmp"));
-        assert_eq!(o.execute, Some(args(&["printf", "%s", "ok"])));
-    }
-
-    #[test]
-    fn cli_parses_short_aliases() {
-        let o = parse_cli(&args(&["-F"])).unwrap();
-        assert!(o.fullscreen);
-        assert!(!o.maximize);
-
-        let o = parse_cli(&args(&["-m"])).unwrap();
-        assert!(!o.fullscreen);
-        assert!(o.maximize);
-
-        let o = parse_cli(&args(&["-g", "120X40"])).unwrap();
-        assert_eq!(o.geometry, Some((120, 40)));
-    }
-
-    #[test]
-    fn cli_requires_arguments_for_value_options() {
-        for option in [
-            "-w",
-            "--working-directory",
-            "-T",
-            "--title",
-            "-g",
-            "--geometry",
-            "--class",
-            "--name",
-            "-p",
-            "--profile",
-            "--config",
-            "-o",
-            "--option",
-            "--font",
-            "--font-size",
-            "-e",
-            "--execute",
-        ] {
-            assert!(
-                parse_cli(&args(&[option])).is_err(),
-                "{} accepts no value",
-                option
-            );
-        }
-    }
-
-    #[test]
-    fn cli_help_lists_every_standard_option() {
-        for option in [
-            "-w, --working-directory",
-            "-T, --title",
-            "-g, --geometry",
-            "-F, --fullscreen",
-            "-m, --maximize",
-            "--class",
-            "--name",
-            "-p, --profile",
-            "--config",
-            "-o, --option",
-            "--font",
-            "--font-size",
-            "--new-window",
-            "--no-restore",
-            "--hold",
-            "-e, --execute",
-            "--list",
-            "--info",
-            "-a, --attach",
-            "-M, --move",
-            "--detach",
-            "--broker",
-            "new [--cwd",
-            "split [--pane",
-            "send [--pane",
-            "capture [--pane",
-            "wait [--pane",
-            "--",
-            "-V, --version",
-            "-h, --help",
-        ] {
-            assert!(usage().contains(option), "help is missing {}", option);
-        }
-    }
-
-    #[test]
-    fn cli_geometry_validation() {
-        assert!(parse_cli(&args(&["--geometry", "abc"])).is_err());
-        assert!(parse_cli(&args(&["--geometry", "0x10"])).is_err());
-        assert!(parse_cli(&args(&["--geometry", "1001x40"])).is_err());
-        assert!(parse_cli(&args(&["--geometry", "80"])).is_err());
-        assert_eq!(parse_geometry("100X30").unwrap(), (100, 30));
-    }
-
-    #[test]
-    fn cli_fullscreen_and_maximize_conflict() {
-        assert!(parse_cli(&args(&["--fullscreen", "--maximize"])).is_err());
-    }
-
-    #[test]
-    fn cli_double_dash_forces_directory() {
-        let o = parse_cli(&args(&["--", "/tmp"])).unwrap();
-        assert!(o.requested_dir);
-        assert_eq!(o.start_dir.as_deref(), Some("/tmp"));
-    }
-
-    #[test]
-    fn cli_parses_class_name_profile_config() {
-        let o = parse_cli(&args(&[
-            "--class",
-            "MyClass",
-            "--name",
-            "inst",
-            "--profile",
-            "work",
-            "--config",
-            "/tmp/alt.json",
-        ]))
-        .unwrap();
-        assert_eq!(o.wm_class.as_deref(), Some("MyClass"));
-        assert_eq!(o.wm_name.as_deref(), Some("inst"));
-        assert_eq!(o.profile.as_deref(), Some("work"));
-        assert_eq!(o.config.as_deref(), Some("/tmp/alt.json"));
-    }
-
-    #[test]
-    fn cli_parses_option_overrides_with_types() {
-        let o = parse_cli(&args(&[
-            "-o",
-            "opacity=0.9",
-            "-o",
-            "login_shell=false",
-            "--font",
-            "Fira Code",
-            "--font-size",
-            "16",
-        ]))
-        .unwrap();
-        assert_eq!(o.options.len(), 4);
-        assert_eq!(o.options[0].0, "opacity");
-        assert_eq!(o.options[0].1, serde_json::json!(0.9));
-        assert_eq!(o.options[1].1, serde_json::Value::Bool(false));
-        assert_eq!(
-            o.options[2],
-            ("font_name".to_string(), serde_json::json!("Fira Code"))
-        );
-        assert_eq!(
-            o.options[3],
-            ("font_size".to_string(), serde_json::json!(16))
-        );
-    }
-
-    #[test]
-    fn cli_option_and_font_size_validation() {
-        assert!(parse_cli(&args(&["-o", "noequals"])).is_err());
-        assert!(parse_cli(&args(&["-o", "=novalue"])).is_err());
-        assert!(parse_cli(&args(&["--font-size", "big"])).is_err());
-        assert!(parse_cli(&args(&["--font-size", "3"])).is_err());
-        assert!(parse_cli(&args(&["--font-size", "129"])).is_err());
-        assert_eq!(parse_override_value("42"), serde_json::json!(42));
-        assert_eq!(parse_override_value("true"), serde_json::Value::Bool(true));
-        assert_eq!(
-            parse_override_value("hello"),
-            serde_json::Value::String("hello".to_string())
-        );
-    }
-}
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     logging::configure_logging();
@@ -860,7 +271,247 @@ fn main() {
         };
         std::process::exit(code);
     }
+    // Help, version and the inspection commands are answered before GTK is
+    // even initialised, so they work without a display and never touch the
+    // user's settings file unless asked to.
+    let parsed = match cli::parse_cli(&args[1..]) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            eprintln!("{}: {}", window::APP_NAME, error);
+            std::process::exit(2);
+        }
+    };
+    if parsed.help {
+        print!("{}", cli::usage());
+        std::process::exit(0);
+    }
+    if parsed.version {
+        println!("{} {}", window::APP_NAME, window::VERSION);
+        std::process::exit(0);
+    }
+    if let Some(inspection) = parsed.inspection() {
+        std::process::exit(run_inspection(&parsed, inspection));
+    }
     let mut app = App::new();
     let code = app.run(args);
     std::process::exit(code);
+}
+
+/// Settings file that `--show-config` / `--validate-config` should use.
+fn inspection_config_path(opts: &cli::CliOptions) -> std::path::PathBuf {
+    opts.config
+        .as_ref()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(settings::config_file)
+}
+
+fn run_inspection(opts: &cli::CliOptions, inspection: cli::Inspection) -> i32 {
+    match inspection {
+        cli::Inspection::ShowConfig { defaults } => show_config(opts, defaults),
+        cli::Inspection::ValidateConfig(file) => validate_config(opts, file),
+        cli::Inspection::ListSettings => list_settings(),
+        cli::Inspection::ListThemes => list_themes(),
+        cli::Inspection::ListKeybinds => {
+            print!("{}", spec::keybinds());
+            0
+        }
+        cli::Inspection::ListActions => list_actions(),
+        cli::Inspection::Diagnostics => diagnostics_report(opts),
+    }
+}
+
+fn show_config(opts: &cli::CliOptions, defaults_only: bool) -> i32 {
+    let mut effective = if defaults_only {
+        spec::defaults()
+    } else {
+        let path = inspection_config_path(opts);
+        if !path.exists() {
+            spec::defaults()
+        } else {
+            match headless_settings::load_file(&path) {
+                Ok(loaded) => {
+                    for issue in &loaded.issues {
+                        eprintln!(
+                            "{}: {}: {}: {}",
+                            window::APP_NAME,
+                            path.display(),
+                            issue.key,
+                            issue.message
+                        );
+                    }
+                    loaded.settings
+                }
+                Err(error) => {
+                    eprintln!("{}: {}: {}", window::APP_NAME, path.display(), error);
+                    return 2;
+                }
+            }
+        }
+    };
+    let issues = headless_settings::apply_overrides(&mut effective, &opts.options);
+    for issue in &issues {
+        eprintln!("{}: -o {}: {}", window::APP_NAME, issue.key, issue.message);
+    }
+    match serde_json::to_string_pretty(&effective) {
+        Ok(text) => {
+            println!("{}", text);
+            0
+        }
+        Err(error) => {
+            eprintln!("{}: {}", window::APP_NAME, error);
+            2
+        }
+    }
+}
+
+fn validate_config(opts: &cli::CliOptions, file: Option<String>) -> i32 {
+    let path = file
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| inspection_config_path(opts));
+    let raw = match headless_settings::read_document(&path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            eprintln!("{}: {}: {}", window::APP_NAME, path.display(), error);
+            return 2;
+        }
+    };
+    match headless_settings::load_document(&raw) {
+        Ok(loaded) => {
+            let mut fatal = 0;
+            for issue in &loaded.issues {
+                if issue.fatal {
+                    fatal += 1;
+                }
+                println!(
+                    "{}: {}: {}: {}",
+                    path.display(),
+                    if issue.fatal { "error" } else { "warning" },
+                    issue.key,
+                    issue.message
+                );
+            }
+            if fatal > 0 {
+                eprintln!(
+                    "{}: {}: {} invalid setting(s)",
+                    window::APP_NAME,
+                    path.display(),
+                    fatal
+                );
+                2
+            } else {
+                println!("{}: ok", path.display());
+                0
+            }
+        }
+        Err(error) => {
+            eprintln!("{}: {}: {}", window::APP_NAME, path.display(), error);
+            2
+        }
+    }
+}
+
+fn list_settings() -> i32 {
+    println!("{:<28} {:<22} {:<22} DESCRIPTION", "KEY", "TYPE", "DEFAULT");
+    for setting in spec::SETTINGS {
+        let default = setting.default_value();
+        let default = match &default {
+            serde_json::Value::String(value) => format!("\"{}\"", value),
+            other => other.to_string(),
+        };
+        println!(
+            "{:<28} {:<22} {:<22} {}",
+            setting.key,
+            setting.kind.type_name(),
+            default,
+            setting.description
+        );
+        if !setting.choices.is_empty() {
+            println!(
+                "{:<28} {:<22} {:<22} values: {}",
+                "",
+                "",
+                "",
+                setting.choices.join(", ")
+            );
+        }
+    }
+    0
+}
+
+fn list_themes() -> i32 {
+    for (name, scheme) in settings::color_schemes() {
+        println!(
+            "{:<20} {:<9} {}",
+            name,
+            scheme.get("foreground").unwrap_or(&""),
+            scheme.get("background").unwrap_or(&"")
+        );
+    }
+    0
+}
+
+fn list_actions() -> i32 {
+    println!("Control API (run inside a pane, or pass --pane ID):");
+    print!("{}", control_cli::summary());
+    println!("\nInspection actions (no window is opened):");
+    let options: Vec<&spec::CliOption> = spec::CLI
+        .iter()
+        .filter(|option| option.group == spec::CliGroup::Inspect)
+        .collect();
+    let width = options
+        .iter()
+        .map(|option| option.names().len())
+        .max()
+        .unwrap_or(0);
+    for option in options {
+        println!("  {:<width$}  {}", option.names(), option.description);
+    }
+    println!("\nRun `oxterm <action> --help` for the details of a control action.");
+    0
+}
+
+fn diagnostics_report(opts: &cli::CliOptions) -> i32 {
+    let mut effective = spec::defaults();
+    let issues = headless_settings::apply_overrides(&mut effective, &opts.options);
+    for issue in &issues {
+        eprintln!("{}: -o {}: {}", window::APP_NAME, issue.key, issue.message);
+    }
+    let configured_notes = effective
+        .get("notes_dir")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let notes_dir = if configured_notes.is_empty() {
+        notes::default_notes_dir()
+    } else {
+        std::path::PathBuf::from(configured_notes)
+    };
+    let overrides: Vec<String> = opts.options.iter().map(|(key, _)| key.clone()).collect();
+    let mut extra = Vec::new();
+    if let Some(profile) = &opts.profile {
+        extra.push(("profile".to_string(), profile.clone()));
+    }
+    if let Some(config) = &opts.config {
+        extra.push(("config-override".to_string(), config.clone()));
+    }
+    let report = diagnostics::Report {
+        version: window::VERSION,
+        build: if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+        rustc: env!("OXTERM_BUILD_RUSTC"),
+        config_file: &settings::config_file(),
+        config_dir: &settings::config_dir(),
+        remote_dir: Some(&remote::remote_dir()),
+        notes_dir: Some(&notes_dir),
+        overrides: &overrides,
+        extra: &extra,
+    };
+    print!("{}", diagnostics::render(&report));
+    if issues.is_empty() {
+        0
+    } else {
+        2
+    }
 }

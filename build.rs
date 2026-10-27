@@ -33,4 +33,17 @@ fn main() {
     };
     println!("cargo:rustc-env=OXTERM_VERSION={full_version}");
     println!("cargo:rustc-env=OXTERM_COMMIT_COUNT={commit_count}");
+
+    // Record the compiler version for `oxterm --diagnostics`; a bug report that
+    // names the exact toolchain is far easier to reproduce.
+    let rustc = Command::new("rustc")
+        .arg("-V")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=OXTERM_BUILD_RUSTC={rustc}");
 }

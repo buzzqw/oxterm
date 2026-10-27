@@ -13,7 +13,7 @@ use serde_json::{json, Map, Value};
 use crate::logging::LOGGER;
 use crate::persistence::{sync_parent_directory, write_private_temp};
 
-const HEX_COLOR_RE: &str = "^#[0-9a-fA-F]{6}$";
+use crate::headless::{settings as headless_settings, spec};
 
 pub fn config_dir() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
@@ -66,14 +66,15 @@ fn override_value(key: &str) -> Option<Value> {
     overrides().lock().unwrap().get(key).cloned()
 }
 
-fn is_hex_color(s: &str) -> bool {
-    static RE: OnceLock<regex::Regex> = OnceLock::new();
-    RE.get_or_init(|| regex::Regex::new(HEX_COLOR_RE).unwrap())
-        .is_match(s)
-}
-
-fn env_or(key: &str, default: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| default.to_string())
+/// Keys overridden for this session, sorted. Used by the diagnostics report so
+/// a bug report shows *which* settings were changed without leaking values.
+pub fn override_keys() -> Vec<String> {
+    let mut keys: Vec<String> = overrides()
+        .lock()
+        .map(|map| map.keys().cloned().collect())
+        .unwrap_or_default();
+    keys.sort();
+    keys
 }
 
 /// Cached copy of the default settings. `defaults()` used to rebuild the whole
@@ -91,68 +92,9 @@ pub fn defaults() -> Value {
 }
 
 fn build_defaults() -> Value {
-    let shell = env_or("SHELL", "/bin/bash");
-    let editor = env_or("EDITOR", "nano");
-    json!({
-        "font_name": "Monospace",
-        "font_size": 12,
-        "color_scheme": "Dark (Default)",
-        "foreground_color": "",
-        "background_color": "",
-        "cursor_color": "#ffffff",
-        "cursor_shape": "block",
-        "highlight_color": "#ffffff",
-        "highlight_bg_color": "#446688",
-        "scrollback_lines": 10000,
-        "scrollbar_position": "right",
-        "opacity": 1.0,
-        "shell_command": shell,
-        "notes_file": "",
-        "notes_dir": "",
-        "notes_record_context": true,
-        "notes_template": "",
-        "editor_command": editor,
-        "snippets": {},
-        "osc133": false,
-        "enable_transparency": false,
-        "confirm_close": true,
-        "tab_title": "Terminal",
-        "tab_title_color": "#ffffff",
-        "tab_active_title_color": "#ffffff",
-        "encoding": "UTF-8",
-        "auto_copy_selection": true,
-        "file_manager": "",
-        "backspace_binding": "ascii-del",
-        "delete_binding": "escape-sequence",
-        "custom_palette": Value::Null,
-        "show_unsafe_paste_dialog": true,
-        "show_tabs": true,
-        "show_menubar": true,
-        "show_toolbar": true,
-        "show_stats": false,
-        "dynamic_title": "replace",
-        "login_shell": true,
-        "cursor_blink": true,
-        "scroll_on_output": true,
-        "scroll_on_keystroke": true,
-        "allow_bold_text": true,
-        "terminal_columns": 80,
-        "terminal_rows": 24,
-        "window_padding_horizontal": 2,
-        "window_padding_vertical": 2,
-        "bell_notification": false,
-        "pager_command": "less -R",
-        "undercurl_style": "single",
-        "broadcast_input": false,
-        "active_profile": "",
-        "session_restore": true,
-        "history_enabled": true,
-        "hint_mode_enabled": true,
-        "vi_copy_mode_enabled": false,
-        "tmux_prefix_enabled": true,
-        "tmux_prefix_key": "b",
-        "ssh_connection_sharing": true,
-    })
+    // Every key, default and description lives in the headless spec so the
+    // GUI, --show-config and the generated documentation cannot drift apart.
+    spec::defaults()
 }
 
 pub type ColorMap = BTreeMap<&'static str, &'static str>;
@@ -504,34 +446,23 @@ impl Settings {
         let mut rewrite = !path.exists();
         if !rewrite {
             let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
-            match fs::read_to_string(&path) {
-                Ok(content) => match serde_json::from_str::<Value>(&content) {
-                    Ok(Value::Object(map)) => {
-                        let defs = defaults_ref();
-                        let defs_map = defs.as_object().unwrap();
-                        for (key, value) in map {
-                            if defs_map.contains_key(&key) && Self::valid_value(&key, &value) {
-                                imp.data
-                                    .lock()
-                                    .unwrap()
-                                    .as_object_mut()
-                                    .unwrap()
-                                    .insert(key, value.clone());
-                            } else if defs_map.contains_key(&key) {
-                                LOGGER.warning(&format!("settings_value_invalid key={}", key));
-                                rewrite = true;
-                            }
+            let loaded = headless_settings::read_document(&path)
+                .and_then(|raw| headless_settings::load_document(&raw));
+            match loaded {
+                Ok(loaded) => {
+                    for issue in &loaded.issues {
+                        if issue.fatal {
+                            LOGGER.warning(&format!(
+                                "settings_value_invalid key={} error={}",
+                                issue.key, issue.message
+                            ));
+                        } else {
+                            LOGGER.warning(&format!("settings_key_unknown key={}", issue.key));
                         }
                     }
-                    Ok(_) => {
-                        LOGGER.warning("settings root must be an object");
-                        preserve_unreadable_settings(&path);
-                    }
-                    Err(e) => {
-                        LOGGER.error(&format!("settings_load_failed error={}", e));
-                        preserve_unreadable_settings(&path);
-                    }
-                },
+                    *imp.data.lock().unwrap() = loaded.settings;
+                    rewrite = loaded.rewrite;
+                }
                 Err(e) => {
                     LOGGER.error(&format!("settings_load_failed error={}", e));
                     preserve_unreadable_settings(&path);
@@ -774,95 +705,11 @@ impl Settings {
     }
 
     pub(crate) fn valid_value(key: &str, value: &Value) -> bool {
-        let default = defaults_ref().get(key).cloned().unwrap_or(Value::Null);
-        match &default {
-            Value::Bool(_) => value.is_boolean(),
-            Value::Number(n) => {
-                if n.is_i64() || n.is_u64() {
-                    if !value.is_number() || value.is_f64() {
-                        return false;
-                    }
-                    let v = value.as_i64().unwrap_or(0);
-                    let limits: Option<(i64, i64)> = match key {
-                        "font_size" => Some((4, 128)),
-                        "scrollback_lines" => Some((-1, 1_000_000)),
-                        "terminal_columns" => Some((40, 300)),
-                        "terminal_rows" => Some((10, 120)),
-                        "window_padding_horizontal" => Some((0, 100)),
-                        "window_padding_vertical" => Some((0, 100)),
-                        _ => None,
-                    };
-                    match limits {
-                        Some((lo, hi)) => v >= lo && v <= hi,
-                        None => true,
-                    }
-                } else {
-                    value.is_number()
-                        && !value.is_boolean()
-                        && (value.as_f64().unwrap_or(0.0) >= 0.1)
-                        && (value.as_f64().unwrap_or(0.0) <= 1.0)
-                }
-            }
-            Value::String(_) => {
-                if !value.is_string() {
-                    return false;
-                }
-                let s = value.as_str().unwrap();
-                if s.chars().count() > 4096 {
-                    return false;
-                }
-                if (key == "foreground_color" || key == "background_color") && !s.is_empty() {
-                    return is_hex_color(s);
-                }
-                if matches!(
-                    key,
-                    "cursor_color"
-                        | "highlight_color"
-                        | "highlight_bg_color"
-                        | "tab_title_color"
-                        | "tab_active_title_color"
-                ) {
-                    return is_hex_color(s);
-                }
-                if key == "tmux_prefix_key" {
-                    return s.chars().count() == 1
-                        && s.chars()
-                            .next()
-                            .map(|c| c.is_ascii_alphabetic())
-                            .unwrap_or(false);
-                }
-                true
-            }
-            Value::Null => match key {
-                "custom_palette" => {
-                    if value.is_null() {
-                        return true;
-                    }
-                    if let Value::Object(map) = value {
-                        if map.len() <= 16 {
-                            return map
-                                .iter()
-                                .all(|(_k, v)| v.is_string() && is_hex_color(v.as_str().unwrap()));
-                        }
-                    }
-                    false
-                }
-                _ => value.is_null(),
-            },
-            Value::Object(_) => {
-                if let Value::Object(map) = value {
-                    if map.len() > 100 {
-                        return false;
-                    }
-                    return map.iter().all(|(k, v)| {
-                        k.chars().count() <= 100
-                            && v.is_string()
-                            && v.as_str().unwrap().chars().count() <= 4096
-                    });
-                }
-                false
-            }
-            Value::Array(_) => false,
+        match spec::find(key) {
+            Some(setting) => spec::validate(setting, value).is_ok(),
+            // Unknown keys are accepted for forward compatibility; `--validate-config`
+            // reports them separately as warnings.
+            None => true,
         }
     }
 }

@@ -7,6 +7,7 @@ use glib::prelude::*;
 use gtk::gdk;
 use gtk::prelude::*;
 
+use crate::headless::{diagnostics, spec};
 use crate::settings::{self, settings, Settings};
 use crate::window::{APP_NAME, EUPL_LICENSE_TEXT, VERSION};
 
@@ -301,20 +302,11 @@ pub fn show_help_dialog(parent: Option<&gtk::Window>) {
     );
     dialog.set_default_size(760, 560);
 
+    let shortcuts = spec::keybinds();
     let text = format!(
         "OXTERM QUICK HELP\n\n\
 Terminal workflow\n\
-  Ctrl+Shift+T       New tab\n\
-  Ctrl+Shift+N       New window\n\
-  Ctrl+Shift+W       Close tab\n\
-  Ctrl+PageUp/Down   Previous / next tab\n\
-  Ctrl+Alt+PageUp    Switch split pane\n\
-  Ctrl+Shift+F       Search terminal scrollback\n\
-  Ctrl+Shift+P       Open command palette\n\
-  Ctrl+Shift+C/V     Copy / paste\n\
-  Ctrl+Plus/Minus    Zoom in / out\n\
-  Ctrl+0             Reset zoom\n\
-  Ctrl+Shift+M       New note (Notes menu)\n\
+{shortcuts}\
 \nBuilt-in commands\n\
   /help              Show the in-terminal command reference\n\
   /history [terms]   Search command history (use -term to exclude)\n\
@@ -329,6 +321,14 @@ Terminal workflow\n\
   oxterm --info ID   Inspect one live session\n\
   oxterm -a ID       Attach from another terminal or over SSH\n\
   Ctrl+B, then d     Detach local forwarding\n\
+\nInspection (no window is opened)\n\
+  oxterm --show-config [--default]   Print effective settings as JSON\n\
+  oxterm --validate-config [FILE]    Check a settings file\n\
+  oxterm --list-settings             List keys, types and defaults\n\
+  oxterm --list-themes               List color schemes\n\
+  oxterm --list-keybinds             List keyboard shortcuts\n\
+  oxterm --list-actions              List control actions\n\
+  oxterm --diagnostics               Print a report for bug reports\n\
 \nVersion {VERSION}\n\
 Manual: {MANUAL_URL}\n\
 Project: {PROJECT_URL}\n"
@@ -353,6 +353,81 @@ Project: {PROJECT_URL}\n"
     dialog.content_area().pack_start(&scroll, true, true, 0);
     dialog.show_all();
     let _ = dialog.run();
+    dialog.close();
+}
+
+/// Help > Diagnostics: versions, paths, limits and the running session, ready
+/// to paste into a bug report. It never includes settings values.
+pub fn show_diagnostics_dialog(parent: Option<&gtk::Window>, panes: usize) {
+    let overrides = settings::override_keys();
+    let notes_dir = crate::notes::resolve_notes_dir();
+    let extra = vec![
+        (
+            "gtk".to_string(),
+            format!(
+                "{}.{}.{}",
+                gtk::major_version(),
+                gtk::minor_version(),
+                gtk::micro_version()
+            ),
+        ),
+        ("vte".to_string(), unsafe {
+            format!(
+                "{}.{}.{}",
+                zoha_vte_sys::vte_get_major_version(),
+                zoha_vte_sys::vte_get_minor_version(),
+                zoha_vte_sys::vte_get_micro_version()
+            )
+        }),
+        ("panes".to_string(), panes.to_string()),
+        ("pid".to_string(), std::process::id().to_string()),
+        (
+            "control-socket".to_string(),
+            crate::control::socket_path().display().to_string(),
+        ),
+    ];
+    let report = diagnostics::Report {
+        version: VERSION,
+        build: if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+        rustc: env!("OXTERM_BUILD_RUSTC"),
+        config_file: &settings::config_file(),
+        config_dir: &settings::config_dir(),
+        remote_dir: Some(&crate::remote::remote_dir()),
+        notes_dir: Some(&notes_dir),
+        overrides: &overrides,
+        extra: &extra,
+    };
+    let text = diagnostics::render(&report);
+
+    let dialog = gtk::Dialog::with_buttons(
+        Some("Diagnostics - Oxterm"),
+        parent,
+        gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+        &[
+            ("Copy", gtk::ResponseType::Other(1)),
+            ("Close", gtk::ResponseType::Close),
+        ],
+    );
+    dialog.set_default_size(760, 520);
+    let text_view = gtk::TextView::new();
+    text_view.set_editable(false);
+    text_view.set_cursor_visible(false);
+    text_view.set_monospace(true);
+    if let Some(buffer) = text_view.buffer() {
+        buffer.set_text(&text);
+    }
+    let scroll = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
+    scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
+    scroll.add(&text_view);
+    dialog.content_area().pack_start(&scroll, true, true, 0);
+    dialog.show_all();
+    while dialog.run() == gtk::ResponseType::Other(1) {
+        gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).set_text(&text);
+    }
     dialog.close();
 }
 

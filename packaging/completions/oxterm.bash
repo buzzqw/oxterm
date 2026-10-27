@@ -62,33 +62,46 @@ _oxterm() {
             ;;
     esac
 
-    opts="-w --working-directory -T --title -g --geometry -F --fullscreen
-        -m --maximize --class --name -p --profile --config -o --option
-        --font --font-size --new-window --no-restore --hold -e --execute
-        --list --info --detach -a --attach -M --move -V --version -h --help
-        --broker --"
+    # BEGIN GENERATED OPTIONS
+    opts="-w --working-directory --new-window --no-restore -T --title -g --geometry -F --fullscreen -m --maximize --class --name -p --profile --config -o --option --font --font-size --hold -e --execute --list --info -a --attach -M --move --detach --broker --show-config --default --validate-config --list-settings --list-themes --list-keybinds --list-actions --diagnostics -V --version -h --help --"
+    # END GENERATED OPTIONS
 
+    # BEGIN GENERATED CASES
     case "$prev" in
-        -w | --working-directory | --config)
+        -w | --working-directory )
+            COMPREPLY=($(compgen -d -- "$cur"))
+            return 0
+            ;;
+        -T | --title | -g | --geometry | --class | --name )
+            return 0
+            ;;
+        -p | --profile )
+            return 0
+            ;;
+        --config | --broker | --validate-config )
             COMPREPLY=($(compgen -f -- "$cur"))
             return 0
             ;;
-        -a | --attach | -M | --move | --detach | --info)
-            COMPREPLY=($(compgen -W "$(_oxterm_sessions)" -- "$cur"))
+        -o | --option )
             return 0
             ;;
-        -e | --execute)
-            COMPREPLY=($(compgen -c -- "$cur"))
-            return 0
-            ;;
-        --font)
+        --font )
             COMPREPLY=($(compgen -W "$(fc-list : family 2>/dev/null | tr ',' '\n' | sort -u)" -- "$cur"))
             return 0
             ;;
-        -p | --profile | -T | --title | -o | --option | -g | --geometry | --class | --name | --font-size | --broker)
+        --font-size )
+            return 0
+            ;;
+        -e | --execute )
+            COMPREPLY=($(compgen -c -- "$cur"))
+            return 0
+            ;;
+        --info | -a | --attach | -M | --move | --detach )
+            COMPREPLY=($(compgen -W "$(_oxterm_sessions)" -- "$cur"))
             return 0
             ;;
     esac
+    # END GENERATED CASES
 
     if [[ "$cur" == -* ]]; then
         COMPREPLY=($(compgen -W "$opts" -- "$cur"))

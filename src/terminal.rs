@@ -71,6 +71,9 @@ pub const OXTERM_COMMANDS: &[&str] = &[
 
 const HINT_CHARS: &str = "asdfghjklqwertyuiopzxcvbnm";
 const MAX_OSC133_BUFFER: usize = 64 * 1024;
+/// A single reported command is stored in the history database and shown in the
+/// UI; cap it so a hostile or broken shell integration cannot insert megabytes.
+const MAX_OSC133_COMMAND: usize = 8 * 1024;
 
 static HINT_URL_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
 static HINT_PATH_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
@@ -2253,7 +2256,8 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 .borrow_mut()
                 .push((row, "cmd_start".into(), 0));
             *self.imp().bell_notify_cmd_running.borrow_mut() = true;
-            let command_text = rest.trim().to_string();
+            let command_text =
+                crate::headless::text::truncate_chars(rest.trim(), MAX_OSC133_COMMAND);
             self.set_remote_command(&command_text, true);
             *self.imp().osc133_last_history_id.borrow_mut() = None;
             {

@@ -193,52 +193,91 @@ from the AUR package, `yay -Syu` updates it instead.
 
 ## Command Line
 
+<!-- BEGIN GENERATED HELP -->
 ```text
-oxterm [DIRECTORY] [OPTIONS] [-e CMD...]
+Usage: oxterm [DIRECTORY] [OPTIONS] [-e CMD...]
 
-  -w, --working-directory DIR  Working directory for the new terminal
-  -T, --title TITLE            Set a fixed window title (apps cannot override it)
-  -g, --geometry COLSxROWS     Initial size in character cells (e.g. 120x40)
-  -F, --fullscreen             Start in fullscreen mode
-  -m, --maximize               Start maximized
-      --class CLASS            Set the WM_CLASS class part (window manager rules)
-      --name NAME             Set the WM_CLASS instance name
-  -p, --profile NAME           Start with a saved profile (session only)
-      --config FILE            Use an alternative settings file
-  -o, --option KEY=VALUE       Override a setting for this session (repeatable)
-      --font FAMILY           Override the font family for this session
-      --font-size N           Override the font size for this session
-      --new-window             Open a new window
-      --no-restore             Do not restore the last session
-      --hold                   Keep the terminal open after the command exits
-  -e, --execute CMD...         Run a command instead of the configured shell
-      --list                   List active Oxterm terminals
-      --info SESSION_ID        Show one active terminal
-      --broker SOCKET ID       Run the persistent PTY broker (internal)
-      --                       Treat the next argument as the directory
-  -V, --version                Show the Oxterm version
-  -h, --help                   Show this help
+Options:
+  -w, --working-directory DIR   Working directory for the new terminal
+      --new-window              Open a new window instead of reusing a running instance
+      --no-restore              Do not restore the last session
+  -T, --title TITLE             Set a fixed window title (apps cannot override it)
+  -g, --geometry COLSxROWS      Initial size in character cells (e.g. 120x40)
+  -F, --fullscreen              Start in fullscreen mode
+  -m, --maximize                Start maximized
+      --class CLASS             Set the WM_CLASS class part (window manager rules)
+      --name NAME               Set the WM_CLASS instance name
+  -p, --profile NAME            Start with a saved profile (session only)
+      --config FILE             Use an alternative settings file
+  -o, --option KEY=VALUE        Override a setting for this session (repeatable)
+      --font FAMILY             Override the font family for this session
+      --font-size N             Override the font size for this session
+      --hold                    Keep the terminal open after the command exits
+  -e, --execute CMD...          Run a command instead of the configured shell
+  -V, --version                 Show the Oxterm version
+  -h, --help                    Show this help
+      --                        Treat the next argument as the directory
 
-Remote sessions (SESSION_ID is the first column printed by --list):
-  -a, --attach [SESSION_ID]    Share a live session in this terminal
-  -M, --move [SESSION_ID]      Take a live session over in this terminal
-      --detach SESSION_ID      Disconnect every remote client of a session
+Remote sessions:
+      --list                    List active Oxterm terminals (first column is the session ID)
+      --info SESSION_ID         Show one active terminal
+  -a, --attach [SESSION_ID]     Share a live session in this terminal
+  -M, --move [SESSION_ID]       Take a live session over in this terminal
+      --detach SESSION_ID       Disconnect every remote client of a session
+      --broker SOCKET ID        Run the persistent PTY broker (internal)
 
-  These headless commands act on a running Oxterm terminal on the same host and
-  open no window, so they are safe to use over SSH. Without a SESSION_ID, -a and
-  -M use the only session or show a list to choose from.
+Inspection (no window is opened):
+      --show-config             Print the effective settings as JSON and exit
+      --default                 With --show-config, print the built-in defaults
+      --validate-config [FILE]  Validate a settings file and exit
+      --list-settings           List every setting with its type and default
+      --list-themes             List the built-in color schemes
+      --list-keybinds           List the keyboard shortcuts
+      --list-actions            List the scriptable control actions
+      --diagnostics             Print environment, paths and limits for bug reports
 
-  attach  Adds this terminal as another view of the session, repainting its
-          current screen. The shell keeps running and its original window stays
-          live; every view shares the same input and output.
+Scriptable control (acts on a running Oxterm, opens no window):
+  new [--cwd DIR] [--title TITLE] [-- CMD...]                          Open a tab, print its pane id
+  split [--pane ID] [--vertical|--horizontal] [--cwd DIR] [-- CMD...]  Split a single-pane window
+  send [--pane ID] [--enter] TEXT...|-                                 Type into a pane
+  capture [--pane ID] [--scrollback N|--all]                           Print a pane's text
+  wait [--pane ID] [--timeout SECONDS]                                 Wait for the next command to finish
 
-  move    Like attach but takes control: it disconnects every other remote client
-          and switches off the original window's view, so the session is shown
-          only here. In that window, Ctrl+B then s or w brings the view back.
+  These headless commands act on a running Oxterm terminal on the same
+  host and open no window, so they are safe to use over SSH. Without a
+  SESSION_ID, -a and -M use the only session or show a list to choose from.
 
-  detach  Releases every remote client (attach or move) without stopping the
-          shell, leaving the original window as the only view again.
+  attach  Adds this terminal as another view of the session, repainting
+          its current screen. The shell keeps running and its original
+          window stays live; every view shares the same input and output.
+  move    Like attach but takes control: it disconnects every other remote
+          client and switches off the original window's view, so the
+          session is shown only here. In that window, Ctrl+B then s or w
+          brings the view back.
+  detach  Releases every remote client (attach or move) without stopping
+          the shell, leaving the original window as the only view again.
 ```
+<!-- END GENERATED HELP -->
+
+### Inspecting the configuration
+
+The inspection commands open no window, need no display, and never modify the
+settings file, so they are safe in scripts and over SSH:
+
+```text
+oxterm --show-config              # effective settings as JSON
+oxterm --show-config --default    # built-in defaults only
+oxterm --validate-config [FILE]   # check a file and report invalid keys
+oxterm --list-settings            # every key, type, default and description
+oxterm --list-themes              # color schemes and their fg/bg colors
+oxterm --list-keybinds            # keyboard shortcuts
+oxterm --list-actions             # scriptable control actions
+oxterm --diagnostics              # versions, paths, permissions and limits
+```
+
+`-o KEY=VALUE` overrides are reflected by `--show-config` but are never written
+to disk. The complete settings reference is generated from the same table as
+these commands: [docs/settings.md](docs/settings.md).
 
 ### Scriptable control
 

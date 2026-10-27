@@ -16,11 +16,30 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libvte-2.91-dev xvfb
       - run: cargo fmt --check
       - run: cargo test --all-targets --locked
+      - name: Check generated documentation
+        run: cargo run --locked --bin oxterm-docgen -- --check
       - name: Run GUI tests
         env:
           OXTERM_GUI_TESTS: "1"
         run: xvfb-run -a cargo test --locked --test gui_lifecycle --test control_api
       - run: cargo build --release --locked
+
+  bench:
+    name: Performance guard rails
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install GTK/VTE development packages and Xvfb
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgtk-3-dev libvte-2.91-dev xvfb
+      - name: Build release binaries
+        run: cargo build --release --locked --bins
+      - name: Core micro-benchmarks
+        run: cargo run --release --locked --example bench-core -- --check
+      - name: Startup and tab benchmarks
+        env:
+          BENCH_TOLERANCE: "6"
+        run: xvfb-run -a ./scripts/bench-startup.sh --check
 
   vte-0-70:
     name: Build against VTE 0.70 (Debian 12)
