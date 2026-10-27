@@ -319,9 +319,19 @@ fn control_api_drives_tabs_panes_and_commands() {
     // split only works while the window still has a single pane.
     let split_pane = cli_stdout(&run_cli(
         fixture.home.path(),
-        &["split", "--pane", &pane, "--vertical"],
+        &["split", "--pane", &pane, "--vertical", "--title", "monitor"],
     ));
     assert_ne!(split_pane, pane);
+    // The requested title must stick: the shell's OSC title updates and the
+    // numbered default must not overwrite it.
+    let listing = cli_stdout(&run_cli(fixture.home.path(), &["--list"]));
+    let row = listing
+        .lines()
+        .find(|line| line.starts_with(&format!("{split_pane}\t")));
+    assert!(
+        row.is_some_and(|row| row.contains("\tmonitor\t")),
+        "split title missing from listing: {listing}"
+    );
     let again = run_cli(fixture.home.path(), &["split", "--pane", &pane]);
     assert_eq!(again.status.code(), Some(1));
     assert!(

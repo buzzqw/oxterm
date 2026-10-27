@@ -3117,7 +3117,7 @@ impl MainWindow {
             paned.set_orientation(gtk::Orientation::Horizontal);
             if nb2.n_pages() == 0 && create_tab {
                 nb2.show();
-                created = Some(self.add_new_tab(cwd, Some(&nb2), None, title, command));
+                created = Some(self.add_new_tab(cwd, Some(&nb2), title, title, command));
             } else {
                 nb2.show();
             }
@@ -3137,7 +3137,7 @@ impl MainWindow {
             paned.set_orientation(gtk::Orientation::Vertical);
             if nb2.n_pages() == 0 && create_tab {
                 nb2.show();
-                created = Some(self.add_new_tab(cwd, Some(&nb2), None, title, command));
+                created = Some(self.add_new_tab(cwd, Some(&nb2), title, title, command));
             } else {
                 nb2.show();
             }
