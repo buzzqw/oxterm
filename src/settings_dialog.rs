@@ -76,11 +76,18 @@ struct DialogState {
     spin_pad_h: gtk::SpinButton,
     spin_pad_v: gtk::SpinButton,
     combo_undercurl: gtk::ComboBoxText,
+    chk_auto_theme: gtk::CheckButton,
+    combo_light_theme: gtk::ComboBoxText,
+    combo_dark_theme: gtk::ComboBoxText,
     // Compatibility
     combo_backspace: gtk::ComboBoxText,
     combo_delete: gtk::ComboBoxText,
     combo_encoding: gtk::ComboBoxText,
     chk_osc133: gtk::CheckButton,
+    chk_bold_is_bright: gtk::CheckButton,
+    chk_sixel: gtk::CheckButton,
+    chk_smooth_scroll: gtk::CheckButton,
+    entry_word_chars: gtk::Entry,
     // Notes
     entry_notes_dir: gtk::Entry,
     entry_notes_file: gtk::Entry,
@@ -201,10 +208,17 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
         spin_pad_h: appearance.15,
         spin_pad_v: appearance.16,
         combo_undercurl: appearance.17,
+        chk_auto_theme: appearance.18,
+        combo_light_theme: appearance.19,
+        combo_dark_theme: appearance.20,
         combo_backspace: compat.0,
         combo_delete: compat.1,
         combo_encoding: compat.2,
         chk_osc133: compat.3,
+        chk_bold_is_bright: compat.4,
+        chk_sixel: compat.5,
+        chk_smooth_scroll: compat.6,
+        entry_word_chars: compat.7,
         entry_notes_dir: notes.0,
         entry_notes_file: notes.1,
         entry_editor: notes.2,
@@ -233,17 +247,11 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
             let Some(name) = combo.active_text() else {
                 return;
             };
-            if let Some(scheme) = settings::color_schemes().get(name.as_str()) {
-                if let Some(fg) = scheme.get("foreground") {
-                    fg_btn.set_rgba(&hex_to_rgba(fg));
-                }
-                if let Some(bg) = scheme.get("background") {
-                    bg_btn.set_rgba(&hex_to_rgba(bg));
-                }
-            }
-            if let Some(pal) = settings::color_palettes().get(name.as_str()) {
+            if let Some(theme) = settings::color_schemes().get(name.as_str()) {
+                fg_btn.set_rgba(&hex_to_rgba(&theme.foreground));
+                bg_btn.set_rgba(&hex_to_rgba(&theme.background));
                 for (key, (btn, _)) in palette_btns.borrow().iter() {
-                    if let Some(hex) = pal.get(key.as_str()) {
+                    if let Some(hex) = theme.palette.get(key.as_str()) {
                         btn.set_rgba(&hex_to_rgba(hex));
                     }
                 }
@@ -379,6 +387,14 @@ pub fn show_diagnostics_dialog(parent: Option<&gtk::Window>, panes: usize) {
                 zoha_vte_sys::vte_get_micro_version()
             )
         }),
+        (
+            "themes".to_string(),
+            format!("{} installed", settings::color_schemes().len()),
+        ),
+        (
+            "themes-dir".to_string(),
+            crate::headless::themes::themes_dir().display().to_string(),
+        ),
         ("panes".to_string(), panes.to_string()),
         ("pid".to_string(), std::process::id().to_string()),
         (
@@ -750,6 +766,9 @@ fn build_appearance(
         gtk::SpinButton,
         gtk::SpinButton,
         gtk::ComboBoxText,
+        gtk::CheckButton,
+        gtk::ComboBoxText,
+        gtk::ComboBoxText,
     ),
 ) {
     let sw = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
@@ -793,9 +812,35 @@ fn build_appearance(
     let idx = scheme_names.iter().position(|n| *n == current).unwrap_or(0);
     combo_scheme.set_active(Some(idx as u32));
     combo_scheme.set_tooltip_text(Some(
-        "Choose a built-in color scheme. Customize individual colors below",
+        "Choose a theme. Drop Ghostty or iTerm2 theme files into ~/.config/oxterm/themes/ \
+         to add more",
     ));
     r = row(&grid, r, "Scheme:", &combo_scheme);
+
+    let chk_auto_theme = gtk::CheckButton::with_label("Follow system dark mode");
+    chk_auto_theme.set_active(s.get_bool("auto_theme"));
+    chk_auto_theme.set_tooltip_text(Some(
+        "Switch between the light and dark theme below when the desktop changes appearance",
+    ));
+    r = row(&grid, r, "Automatic theme:", &chk_auto_theme);
+
+    let theme_combo = |current: String| {
+        let combo = gtk::ComboBoxText::new();
+        let mut names = Vec::new();
+        for name in settings::color_schemes().keys() {
+            combo.append_text(name);
+            names.push(name.to_string());
+        }
+        let index = names.iter().position(|name| *name == current).unwrap_or(0);
+        combo.set_active(Some(index as u32));
+        combo
+    };
+    let combo_light_theme = theme_combo(s.get_str_default("theme_light", "Light"));
+    combo_light_theme.set_tooltip_text(Some("Theme used when the desktop is in light mode"));
+    r = row(&grid, r, "Light theme:", &combo_light_theme);
+    let combo_dark_theme = theme_combo(s.get_str_default("theme_dark", "Dark (Default)"));
+    combo_dark_theme.set_tooltip_text(Some("Theme used when the desktop is in dark mode"));
+    r = row(&grid, r, "Dark theme:", &combo_dark_theme);
 
     r += 1;
     r = section(&grid, r, "Individual Colors");
@@ -942,6 +987,9 @@ fn build_appearance(
             spin_pad_h,
             spin_pad_v,
             combo_undercurl,
+            chk_auto_theme,
+            combo_light_theme,
+            combo_dark_theme,
         ),
     )
 }
@@ -966,10 +1014,7 @@ fn build_colors(
     vbox.pack_start(&label, false, false, 4);
 
     let saved = s.get("custom_palette");
-    let scheme = s.get_str_default("color_scheme", "Dark (Default)");
-    let default_palette = settings::color_palettes()
-        .get(scheme.as_str())
-        .unwrap_or_else(|| settings::color_palettes().get("Dark (Default)").unwrap());
+    let default_palette = s.effective_theme();
 
     let labels_16: [[&str; 4]; 4] = [
         ["Black", "Red", "Green", "Yellow"],
@@ -996,9 +1041,21 @@ fn build_colors(
                     .get(key)
                     .and_then(|v| v.as_str())
                     .map(|x| x.to_string())
-                    .unwrap_or_else(|| default_palette.get(key).unwrap_or(&"#000000").to_string())
+                    .unwrap_or_else(|| {
+                        default_palette
+                            .palette
+                            .get(key)
+                            .map(String::as_str)
+                            .unwrap_or("#000000")
+                            .to_string()
+                    })
             } else {
-                default_palette.get(key).unwrap_or(&"#000000").to_string()
+                default_palette
+                    .palette
+                    .get(key)
+                    .map(String::as_str)
+                    .unwrap_or("#000000")
+                    .to_string()
             };
             let btn = make_color_button(&hex, name);
             btn.set_size_request(48, 22);
@@ -1027,27 +1084,17 @@ fn build_colors(
             ],
         );
         let combo = gtk::ComboBoxText::new();
-        let presets = [
-            "Dark (Default)",
-            "Light",
-            "Solarized Dark",
-            "Solarized Light",
-            "Monokai",
-            "Gruvbox Dark",
-            "Nord",
-            "Matrix",
-        ];
-        for p in presets {
-            combo.append_text(p);
+        for name in settings::color_palettes().keys() {
+            combo.append_text(name);
         }
         combo.set_active(Some(0));
         dialog.content_area().pack_start(&combo, true, true, 8);
         dialog.show_all();
         if dialog.run() == gtk::ResponseType::Ok {
             let name = combo.active_text().unwrap_or_default();
-            if let Some(pal) = settings::color_palettes().get(name.as_str()) {
+            if let Some(theme) = settings::color_palettes().get(name.as_str()) {
                 for (key, (btn, _)) in &btns {
-                    if let Some(hex) = pal.get(key.as_str()) {
+                    if let Some(hex) = theme.palette.get(key.as_str()) {
                         btn.set_rgba(&hex_to_rgba(hex));
                     }
                 }
@@ -1056,7 +1103,7 @@ fn build_colors(
         dialog.close();
     });
     load_btn.set_tooltip_text(Some(
-        "Load a built-in color palette preset (Dark, Light, Solarized, Gruvbox, Monokai, Nord)",
+        "Load a complete palette from any installed or imported theme",
     ));
     let save_btn = gtk::Button::with_label("Save As Custom");
     let btns = palette_btns.clone();
@@ -1070,9 +1117,9 @@ fn build_colors(
     let reset_btn = gtk::Button::with_label("Reset to Default");
     let btns2 = palette_btns.clone();
     reset_btn.connect_clicked(move |_| {
-        if let Some(pal) = settings::color_palettes().get("Dark (Default)") {
+        if let Some(theme) = settings::color_palettes().get("Dark (Default)") {
             for (key, (btn, _)) in &btns2 {
-                if let Some(hex) = pal.get(key.as_str()) {
+                if let Some(hex) = theme.palette.get(key.as_str()) {
                     btn.set_rgba(&hex_to_rgba(hex));
                 }
             }
@@ -1096,6 +1143,10 @@ fn build_compatibility(
         gtk::ComboBoxText,
         gtk::ComboBoxText,
         gtk::CheckButton,
+        gtk::CheckButton,
+        gtk::CheckButton,
+        gtk::CheckButton,
+        gtk::Entry,
     ),
 ) {
     let grid = gtk::Grid::new();
@@ -1182,6 +1233,35 @@ fn build_compatibility(
     r = row(&grid, r, "Default encoding:", &combo_encoding);
 
     r += 1;
+    r = section(&grid, r, "Rendering");
+    let chk_bold_is_bright = gtk::CheckButton::with_label("Bold text uses bright colors");
+    chk_bold_is_bright.set_active(s.get_bool("bold_is_bright"));
+    chk_bold_is_bright.set_tooltip_text(Some(
+        "Match xterm and most Linux terminals: bold text picks the bright palette color",
+    ));
+    r = row(&grid, r, "Bold is bright:", &chk_bold_is_bright);
+
+    let chk_sixel = gtk::CheckButton::with_label("Allow Sixel images");
+    chk_sixel.set_active(s.get_bool("sixel"));
+    chk_sixel.set_tooltip_text(Some(
+        "Let applications draw inline images with Sixel (lsix, chafa, img2sixel). \
+         Off by default because images consume memory",
+    ));
+    r = row(&grid, r, "Sixel images:", &chk_sixel);
+
+    let chk_smooth_scroll = gtk::CheckButton::with_label("Smooth scrolling");
+    chk_smooth_scroll.set_active(s.get_bool("smooth_scroll"));
+    chk_smooth_scroll.set_tooltip_text(Some("Scroll by pixels instead of whole lines"));
+    r = row(&grid, r, "Smooth scroll:", &chk_smooth_scroll);
+
+    let entry_word_chars = gtk::Entry::new();
+    entry_word_chars.set_text(&s.get_str_default("word_char_exceptions", "-./?%&#:_=+@~"));
+    entry_word_chars.set_tooltip_text(Some(
+        "Characters treated as part of a word by double-click selection (e.g. to select a path)",
+    ));
+    r = row(&grid, r, "Word characters:", &entry_word_chars);
+
+    r += 1;
     r = section(&grid, r, "Integration");
     let chk_osc133 = gtk::CheckButton::with_label("Enable shell integration (OSC 133)");
     chk_osc133.set_active(s.get_bool("osc133"));
@@ -1199,17 +1279,34 @@ fn build_compatibility(
     let dl = combo_delete.clone();
     let enc = combo_encoding.clone();
     let osc = chk_osc133.clone();
+    let bold_bright = chk_bold_is_bright.clone();
+    let sixel = chk_sixel.clone();
+    let smooth = chk_smooth_scroll.clone();
+    let word_chars = entry_word_chars.clone();
     reset_btn.connect_clicked(move |_| {
         bs.set_active(Some(1));
         dl.set_active(Some(1));
         enc.set_active(Some(0));
         osc.set_active(false);
+        bold_bright.set_active(false);
+        sixel.set_active(false);
+        smooth.set_active(false);
+        word_chars.set_text("-./?%&#:_=+@~");
     });
     grid.attach(&reset_btn, 0, r, 2, 1);
 
     (
         grid,
-        (combo_backspace, combo_delete, combo_encoding, chk_osc133),
+        (
+            combo_backspace,
+            combo_delete,
+            combo_encoding,
+            chk_osc133,
+            chk_bold_is_bright,
+            chk_sixel,
+            chk_smooth_scroll,
+            entry_word_chars,
+        ),
     )
 }
 
@@ -1360,6 +1457,13 @@ impl DialogState {
         if let Some(name) = self.combo_scheme.active_text() {
             s.set_str("color_scheme", &name);
         }
+        s.set_bool("auto_theme", self.chk_auto_theme.is_active());
+        if let Some(name) = self.combo_light_theme.active_text() {
+            s.set_str("theme_light", &name);
+        }
+        if let Some(name) = self.combo_dark_theme.active_text() {
+            s.set_str("theme_dark", &name);
+        }
 
         let foreground = if self.fg_override.get() {
             rgba_to_hex(&self.fg_color_btn.rgba())
@@ -1412,6 +1516,7 @@ impl DialogState {
             .get(scheme_name.as_str())
             .unwrap_or_else(|| settings::color_palettes().get("Dark (Default)").unwrap());
         let preset_json: BTreeMap<String, serde_json::Value> = preset
+            .palette
             .iter()
             .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
             .collect();
@@ -1448,6 +1553,10 @@ impl DialogState {
 
         let osc133_now_enabled = self.chk_osc133.is_active();
         s.set_bool("osc133", osc133_now_enabled);
+        s.set_bool("bold_is_bright", self.chk_bold_is_bright.is_active());
+        s.set_bool("sixel", self.chk_sixel.is_active());
+        s.set_bool("smooth_scroll", self.chk_smooth_scroll.is_active());
+        s.set_str("word_char_exceptions", self.entry_word_chars.text().trim());
 
         s.set_str("notes_dir", self.entry_notes_dir.text().trim());
         s.set_str("notes_file", self.entry_notes_file.text().trim());

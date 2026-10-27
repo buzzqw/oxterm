@@ -91,6 +91,15 @@ impl App {
         notes::migrate_legacy_notes_dir();
 
         app.connect_startup(|_app| {
+            // Follow the desktop's light/dark preference. Emitting the settings
+            // signal makes every terminal recompute its theme when the desktop
+            // switches appearance at sunset (or from the control centre).
+            if let Some(gtk_settings) = gtk::Settings::default() {
+                gtk_settings.connect_gtk_application_prefer_dark_theme_notify(|_| {
+                    settings().notify_changed();
+                });
+            }
+
             let css_provider = gtk::CssProvider::new();
             let css = b"
                 vte-terminal { padding-left: 8px; padding-right: 4px; }
@@ -317,6 +326,8 @@ fn run_inspection(opts: &cli::CliOptions, inspection: cli::Inspection) -> i32 {
         }
         cli::Inspection::ListActions => list_actions(),
         cli::Inspection::Diagnostics => diagnostics_report(opts),
+        cli::Inspection::EditConfig => edit_config(opts),
+        cli::Inspection::ListFonts => list_fonts(),
     }
 }
 
@@ -439,14 +450,14 @@ fn list_settings() -> i32 {
 }
 
 fn list_themes() -> i32 {
-    for (name, scheme) in settings::color_schemes() {
-        println!(
-            "{:<20} {:<9} {}",
-            name,
-            scheme.get("foreground").unwrap_or(&""),
-            scheme.get("background").unwrap_or(&"")
-        );
+    println!("{:<26} {:<9} {}", "THEME", "FOREGROUND", "BACKGROUND");
+    for (name, theme) in settings::color_schemes() {
+        println!("{:<26} {:<9} {}", name, theme.foreground, theme.background);
     }
+    println!(
+        "\nDrop Ghostty or iTerm2 theme files in {} to add your own.",
+        oxterm::headless::themes::themes_dir().display()
+    );
     0
 }
 
@@ -467,6 +478,110 @@ fn list_actions() -> i32 {
         println!("  {:<width$}  {}", option.names(), option.description);
     }
     println!("\nRun `oxterm <action> --help` for the details of a control action.");
+    0
+}
+
+fn edit_config(opts: &cli::CliOptions) -> i32 {
+    let path = inspection_config_path(opts);
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+            let _ = std::fs::set_permissions(
+                parent,
+                std::os::unix::fs::PermissionsExt::from_mode(0o700),
+            );
+        }
+        let defaults =
+            serde_json::to_string_pretty(&spec::defaults()).unwrap_or_else(|_| "{}\n".to_string());
+        if let Err(error) = std::fs::write(&path, defaults + "\n") {
+            eprintln!("{}: {}: {}", window::APP_NAME, path.display(), error);
+            return 2;
+        }
+        let _ =
+            std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600));
+    }
+    let editor = configured_editor(&path);
+    let parts = shell_words::split(&editor).unwrap_or_default();
+    let Some((program, arguments)) = parts.split_first() else {
+        eprintln!("{}: editor command is empty", window::APP_NAME);
+        return 2;
+    };
+    match std::process::Command::new(program)
+        .args(arguments)
+        .arg(&path)
+        .status()
+    {
+        Ok(status) => {
+            if status.success() {
+                0
+            } else {
+                status.code().unwrap_or(1)
+            }
+        }
+        Err(error) => {
+            eprintln!(
+                "{}: cannot start editor {:?}: {}",
+                window::APP_NAME,
+                program,
+                error
+            );
+            2
+        }
+    }
+}
+
+/// `editor_command` from the settings file, then `$EDITOR`, then a safe default.
+fn configured_editor(path: &std::path::Path) -> String {
+    if let Ok(text) = std::fs::read_to_string(path) {
+        if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&text) {
+            if let Some(command) = map.get("editor_command").and_then(|value| value.as_str()) {
+                if !command.trim().is_empty() {
+                    return command.to_string();
+                }
+            }
+        }
+    }
+    std::env::var("EDITOR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "nano".to_string())
+}
+
+fn list_fonts() -> i32 {
+    let output = std::process::Command::new("fc-list")
+        .args([":", "family"])
+        .output();
+    let output = match output {
+        Ok(output) if output.status.success() => output,
+        Ok(output) => {
+            eprintln!(
+                "{}: fc-list failed: {}",
+                window::APP_NAME,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+            return 1;
+        }
+        Err(error) => {
+            eprintln!(
+                "{}: cannot run fc-list (is fontconfig installed?): {}",
+                window::APP_NAME,
+                error
+            );
+            return 1;
+        }
+    };
+    let mut families = std::collections::BTreeSet::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        for family in line.split(',') {
+            let family = family.trim();
+            if !family.is_empty() {
+                families.insert(family.to_string());
+            }
+        }
+    }
+    for family in families {
+        println!("{}", family);
+    }
     0
 }
 
@@ -493,6 +608,14 @@ fn diagnostics_report(opts: &cli::CliOptions) -> i32 {
     if let Some(config) = &opts.config {
         extra.push(("config-override".to_string(), config.clone()));
     }
+    extra.push((
+        "themes".to_string(),
+        format!("{} installed", settings::color_schemes().len()),
+    ));
+    extra.push((
+        "themes-dir".to_string(),
+        oxterm::headless::themes::themes_dir().display().to_string(),
+    ));
     let report = diagnostics::Report {
         version: window::VERSION,
         build: if cfg!(debug_assertions) {

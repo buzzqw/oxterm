@@ -13,4 +13,5 @@ pub mod framing;
 pub mod settings;
 pub mod spec;
 pub mod text;
+pub mod themes;
 pub mod vi;

@@ -92,6 +92,14 @@ fn build_info_bar() -> (gtk::InfoBar, gtk::Label) {
 
 /// Show a transient message in a window's info bar, hiding it after a few
 /// seconds. No-op when the window has no info bar.
+fn paned_size(paned: &gtk::Paned) -> i32 {
+    if paned.orientation() == gtk::Orientation::Horizontal {
+        paned.allocated_width()
+    } else {
+        paned.allocated_height()
+    }
+}
+
 fn show_note_feedback(
     bar: &RefCell<Option<gtk::InfoBar>>,
     label: &RefCell<Option<gtk::Label>>,
@@ -126,6 +134,8 @@ pub trait TerminalWindow {
     fn reset_terminal(&self);
     fn reset_and_clear(&self);
     fn split_signal(&self, mode: &str);
+    fn toggle_split_zoom_signal(&self) {}
+    fn equalize_splits_signal(&self) {}
     fn focus_other_pane_signal(&self);
     fn prev_tab_signal(&self);
     fn next_tab_signal(&self);
@@ -1481,6 +1491,10 @@ mod main_imp {
         pub remote_stats_pending: RefCell<bool>,
         pub remote_stats_generation: RefCell<u64>,
         pub split_mode: RefCell<String>,
+        /// True while one half of a split is zoomed to fill the window.
+        pub split_zoomed: Cell<bool>,
+        /// Position of the splitter as a fraction of the window before zooming.
+        pub split_zoom_ratio: Cell<f64>,
         /// True while `move_tab_between` is detaching a page from its old
         /// notebook. The page is appended to the destination only afterwards,
         /// so `page-removed` must not mistake the temporary empty state for
@@ -1853,6 +1867,52 @@ impl MainWindow {
     fn fix_paned_position(&self) {
         if let Some(paned) = self.imp().paned.borrow().clone() {
             paned.set_position(99999);
+        }
+    }
+
+    /// Toggle a tmux-style split zoom: the focused half fills the window, and
+    /// toggling again restores the previous splitter position.
+    fn toggle_split_zoom(&self) {
+        if *self.imp().split_mode.borrow() == "single" {
+            return;
+        }
+        let Some(paned) = self.imp().paned.borrow().clone() else {
+            return;
+        };
+        if self.imp().split_zoomed.get() {
+            let size = paned_size(&paned);
+            let ratio = self.imp().split_zoom_ratio.get().clamp(0.15, 0.85);
+            paned.set_position((ratio * size as f64).round() as i32);
+            self.imp().split_zoomed.set(false);
+            return;
+        }
+        let size = paned_size(&paned);
+        if size <= 2 {
+            return;
+        }
+        let position = paned.position().clamp(1, size - 1);
+        self.imp()
+            .split_zoom_ratio
+            .set(position as f64 / size as f64);
+        let first = self.imp().notebook.borrow().clone().unwrap();
+        let zoom_first = self.focused_notebook() == first;
+        // A huge position is clamped by GtkPaned and stays clamped when the
+        // window is resized, unlike an absolute pixel value.
+        paned.set_position(if zoom_first { i32::MAX / 4 } else { 0 });
+        self.imp().split_zoomed.set(true);
+    }
+
+    fn equalize_splits(&self) {
+        if *self.imp().split_mode.borrow() == "single" {
+            return;
+        }
+        let Some(paned) = self.imp().paned.borrow().clone() else {
+            return;
+        };
+        self.imp().split_zoomed.set(false);
+        let size = paned_size(&paned);
+        if size > 0 {
+            paned.set_position(size / 2);
         }
     }
 
@@ -2565,6 +2625,31 @@ impl MainWindow {
         *self.imp().split_v_act.borrow_mut() = Some(split_v);
         *self.imp().split_h_act.borrow_mut() = Some(split_h);
         view_menu.append(&split_item);
+
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &view_menu,
+            "Zoom Split Pane",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.toggle_split_zoom_signal();
+                }
+            }),
+            None,
+            Some("Let the focused pane fill the window; repeat to restore the split"),
+        );
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &view_menu,
+            "Equalize Splits",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.equalize_splits_signal();
+                }
+            }),
+            None,
+            Some("Reset the splitter to the middle"),
+        );
         view_menu.append(&gtk::SeparatorMenuItem::new());
 
         let weak = crate::SendWeak::new(self);
@@ -3124,6 +3209,7 @@ impl MainWindow {
         }
         let _split_guard = SplitGuard(&self.imp().splitting);
         *self.imp().splitting.borrow_mut() = true;
+        self.imp().split_zoomed.set(false);
         *self.imp().split_mode.borrow_mut() = mode.to_string();
         let nb = self.imp().notebook.borrow().clone().unwrap();
         let nb2 = self.imp().notebook2.borrow().clone().unwrap();
@@ -3250,6 +3336,9 @@ impl MainWindow {
     fn focus_other_pane(&self) {
         if *self.imp().split_mode.borrow() == "single" {
             return;
+        }
+        if self.imp().split_zoomed.get() {
+            self.toggle_split_zoom();
         }
         let nb = self.imp().notebook.borrow().clone().unwrap();
         let nb2 = self.imp().notebook2.borrow().clone().unwrap();
@@ -4504,6 +4593,14 @@ impl MainWindow {
         }
     }
 
+    pub fn toggle_split_zoom_signal(&self) {
+        self.toggle_split_zoom();
+    }
+
+    pub fn equalize_splits_signal(&self) {
+        self.equalize_splits();
+    }
+
     pub fn prev_tab_signal(&self) {
         self.prev_tab();
     }
@@ -4864,6 +4961,12 @@ impl TerminalWindow for MainWindow {
     fn focus_other_pane_signal(&self) {
         MainWindow::focus_other_pane_signal(self);
     }
+    fn toggle_split_zoom_signal(&self) {
+        MainWindow::toggle_split_zoom_signal(self);
+    }
+    fn equalize_splits_signal(&self) {
+        MainWindow::equalize_splits_signal(self);
+    }
     fn prev_tab_signal(&self) {
         MainWindow::prev_tab_signal(self);
     }
@@ -5056,6 +5159,8 @@ pub mod test_scenario {
             "detach-from-split" => detach_from_split(app, win),
             "detach-local-view" => detach_local_view(app, win),
             "new-window" => new_window(app, win),
+            "split-zoom" => split_zoom(win),
+            "theme-switch" => theme_switch(win),
             other => Err(format!("unknown test scenario: {other}")),
         }
     }
@@ -5100,6 +5205,110 @@ pub mod test_scenario {
             Some(title),
             Some(&command),
         ))
+    }
+
+    fn split_zoom(win: &MainWindow) -> Result<(), String> {
+        win.set_split("vertical", true);
+        let paned = win
+            .imp()
+            .paned
+            .borrow()
+            .clone()
+            .ok_or_else(|| "the split paned is missing".to_string())?;
+        let size = paned.allocated_width();
+        if size < 50 {
+            return Err(format!("window is too small for the split test: {size}px"));
+        }
+        if !win.imp().split_zoomed.get() {
+            // The new pane (right) has focus, so zooming must hide the left.
+            win.toggle_split_zoom_signal();
+        }
+        if !win.imp().split_zoomed.get() {
+            return Err("zoom did not engage".to_string());
+        }
+        // The position may still be the requested (huge) value until the next
+        // allocation; 0 and >= size both mean one pane is fully hidden.
+        let zoomed_position = paned.position();
+        if zoomed_position > 1 && zoomed_position < size {
+            return Err(format!(
+                "zoomed pane did not fill the window: position {zoomed_position}/{size}"
+            ));
+        }
+        win.toggle_split_zoom_signal();
+        if win.imp().split_zoomed.get() {
+            return Err("zoom did not disengage".to_string());
+        }
+        let restored = paned.position();
+        if restored <= 0 || restored >= size {
+            return Err(format!("splitter was not restored: {restored}/{size}"));
+        }
+        win.equalize_splits_signal();
+        let middle = size / 2;
+        if (paned.position() - middle).abs() > 4 {
+            return Err(format!(
+                "equalize left position {} instead of {middle}",
+                paned.position()
+            ));
+        }
+        win.set_split("single", false);
+        Ok(())
+    }
+
+    fn theme_switch(win: &MainWindow) -> Result<(), String> {
+        let term = win
+            .current_terminal()
+            .ok_or_else(|| "no current terminal".to_string())?;
+        let settings = settings();
+        let auto_before = settings.get_bool("auto_theme");
+        let light_before = settings.get_str("theme_light");
+        let dark_before = settings.get_str("theme_dark");
+        let gtk_settings =
+            gtk::Settings::default().ok_or_else(|| "GTK settings are unavailable".to_string())?;
+        let dark_before_gtk = gtk_settings.is_gtk_application_prefer_dark_theme();
+
+        settings.set_bool("auto_theme", true);
+        settings.set_str("theme_light", "Light");
+        settings.set_str("theme_dark", "Dracula");
+
+        gtk_settings.set_gtk_application_prefer_dark_theme(true);
+        settings.notify_changed();
+        let dark_bg = term.vte().color_background_for_draw();
+        // Dracula background is #282a36.
+        if (dark_bg.red() - 0.157).abs() > 0.03 || (dark_bg.blue() - 0.212).abs() > 0.03 {
+            settings.set_bool("auto_theme", auto_before);
+            settings.set_str("theme_light", &light_before);
+            settings.set_str("theme_dark", &dark_before);
+            gtk_settings.set_gtk_application_prefer_dark_theme(dark_before_gtk);
+            return Err(format!(
+                "dark theme not applied: {:.3},{:.3},{:.3}",
+                dark_bg.red(),
+                dark_bg.green(),
+                dark_bg.blue()
+            ));
+        }
+
+        gtk_settings.set_gtk_application_prefer_dark_theme(false);
+        settings.notify_changed();
+        let light_bg = term.vte().color_background_for_draw();
+        if light_bg.red() < 0.9 || light_bg.blue() < 0.9 {
+            settings.set_bool("auto_theme", auto_before);
+            settings.set_str("theme_light", &light_before);
+            settings.set_str("theme_dark", &dark_before);
+            gtk_settings.set_gtk_application_prefer_dark_theme(dark_before_gtk);
+            return Err(format!(
+                "light theme not applied: {:.3},{:.3},{:.3}",
+                light_bg.red(),
+                light_bg.green(),
+                light_bg.blue()
+            ));
+        }
+
+        settings.set_bool("auto_theme", auto_before);
+        settings.set_str("theme_light", &light_before);
+        settings.set_str("theme_dark", &dark_before);
+        gtk_settings.set_gtk_application_prefer_dark_theme(dark_before_gtk);
+        settings.notify_changed();
+        Ok(())
     }
 
     fn detach_last_tab(app: &gtk::Application, win: &MainWindow) -> Result<(), String> {

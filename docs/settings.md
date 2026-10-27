@@ -17,6 +17,9 @@ never written back to disk.
 | `font_name` | string | `Monospace` | Font family used by new terminals. |
 | `font_size` | int (4..128) | `12` | Font size in points. |
 | `color_scheme` | string | `Dark (Default)` | Built-in color scheme; see --list-themes. |
+| `auto_theme` | bool | `false` | Follow the desktop's light/dark preference, using theme_light or theme_dark. |
+| `theme_light` | string | `Light` | Theme used when the desktop prefers a light appearance. |
+| `theme_dark` | string | `Dark (Default)` | Theme used when the desktop prefers a dark appearance. |
 | `foreground_color` | color or empty | `""` | Foreground override; empty uses the color scheme. |
 | `background_color` | color or empty | `""` | Background override; empty uses the color scheme. |
 | `cursor_color` | color (#rrggbb) | `#ffffff` | Cursor color. |
@@ -62,6 +65,10 @@ never written back to disk.
 | `scroll_on_output` | bool | `true` | Scroll to the bottom when a command produces output. |
 | `scroll_on_keystroke` | bool | `true` | Scroll to the bottom when typing. |
 | `allow_bold_text` | bool | `true` | Render bold text with a bold font. |
+| `bold_is_bright` | bool | `false` | Render bold text with the bright variant of its color. |
+| `sixel` | bool | `false` | Allow applications to draw inline Sixel images. |
+| `smooth_scroll` | bool | `false` | Scroll by pixels instead of whole lines. |
+| `word_char_exceptions` | string | `-./?%&#:_=+@~` | Extra characters treated as part of a word for double-click selection. |
 | `terminal_columns` | int (40..300) | `80` | Initial width in character cells. |
 | `terminal_rows` | int (10..120) | `24` | Initial height in character cells. |
 | `window_padding_horizontal` | int (0..100) | `2` | Horizontal padding around the terminal, in pixels. |

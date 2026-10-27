@@ -23,6 +23,8 @@ const SCENARIOS: &[&str] = &[
     "detach-from-split",
     "detach-local-view",
     "new-window",
+    "split-zoom",
+    "theme-switch",
 ];
 
 struct TempHome(PathBuf);

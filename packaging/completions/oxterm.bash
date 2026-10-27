@@ -63,7 +63,7 @@ _oxterm() {
     esac
 
     # BEGIN GENERATED OPTIONS
-    opts="-w --working-directory --new-window --no-restore -T --title -g --geometry -F --fullscreen -m --maximize --class --name -p --profile --config -o --option --font --font-size --hold -e --execute --list --info -a --attach -M --move --detach --broker --show-config --default --validate-config --list-settings --list-themes --list-keybinds --list-actions --diagnostics -V --version -h --help --"
+    opts="-w --working-directory --new-window --no-restore -T --title -g --geometry -F --fullscreen -m --maximize --class --name -p --profile --config -o --option --font --font-size --hold -e --execute --list --info -a --attach -M --move --detach --broker --show-config --default --validate-config --list-settings --list-themes --list-keybinds --list-actions --diagnostics --edit-config --list-fonts -V --version -h --help --"
     # END GENERATED OPTIONS
 
     # BEGIN GENERATED CASES

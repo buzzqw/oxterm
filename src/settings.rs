@@ -8,12 +8,13 @@ use std::sync::{Mutex, OnceLock};
 
 use glib::prelude::*;
 use glib::subclass::prelude::*;
+use gtk::prelude::*;
 use serde_json::{json, Map, Value};
 
 use crate::logging::LOGGER;
 use crate::persistence::{sync_parent_directory, write_private_temp};
 
-use crate::headless::{settings as headless_settings, spec};
+use crate::headless::{settings as headless_settings, spec, themes};
 
 pub fn config_dir() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
@@ -97,213 +98,23 @@ fn build_defaults() -> Value {
     spec::defaults()
 }
 
-pub type ColorMap = BTreeMap<&'static str, &'static str>;
-
-fn init_data() -> BTreeMap<&'static str, ColorMap> {
-    let dark: ColorMap = BTreeMap::from([
-        ("black", "#0a0a0a"),
-        ("red", "#cc0000"),
-        ("green", "#4e9a06"),
-        ("yellow", "#c4a000"),
-        ("blue", "#3465a4"),
-        ("magenta", "#75507b"),
-        ("cyan", "#06989a"),
-        ("white", "#d3d7cf"),
-        ("brightblack", "#555753"),
-        ("brightred", "#ef2929"),
-        ("brightgreen", "#8ae234"),
-        ("brightyellow", "#fce94f"),
-        ("brightblue", "#729fcf"),
-        ("brightmagenta", "#ad7fa8"),
-        ("brightcyan", "#34e2e2"),
-        ("brightwhite", "#eeeeec"),
-    ]);
-    let light: ColorMap = BTreeMap::from([
-        ("black", "#2e3436"),
-        ("red", "#cc0000"),
-        ("green", "#4e9a06"),
-        ("yellow", "#c4a000"),
-        ("blue", "#3465a4"),
-        ("magenta", "#75507b"),
-        ("cyan", "#06989a"),
-        ("white", "#d3d7cf"),
-        ("brightblack", "#555753"),
-        ("brightred", "#ef2929"),
-        ("brightgreen", "#8ae234"),
-        ("brightyellow", "#fce94f"),
-        ("brightblue", "#729fcf"),
-        ("brightmagenta", "#ad7fa8"),
-        ("brightcyan", "#34e2e2"),
-        ("brightwhite", "#eeeeec"),
-    ]);
-    let solarized_dark: ColorMap = BTreeMap::from([
-        ("black", "#002b36"),
-        ("red", "#dc322f"),
-        ("green", "#859900"),
-        ("yellow", "#b58900"),
-        ("blue", "#268bd2"),
-        ("magenta", "#d33682"),
-        ("cyan", "#2aa198"),
-        ("white", "#eee8d5"),
-        ("brightblack", "#073642"),
-        ("brightred", "#cb4b16"),
-        ("brightgreen", "#586e75"),
-        ("brightyellow", "#657b83"),
-        ("brightblue", "#839496"),
-        ("brightmagenta", "#6c71c4"),
-        ("brightcyan", "#93a1a1"),
-        ("brightwhite", "#fdf6e3"),
-    ]);
-    let solarized_light: ColorMap = BTreeMap::from([
-        ("black", "#073642"),
-        ("red", "#dc322f"),
-        ("green", "#859900"),
-        ("yellow", "#b58900"),
-        ("blue", "#268bd2"),
-        ("magenta", "#d33682"),
-        ("cyan", "#2aa198"),
-        ("white", "#eee8d5"),
-        ("brightblack", "#002b36"),
-        ("brightred", "#cb4b16"),
-        ("brightgreen", "#586e75"),
-        ("brightyellow", "#657b83"),
-        ("brightblue", "#839496"),
-        ("brightmagenta", "#6c71c4"),
-        ("brightcyan", "#93a1a1"),
-        ("brightwhite", "#fdf6e3"),
-    ]);
-    let gruvbox: ColorMap = BTreeMap::from([
-        ("black", "#282828"),
-        ("red", "#cc241d"),
-        ("green", "#98971a"),
-        ("yellow", "#d79921"),
-        ("blue", "#458588"),
-        ("magenta", "#b16286"),
-        ("cyan", "#689d6a"),
-        ("white", "#a89984"),
-        ("brightblack", "#928374"),
-        ("brightred", "#fb4934"),
-        ("brightgreen", "#b8bb26"),
-        ("brightyellow", "#fabd2f"),
-        ("brightblue", "#83a598"),
-        ("brightmagenta", "#d3869b"),
-        ("brightcyan", "#8ec07c"),
-        ("brightwhite", "#ebdbb2"),
-    ]);
-    let monokai: ColorMap = BTreeMap::from([
-        ("black", "#272822"),
-        ("red", "#f92672"),
-        ("green", "#a6e22e"),
-        ("yellow", "#f4bf75"),
-        ("blue", "#66d9ef"),
-        ("magenta", "#ae81ff"),
-        ("cyan", "#a1efe4"),
-        ("white", "#f8f8f2"),
-        ("brightblack", "#75715e"),
-        ("brightred", "#f92672"),
-        ("brightgreen", "#a6e22e"),
-        ("brightyellow", "#f4bf75"),
-        ("brightblue", "#66d9ef"),
-        ("brightmagenta", "#ae81ff"),
-        ("brightcyan", "#a1efe4"),
-        ("brightwhite", "#f9f8f5"),
-    ]);
-    let nord: ColorMap = BTreeMap::from([
-        ("black", "#3b4252"),
-        ("red", "#bf616a"),
-        ("green", "#a3be8c"),
-        ("yellow", "#ebcb8b"),
-        ("blue", "#81a1c1"),
-        ("magenta", "#b48ead"),
-        ("cyan", "#88c0d0"),
-        ("white", "#e5e9f0"),
-        ("brightblack", "#4c566a"),
-        ("brightred", "#bf616a"),
-        ("brightgreen", "#a3be8c"),
-        ("brightyellow", "#ebcb8b"),
-        ("brightblue", "#81a1c1"),
-        ("brightmagenta", "#b48ead"),
-        ("brightcyan", "#8fbcbb"),
-        ("brightwhite", "#eceff4"),
-    ]);
-    let matrix: ColorMap = BTreeMap::from([
-        ("black", "#0d0208"),
-        ("red", "#008f11"),
-        ("green", "#00ff41"),
-        ("yellow", "#00ff41"),
-        ("blue", "#008f11"),
-        ("magenta", "#00ff41"),
-        ("cyan", "#00ff41"),
-        ("white", "#00ff41"),
-        ("brightblack", "#003b00"),
-        ("brightred", "#00ff41"),
-        ("brightgreen", "#00ff41"),
-        ("brightyellow", "#00ff41"),
-        ("brightblue", "#00ff41"),
-        ("brightmagenta", "#00ff41"),
-        ("brightcyan", "#00ff41"),
-        ("brightwhite", "#00ff41"),
-    ]);
-    let mut all = BTreeMap::from([
-        ("Dark (Default)", dark),
-        ("Light", light),
-        ("Solarized Dark", solarized_dark),
-        ("Solarized Light", solarized_light),
-        ("Gruvbox Dark", gruvbox),
-        ("Monokai", monokai),
-        ("Nord", nord),
-        ("Matrix", matrix),
-    ]);
-    let schemes = [
-        ("Dark (Default)", "#d3d7cf", "#0a0a0a"),
-        ("Light", "#2e3436", "#ffffff"),
-        ("Solarized Dark", "#839496", "#002b36"),
-        ("Solarized Light", "#657b83", "#fdf6e3"),
-        ("Gruvbox Dark", "#ebdbb2", "#282828"),
-        ("Monokai", "#f8f8f2", "#272822"),
-        ("Nord", "#e5e9f0", "#3b4252"),
-        ("Matrix", "#00ff41", "#0d0208"),
-    ];
-    for (name, foreground, background) in schemes {
-        if let Some(palette) = all.get_mut(name) {
-            palette.insert("foreground", foreground);
-            palette.insert("background", background);
-        }
-    }
-    all
+/// All available themes (built-in plus files from `~/.config/oxterm/themes/`).
+pub fn color_schemes() -> &'static BTreeMap<String, themes::Theme> {
+    themes::all()
 }
 
-pub fn color_schemes() -> &'static BTreeMap<&'static str, ColorMap> {
-    static SCHEMES: OnceLock<BTreeMap<&'static str, ColorMap>> = OnceLock::new();
-    SCHEMES.get_or_init(|| {
-        let all = init_data();
-        all.into_iter()
-            .map(|(k, v)| {
-                (k, {
-                    v.into_iter()
-                        .filter(|(kk, _)| matches!(*kk, "foreground" | "background"))
-                        .collect()
-                })
-            })
-            .collect()
-    })
+/// Alias kept for the palette editor: a theme carries both foreground/background
+/// and the 16 ANSI colors.
+pub fn color_palettes() -> &'static BTreeMap<String, themes::Theme> {
+    themes::all()
 }
 
-pub fn color_palettes() -> &'static BTreeMap<&'static str, ColorMap> {
-    static PALETTES: OnceLock<BTreeMap<&'static str, ColorMap>> = OnceLock::new();
-    PALETTES.get_or_init(|| {
-        let all = init_data();
-        all.into_iter()
-            .map(|(k, v)| {
-                (
-                    k,
-                    v.into_iter()
-                        .filter(|(kk, _)| !matches!(*kk, "foreground" | "background"))
-                        .collect(),
-                )
-            })
-            .collect()
-    })
+/// Whether the desktop currently asks for a dark theme. GTK exposes this for
+/// GNOME, XFCE, Cinnamon and most other desktops.
+pub fn system_prefers_dark() -> bool {
+    gtk::Settings::default()
+        .map(|settings| settings.is_gtk_application_prefer_dark_theme())
+        .unwrap_or(false)
 }
 
 mod imp {
@@ -653,17 +464,27 @@ impl Settings {
         self.data().clone()
     }
 
+    /// Theme actually in use, resolving `auto_theme` against the desktop's
+    /// dark-mode preference. Falls back to `color_scheme` when the chosen
+    /// light/dark theme no longer exists (for example a removed theme file).
+    pub fn effective_theme(&self) -> &'static themes::Theme {
+        let mut name = self.get_str_default("color_scheme", "Dark (Default)");
+        if self.get_bool("auto_theme") {
+            let preferred = if system_prefers_dark() {
+                self.get_str_default("theme_dark", "Dark (Default)")
+            } else {
+                self.get_str_default("theme_light", "Light")
+            };
+            if themes::get(&preferred).is_some() {
+                name = preferred;
+            }
+        }
+        themes::get(&name).unwrap_or_else(themes::default_theme)
+    }
+
     pub fn get_color_scheme(&self) -> (String, String) {
-        // Read through `get_str_default`, not the raw data, so command-line and
-        // profile overrides of `color_scheme` are honoured.
-        let scheme = self.get_str_default("color_scheme", "Dark (Default)");
-        let pal = color_schemes()
-            .get(scheme.as_str())
-            .unwrap_or_else(|| color_schemes().get("Dark (Default)").unwrap());
-        (
-            pal.get("foreground").unwrap_or(&"#d3d7cf").to_string(),
-            pal.get("background").unwrap_or(&"#0a0a0a").to_string(),
-        )
+        let theme = self.effective_theme();
+        (theme.foreground.clone(), theme.background.clone())
     }
 
     pub fn get_palette(&self) -> Value {
@@ -675,13 +496,11 @@ impl Settings {
                 return Value::Object(map);
             }
         }
-        let scheme = self.get_str_default("color_scheme", "Dark (Default)");
-        let pal = color_palettes()
-            .get(scheme.as_str())
-            .unwrap_or_else(|| color_palettes().get("Dark (Default)").unwrap());
         Value::Object(
-            pal.iter()
-                .map(|(k, v)| (k.to_string(), Value::String(v.to_string())))
+            self.effective_theme()
+                .palette
+                .iter()
+                .map(|(k, v)| (k.to_string(), Value::String(v.clone())))
                 .collect(),
         )
     }
@@ -721,9 +540,9 @@ mod tests {
     #[test]
     fn color_schemes_have_foreground_and_background() {
         let light = color_schemes().get("Light").unwrap();
-        assert_eq!(light.get("foreground"), Some(&"#2e3436"));
-        assert_eq!(light.get("background"), Some(&"#ffffff"));
-        assert_eq!(color_palettes().get("Light").unwrap().len(), 16);
+        assert_eq!(light.foreground, "#2e3436");
+        assert_eq!(light.background, "#ffffff");
+        assert_eq!(color_palettes().get("Light").unwrap().palette.len(), 16);
     }
 
     #[test]

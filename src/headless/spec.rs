@@ -15,6 +15,7 @@ pub enum CliGroup {
     Window,
     Session,
     Inspect,
+    Utility,
 }
 
 /// How a shell completion should complete the value of an option.
@@ -326,6 +327,22 @@ pub const CLI: &[CliOption] = &[
         ValueKind::None,
     ),
     opt(
+        None,
+        "edit-config",
+        None,
+        "Open the settings file in the configured editor",
+        CliGroup::Utility,
+        ValueKind::None,
+    ),
+    opt(
+        None,
+        "list-fonts",
+        None,
+        "List installed font families for font_name",
+        CliGroup::Utility,
+        ValueKind::None,
+    ),
+    opt(
         Some('V'),
         "version",
         None,
@@ -358,6 +375,7 @@ pub fn usage() -> String {
         (CliGroup::Window, "Options"),
         (CliGroup::Session, "Remote sessions"),
         (CliGroup::Inspect, "Inspection (no window is opened)"),
+        (CliGroup::Utility, "Utilities (no window is opened)"),
     ] {
         out.push_str(title);
         out.push_str(":\n");
@@ -509,6 +527,24 @@ pub const SETTINGS: &[Setting] = &[
         description: "Built-in color scheme; see --list-themes.",
         choices: &[],
     },
+    setting(
+        "auto_theme",
+        Kind::Bool,
+        Default::Bool(false),
+        "Follow the desktop's light/dark preference, using theme_light or theme_dark.",
+    ),
+    setting(
+        "theme_light",
+        Kind::Text,
+        Default::Text("Light"),
+        "Theme used when the desktop prefers a light appearance.",
+    ),
+    setting(
+        "theme_dark",
+        Kind::Text,
+        Default::Text("Dark (Default)"),
+        "Theme used when the desktop prefers a dark appearance.",
+    ),
     setting(
         "foreground_color",
         Kind::HexColorOrEmpty,
@@ -767,6 +803,30 @@ pub const SETTINGS: &[Setting] = &[
         "Render bold text with a bold font.",
     ),
     setting(
+        "bold_is_bright",
+        Kind::Bool,
+        Default::Bool(false),
+        "Render bold text with the bright variant of its color.",
+    ),
+    setting(
+        "sixel",
+        Kind::Bool,
+        Default::Bool(false),
+        "Allow applications to draw inline Sixel images.",
+    ),
+    setting(
+        "smooth_scroll",
+        Kind::Bool,
+        Default::Bool(false),
+        "Scroll by pixels instead of whole lines.",
+    ),
+    setting(
+        "word_char_exceptions",
+        Kind::Text,
+        Default::Text("-./?%&#:_=+@~"),
+        "Extra characters treated as part of a word for double-click selection.",
+    ),
+    setting(
         "terminal_columns",
         Kind::Int { min: 40, max: 300 },
         Default::Int(80),
@@ -1005,6 +1065,7 @@ pub fn man_options() -> String {
         (CliGroup::Window, "Window and terminal options"),
         (CliGroup::Session, "Remote sessions and live queries"),
         (CliGroup::Inspect, "Inspection commands"),
+        (CliGroup::Utility, "Utilities"),
     ] {
         out.push_str(&format!(".SS {}\n", title));
         for option in CLI.iter().filter(|option| option.group == group) {
@@ -1285,6 +1346,14 @@ pub const KEYBINDS: &[Keybind] = &[
     Keybind {
         keys: "Ctrl+B, then o",
         description: "Switch split pane",
+    },
+    Keybind {
+        keys: "Ctrl+B, then z",
+        description: "Zoom the focused pane to fill the window, repeat to restore",
+    },
+    Keybind {
+        keys: "Ctrl+B, then =",
+        description: "Equalize the split panes",
     },
     Keybind {
         keys: "Ctrl+B, then s / w",

@@ -917,6 +917,17 @@ impl TerminalBox {
             vte.set_cursor_blink_mode(CursorBlinkMode::Off);
         }
         vte.set_allow_bold(s.get_bool("allow_bold_text"));
+        vte.set_bold_is_bright(s.get_bool("bold_is_bright"));
+        vte.set_enable_sixel(s.get_bool("sixel"));
+        vte.set_scroll_unit_is_pixels(s.get_bool("smooth_scroll"));
+        // VTE expects printable ASCII here; ignore anything else instead of
+        // passing a malformed list to the C library.
+        let word_chars: String = s
+            .get_str_default("word_char_exceptions", "-./?%&#:_=+@~")
+            .chars()
+            .filter(|c| c.is_ascii_graphic())
+            .collect();
+        vte.set_word_char_exceptions(&word_chars);
         let encoding = s.get_str("encoding");
         let _ = vte.set_encoding(Some(&encoding));
         *self.imp().cached_backspace_binding.borrow_mut() = s.get_str("backspace_binding");
@@ -3500,6 +3511,10 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             self.call_window(|win| win.prev_tab_signal());
         } else if key == K::o || key == K::O {
             self.call_window(|win| win.focus_other_pane_signal());
+        } else if key == K::z || key == K::Z {
+            self.call_window(|win| win.toggle_split_zoom_signal());
+        } else if text == "=" {
+            self.call_window(|win| win.equalize_splits_signal());
         } else if key == K::s || key == K::S || key == K::w || key == K::W {
             self.call_window(|win| win.session_list_signal());
         } else if key == K::x || key == K::X {
@@ -3516,7 +3531,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         } else if key == K::question {
             self.vte().feed(
                 format!(
-                    "\r\n\x1b[36mCtrl+{} commands: c new tab, n/p next/previous tab, %/\" split, o other pane, s/w terminal list, d detach, x close, ? help\x1b[0m\r\n",
+                    "\r\n\x1b[36mCtrl+{} commands: c new tab, n/p next/previous tab, %/\" split, o other pane, z zoom pane, = equalize, s/w terminal list, d detach, x close, ? help\x1b[0m\r\n",
                     prefix.to_ascii_uppercase()
                 )
                 .as_bytes(),

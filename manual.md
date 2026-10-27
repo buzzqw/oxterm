@@ -621,6 +621,8 @@ remote tmux detaches instead of the local terminal.
 | `Ctrl+B, then n / p` | Next / previous tab |
 | `Ctrl+B, then % / "` | Vertical / horizontal split |
 | `Ctrl+B, then o` | Switch split pane |
+| `Ctrl+B, then z` | Zoom the focused pane to fill the window, repeat to restore |
+| `Ctrl+B, then =` | Equalize the split panes |
 | `Ctrl+B, then s / w` | Show the interactive terminal list |
 | `Ctrl+B, then d` | Detach the local terminal PTY; passed through when ssh is foreground |
 | `Ctrl+B, then x` | Close tab |
@@ -643,6 +645,7 @@ after the prefix is passed to the running program together with the prefix.
 ~/.config/oxterm/sessions/
 ~/.config/oxterm/profiles/
 ~/.config/oxterm/remote/
+~/.config/oxterm/themes/
 ```
 
 Broker sockets move to `/tmp/oxterm-<uid>/remote/` when the configured path is
@@ -673,6 +676,42 @@ errors, with the expected type or range for each key. `--show-config` applies
 `-o KEY=VALUE` overrides but never writes them back. `--diagnostics` prints
 versions, paths, file permissions and the enforced limits, never settings
 values, so it is safe to include in a bug report.
+
+### Themes
+
+Oxterm ships 25 themes and can load more from `~/.config/oxterm/themes/`.
+Both Ghostty-style theme files and iTerm2 `.itermcolors` files are accepted; the
+file name becomes the theme name. `oxterm --list-themes` shows everything that
+is installed.
+
+To follow the desktop's light/dark preference automatically, enable
+**Preferences → Appearance → Automatic theme** (or set `auto_theme` to `true`)
+and choose the light and dark themes underneath. Open terminals are recolored as
+soon as the desktop switches.
+
+### Compatibility
+
+The Compatibility page also controls rendering details that differ between
+terminals:
+
+- **Bold is bright** — bold text picks the bright palette color, as in xterm.
+- **Sixel images** — allow inline images from applications such as `lsix`,
+  `chafa` or `img2sixel` (off by default because images use memory).
+- **Smooth scrolling** — scroll by pixels instead of whole lines.
+- **Word characters** — extra characters treated as part of a word when
+  double-clicking, so paths and URLs are selected whole.
+
+### Utilities
+
+These commands open no window and are safe over SSH:
+
+```text
+oxterm --edit-config        Edit settings.json in $EDITOR
+oxterm --list-fonts         List font families for font_name
+oxterm --list-themes        List installed themes
+oxterm --list-actions       List scriptable control actions
+oxterm --diagnostics        Print versions, paths and limits
+```
 
 ## Troubleshooting
 

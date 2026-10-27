@@ -99,6 +99,8 @@ _oxterm_global_options=(
     '--list-keybinds[List the keyboard shortcuts]'
     '--list-actions[List the scriptable control actions]'
     '--diagnostics[Print environment, paths and limits for bug reports]'
+    '--edit-config[Open the settings file in the configured editor]'
+    '--list-fonts[List installed font families for font_name]'
     '(-V --version)'{-V,--version}'[Show the Oxterm version]'
     '(-h --help)'{-h,--help}'[Show this help]'
     # END GENERATED OPTIONS

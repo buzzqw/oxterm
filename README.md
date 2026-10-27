@@ -28,7 +28,7 @@ memory footprint and the memory-safety guarantees of Rust.
 - Native GTK3/VTE terminal with 256 colors and true-color support
 - Tabs with reorder, rename, move, detach, and independent windows
 - tmux-like single, vertical, and horizontal split layouts, with a configurable prefix key (`Ctrl+B` by default)
-- Configurable font, colors, 16-color palettes, cursor, opacity, padding, and encoding
+- 25 built-in themes, drop-in Ghostty/iTerm2 theme files, automatic light/dark switching, configurable font, colors, 16-color palettes, cursor, opacity, padding, and encoding
 - Live Preferences reload without restarting the application
 - SQLite command history with reverse search, filters, read-only SQL, replay, command duration, and Git branch metadata
 - Scrollback search with match navigation, clickable `http`/`https` links, and broadcast input across panes
@@ -236,6 +236,10 @@ Inspection (no window is opened):
       --list-actions            List the scriptable control actions
       --diagnostics             Print environment, paths and limits for bug reports
 
+Utilities (no window is opened):
+      --edit-config             Open the settings file in the configured editor
+      --list-fonts              List installed font families for font_name
+
 Scriptable control (acts on a running Oxterm, opens no window):
   new [--cwd DIR] [--title TITLE] [-- CMD...]                          Open a tab, print its pane id
   split [--pane ID] [--vertical|--horizontal] [--cwd DIR] [-- CMD...]  Split a single-pane window
@@ -272,6 +276,8 @@ oxterm --list-settings            # every key, type, default and description
 oxterm --list-themes              # color schemes and their fg/bg colors
 oxterm --list-keybinds            # keyboard shortcuts
 oxterm --list-actions             # scriptable control actions
+oxterm --list-fonts               # font families for font_name
+oxterm --edit-config              # edit settings.json in $EDITOR
 oxterm --diagnostics              # versions, paths, permissions and limits
 ```
 
@@ -475,8 +481,38 @@ Oxterm intentionally uses the existing shared data directory:
 ~/.config/oxterm/sessions/       Saved sessions
 ~/.config/oxterm/profiles/       Named profiles
 ~/.config/oxterm/remote/         Private broker sockets
+~/.config/oxterm/themes/         Drop-in Ghostty and iTerm2 theme files
 /tmp/oxterm-<uid>/remote/        Fallback broker sockets when that path is too long
 ```
+
+### Themes
+
+Oxterm ships 25 themes (Catppuccin, Dracula, Tokyo Night, One Dark, Rose Pine,
+Kanagawa, Everforest, Gruvbox, Nord, Solarized, GitHub, Ayu, Material,
+Nightfox and more). Pick one in **Preferences → Appearance** or with
+`color_scheme`; `oxterm --list-themes` prints the full list.
+
+To add a theme, copy a Ghostty-style theme file or an iTerm2 `.itermcolors`
+file into `~/.config/oxterm/themes/`. The file name becomes the theme name and
+the theme shows up in the list the next time Oxterm starts. No conversion step
+is needed.
+
+Automatic light/dark switching uses the desktop's GTK dark-mode preference:
+
+```json
+{
+  "auto_theme": true,
+  "theme_light": "Catppuccin Latte",
+  "theme_dark": "Catppuccin Mocha"
+}
+```
+
+With `auto_theme` enabled, Oxterm follows the desktop when it changes
+appearance (for example at sunset) and re-colors open terminals immediately.
+
+Compatibility switches live under **Preferences → Compatibility**: bold text
+using bright colors, inline Sixel images, pixel-smooth scrolling, and the
+characters treated as part of a word by double-click selection.
 
 Open **Edit > Preferences** to configure the terminal, appearance, colors,
 compatibility, and notes. Most changes are applied immediately.

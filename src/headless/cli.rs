@@ -17,6 +17,8 @@ pub enum Inspection {
     ListKeybinds,
     ListActions,
     Diagnostics,
+    EditConfig,
+    ListFonts,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +51,8 @@ pub struct CliOptions {
     pub list_keybinds: bool,
     pub list_actions: bool,
     pub diagnostics: bool,
+    pub edit_config: bool,
+    pub list_fonts: bool,
     pub version: bool,
     pub help: bool,
 }
@@ -79,6 +83,12 @@ impl CliOptions {
         }
         if self.diagnostics {
             found.push(Inspection::Diagnostics);
+        }
+        if self.edit_config {
+            found.push(Inspection::EditConfig);
+        }
+        if self.list_fonts {
+            found.push(Inspection::ListFonts);
         }
         (found.len() == 1).then(|| found.remove(0))
     }
@@ -185,6 +195,8 @@ pub fn parse_cli(args: &[String]) -> Result<CliOptions, String> {
     let mut list_keybinds = false;
     let mut list_actions = false;
     let mut diagnostics = false;
+    let mut edit_config = false;
+    let mut list_fonts = false;
     let mut version = false;
     let mut help = false;
     let mut no_more_opts = false;
@@ -322,6 +334,8 @@ pub fn parse_cli(args: &[String]) -> Result<CliOptions, String> {
             "--list-keybinds" => list_keybinds = true,
             "--list-actions" => list_actions = true,
             "--diagnostics" => diagnostics = true,
+            "--edit-config" => edit_config = true,
+            "--list-fonts" => list_fonts = true,
             "--version" | "-V" => version = true,
             "--help" | "-h" => help = true,
             _ => {
@@ -349,7 +363,9 @@ pub fn parse_cli(args: &[String]) -> Result<CliOptions, String> {
         + usize::from(list_themes)
         + usize::from(list_keybinds)
         + usize::from(list_actions)
-        + usize::from(diagnostics);
+        + usize::from(diagnostics)
+        + usize::from(edit_config)
+        + usize::from(list_fonts);
     if inspections > 1 {
         return Err("choose one inspection option at a time".into());
     }
@@ -377,6 +393,8 @@ pub fn parse_cli(args: &[String]) -> Result<CliOptions, String> {
         list_keybinds,
         list_actions,
         diagnostics,
+        edit_config,
+        list_fonts,
         version,
         help,
     };

@@ -38,6 +38,8 @@ complete -c oxterm -n '__oxterm_global_option' -l list-themes -d 'List the built
 complete -c oxterm -n '__oxterm_global_option' -l list-keybinds -d 'List the keyboard shortcuts'
 complete -c oxterm -n '__oxterm_global_option' -l list-actions -d 'List the scriptable control actions'
 complete -c oxterm -n '__oxterm_global_option' -l diagnostics -d 'Print environment, paths and limits for bug reports'
+complete -c oxterm -n '__oxterm_global_option' -l edit-config -d 'Open the settings file in the configured editor'
+complete -c oxterm -n '__oxterm_global_option' -l list-fonts -d 'List installed font families for font_name'
 complete -c oxterm -n '__oxterm_global_option' -s V -l version -d 'Show the Oxterm version'
 complete -c oxterm -n '__oxterm_global_option' -s h -l help -d 'Show this help'
 # END GENERATED OPTIONS
