@@ -165,20 +165,22 @@ scripts, editors and coding agents drive tabs and panes without a browser or a
 GUI toolkit:
 
 ```text
-oxterm new [--cwd DIR] [--title TITLE] [-- COMMAND...]
+oxterm new [DIR] [--cwd DIR] [--title TITLE] [-- COMMAND...]
 oxterm split [--pane ID] [--vertical|--horizontal] [--cwd DIR] [--title TITLE]
+             [-- COMMAND...]
 oxterm send [--pane ID] [--enter] TEXT...        # or: ... - (read stdin)
 oxterm capture [--pane ID] [--scrollback N | --all]
 oxterm wait [--pane ID] [--timeout SECONDS]
 ```
 
-`new` prints the id of the new pane; `split` prints the id of the new pane and
-refuses to split a window that already has two panes. `send` types into the
-target pane and, with `--enter`, submits the line. `capture` prints the visible
-screen by default, the last `N` lines of history with `--scrollback`, or the
-whole buffer with `--all`. `wait` waits for the next command in the pane to
-finish and exits with that command's status (clamped to 0–255), which makes it
-possible to chain a build and read its result:
+`new` prints the id of the new pane and `new DIR` is a shorthand for
+`new --cwd DIR`. `split` prints the id of the new pane and refuses to split a
+window that already has two panes. `send` types into the target pane and, with
+`--enter`, submits the line. `capture` prints the visible screen by default, the
+last `N` lines of history with `--scrollback`, or the whole buffer with `--all`.
+`wait` waits for the next command in the pane to finish and exits with that
+command's status (clamped to 0–255), which makes it possible to chain a build and
+read its result:
 
 ```sh
 pane=$(oxterm split --horizontal --cwd ~/src/app)

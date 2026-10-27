@@ -18,6 +18,8 @@ oxterm \- GTK3/VTE terminal emulator with notes, history and remote sessions
 .br
 .B oxterm
 .B \-\-list
+.br
+.BI oxterm " {new|split|send|capture|wait} [OPTIONS]"
 .SH DESCRIPTION
 .B oxterm
 is a terminal emulator for Linux built on GTK3 and VTE. It provides tabs,
@@ -108,6 +110,71 @@ and exit.
 .TP
 .BR \-h ", " \-\-help
 Print the command line summary and exit.
+.SH CONTROL API
+These subcommands act on a running Oxterm window on the same host and open no
+window, so they are safe to use over SSH. Each prints its result on standard
+output. A target pane can be given with
+.BR \-\-pane ;
+otherwise Oxterm uses
+.BR OXTERM_PANE ,
+then the only open pane.
+.TP
+.B oxterm new
+.RI [ DIRECTORY ]
+.RI [ \-\-cwd " " DIR ]
+.RI [ \-\-title " " TITLE ]
+.RI [ "\-\- " COMMAND " ...]"
+Open a new tab, run
+.I COMMAND
+there when given, and print the new pane id.
+.I DIRECTORY
+is a shorthand for
+.BR \-\-cwd .
+.TP
+.B oxterm split
+.RI [ \-\-pane " " ID ]
+.RB [ \-\-vertical | \-\-horizontal ]
+.RI [ \-\-cwd " " DIR ]
+.RI [ \-\-title " " TITLE ]
+.RI [ "\-\- " COMMAND " ...]"
+Split the target pane's window, which must still have a single pane, and print
+the new pane id. The default is a vertical split.
+.TP
+.B oxterm send
+.RI [ \-\-pane " " ID ]
+.RI [ \-\-enter ]
+.I TEXT ...
+.br
+.B oxterm send
+.RI [ \-\-pane " " ID ]
+.RI [ \-\-enter ]
+.B \-
+Type
+.I TEXT
+into the target pane, or standard input with
+.BR \- .
+With
+.B \-\-enter
+a carriage return is appended, as if Enter had been pressed. Read-only mode is
+respected.
+.TP
+.B oxterm capture
+.RI [ \-\-pane " " ID ]
+.RB [ \-\-scrollback " " N | \-\-all ]
+Print the target pane's text: the visible screen by default, the last
+.I N
+lines of history with
+.BR \-\-scrollback ,
+or the whole buffer with
+.BR \-\-all .
+.TP
+.B oxterm wait
+.RI [ \-\-pane " " ID ]
+.RI [ \-\-timeout " " SECONDS ]
+Wait for the next command in the pane to finish and exit with that command's
+status, clamped to 0-255. Without
+.B \-\-timeout
+it waits indefinitely.
 .SH REMOTE SESSIONS
 These commands act on a running Oxterm terminal on the same host, open no
 window and are safe to use over SSH. Without a
@@ -145,7 +212,8 @@ application is running.
 SQLite database with the command history.
 .TP
 .I ~/.config/oxterm/remote/
-Private directory (mode 0700) with the Unix sockets of persistent sessions.
+Private directory (mode 0700) with the Unix sockets of persistent sessions and
+the control socket of the running window.
 .TP
 .I ~/.local/share/oxterm/notes/
 Default directory for Markdown notes, unless
@@ -183,6 +251,14 @@ ControlMaster connection sharing.
 .B OXTERM\_OSC133\_FIFO
 Internal. Path of the private FIFO used by the shell integration to report
 prompt events without polluting the terminal output.
+.TP
+.B OXTERM\_PANE
+Set for every shell started by Oxterm to the pane id of that terminal, so the
+control commands can address the calling pane.
+.TP
+.B OXTERM\_CONTROL
+Set for every shell started by Oxterm to the path of the window's control
+socket.
 .SH EXAMPLES
 .TP
 .B oxterm ~/src/project
@@ -199,9 +275,18 @@ Show active sessions and their IDs.
 .TP
 .B ssh server oxterm \-a
 Attach to a live session from another computer.
+.TP
+.B oxterm send \-\-pane 12345\-2 \-\-enter 'make test'
+Type a command into a pane of a running window.
+.TP
+.B oxterm wait \-\-pane 12345\-2 \-\-timeout 600
+Wait for that command and exit with its status.
 .SH EXIT STATUS
-0 on success, 1 when a command line option or a remote session request fails,
-and 2 when the command line cannot be parsed.
+0 on success, 1 when an operation fails, 2 when the command line cannot be
+parsed, 3 when a control command cannot find the requested pane and 4 when no
+running Oxterm window can be reached.
+.B oxterm wait
+exits with the status of the command it observed instead.
 .SH SEE ALSO
 .BR tmux (1),
 .BR ssh (1),

@@ -216,8 +216,9 @@ fn expand_dir(raw: &str) -> Result<String, String> {
 fn verb_usage(verb: &str) -> &'static str {
     match verb {
         "new" => {
-            "Usage: oxterm new [--cwd DIR] [--title TITLE] [-- COMMAND...]\n\n\
-             Open a new tab in the running Oxterm and print its pane id.\n"
+            "Usage: oxterm new [DIR] [--cwd DIR] [--title TITLE] [-- COMMAND...]\n\n\
+             Open a new tab in the running Oxterm and print its pane id. DIR is a\n\
+             shorthand for --cwd.\n"
         }
         "split" => {
             "Usage: oxterm split [--pane ID] [--vertical|--horizontal] [--cwd DIR]\n\

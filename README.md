@@ -233,19 +233,22 @@ A running Oxterm window also publishes a private control socket, so scripts,
 editors, and coding agents can drive tabs and panes without a GUI:
 
 ```text
-oxterm new [--cwd DIR] [--title TITLE] [-- COMMAND...]
+oxterm new [DIR] [--cwd DIR] [--title TITLE] [-- COMMAND...]
 oxterm split [--pane ID] [--vertical|--horizontal] [--cwd DIR] [--title TITLE]
+             [-- COMMAND...]
 oxterm send [--pane ID] [--enter] TEXT...        # or: ... - (read stdin)
 oxterm capture [--pane ID] [--scrollback N | --all]
 oxterm wait [--pane ID] [--timeout SECONDS]
 ```
 
 `new` and `split` print the id of the new pane; `split` refuses a window that
-already has two panes. `send` types into the target pane and, with `--enter`,
-submits the line. `capture` prints the visible screen by default, the last `N`
-lines of history with `--scrollback`, or the whole buffer with `--all`. `wait`
-waits for the next command in the pane and exits with that command's status, so
-a build can be chained and checked. None of them opens a window.
+already has two panes. `new` also accepts a directory as its first positional
+argument, as a shorthand for `--cwd`. `send` types into the target pane and,
+with `--enter`, submits the line. `capture` prints the visible screen by
+default, the last `N` lines of history with `--scrollback`, or the whole buffer
+with `--all`. `wait` waits for the next command in the pane and exits with that
+command's status, so a build can be chained and checked. None of them opens a
+window.
 
 The target pane comes from `--pane`, then `$OXTERM_PANE`, then the only open
 pane. Exit statuses are `0` for success, `1` for a failed operation, `2` for a

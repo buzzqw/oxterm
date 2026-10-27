@@ -6,7 +6,67 @@ _oxterm_sessions() {
     _describe -t sessions 'session' sessions
 }
 
+_oxterm_new() {
+    _arguments -s -S \
+        '--cwd[Working directory]:directory:_directories' \
+        '--title[Tab title]:title:' \
+        '(-h --help)'{-h,--help}'[Show help]' \
+        '1:directory:_directories' \
+        '*:command:_command_names -e'
+}
+
+_oxterm_split() {
+    _arguments -s -S \
+        '--pane[Target pane id]:pane:' \
+        '(--horizontal)--vertical[Vertical split]' \
+        '(--vertical)--horizontal[Horizontal split]' \
+        '--cwd[Working directory]:directory:_directories' \
+        '--title[Tab title]:title:' \
+        '(-h --help)'{-h,--help}'[Show help]' \
+        '*:command:_command_names -e'
+}
+
+_oxterm_send() {
+    _arguments -s -S \
+        '--pane[Target pane id]:pane:' \
+        '--enter[Append a carriage return]' \
+        '(-h --help)'{-h,--help}'[Show help]' \
+        '*:text:'
+}
+
+_oxterm_capture() {
+    _arguments -s -S \
+        '--pane[Target pane id]:pane:' \
+        '--scrollback[Number of history lines]:lines:' \
+        '--all[Print the whole buffer]' \
+        '(-h --help)'{-h,--help}'[Show help]'
+}
+
+_oxterm_wait() {
+    _arguments -s -S \
+        '--pane[Target pane id]:pane:' \
+        '--timeout[Timeout in seconds]:seconds:' \
+        '(-h --help)'{-h,--help}'[Show help]'
+}
+
 _oxterm() {
+    local -a control
+    control=(new split send capture wait)
+
+    if (( ${control[(Ie)${words[2]}]} )) && (( CURRENT > 2 )); then
+        shift words
+        (( CURRENT-- ))
+        _oxterm_${words[1]}
+        return
+    fi
+
+    if (( CURRENT == 2 )) && [[ ${words[CURRENT]} != -* ]]; then
+        _alternative \
+            'commands:control command:(new split send capture wait)' \
+            'directories:directory:_directories'
+        return
+    fi
+
     _arguments -s -S \
         '(-w --working-directory)'{-w,--working-directory}'[Working directory]:directory:_directories' \
         '(-T --title)'{-T,--title}'[Fixed window title]:title:' \
