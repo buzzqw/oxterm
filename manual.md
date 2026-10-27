@@ -679,10 +679,14 @@ values, so it is safe to include in a bug report.
 
 ### Themes
 
-Oxterm ships 25 themes and can load more from `~/.config/oxterm/themes/`.
-Both Ghostty-style theme files and iTerm2 `.itermcolors` files are accepted; the
-file name becomes the theme name. `oxterm --list-themes` shows everything that
-is installed.
+Oxterm ships 247 themes embedded in the binary, so there is nothing to
+download or install. `oxterm --list-themes` shows the full list and
+**Preferences → Appearance** selects one.
+
+Custom themes are optional: copy a Ghostty-style theme file or an iTerm2
+`.itermcolors` file into `~/.config/oxterm/themes/`; the file name becomes the
+theme name. Per-theme licences for the bundled collection are recorded in
+`themes/licenses.md`.
 
 To follow the desktop's light/dark preference automatically, enable
 **Preferences → Appearance → Automatic theme** (or set `auto_theme` to `true`)

@@ -65,7 +65,8 @@ jobs:
           VERSION="${{ steps.tag.outputs.value }}"
           VERSION="${VERSION#v}"
           install -m 0755 target/release/oxterm "oxterm-${VERSION}-linux-x86_64"
-          tar -czf "oxterm-${VERSION}-linux-x86_64.tar.gz" "oxterm-${VERSION}-linux-x86_64"
+          install -m 0644 themes/licenses.md THEME-LICENSES.md
+          tar -czf "oxterm-${VERSION}-linux-x86_64.tar.gz" "oxterm-${VERSION}-linux-x86_64" THEME-LICENSES.md
           sha256sum oxterm-* > SHA256SUMS
 
       - name: Create or update GitHub release

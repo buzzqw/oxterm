@@ -450,12 +450,22 @@ fn list_settings() -> i32 {
 }
 
 fn list_themes() -> i32 {
-    println!("{:<26} {:<9} {}", "THEME", "FOREGROUND", "BACKGROUND");
+    let width = settings::color_schemes()
+        .keys()
+        .map(|name| name.chars().count())
+        .max()
+        .unwrap_or(20)
+        .clamp(20, 40);
+    println!("{:<width$} {:<9} {}", "THEME", "FOREGROUND", "BACKGROUND");
     for (name, theme) in settings::color_schemes() {
-        println!("{:<26} {:<9} {}", name, theme.foreground, theme.background);
+        println!(
+            "{:<width$} {:<9} {}",
+            name, theme.foreground, theme.background
+        );
     }
     println!(
-        "\nDrop Ghostty or iTerm2 theme files in {} to add your own.",
+        "\n{} themes built in. Extra Ghostty/iTerm2 files in {} are loaded as well.",
+        settings::color_schemes().len(),
         oxterm::headless::themes::themes_dir().display()
     );
     0

@@ -37,3 +37,16 @@ cargo run --bin oxterm-docgen
 
 and commit the result. CI runs `cargo run --bin oxterm-docgen -- --check` and
 fails when a generated file is stale.
+
+## Themes
+
+`assets/themes.json` is generated from the MIT-licensed
+[iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes)
+collection by `scripts/update-themes.py`, which bundles only themes whose
+licence permits redistribution and refreshes `themes/licenses.md`. Oxterm's own
+palettes stay in `src/headless/themes.rs` and win over a bundled theme with the
+same name. To update the pack:
+
+```bash
+python3 scripts/update-themes.py /path/to/iTerm2-Color-Schemes
+```

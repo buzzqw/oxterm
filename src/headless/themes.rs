@@ -31,7 +31,7 @@ pub const ANSI_KEYS: [&str; 16] = [
     "brightwhite",
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct Theme {
     pub name: String,
     pub foreground: String,
@@ -96,7 +96,27 @@ pub fn default_theme() -> &'static Theme {
         .expect("at least one built-in theme")
 }
 
+/// Every theme embedded in the binary.
+///
+/// Oxterm's own palettes come first so historical names such as
+/// "Dark (Default)" and "Light" keep their exact colors; the generated
+/// iTerm2-Color-Schemes bundle fills the rest. Regenerate the bundle with
+/// `scripts/update-themes.py`; `themes/licenses.md` records each licence.
 pub fn builtin() -> BTreeMap<String, Theme> {
+    let mut themes = originals();
+    for theme in serde_json::from_str::<Vec<Theme>>(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/assets/themes.json"
+    )))
+    .unwrap_or_default()
+    {
+        themes.entry(theme.name.clone()).or_insert(theme);
+    }
+    themes
+}
+
+/// Oxterm's hand-written palettes, kept stable across releases.
+fn originals() -> BTreeMap<String, Theme> {
     let mut themes = BTreeMap::new();
     for theme in [
         theme(
@@ -573,7 +593,7 @@ mod tests {
     #[test]
     fn builtins_are_complete_and_valid() {
         let themes = builtin();
-        assert!(themes.len() >= 20, "expected a useful theme pack");
+        assert!(themes.len() >= 200, "expected the bundled theme pack");
         for (name, theme) in &themes {
             assert_eq!(name, &theme.name);
             assert_eq!(theme.palette.len(), 16, "{name} palette is incomplete");
@@ -591,6 +611,8 @@ mod tests {
         }
         assert!(themes.contains_key("Catppuccin Mocha"));
         assert!(themes.contains_key("Tokyo Night"));
+        assert!(themes.contains_key("Dracula"));
+        assert!(themes.contains_key("0x96f"));
     }
 
     #[test]

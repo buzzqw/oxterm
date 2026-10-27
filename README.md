@@ -28,7 +28,7 @@ memory footprint and the memory-safety guarantees of Rust.
 - Native GTK3/VTE terminal with 256 colors and true-color support
 - Tabs with reorder, rename, move, detach, and independent windows
 - tmux-like single, vertical, and horizontal split layouts, with a configurable prefix key (`Ctrl+B` by default)
-- 25 built-in themes, drop-in Ghostty/iTerm2 theme files, automatic light/dark switching, configurable font, colors, 16-color palettes, cursor, opacity, padding, and encoding
+- 247 built-in themes, optional drop-in Ghostty/iTerm2 theme files, automatic light/dark switching, configurable font, colors, 16-color palettes, cursor, opacity, padding, and encoding
 - Live Preferences reload without restarting the application
 - SQLite command history with reverse search, filters, read-only SQL, replay, command duration, and Git branch metadata
 - Scrollback search with match navigation, clickable `http`/`https` links, and broadcast input across panes
@@ -487,15 +487,16 @@ Oxterm intentionally uses the existing shared data directory:
 
 ### Themes
 
-Oxterm ships 25 themes (Catppuccin, Dracula, Tokyo Night, One Dark, Rose Pine,
-Kanagawa, Everforest, Gruvbox, Nord, Solarized, GitHub, Ayu, Material,
-Nightfox and more). Pick one in **Preferences → Appearance** or with
-`color_scheme`; `oxterm --list-themes` prints the full list.
+Oxterm ships **247 themes embedded in the binary**: Catppuccin, Dracula,
+Tokyo Night, One Dark, Rose Pine, Kanagawa, Everforest, Gruvbox, Nord,
+Solarized, GitHub, Ayu, Material, Nightfox, the full redistributable
+iTerm2-Color-Schemes collection, and many more. There is nothing to download
+or copy: pick one in **Preferences → Appearance** or with `color_scheme`, and
+`oxterm --list-themes` prints the full list.
 
-To add a theme, copy a Ghostty-style theme file or an iTerm2 `.itermcolors`
-file into `~/.config/oxterm/themes/`. The file name becomes the theme name and
-the theme shows up in the list the next time Oxterm starts. No conversion step
-is needed.
+Custom themes are optional. Drop a Ghostty-style theme file or an iTerm2
+`.itermcolors` file into `~/.config/oxterm/themes/` and it appears in the list
+on the next start; the file name becomes the theme name.
 
 Automatic light/dark switching uses the desktop's GTK dark-mode preference:
 

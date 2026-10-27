@@ -39,7 +39,8 @@ jobs:
       - name: Prepare executable package
         run: |
           install -m 0755 target/release/oxterm oxterm-latest-linux-x86_64
-          tar -czf oxterm-latest-linux-x86_64.tar.gz oxterm-latest-linux-x86_64
+          install -m 0644 themes/licenses.md THEME-LICENSES.md
+          tar -czf oxterm-latest-linux-x86_64.tar.gz oxterm-latest-linux-x86_64 THEME-LICENSES.md
 
       - name: Create checksums
         run: sha256sum oxterm-latest-* > SHA256SUMS

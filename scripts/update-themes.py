@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Regenerate the built-in theme bundle from iTerm2-Color-Schemes.
+
+Usage:
+    scripts/update-themes.py /path/to/iTerm2-Color-Schemes
+    scripts/update-themes.py            # downloads the upstream tarball
+
+Only schemes whose licence allows redistribution are bundled (MIT, Apache-2.0,
+CC0, ISC, 0BSD, Zlib, Unlicense, WTFPL). Themes marked `unknown`, `nonfree`,
+GPL or LGPL are skipped, as are themes already defined in Rust (Oxterm's own
+palettes win, so names such as "Dark (Default)" stay stable).
+
+Writes:
+    assets/themes.json     compact data embedded with include_str! in themes.rs
+    themes/licenses.md     per-theme licence and source for attribution
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import re
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
+from pathlib import Path
+
+import yaml
+
+ROOT = Path(__file__).resolve().parent.parent
+UPSTREAM = "https://github.com/mbadolato/iTerm2-Color-Schemes/archive/refs/heads/master.tar.gz"
+ALLOWED_LICENCES = {
+    "MIT",
+    "Apache-2.0",
+    "CC0-1.0",
+    "ISC",
+    "0BSD",
+    "Zlib",
+    "Unlicense",
+    "WTFPL",
+}
+ANSI_KEYS = [
+    "black",
+    "red",
+    "green",
+    "yellow",
+    "blue",
+    "magenta",
+    "cyan",
+    "white",
+    "brightblack",
+    "brightred",
+    "brightgreen",
+    "brightyellow",
+    "brightblue",
+    "brightmagenta",
+    "brightcyan",
+    "brightwhite",
+]
+DICT_RE = re.compile(r"(?s)<key>([^<]+)</key>\s*<dict>(.*?)</dict>")
+COMPONENT_RE = re.compile(
+    r"<key>(Red|Green|Blue) Component</key>\s*<(?:real|integer)>([^<]+)</(?:real|integer)>"
+)
+
+
+def source_tree() -> Path:
+    argument = sys.argv[1] if len(sys.argv) > 1 else None
+    if argument:
+        return Path(argument).resolve()
+    print("downloading", UPSTREAM, file=sys.stderr)
+    with urllib.request.urlopen(UPSTREAM) as response:
+        payload = response.read()
+    directory = Path(tempfile.mkdtemp(prefix="iterm-themes-"))
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
+        archive.extractall(directory)
+    return next(directory.iterdir())
+
+
+def parse_scheme(path: Path) -> dict | None:
+    text = path.read_text(errors="replace")
+    colors: dict[str, tuple[int, int, int]] = {}
+    for match in DICT_RE.finditer(text):
+        key = match.group(1).strip()
+        components = {name: None for name in ("Red", "Green", "Blue")}
+        for part in COMPONENT_RE.finditer(match.group(2)):
+            try:
+                value = float(part.group(2).strip())
+            except ValueError:
+                continue
+            components[part.group(1)] = max(0, min(255, round(value * 255)))
+        if any(value is None for value in components.values()):
+            continue
+        colors[key] = (
+            components["Red"],
+            components["Green"],
+            components["Blue"],
+        )
+
+    def hexcolor(key: str) -> str | None:
+        color = colors.get(key)
+        return None if color is None else "#{:02x}{:02x}{:02x}".format(*color)
+
+    foreground = hexcolor("Foreground Color")
+    background = hexcolor("Background Color")
+    palette = {}
+    for index, slot in enumerate(ANSI_KEYS):
+        color = hexcolor(f"Ansi {index} Color")
+        if color is None:
+            return None
+        palette[slot] = color
+    if not foreground or not background:
+        return None
+    return {
+        "name": path.stem,
+        "foreground": foreground,
+        "background": background,
+        "cursor": hexcolor("Cursor Color") or foreground,
+        "palette": palette,
+    }
+
+
+def main() -> int:
+    tree = source_tree()
+    licences = yaml.safe_load((tree / "licenses.yml").read_text())
+    schemes = tree / "schemes"
+    if not schemes.is_dir():
+        print(f"{schemes} does not exist", file=sys.stderr)
+        return 1
+
+    bundled: dict[str, dict] = {}
+    attribution: list[tuple[str, str, str]] = []
+    skipped = 0
+    for path in sorted(schemes.glob("*.itermcolors")):
+        name = path.stem
+        entry = licences.get(name) or {}
+        licence = str(entry.get("license", "unknown"))
+        if licence not in ALLOWED_LICENCES:
+            skipped += 1
+            continue
+        theme = parse_scheme(path)
+        if theme is None:
+            skipped += 1
+            continue
+        if name in bundled:
+            continue
+        bundled[name] = theme
+        attribution.append((name, licence, str(entry.get("source", "")).strip()))
+
+    if not bundled:
+        print("no themes found", file=sys.stderr)
+        return 1
+
+    ROOT.joinpath("assets").mkdir(exist_ok=True)
+    target = ROOT / "assets" / "themes.json"
+    target.write_text(
+        json.dumps(list(bundled.values()), indent=0, sort_keys=True) + "\n"
+    )
+
+    ROOT.joinpath("themes").mkdir(exist_ok=True)
+    lines = [
+        "# Bundled theme licences",
+        "",
+        "The themes in `assets/themes.json` are generated by",
+        "`scripts/update-themes.py` from the",
+        "[iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes)",
+        "collection. The collection is MIT licensed:",
+        "",
+        "> Copyright (c) 2011 to Present Mark Badolato",
+        ">",
+        "> Permission is hereby granted, free of charge, to any person obtaining a copy",
+        "> of this software and associated documentation files (the \"Software\"), to deal",
+        "> in the Software without restriction, including without limitation the rights",
+        "> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell",
+        "> copies of the Software, and to permit persons to whom the Software is",
+        "> furnished to do so, subject to the following conditions:",
+        ">",
+        "> The above copyright notice and this permission notice shall be included in",
+        "> all copies or substantial portions of the Software.",
+        ">",
+        "> THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND.",
+        "",
+        "The copyright of each individual theme belongs to its author. Only themes",
+        "whose licence permits redistribution are bundled; the SPDX licence and",
+        "source for each one are listed below.",
+        "",
+        "| Theme | Licence | Source |",
+        "| --- | --- | --- |",
+    ]
+    for name, licence, source in attribution:
+        lines.append(f"| {name} | {licence} | {source} |")
+    (ROOT / "themes" / "licenses.md").write_text("\n".join(lines) + "\n")
+
+    print(
+        f"bundled {len(bundled)} themes ({skipped} skipped for licence or data), "
+        f"wrote {target.relative_to(ROOT)} and themes/licenses.md"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

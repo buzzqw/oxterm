@@ -77,6 +77,7 @@ install_file 0644 "${ROOT_DIR}/packaging/oxterm.svg" "${INSTALL_ICON}"
 install_file 0644 "${ROOT_DIR}/packaging/oxterm.desktop" "${INSTALL_DESKTOP}"
 install_file 0644 "${ROOT_DIR}/manual.md" "/usr/share/doc/oxterm/manual.md"
 install_file 0644 "${ROOT_DIR}/docs/settings.md" "/usr/share/doc/oxterm/settings.md"
+install_file 0644 "${ROOT_DIR}/themes/licenses.md" "/usr/share/doc/oxterm/themes-licenses.md"
 install_file 0644 "${ROOT_DIR}/packaging/oxterm.1" "/usr/share/man/man1/oxterm.1"
 if [[ -w "/usr/share/man/man1" ]]; then
     gzip -nf "/usr/share/man/man1/oxterm.1"
