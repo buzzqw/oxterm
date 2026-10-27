@@ -27,11 +27,12 @@ memory footprint and the memory-safety guarantees of Rust.
 
 - Native GTK3/VTE terminal with 256 colors and true-color support
 - Tabs with reorder, rename, move, detach, and independent windows
-- tmux-like single, vertical, and horizontal split layouts
+- tmux-like single, vertical, and horizontal split layouts, with a configurable prefix key (`Ctrl+B` by default)
 - Configurable font, colors, 16-color palettes, cursor, opacity, padding, and encoding
 - Live Preferences reload without restarting the application
 - SQLite command history with reverse search, filters, read-only SQL, replay, command duration, and Git branch metadata
-- Timestamped Markdown notes with an in-app Notes menu, per-entry context, and configurable editor integration
+- Scrollback search with match navigation, clickable `http`/`https` links, and broadcast input across panes
+- Timestamped Markdown notes with an in-app Notes menu, a searchable Notes panel (SQLite FTS5) with `#tags` and preview, per-entry context, and configurable editor integration
 - OSC 133 shell integration for prompts, command boundaries, and exit status
 - Sticky command header, failure marks on the scrollbar, and open-output-in-pager
 - Scriptable control API: `new`, `split`, `send`, `capture`, and `wait` against a running window
@@ -42,7 +43,7 @@ memory footprint and the memory-safety guarantees of Rust.
   and notes actions
 - Persistent PTY broker with SSH-friendly remote attach/detach, session listing, and multi-client terminal sharing
 - Parameterized snippets and JSON export for saved sessions
-- System statistics and SSH-aware status information
+- System statistics for the local and remote host (CPU, memory, disk), SSH connection sharing with keepalives, `autossh` support, and `mosh` recognition
 - Optional close confirmation only when a terminal has an active foreground process
 
 ## Requirements
@@ -182,8 +183,8 @@ from the AUR package, `yay -Syu` updates it instead.
 ```text
 oxterm [DIRECTORY] [OPTIONS] [-e CMD...]
 
-  -w, --working-directory DIR  Start in DIR
-  -T, --title TITLE            Fixed window title (apps cannot override it)
+  -w, --working-directory DIR  Working directory for the new terminal
+  -T, --title TITLE            Set a fixed window title (apps cannot override it)
   -g, --geometry COLSxROWS     Initial size in character cells (e.g. 120x40)
   -F, --fullscreen             Start in fullscreen mode
   -m, --maximize               Start maximized
@@ -194,10 +195,10 @@ oxterm [DIRECTORY] [OPTIONS] [-e CMD...]
   -o, --option KEY=VALUE       Override a setting for this session (repeatable)
       --font FAMILY           Override the font family for this session
       --font-size N           Override the font size for this session
-      --new-window             Open an independent window
+      --new-window             Open a new window
       --no-restore             Do not restore the last session
       --hold                   Keep the terminal open after the command exits
-  -e, --execute CMD...         Run CMD instead of the configured shell
+  -e, --execute CMD...         Run a command instead of the configured shell
       --list                   List active Oxterm terminals
       --info SESSION_ID        Show one active terminal
       --broker SOCKET ID       Run the persistent PTY broker (internal)
@@ -226,6 +227,32 @@ Remote sessions (SESSION_ID is the first column printed by --list):
           shell, leaving the original window as the only view again.
 ```
 
+### Scriptable control
+
+A running Oxterm window also publishes a private control socket, so scripts,
+editors, and coding agents can drive tabs and panes without a GUI:
+
+```text
+oxterm new [--cwd DIR] [--title TITLE] [-- COMMAND...]
+oxterm split [--pane ID] [--vertical|--horizontal] [--cwd DIR] [--title TITLE]
+oxterm send [--pane ID] [--enter] TEXT...        # or: ... - (read stdin)
+oxterm capture [--pane ID] [--scrollback N | --all]
+oxterm wait [--pane ID] [--timeout SECONDS]
+```
+
+`new` and `split` print the id of the new pane; `split` refuses a window that
+already has two panes. `send` types into the target pane and, with `--enter`,
+submits the line. `capture` prints the visible screen by default, the last `N`
+lines of history with `--scrollback`, or the whole buffer with `--all`. `wait`
+waits for the next command in the pane and exits with that command's status, so
+a build can be chained and checked. None of them opens a window.
+
+The target pane comes from `--pane`, then `$OXTERM_PANE`, then the only open
+pane. Exit statuses are `0` for success, `1` for a failed operation, `2` for a
+usage error, `3` when the pane is not found, and `4` when no running Oxterm
+window can be reached. See the [manual](manual.md#scriptable-control) for
+details.
+
 Examples:
 
 ```bash
@@ -249,6 +276,10 @@ oxterm -a 12345-2                          # attach to one terminal
 oxterm -M                                  # move one here (detaches its other views)
 oxterm -M 12345-2                          # move one terminal here
 oxterm --detach 12345-2                   # release a remote attach
+pane=$(oxterm split --horizontal --cwd ~/src/app)  # new pane, prints its id
+oxterm send --pane "$pane" --enter 'make test'     # type into a pane
+oxterm wait --pane "$pane" --timeout 600           # wait for the command
+oxterm capture --pane "$pane" --scrollback 200     # read its output
 ```
 
 `--option`, `--font`, `--font-size` and `--profile` overrides apply only to the
