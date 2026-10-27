@@ -677,6 +677,25 @@ errors, with the expected type or range for each key. `--show-config` applies
 versions, paths, file permissions and the enforced limits, never settings
 values, so it is safe to include in a bug report.
 
+### Notifications and failure markers
+
+Enable **Preferences → General → Notify on command completion** (requires
+OSC 133 shell integration) to receive a desktop notification when a command
+finishes. Notifications are intentionally selective:
+
+- nothing while the terminal has keyboard focus;
+- successful commands shorter than the minimum duration (10 seconds by default)
+  are ignored;
+- failures always notify, even when they finish immediately.
+
+The notification names the command, exit status, duration and working
+directory. Tune it with `bell_notification`, `notify_only_unfocused`,
+`notify_min_seconds` and `notify_on_failure`.
+
+A red dot appears on the tab when its last command failed and you were not
+looking at that tab. Selecting the tab, or running a command that succeeds,
+clears it.
+
 ### Themes
 
 Oxterm ships 247 themes embedded in the binary, so there is nothing to

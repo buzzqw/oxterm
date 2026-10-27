@@ -73,7 +73,10 @@ never written back to disk.
 | `terminal_rows` | int (10..120) | `24` | Initial height in character cells. |
 | `window_padding_horizontal` | int (0..100) | `2` | Horizontal padding around the terminal, in pixels. |
 | `window_padding_vertical` | int (0..100) | `2` | Vertical padding around the terminal, in pixels. |
-| `bell_notification` | bool | `false` | Show a desktop notification when a background command rings the bell. |
+| `bell_notification` | bool | `false` | Enable desktop notifications when a command finishes (requires OSC 133). |
+| `notify_only_unfocused` | bool | `true` | Only notify when the terminal does not have keyboard focus. |
+| `notify_min_seconds` | int (0..86400) | `10` | Skip notifications for commands shorter than this; 0 notifies for every command. |
+| `notify_on_failure` | bool | `true` | Notify when a command fails even if it was faster than notify_min_seconds. |
 | `pager_command` | string | `less -R` | Pager used to open command output. |
 | `undercurl_style` | string | `single` | Shape used to draw curly underlines. |
 |  |  | Values: `single`, `double`, `curly`, `dashed`, `dotted` |  |

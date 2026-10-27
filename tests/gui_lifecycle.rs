@@ -25,6 +25,7 @@ const SCENARIOS: &[&str] = &[
     "new-window",
     "split-zoom",
     "theme-switch",
+    "tab-failure",
 ];
 
 struct TempHome(PathBuf);

@@ -531,19 +531,28 @@ impl TerminalBox {
         self.vte().feed(help_text.as_bytes());
     }
 
-    pub(super) fn trigger_bell_notification(&self, exit_code: i64) {
-        if !settings().get_bool("bell_notification") {
+    pub(super) fn trigger_bell_notification(&self, exit_code: i64, duration_ms: Option<i64>) {
+        let s = settings();
+        let command = self.last_command();
+        let cwd = self.get_cwd();
+        let notification = crate::headless::notify::Notification {
+            enabled: s.get_bool("bell_notification"),
+            focused: self.vte().is_focus(),
+            only_unfocused: s.get_bool("notify_only_unfocused"),
+            exit_code,
+            duration_ms,
+            min_seconds: s.get_i64("notify_min_seconds"),
+            notify_on_failure: s.get_bool("notify_on_failure"),
+            command: &command,
+            cwd: &cwd,
+        };
+        if !crate::headless::notify::should_notify(&notification) {
             return;
         }
         if crate::notes::which("notify-send").is_none() {
             return;
         }
-        let cwd = self.get_cwd();
-        let status = if exit_code == 0 {
-            "succeeded".to_string()
-        } else {
-            format!("failed (exit {})", exit_code)
-        };
+        let body = crate::headless::notify::body(&notification);
         crate::notes::spawn_detached(
             "notify-send",
             &[
@@ -551,8 +560,8 @@ impl TerminalBox {
                 "Oxterm",
                 "-i",
                 "terminal",
-                "Command finished",
-                &format!("Command {} in {}", status, cwd),
+                crate::headless::notify::title(&notification),
+                &body,
             ],
         );
     }

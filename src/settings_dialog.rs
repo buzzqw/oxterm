@@ -53,6 +53,9 @@ struct DialogState {
     entry_fm: gtk::Entry,
     chk_session_restore: gtk::CheckButton,
     chk_bell_notify: gtk::CheckButton,
+    chk_notify_unfocused: gtk::CheckButton,
+    spin_notify_min: gtk::SpinButton,
+    chk_notify_failure: gtk::CheckButton,
     chk_hint_mode: gtk::CheckButton,
     chk_vi_copy: gtk::CheckButton,
     chk_tmux_prefix: gtk::CheckButton,
@@ -191,6 +194,9 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
         chk_tmux_prefix: general.19,
         entry_tmux_prefix_key: general.20,
         chk_ssh_sharing: general.21,
+        chk_notify_unfocused: general.22,
+        spin_notify_min: general.23,
+        chk_notify_failure: general.24,
         font_btn: appearance.0,
         chk_bold: appearance.1,
         combo_scheme: appearance.2,
@@ -502,6 +508,9 @@ fn build_general(
         gtk::CheckButton,
         gtk::Entry,
         gtk::CheckButton,
+        gtk::CheckButton,
+        gtk::SpinButton,
+        gtk::CheckButton,
     ),
 ) {
     let sw = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
@@ -664,9 +673,30 @@ fn build_general(
     let chk_bell_notify = gtk::CheckButton::new();
     chk_bell_notify.set_active(s.get_bool("bell_notification"));
     chk_bell_notify.set_tooltip_text(Some(
-        "Show desktop notification when a command completes (requires OSC 133 shell integration)",
+        "Show a desktop notification when a command finishes (requires OSC 133 shell integration)",
     ));
     r = row(&grid, r, "Notify on command completion:", &chk_bell_notify);
+
+    let chk_notify_unfocused = gtk::CheckButton::new();
+    chk_notify_unfocused.set_active(s.get_bool("notify_only_unfocused"));
+    chk_notify_unfocused.set_tooltip_text(Some(
+        "Stay quiet while you are watching the terminal; notify only when it is in the background",
+    ));
+    r = row(&grid, r, "Only when unfocused:", &chk_notify_unfocused);
+
+    let spin_notify_min = gtk::SpinButton::with_range(0.0, 86_400.0, 1.0);
+    spin_notify_min.set_value(s.get_i64("notify_min_seconds") as f64);
+    spin_notify_min.set_tooltip_text(Some(
+        "Skip notifications for commands shorter than this (0 = every command). Failures always notify when enabled",
+    ));
+    r = row(&grid, r, "Minimum duration (s):", &spin_notify_min);
+
+    let chk_notify_failure = gtk::CheckButton::new();
+    chk_notify_failure.set_active(s.get_bool("notify_on_failure"));
+    chk_notify_failure.set_tooltip_text(Some(
+        "Notify when a command exits non-zero even if it was faster than the minimum duration",
+    ));
+    r = row(&grid, r, "Always notify failures:", &chk_notify_failure);
 
     r += 1;
     r = section(&grid, r, "Keyboard Modes");
@@ -739,6 +769,9 @@ fn build_general(
             chk_tmux_prefix,
             entry_tmux_prefix_key,
             chk_ssh_sharing,
+            chk_notify_unfocused,
+            spin_notify_min,
+            chk_notify_failure,
         ),
     )
 }
@@ -1439,6 +1472,12 @@ impl DialogState {
             .unwrap_or_else(|| "b".to_string());
         s.set_str("tmux_prefix_key", &prefix_key);
         s.set_bool("ssh_connection_sharing", self.chk_ssh_sharing.is_active());
+        s.set_bool(
+            "notify_only_unfocused",
+            self.chk_notify_unfocused.is_active(),
+        );
+        s.set_i64("notify_min_seconds", self.spin_notify_min.value() as i64);
+        s.set_bool("notify_on_failure", self.chk_notify_failure.is_active());
 
         let font_name = self
             .font_btn

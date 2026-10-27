@@ -841,6 +841,18 @@ impl TerminalBox {
             });
         }
         {
+            // Looking at a terminal clears a failure marker left by a command
+            // that finished while it was in the background.
+            let weak = crate::SendWeak::new(self);
+            vte.connect_focus_in_event(move |_w, _ev| {
+                if let Some(t) = weak.upgrade() {
+                    let term = t.clone();
+                    t.call_window(move |win| win.clear_tab_failure_signal(&term));
+                }
+                glib::Propagation::Proceed
+            });
+        }
+        {
             let weak = crate::SendWeak::new(self);
             vte.connect_window_title_changed(move |t| {
                 if let Some(t2) = weak.upgrade() {
@@ -2333,7 +2345,13 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             }
             if *self.imp().bell_notify_cmd_running.borrow() {
                 *self.imp().bell_notify_cmd_running.borrow_mut() = false;
-                self.trigger_bell_notification(exit_code);
+                self.trigger_bell_notification(exit_code, duration_ms);
+            }
+            if exit_code != 0 {
+                let term = self.clone();
+                self.call_window(move |win| win.set_tab_failure_signal(&term, true));
+            } else {
+                self.call_window(|win| win.clear_tab_failure_signal(self));
             }
         } else if cmd == 'A' {
             *self.imp().osc133_cmd_start_row.borrow_mut() = -1;

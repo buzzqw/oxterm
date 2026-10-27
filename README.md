@@ -35,6 +35,7 @@ memory footprint and the memory-safety guarantees of Rust.
 - Timestamped Markdown notes with an in-app Notes menu, a searchable Notes panel (SQLite FTS5) with `#tags` and preview, per-entry context, and configurable editor integration
 - OSC 133 shell integration for prompts, command boundaries, and exit status
 - Sticky command header, failure marks on the scrollbar, and open-output-in-pager
+- Smart command-finished notifications: only when the terminal is unfocused or a command runs long, with failures always reported, plus a red dot on tabs whose last command failed
 - Scriptable control API: `new`, `split`, `send`, `capture`, and `wait` against a running window
 - VI copy mode with motions, text objects, visual block selection, scrolloff, and bookmarks
 - Session restore, named sessions, profiles, command palette, quickmarks, and hints
@@ -510,6 +511,26 @@ Automatic light/dark switching uses the desktop's GTK dark-mode preference:
 
 With `auto_theme` enabled, Oxterm follows the desktop when it changes
 appearance (for example at sunset) and re-colors open terminals immediately.
+
+### Notifications and failure markers
+
+With **Preferences → General → Notify on command completion** enabled (requires
+OSC 133 shell integration), Oxterm sends a desktop notification only when it is
+useful:
+
+- commands that finish while the terminal has focus stay silent;
+- successful commands shorter than `notify_min_seconds` (10s by default) stay
+  silent;
+- failed commands always notify, so a test suite that dies in two seconds still
+  gets your attention.
+
+The body names the command, its exit code, the duration and the directory. The
+three knobs are `bell_notification`, `notify_only_unfocused`,
+`notify_min_seconds` and `notify_on_failure`.
+
+A tab whose last command failed gets a red dot; it disappears when you select
+that tab (or when the next command succeeds). When a command fails while you
+are watching its tab, no dot is shown because you can already see the error.
 
 Compatibility switches live under **Preferences → Compatibility**: bold text
 using bright colors, inline Sixel images, pixel-smooth scrolling, and the

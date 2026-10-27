@@ -10,6 +10,7 @@ pub mod cli;
 pub mod control_cli;
 pub mod diagnostics;
 pub mod framing;
+pub mod notify;
 pub mod settings;
 pub mod spec;
 pub mod text;

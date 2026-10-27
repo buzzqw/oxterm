@@ -123,6 +123,14 @@ fn show_note_feedback(
     });
 }
 
+/// Widgets that make up one tab: the title, its close button container and the
+/// small red dot shown when the last command failed.
+pub struct TabLabel {
+    pub event_box: gtk::EventBox,
+    pub label: gtk::Label,
+    pub indicator: gtk::Label,
+}
+
 /// Interface implemented by both window types so a terminal can drive its
 /// host window without knowing which concrete kind it is.
 pub trait TerminalWindow {
@@ -136,6 +144,13 @@ pub trait TerminalWindow {
     fn split_signal(&self, mode: &str);
     fn toggle_split_zoom_signal(&self) {}
     fn equalize_splits_signal(&self) {}
+    /// Mark (or clear) the failed-command dot on the tab that owns `term`.
+    fn set_tab_failure_signal(&self, term: &TerminalBox, failed: bool) {
+        let _ = (term, failed);
+    }
+    fn clear_tab_failure_signal(&self, term: &TerminalBox) {
+        let _ = term;
+    }
     fn focus_other_pane_signal(&self);
     fn prev_tab_signal(&self);
     fn next_tab_signal(&self);
@@ -1504,8 +1519,7 @@ mod main_imp {
         /// Tabs explicitly renamed by the user. Their title is kept as-is and
         /// is not replaced by OSC titles coming from the running program.
         pub tab_custom_titles: RefCell<std::collections::HashMap<TerminalBox, String>>,
-        pub tab_labels:
-            RefCell<std::collections::HashMap<TerminalBox, (gtk::EventBox, gtk::Label)>>,
+        pub tab_labels: RefCell<std::collections::HashMap<TerminalBox, TabLabel>>,
         pub next_tab_number: RefCell<i64>,
         pub current_pages: RefCell<std::collections::HashMap<gtk::Notebook, u32>>,
         pub encoding_actions: RefCell<Vec<(gtk::CheckMenuItem, String)>>,
@@ -2061,14 +2075,15 @@ impl MainWindow {
     }
 
     fn get_tab_text(&self, term: &TerminalBox) -> String {
-        if let Some((_box, lbl)) = self.imp().tab_labels.borrow().get(term) {
-            return lbl.text().to_string();
+        if let Some(tab) = self.imp().tab_labels.borrow().get(term) {
+            return tab.label.text().to_string();
         }
         String::new()
     }
 
     fn set_tab_text(&self, term: &TerminalBox, text: &str) {
-        if let Some((_box, lbl)) = self.imp().tab_labels.borrow().get(term) {
+        if let Some(tab) = self.imp().tab_labels.borrow().get(term) {
+            let lbl = &tab.label;
             lbl.set_tooltip_text(Some(text));
             lbl.set_width_chars(Self::tab_label_width(text));
             let s = settings();
@@ -2166,7 +2181,8 @@ impl MainWindow {
         } else {
             s.get_str("tab_title_color")
         };
-        if let Some((_box, lbl)) = self.imp().tab_labels.borrow().get(term) {
+        if let Some(tab) = self.imp().tab_labels.borrow().get(term) {
+            let lbl = &tab.label;
             let text = lbl.text().to_string();
             if color.is_empty() {
                 lbl.set_text(&text);
@@ -3315,11 +3331,15 @@ impl MainWindow {
         *self.imp().moving_tab.borrow_mut() = true;
         let _moving = SplitGuard(&self.imp().moving_tab);
         src.remove_page(Some(idx));
-        let (lbl_box, lbl) = self.make_tab_label(&title, &term);
-        self.imp()
-            .tab_labels
-            .borrow_mut()
-            .insert(term.clone(), (lbl_box.clone(), lbl));
+        let (lbl_box, lbl, indicator) = self.make_tab_label(&title, &term);
+        self.imp().tab_labels.borrow_mut().insert(
+            term.clone(),
+            TabLabel {
+                event_box: lbl_box.clone(),
+                label: lbl,
+                indicator,
+            },
+        );
         dst.append_page(&term, Some(&lbl_box));
         dst.set_tab_reorderable(&term, true);
         dst.show_all();
@@ -3384,11 +3404,15 @@ impl MainWindow {
             Some(nb) => nb.clone(),
             None => self.active_notebook(),
         };
-        let (lbl_box, lbl) = self.make_tab_label(display_title.unwrap_or(&base), &term);
-        self.imp()
-            .tab_labels
-            .borrow_mut()
-            .insert(term.clone(), (lbl_box.clone(), lbl));
+        let (lbl_box, lbl, indicator) = self.make_tab_label(display_title.unwrap_or(&base), &term);
+        self.imp().tab_labels.borrow_mut().insert(
+            term.clone(),
+            TabLabel {
+                event_box: lbl_box.clone(),
+                label: lbl,
+                indicator,
+            },
+        );
         let idx = nb.append_page(&term, Some(&lbl_box));
         nb.set_tab_reorderable(&term, true);
         nb.set_show_tabs(settings().get_bool("show_tabs"));
@@ -3417,7 +3441,11 @@ impl MainWindow {
         text.chars().count().clamp(4, 28) as i32
     }
 
-    fn make_tab_label(&self, name: &str, term: &TerminalBox) -> (gtk::EventBox, gtk::Label) {
+    fn make_tab_label(
+        &self,
+        name: &str,
+        term: &TerminalBox,
+    ) -> (gtk::EventBox, gtk::Label, gtk::Label) {
         let eb = gtk::EventBox::new();
         let term2 = term.clone();
         let weak = crate::SendWeak::new(self);
@@ -3459,11 +3487,34 @@ impl MainWindow {
                 win.close_tab(Some(&term3));
             }
         });
+        let indicator = gtk::Label::new(Some("●"));
+        indicator.style_context().add_class("oxterm-tab-failure");
+        indicator.set_tooltip_text(Some("The last command in this tab failed"));
+        indicator.set_no_show_all(true);
+        indicator.hide();
+        box_.pack_start(&indicator, false, false, 0);
         box_.pack_start(&lbl, true, true, 0);
         box_.pack_start(&btn, false, false, 0);
         eb.add(&box_);
         eb.show_all();
-        (eb, lbl)
+        (eb, lbl, indicator)
+    }
+
+    /// Show or hide the failed-command dot. The tab the user is currently
+    /// looking at stays clean: they can already see the error.
+    fn set_tab_failure(&self, term: &TerminalBox, failed: bool) {
+        let watching = self.is_active()
+            && self.current_terminal().as_ref() == Some(term)
+            && term.vte().is_focus();
+        if let Some(tab) = self.imp().tab_labels.borrow().get(term) {
+            tab.indicator.set_visible(failed && !watching);
+        }
+    }
+
+    fn clear_tab_failure(&self, term: &TerminalBox) {
+        if let Some(tab) = self.imp().tab_labels.borrow().get(term) {
+            tab.indicator.hide();
+        }
     }
 
     fn on_tab_button_press(&self, term: &TerminalBox) {
@@ -3901,6 +3952,7 @@ impl MainWindow {
             self.imp().current_pages.borrow_mut().insert(nb, page_num);
         }
         if let Ok(term) = page.clone().downcast::<TerminalBox>() {
+            self.clear_tab_failure(&term);
             let weak = crate::SendWeak::new(&term);
             glib::idle_add_local(move || {
                 if let Some(t) = weak.upgrade() {
@@ -4601,6 +4653,14 @@ impl MainWindow {
         self.equalize_splits();
     }
 
+    pub fn set_tab_failure_signal(&self, term: &TerminalBox, failed: bool) {
+        self.set_tab_failure(term, failed);
+    }
+
+    pub fn clear_tab_failure_signal(&self, term: &TerminalBox) {
+        self.clear_tab_failure(term);
+    }
+
     pub fn prev_tab_signal(&self) {
         self.prev_tab();
     }
@@ -4967,6 +5027,12 @@ impl TerminalWindow for MainWindow {
     fn equalize_splits_signal(&self) {
         MainWindow::equalize_splits_signal(self);
     }
+    fn set_tab_failure_signal(&self, term: &TerminalBox, failed: bool) {
+        MainWindow::set_tab_failure_signal(self, term, failed);
+    }
+    fn clear_tab_failure_signal(&self, term: &TerminalBox) {
+        MainWindow::clear_tab_failure_signal(self, term);
+    }
     fn prev_tab_signal(&self) {
         MainWindow::prev_tab_signal(self);
     }
@@ -5161,6 +5227,7 @@ pub mod test_scenario {
             "new-window" => new_window(app, win),
             "split-zoom" => split_zoom(win),
             "theme-switch" => theme_switch(win),
+            "tab-failure" => tab_failure(win),
             other => Err(format!("unknown test scenario: {other}")),
         }
     }
@@ -5251,6 +5318,51 @@ pub mod test_scenario {
             ));
         }
         win.set_split("single", false);
+        Ok(())
+    }
+
+    fn tab_failure(win: &MainWindow) -> Result<(), String> {
+        let background = win
+            .current_terminal()
+            .ok_or_else(|| "no current terminal".to_string())?;
+        // A second tab makes the first one a background tab.
+        let foreground = add_sleep_tab(win, None, "foreground")?;
+        win.set_tab_failure_signal(&background, true);
+        let visible = win
+            .imp()
+            .tab_labels
+            .borrow()
+            .get(&background)
+            .map(|tab| tab.indicator.is_visible())
+            .unwrap_or(false);
+        if !visible {
+            return Err("the failed-command marker is not visible on a background tab".into());
+        }
+        win.clear_tab_failure_signal(&background);
+        let still_visible = win
+            .imp()
+            .tab_labels
+            .borrow()
+            .get(&background)
+            .map(|tab| tab.indicator.is_visible())
+            .unwrap_or(false);
+        if still_visible {
+            return Err("the failed-command marker was not cleared".into());
+        }
+        // A successful command clears a previous failure marker.
+        win.set_tab_failure_signal(&background, true);
+        win.set_tab_failure_signal(&background, false);
+        if win
+            .imp()
+            .tab_labels
+            .borrow()
+            .get(&background)
+            .map(|tab| tab.indicator.is_visible())
+            .unwrap_or(true)
+        {
+            return Err("success did not clear the marker".into());
+        }
+        let _ = foreground;
         Ok(())
     }
 

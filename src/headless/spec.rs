@@ -854,7 +854,28 @@ pub const SETTINGS: &[Setting] = &[
         "bell_notification",
         Kind::Bool,
         Default::Bool(false),
-        "Show a desktop notification when a background command rings the bell.",
+        "Enable desktop notifications when a command finishes (requires OSC 133).",
+    ),
+    setting(
+        "notify_only_unfocused",
+        Kind::Bool,
+        Default::Bool(true),
+        "Only notify when the terminal does not have keyboard focus.",
+    ),
+    setting(
+        "notify_min_seconds",
+        Kind::Int {
+            min: 0,
+            max: 86_400,
+        },
+        Default::Int(10),
+        "Skip notifications for commands shorter than this; 0 notifies for every command.",
+    ),
+    setting(
+        "notify_on_failure",
+        Kind::Bool,
+        Default::Bool(true),
+        "Notify when a command fails even if it was faster than notify_min_seconds.",
     ),
     setting(
         "pager_command",

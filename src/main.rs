@@ -119,6 +119,7 @@ impl App {
                 .oxterm-sticky-ok { color: #4faa5a; }
                 .oxterm-sticky-fail { color: #cc4b4b; }
                 .oxterm-sticky-run { color: #c9971f; }
+                .oxterm-tab-failure { color: #e01b24; font-size: 0.85em; }
             ";
             let _ = css_provider.load_from_data(css);
             if let Some(screen) = gdk::Screen::default() {
