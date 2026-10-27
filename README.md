@@ -46,6 +46,19 @@ memory footprint and the memory-safety guarantees of Rust.
 - System statistics for the local and remote host (CPU, memory, disk), SSH connection sharing with keepalives, `autossh` support, and `mosh` recognition
 - Optional close confirmation only when a terminal has an active foreground process
 
+## Screenshots
+
+![Oxterm with tabs, terminal output and the status bar](docs/screenshots/main.png)
+
+| Split panes | Command bar |
+| :---: | :---: |
+| ![Vertical split with two shells](docs/screenshots/splits.png) | ![Command bar with slash commands](docs/screenshots/command-bar.png) |
+
+The images come from an isolated profile running the release build, so they
+never contain real settings or shell history. Regenerate them after a UI change
+with `scripts/capture-screenshots.sh`; the script header lists the tools it
+needs (Xvnc, xdotool, ImageMagick, xfwm4).
+
 ## Requirements
 
 ### Using a release binary
