@@ -723,13 +723,9 @@ impl Settings {
     }
 
     pub fn get_color_scheme(&self) -> (String, String) {
-        self.ensure_loaded();
-        let data = self.data();
-        let scheme = data
-            .get("color_scheme")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Dark (Default)")
-            .to_string();
+        // Read through `get_str_default`, not the raw data, so command-line and
+        // profile overrides of `color_scheme` are honoured.
+        let scheme = self.get_str_default("color_scheme", "Dark (Default)");
         let pal = color_schemes()
             .get(scheme.as_str())
             .unwrap_or_else(|| color_schemes().get("Dark (Default)").unwrap());
@@ -740,20 +736,17 @@ impl Settings {
     }
 
     pub fn get_palette(&self) -> Value {
-        self.ensure_loaded();
-        let custom = self.data().get("custom_palette").cloned();
-        if let Some(Value::Object(map)) = custom {
+        // `get` applies session overrides, so `-o color_scheme=...` and colour
+        // schemes loaded from a profile change the palette as well.
+        let custom = self.get("custom_palette");
+        if let Value::Object(map) = custom {
             if !map.is_empty() {
                 return Value::Object(map);
             }
         }
-        let data = self.data();
-        let scheme = data
-            .get("color_scheme")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Dark (Default)");
+        let scheme = self.get_str_default("color_scheme", "Dark (Default)");
         let pal = color_palettes()
-            .get(scheme)
+            .get(scheme.as_str())
             .unwrap_or_else(|| color_palettes().get("Dark (Default)").unwrap());
         Value::Object(
             pal.iter()
