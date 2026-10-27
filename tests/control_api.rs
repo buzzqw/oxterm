@@ -98,6 +98,11 @@ fn run_cli(home: &Path, args: &[&str]) -> Output {
         .args(args)
         .env("HOME", home)
         .env("NO_AT_BRIDGE", "1")
+        // A developer running the suite from inside Oxterm inherits these;
+        // leaving them set makes the CLI talk to the outer window instead of
+        // the test instance.
+        .env_remove("OXTERM_CONTROL")
+        .env_remove("OXTERM_PANE")
         .stdin(Stdio::null())
         .output()
         .expect("run oxterm")
@@ -152,6 +157,11 @@ fn spawn_wait(home: &Path, pane: &str, timeout: &str) -> Child {
         .args(["wait", "--pane", pane, "--timeout", timeout])
         .env("HOME", home)
         .env("NO_AT_BRIDGE", "1")
+        // A developer running the suite from inside Oxterm inherits these;
+        // leaving them set makes the CLI talk to the outer window instead of
+        // the test instance.
+        .env_remove("OXTERM_CONTROL")
+        .env_remove("OXTERM_PANE")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -218,6 +228,8 @@ fn control_api_drives_tabs_panes_and_commands() {
         .env("HOME", home.path())
         .env("XDG_RUNTIME_DIR", home.path())
         .env("NO_AT_BRIDGE", "1")
+        .env_remove("OXTERM_CONTROL")
+        .env_remove("OXTERM_PANE")
         .stdin(Stdio::null())
         .stdout(log)
         .stderr(log_err)
@@ -258,6 +270,8 @@ fn control_api_drives_tabs_panes_and_commands() {
     let mut sender = Command::new(binary())
         .args(["send", "--pane", &pane, "--enter", "-"])
         .env("HOME", fixture.home.path())
+        .env_remove("OXTERM_CONTROL")
+        .env_remove("OXTERM_PANE")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

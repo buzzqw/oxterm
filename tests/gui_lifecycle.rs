@@ -95,6 +95,8 @@ fn run_scenario(scenario: &str) -> Result<(), String> {
         .env("XDG_RUNTIME_DIR", home.path())
         .env("OXTERM_TEST_SCENARIO", scenario)
         .env("NO_AT_BRIDGE", "1")
+        .env_remove("OXTERM_CONTROL")
+        .env_remove("OXTERM_PANE")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
