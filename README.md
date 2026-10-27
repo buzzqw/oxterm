@@ -499,20 +499,73 @@ cargo test --all-targets --locked
 cargo build --release --locked
 ```
 
-The suite includes unit tests for CLI parsing, frame bounds, metadata
-sanitization, and client buffering. `tests/remote_broker.rs` also starts the
-release binary as a real broker with two PTYs and verifies control commands,
-multi-client input/output, local forwarding toggles, detach, socket
-permissions, and cleanup. Run that integration test alone with:
+`src/headless/` is the display-free core: command line and control-command
+parsing, the settings schema and validation, JSON framing, diagnostics and the
+pure VI copy-mode helpers. It must not import GTK or VTE; `tests/headless.rs`
+enforces the boundary, and `cargo test --lib` runs it without a display.
+
+The suite also covers frame bounds, metadata sanitization, history and client
+buffering. `tests/remote_broker.rs` starts the release binary as a real broker
+with two PTYs and verifies control commands, multi-client input/output, local
+forwarding toggles, detach, socket permissions, and cleanup. Run that
+integration test alone with:
 
 ```bash
 cargo test --test remote_broker -- --nocapture
 ```
 
-The GitHub Actions workflows run the same checks and build an x86_64 release
-artifact on every commit push, pull request, and manual workflow dispatch on any
-branch. Version tags also trigger versioned release artifacts and checksum
-generation.
+### Generated documentation
+
+`--help`, the OPTIONS section of the man page, the bash/fish/zsh completions,
+`docs/settings.md`, the shortcut table in the manual and the command line block
+above are generated from `src/headless/spec.rs`. After changing an option, a
+setting or a description, regenerate and commit the result:
+
+```bash
+cargo run --bin oxterm-docgen
+cargo run --bin oxterm-docgen -- --check   # what CI runs
+```
+
+### Benchmarks
+
+Two dependency-free benchmarks guard the "lightweight and fast" promise. The
+core benchmark measures the hot headless paths; the startup benchmark measures
+the real binary, including GUI readiness, tab creation and RSS.
+
+```bash
+cargo run --release --example bench-core
+cargo run --release --example bench-core -- --check
+
+./scripts/bench-startup.sh                  # needs DISPLAY or WAYLAND_DISPLAY for the GUI part
+./scripts/bench-startup.sh --check
+./scripts/bench-startup.sh --write-baseline # after an intentional change
+```
+
+Reference numbers on a warm cache, release build, minimum of five runs (exact
+values depend on the machine and are only meant to show the order of magnitude):
+
+| Measurement | Reference |
+| --- | --- |
+| CLI parse (one invocation) | ~0.3 µs |
+| Effective defaults / validate all settings | ~9 µs / ~2 µs |
+| Load and validate a settings document | ~12 µs |
+| VI word motion (8 hops, long line) | ~6 µs |
+| JSON frame round trip | ~0.6 µs |
+| `--version` / `--list-settings` | ~27 ms |
+| Window ready, including the first shell | ~300 ms |
+| Five new tabs through the control API | ~400 ms |
+| RSS with the idle window / after five tabs | ~44 MB / ~46 MB |
+
+Baselines live in `bench/`. `--check` compares against them and exits non-zero
+past a tolerance (`BENCH_TOLERANCE`, default 4x for startup and 5x for the
+core; CI uses 6x for startup). The limits are deliberately generous: they catch
+algorithmic and packaging regressions, not run-to-run noise. Regenerate a
+baseline only when a change is understood and intended.
+
+The GitHub Actions workflows run the same checks, the documentation check, the
+GUI tests under Xvfb and both benchmarks, and build an x86_64 release artifact
+on every commit push, pull request, and manual workflow dispatch on any branch.
+Version tags also trigger versioned release artifacts and checksum generation.
 
 For maintainers, release automation is available through:
 
