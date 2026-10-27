@@ -327,7 +327,10 @@ stopping the broker. On attach the broker replays the most recent child output
 (bounded to a fixed size) so the program's screen is repainted instead of
 appearing blank, then nudges the foreground program to redraw. A reconnect still
 cannot recover output older than that replay window. The broker removes its
-socket after the shell exits.
+socket after the shell exits. Brokers are event driven: a session left without a
+GUI keeps its shell alive at no CPU cost, and a broker that stops making I/O
+progress for a few seconds terminates itself instead of spinning on a stuck
+descriptor.
 
 The listing columns are `ID`, `NAME`, `TITLE`, `DIRECTORY`, `STATUS`,
 `APPLICATION`, and `APP_STATUS`. `APP_STATUS` is `running` while the command is

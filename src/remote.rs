@@ -6,7 +6,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::settings;
 
@@ -26,6 +26,13 @@ const MAX_REPLAY: usize = 256 * 1024;
 /// broker polls, so this is the only way to notice a window resize before the
 /// next keystroke or output burst.
 const GUI_SIZE_POLL_MS: i32 = 100;
+/// A broker must always make progress or block in `poll`. If it keeps waking
+/// up without moving a single byte, something is signalling readiness forever
+/// (a closed descriptor reporting `POLLHUP`, a failed read/write loop) and the
+/// process would sit at 100% CPU. Give it a generous window, then exit rather
+/// than pin a core; the child inherits the hangup and is reaped.
+const STALL_WAKEUPS: u32 = 10_000;
+const STALL_WINDOW: Duration = Duration::from_secs(5);
 
 /// Last winsize applied to the child PTY, packed as `(columns << 32) | rows`.
 /// `set_child_size` becomes a no-op when the size is unchanged so that the
@@ -1125,6 +1132,11 @@ fn run_broker(path: &Path, id: &str) -> i32 {
     // broker resident for the rest of the session.
     let mut output_since_trim = 0usize;
     let mut trim_pending = false;
+    // Busy-loop guard: a broker that gets woken up over and over without moving
+    // any bytes is wedged (see `STALL_WAKEUPS`), so it is terminated instead of
+    // pinning a CPU core forever.
+    let mut stalled_wakeups = 0u32;
+    let mut last_progress = Instant::now();
 
     loop {
         // Only the GUI drives the child size while no remote client is
@@ -1143,7 +1155,12 @@ fn run_broker(path: &Path, id: &str) -> i32 {
             revents: 0,
         });
         poll_fds.push(libc::pollfd {
-            fd: CHILD_FD,
+            // `poll` reports `POLLHUP`/`POLLERR` even when `events` is zero, so
+            // a closed child must be removed from the set entirely. A negative
+            // descriptor is ignored (revents stays 0); leaving the fd in place
+            // made every iteration return immediately and spun the broker at
+            // 100% CPU once the child or the GUI endpoint was gone.
+            fd: if state.child_closed { -1 } else { CHILD_FD },
             events: if state.child_closed {
                 0
             } else {
@@ -1157,7 +1174,7 @@ fn run_broker(path: &Path, id: &str) -> i32 {
             revents: 0,
         });
         poll_fds.push(libc::pollfd {
-            fd: GUI_FD,
+            fd: if state.gui_closed { -1 } else { GUI_FD },
             events: if state.gui_closed {
                 0
             } else {
@@ -1215,8 +1232,14 @@ fn run_broker(path: &Path, id: &str) -> i32 {
                 }
                 trim_pending = false;
             }
+            // A poll timeout means the broker is idle, not stuck.
+            stalled_wakeups = 0;
+            last_progress = Instant::now();
             continue;
         }
+
+        // Bytes forwarded this iteration, used only by the stall guard below.
+        let mut moved = 0usize;
 
         if poll_fds[0].revents & libc::POLLIN != 0 {
             loop {
@@ -1227,6 +1250,7 @@ fn run_broker(path: &Path, id: &str) -> i32 {
                             continue;
                         }
                         let _ = stream.set_nonblocking(true);
+                        moved += 1;
                         clients.push(Client {
                             stream,
                             attached: false,
@@ -1248,6 +1272,7 @@ fn run_broker(path: &Path, id: &str) -> i32 {
                 let count =
                     unsafe { libc::read(CHILD_FD, bytes.as_mut_ptr() as *mut _, bytes.len()) };
                 if count > 0 {
+                    moved += count as usize;
                     broadcast_output(
                         &mut clients,
                         &mut gui_output,
@@ -1287,6 +1312,7 @@ fn run_broker(path: &Path, id: &str) -> i32 {
                 let count =
                     unsafe { libc::read(GUI_FD, bytes.as_mut_ptr() as *mut _, bytes.len()) };
                 if count > 0 {
+                    moved += count as usize;
                     if state.local_on {
                         queue_child_input(&mut state, &bytes[..count as usize]);
                     }
@@ -1322,29 +1348,49 @@ fn run_broker(path: &Path, id: &str) -> i32 {
                 );
             }
         }
+        let child_pending_before = state.child_input_pending;
         if !state.child_closed && !flush_child_input(&mut state) {
             state.child_closed = true;
         }
+        moved += child_pending_before.saturating_sub(state.child_input_pending);
+        let gui_pending_before = gui_pending;
         if !flush_gui(&mut gui_output, &mut gui_offset, &mut gui_pending) {
             state.local_on = false;
         }
+        moved += gui_pending_before.saturating_sub(gui_pending);
 
         let mut remove = Vec::new();
         for index in 0..clients.len() {
             let poll = poll_fds.get(index + 3).map(|p| p.revents).unwrap_or(0);
             if poll & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
-                && !read_client(index, &mut clients, &mut state)
+                && !read_client(index, &mut clients, &mut state, &mut moved)
             {
                 remove.push(index);
             }
+            let client_pending_before = clients[index].output_pending;
             if !clients[index].flush() {
                 remove.push(index);
             }
+            moved += client_pending_before.saturating_sub(clients[index].output_pending);
         }
         remove.sort_unstable();
         remove.dedup();
         for index in remove.into_iter().rev() {
             clients.remove(index);
+        }
+        if moved == 0 {
+            stalled_wakeups = stalled_wakeups.saturating_add(1);
+            if stalled_wakeups >= STALL_WAKEUPS && last_progress.elapsed() >= STALL_WINDOW {
+                eprintln!(
+                    "oxterm broker: no I/O progress for {:?} after {} wakeups; exiting",
+                    last_progress.elapsed(),
+                    stalled_wakeups
+                );
+                break;
+            }
+        } else {
+            stalled_wakeups = 0;
+            last_progress = Instant::now();
         }
         if state.kill_requested {
             break;
@@ -1403,7 +1449,12 @@ fn set_nonblocking(fd: RawFd) {
     }
 }
 
-fn read_client(index: usize, clients: &mut [Client], state: &mut BrokerState) -> bool {
+fn read_client(
+    index: usize,
+    clients: &mut [Client],
+    state: &mut BrokerState,
+    moved: &mut usize,
+) -> bool {
     let mut frames = Vec::new();
     {
         let client = &mut clients[index];
@@ -1411,7 +1462,10 @@ fn read_client(index: usize, clients: &mut [Client], state: &mut BrokerState) ->
         loop {
             match client.stream.read(&mut bytes) {
                 Ok(0) => return false,
-                Ok(count) => client.input.extend_from_slice(&bytes[..count]),
+                Ok(count) => {
+                    *moved += count;
+                    client.input.extend_from_slice(&bytes[..count]);
+                }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(_) => return false,

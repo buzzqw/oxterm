@@ -54,6 +54,17 @@ fn open_pty() -> io::Result<(RawFd, RawFd)> {
     }
 }
 
+fn set_cloexec(fd: RawFd) -> io::Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 fn set_raw(fd: RawFd) -> io::Result<()> {
     let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
     if unsafe { libc::tcgetattr(fd, termios.as_mut_ptr()) } != 0 {
@@ -241,6 +252,12 @@ fn start_broker() -> io::Result<Fixture> {
         .join("oxterm-test-session.sock");
     let (child_master, child_slave) = open_pty()?;
     let (gui_master, gui_slave) = open_pty()?;
+    // Only the descriptors the broker explicitly duplicates (3 and 4) should
+    // survive the exec. Without this the broker keeps a copy of the GUI PTY
+    // master, so closing it here would never look like a closed GUI endpoint.
+    for fd in [child_master, child_slave, gui_master, gui_slave] {
+        set_cloexec(fd)?;
+    }
     set_raw(child_slave)?;
     set_raw(gui_slave)?;
 
@@ -261,6 +278,11 @@ fn start_broker() -> io::Result<Fixture> {
                 if libc::dup2(child_master, 3) < 0 || libc::dup2(gui_slave, 4) < 0 {
                     return Err(io::Error::last_os_error());
                 }
+                // `dup2` leaves FD_CLOEXEC untouched when both descriptors are
+                // the same number (e.g. `child_master` is already 3), which
+                // would make exec close the broker's own PTY ends.
+                libc::fcntl(3, libc::F_SETFD, 0);
+                libc::fcntl(4, libc::F_SETFD, 0);
                 Ok(())
             })
             .spawn()?
@@ -278,6 +300,27 @@ fn start_broker() -> io::Result<Fixture> {
     };
     wait_for_socket(&fixture.socket, &mut fixture.child)?;
     Ok(fixture)
+}
+
+/// CPU time (user + system) consumed by a process, in clock ticks.
+fn cpu_ticks(pid: u32) -> io::Result<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
+    let fields: Vec<&str> = stat
+        .rsplit_once(')')
+        .map(|(_, rest)| rest)
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect();
+    // After the command name, utime is field 14 and stime field 15.
+    let utime = fields
+        .get(11)
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let stime = fields
+        .get(12)
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    Ok(utime + stime)
 }
 
 fn wait_for_size(fd: RawFd, expected: (u16, u16), timeout: Duration) -> io::Result<(u16, u16)> {
@@ -310,6 +353,36 @@ fn broker_tracks_gui_resizes_without_terminal_io() -> io::Result<()> {
         wait_for_size(fixture.child_slave, (90, 30), Duration::from_secs(2))?,
         (90, 30),
         "child PTY did not follow a second GUI PTY resize"
+    );
+    Ok(())
+}
+
+#[test]
+fn broker_stays_idle_after_the_gui_endpoint_closes() -> io::Result<()> {
+    let mut fixture = start_broker()?;
+
+    // Closing the GUI PTY used to leave the broker polling a descriptor that
+    // reports POLLHUP forever: `poll` returned immediately on every iteration
+    // and the process burned a full CPU core while the session sat idle.
+    unsafe { libc::close(fixture.gui_master) };
+    fixture.gui_master = -1;
+    thread::sleep(Duration::from_millis(300));
+
+    let pid = fixture.child.id();
+    let before = cpu_ticks(pid)?;
+    thread::sleep(Duration::from_millis(700));
+    let after = cpu_ticks(pid)?;
+
+    assert!(
+        fixture.child.try_wait()?.is_none(),
+        "the broker must keep the session alive after the GUI goes away"
+    );
+    // A busy loop consumes roughly 70 ticks in 700ms (100Hz clock); an idle
+    // broker needs next to none.
+    let ticks = after - before;
+    assert!(
+        ticks < 20,
+        "broker burned {ticks} CPU ticks while idle after the GUI closed"
     );
     Ok(())
 }

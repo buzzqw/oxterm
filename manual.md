@@ -147,7 +147,10 @@ forwarding to be disabled without releasing the shell session. On attach the
 broker replays the most recent child output (bounded to a fixed size) to repaint
 the screen and then nudges the foreground program to redraw; output older than
 that window is not kept, so Oxterm does not persist full scrollback. When the
-shell exits, the broker removes the session socket.
+shell exits, the broker removes the session socket. Brokers are event driven: a
+session left without a GUI keeps its shell alive at no CPU cost, and a broker
+that stops making I/O progress for a few seconds terminates itself instead of
+spinning on a stuck descriptor.
 
 The listing columns are `ID`, `NAME`, `TITLE`, `DIRECTORY`, `STATUS`,
 `APPLICATION`, and `APP_STATUS`. The application column contains the latest
