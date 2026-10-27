@@ -1994,6 +1994,7 @@ impl MainWindow {
     fn set_tab_text(&self, term: &TerminalBox, text: &str) {
         if let Some((_box, lbl)) = self.imp().tab_labels.borrow().get(term) {
             lbl.set_tooltip_text(Some(text));
+            lbl.set_width_chars(Self::tab_label_width(text));
             let s = settings();
             let active_color = s.get_str("tab_active_title_color");
             let title_color = s.get_str("tab_title_color");
@@ -3287,6 +3288,14 @@ impl MainWindow {
         term
     }
 
+    /// Minimum character width for a tab label. `GtkNotebook` sizes a tab from
+    /// the label's *minimum* width, so an ellipsized label with no explicit
+    /// width collapses to a bare ellipsis. The cap matches `max_width_chars`
+    /// above so long titles still ellipsize instead of widening the tab.
+    fn tab_label_width(text: &str) -> i32 {
+        text.chars().count().clamp(4, 28) as i32
+    }
+
     fn make_tab_label(&self, name: &str, term: &TerminalBox) -> (gtk::EventBox, gtk::Label) {
         let eb = gtk::EventBox::new();
         let term2 = term.clone();
@@ -3311,6 +3320,7 @@ impl MainWindow {
         // and the older terminal would be clipped instead of reflowing.
         lbl.set_ellipsize(pango::EllipsizeMode::End);
         lbl.set_max_width_chars(28);
+        lbl.set_width_chars(Self::tab_label_width(name));
         lbl.set_single_line_mode(true);
         lbl.set_tooltip_text(Some(name));
         let btn = gtk::Button::new();
