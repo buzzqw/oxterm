@@ -1,6 +1,6 @@
 # Maintainer: Oxterm maintainers <https://github.com/buzzqw/oxterm/issues>
 pkgname=oxterm
-pkgver=1.1.18
+pkgver=1.1.19
 pkgrel=1
 pkgdesc="Lightweight GTK3/VTE terminal emulator with notes, command history and remote sessions"
 arch=('x86_64' 'aarch64')
