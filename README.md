@@ -29,6 +29,7 @@ memory footprint and the memory-safety guarantees of Rust.
 - Tabs with reorder, rename, move, detach, and independent windows
 - tmux-like single, vertical, and horizontal split layouts, with a configurable prefix key (`Ctrl+B` by default)
 - 247 built-in themes, optional drop-in Ghostty/iTerm2 theme files, automatic light/dark switching, configurable font, colors, 16-color palettes, cursor, opacity, padding, and encoding
+- Typography controls: antialiasing and hinting, cell height and width scaling, optional HarfBuzz shaping, and ligature-friendly fonts
 - Live Preferences reload without restarting the application
 - SQLite command history with reverse search, filters, read-only SQL, replay, command duration, and Git branch metadata
 - Scrollback search with match navigation, clickable `http`/`https` links, and broadcast input across panes
@@ -591,8 +592,10 @@ cargo run --bin oxterm-docgen -- --check   # what CI runs
 
 Two dependency-free benchmarks guard the "lightweight and fast" promise. The
 core benchmark measures the hot headless paths; the startup benchmark measures
-the real binary, including GUI readiness, tab creation and RSS. A third script
-compares Oxterm head to head with another terminal (Ghostty by default).
+the real binary, including GUI readiness, tab creation and RSS. Two further
+scripts look outward: one compares Oxterm head to head with another terminal
+(Ghostty by default), and one measures the input-to-model latency of the
+control path.
 
 ```bash
 cargo run --release --example bench-core
@@ -638,21 +641,30 @@ GHOSTTY_BIN=/path/to/other-terminal ./scripts/bench-compare.sh
 ```
 
 Measured on CachyOS with an X11 session at 1920x1080, default configuration,
-font size 12, release build, minimum of five runs; absolute values depend on
-the machine:
+font size 12, release build, median of three sets of five runs; absolute values
+depend on the machine and on its load:
 
 | Measurement | Oxterm | Ghostty 1.3.1 |
 | --- | --- | --- |
-| Spawn to first visible window | 369 ms | 387 ms |
-| Spawn to the command inside the terminal | 211 ms | 418 ms |
-| Drain 100 000 ANSI-coloured lines (8.8 MB) | 112 ms | 237 ms |
-| Total tree RSS when idle | 108 MB | 182 MB |
+| Spawn to first visible window | 388 ms | 392 ms |
+| Spawn to the command inside the terminal | 262 ms | 434 ms |
+| Drain 100 000 ANSI-coloured lines (8.8 MB) | 116 ms | 235 ms |
+| CPU to drain, terminal only | 201 ms | 429 ms |
+| CPU to drain, GUI process | 103 ms | 377 ms |
+| Total tree RSS when idle | 109 MB | 181 MB |
 | Peak tree RSS under the payload | 112 MB | 201 MB |
 
-Oxterm is ahead on every row, but the margins are not the whole story:
-`drain_ms` varies by about 50% between runs at this payload size, and Ghostty's
-real advantage is smoothness, input latency and rendering quality, none of which
-this script measures.
+CPU time is the more informative row: wall time in the drain test is bounded by
+how each terminal acknowledges PTY output, while CPU time shows what the
+machine actually spends. It is sampled from the threads of the terminal's own
+processes (`schedstat`), excluding the shell and the payload command, so it
+covers Oxterm's PTY broker and Ghostty's worker threads alike.
+
+Oxterm is ahead on every row in this synthetic workload, but the margins are not
+the whole story: `drain_ms` varies by about 50% between runs at this payload
+size, and Ghostty's real advantage is smoothness, input latency and rendering
+quality, which this script does not measure (the next section measures the part
+it can).
 
 The window metrics need X11 and `xdotool`; Wayland-only sessions are not
 supported yet (run the script under `xvfb-run` in CI). Windows are matched by
@@ -667,6 +679,55 @@ GPU frame times — its actual strength — are not measured here. Tree RSS coun
 the PTY broker and the shell, which is why it is larger than the single-process
 figures reported above.
 
+#### Input latency
+
+`scripts/bench-latency.py` types a unique marker into a running pane through the
+control socket and polls `capture` until the marker appears in the terminal's
+text model. That covers the part of the input path Oxterm controls: keystroke,
+control socket, GUI PTY, broker, shell PTY, line-discipline echo and back into
+VTE. Two baselines keep the numbers honest: `ping` is a no-op control round
+trip and `capture` is one screen-text extraction.
+
+```bash
+./scripts/bench-latency.py --table
+./scripts/bench-latency.py --runs 200
+./scripts/bench-latency.py --variant fast:cursor_blink=false,text_shaping=false
+```
+
+| Variant | ping p50 | capture p50 | echo p50 | echo p95 |
+| --- | --- | --- | --- | --- |
+| defaults | 0.30 ms | 0.25 ms | 16.2 ms | 17.3 ms |
+| no-blink | 0.30 ms | 0.24 ms | 16.3 ms | 17.3 ms |
+| transparency | 0.41 ms | 0.37 ms | 16.2 ms | 17.2 ms |
+| no-shaping | 0.15 ms | 0.09 ms | 16.2 ms | 17.3 ms |
+| fast | 0.31 ms | 0.28 ms | 16.2 ms | 17.2 ms |
+
+The round trip is one 60 Hz frame for every variant: transparency, cursor
+blink, shaping and smooth scrolling do not move it, because the limit is VTE's
+processing cadence rather than anything Oxterm adds. The broker and the control
+API together stay below 0.5 ms, which is the useful negative result of this
+measurement — it says not to trade visual features for input latency.
+
+What it does not measure is input to photon. Frame pacing, compositor latency
+and glyph rasterization need frame-level timestamps from a renderer, which is
+exactly where a GPU terminal like Ghostty is expected to win.
+
+#### What the PTY broker costs
+
+The broker relays every byte between two PTYs. Across the measurement sets it
+accounts for roughly half of the CPU Oxterm spends draining the 8.8 MB payload
+— about as much as VTE itself. Two experiments shaped the conclusion:
+
+- Moving the two relay directions from 8 KiB to 64 KiB reads changed neither
+  drain time nor CPU beyond run-to-run noise (±17% across rounds, both
+  directions), so the cost is the per-byte copy, not the syscall count.
+- Lowering the broker's idle wakeup from 100 ms to 10 ms left the input round
+  trip at 16.3 ms, so the broker is not where the frame of latency comes from.
+
+A `splice`-based relay is the next step if per-byte CPU ever becomes a
+priority; it is deliberately not done yet, because it complicates the remote
+client fan-out for no measured gain in wall time.
+
 Read the rest of the table the same way: Oxterm is a GTK3 frontend that
 delegates the parser, the grid and the drawing to VTE, while Ghostty ships its
 own Zig core with a GPU renderer. The comparison is a fair end-to-end verdict
@@ -674,7 +735,7 @@ on the two products, but it measures VTE+GTK against Ghostty — not Oxterm's ow
 code.
 
 The GitHub Actions workflows run the same checks, the documentation check, the
-GUI tests under Xvfb and both benchmarks, and build an x86_64 release artifact
+GUI tests under Xvfb and the benchmark checks, and build an x86_64 release artifact
 on every commit push, pull request, and manual workflow dispatch on any branch.
 Version tags also trigger versioned release artifacts and checksum generation.
 

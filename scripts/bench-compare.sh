@@ -111,6 +111,55 @@ tree_sum_kb() {
     printf '%s' "${total}"
 }
 
+# CPU time is the honest efficiency metric: wall time in the drain test is
+# bounded by how each terminal acknowledges PTY output, while CPU time shows
+# what the machine actually spends to consume the same bytes.
+CLK_TCK="$(getconf CLK_TCK 2>/dev/null || printf '100')"
+
+proc_ticks() {
+    local stat rest
+    stat="$(cat "/proc/$1/stat" 2>/dev/null)" || { printf '0'; return 0; }
+    rest="${stat##*) }"
+    # shellcheck disable=SC2086
+    set -- ${rest}
+    printf '%s' "$(( ${12:-0} + ${13:-0} ))"
+}
+
+# /proc/<pid>/stat counts in 10 ms clock ticks, which is too coarse to see the
+# relay's per-byte cost. schedstat reports nanoseconds, but it is per *task*:
+# summing the threads is required, otherwise a terminal that parses on worker
+# threads (Ghostty) would look ten times cheaper than it is. Fall back to ticks
+# when the kernel has no schedstats.
+proc_ns() {
+    local value
+    if value="$(awk 'FNR == 1 { total += $1 } END { printf "%d", total }' \
+        "/proc/$1/task/"*/schedstat 2>/dev/null)" && [[ -n "${value}" ]]; then
+        printf '%s' "${value}"
+        return 0
+    fi
+    printf '%s' "$(( $(proc_ticks "$1") * 1000000000 / CLK_TCK ))"
+}
+
+# CPU of the terminal itself: the process we started plus the helpers that run
+# the same executable (Oxterm's PTY broker). The payload command and the shell
+# are excluded on purpose: they would disappear before the final sample and
+# their cost is not the terminal's.
+term_ns() {
+    local pid="$1" exe="$2" total child target
+    total="$(proc_ns "${pid}")"
+    for child in $(children_of "${pid}"); do
+        target="$(readlink "/proc/${child}/exe" 2>/dev/null || true)"
+        if [[ "${target}" == "${exe}" ]]; then
+            total=$(( total + $(term_ns "${child}" "${exe}") ))
+        fi
+    done
+    printf '%s' "${total}"
+}
+
+ns_to_ms() {
+    awk -v ns="$1" 'BEGIN { printf "%.1f", ns / 1000000 }'
+}
+
 stop_term() {
     local pid="${APP_PID}" child waited=0
     APP_PID=""
@@ -270,10 +319,10 @@ measure_startup() {
     printf '%s %s\n' "${ms}" "${rss}"
 }
 
-# measure_payload TERM PAYLOAD -> "exec_ms drain_ms peak_rss_kb"
+# measure_payload TERM PAYLOAD -> "exec_ms drain_ms peak_rss_kb cpu_ms gui_cpu_ms"
 measure_payload() {
     local term="$1" payload="$2" class home runtime started done script
-    local t0 t_started t_done exec_ms drain_ms peak
+    local t0 t_started t_done exec_ms drain_ms peak cpu gui_cpu cpu_start gui_cpu_start
     CLASS_SEQ=$(( CLASS_SEQ + 1 ))
     class="oxterm-bench-$$-${CLASS_SEQ}"
     home="${TMP_DIR}/${term}-home-${CLASS_SEQ}"
@@ -292,6 +341,10 @@ measure_payload() {
         return 1
     fi
     t_started="$(now_ns)"
+    local exe
+    exe="$(readlink "/proc/${APP_PID}/exe" 2>/dev/null || true)"
+    cpu_start="$(term_ns "${APP_PID}" "${exe}")"
+    gui_cpu_start="$(proc_ns "${APP_PID}")"
     if ! wait_for_file "${done}" "${PAYLOAD_TIMEOUT}"; then
         stop_term
         printf '%s\n' "bench-compare: ${term} did not finish the payload" >&2
@@ -302,11 +355,13 @@ measure_payload() {
     # reflects the scrollback the payload actually allocated.
     sleep 0.3
     peak="$(tree_sum_kb "${APP_PID}" VmHWM)"
+    cpu="$(ns_to_ms "$(( $(term_ns "${APP_PID}" "${exe}") - cpu_start ))" )"
+    gui_cpu="$(ns_to_ms "$(( $(proc_ns "${APP_PID}") - gui_cpu_start ))" )"
     stop_term
 
     exec_ms=$(( (t_started - t0) / 1000000 ))
     drain_ms=$(( (t_done - t_started) / 1000000 ))
-    printf '%s %s %s\n' "${exec_ms}" "${drain_ms}" "${peak}"
+    printf '%s %s %s %s %s\n' "${exec_ms}" "${drain_ms}" "${peak}" "${cpu}" "${gui_cpu}"
 }
 
 # --- payload ---------------------------------------------------------------
@@ -352,6 +407,8 @@ for term in "${TERMS[@]}"; do
     exec_best=""
     drain_best=""
     peak_best=""
+    cpu_best=""
+    gui_cpu_best=""
     for _ in $(seq "${RUNS}"); do
         if out="$(measure_startup "${term}")"; then
             read -r m r <<<"${out}"
@@ -365,7 +422,7 @@ for term in "${TERMS[@]}"; do
             have_failure=1
         fi
         if out="$(measure_payload "${term}" "${PAYLOAD}")"; then
-            read -r e d p <<<"${out}"
+            read -r e d p c g <<<"${out}"
             if [[ -z "${exec_best}" || "${e}" -lt "${exec_best}" ]]; then
                 exec_best="${e}"
             fi
@@ -374,6 +431,12 @@ for term in "${TERMS[@]}"; do
             fi
             if [[ -z "${peak_best}" || "${p}" -lt "${peak_best}" ]]; then
                 peak_best="${p}"
+            fi
+            if [[ -z "${cpu_best}" ]] || awk -v a="${c}" -v b="${cpu_best}" 'BEGIN { exit !(a < b) }'; then
+                cpu_best="${c}"
+            fi
+            if [[ -z "${gui_cpu_best}" ]] || awk -v a="${g}" -v b="${gui_cpu_best}" 'BEGIN { exit !(a < b) }'; then
+                gui_cpu_best="${g}"
             fi
         else
             have_failure=1
@@ -384,6 +447,8 @@ for term in "${TERMS[@]}"; do
     RESULT["${term}.exec_ms"]="${exec_best}"
     RESULT["${term}.drain_ms"]="${drain_best}"
     RESULT["${term}.peak_rss_kb"]="${peak_best}"
+    RESULT["${term}.drain_cpu_ms"]="${cpu_best}"
+    RESULT["${term}.drain_gui_cpu_ms"]="${gui_cpu_best}"
 done
 
 printf '%s\n' "bench-compare: payload ${PAYLOAD_BYTES} bytes, ${PAYLOAD_LINES} lines" \
@@ -403,6 +468,9 @@ print_table() {
     format_row "Startup to window (ms)" ".startup_ms"
     format_row "Spawn to command (ms)" ".exec_ms"
     format_row "Drain ${PAYLOAD_LINES} lines (ms)" ".drain_ms"
+    format_row "Drain throughput (MB/s)" ".drain_ms" mbs
+    format_row "Drain CPU, terminal (ms)" ".drain_cpu_ms"
+    format_row "Drain CPU, GUI process (ms)" ".drain_gui_cpu_ms"
     format_row "Idle RSS (MiB)" ".idle_rss_kb" mib
     format_row "Peak RSS under load (MiB)" ".peak_rss_kb" mib
 }
@@ -416,6 +484,9 @@ format_row() {
             cell="n/a"
         elif [[ "${unit}" == mib ]]; then
             cell="$(awk -v kb="${value}" 'BEGIN { printf "%.1f", kb / 1024 }')"
+        elif [[ "${unit}" == mbs ]]; then
+            cell="$(awk -v ms="${value}" -v bytes="${PAYLOAD_BYTES}" \
+                'BEGIN { printf "%.1f", bytes / 1048576 / (ms / 1000) }')"
         else
             cell="${value}"
         fi
@@ -432,7 +503,8 @@ baseline_value() {
 emit_results() {
     local term
     for term in "${TERMS[@]}"; do
-        for suffix in startup_ms idle_rss_kb exec_ms drain_ms peak_rss_kb; do
+        for suffix in startup_ms idle_rss_kb exec_ms drain_ms peak_rss_kb \
+            drain_cpu_ms drain_gui_cpu_ms; do
             local value="${RESULT[${term}.${suffix}]:-}"
             [[ -n "${value}" ]] || continue
             printf '%s.%s=%s\n' "${term}" "${suffix}" "${value}"
@@ -465,7 +537,8 @@ case "${MODE}" in
     --check)
         failed=0
         for term in "${TERMS[@]}"; do
-            for suffix in startup_ms exec_ms drain_ms idle_rss_kb peak_rss_kb; do
+            for suffix in startup_ms exec_ms drain_ms idle_rss_kb peak_rss_kb \
+                drain_cpu_ms drain_gui_cpu_ms; do
                 key="${term}.${suffix}"
                 measured="${RESULT[${key}]:-}"
                 base="$(baseline_value "${key}")"

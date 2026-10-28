@@ -2,13 +2,17 @@
 # Times are milliseconds (minimum of 5 runs); RSS is KiB.
 # Oxterm and Ghostty are measured on the same display with an
 # isolated HOME; see the header of the script for the caveats.
-oxterm.startup_ms=369
-oxterm.idle_rss_kb=110996
-oxterm.exec_ms=211
-oxterm.drain_ms=112
-oxterm.peak_rss_kb=114688
-ghostty.startup_ms=387
-ghostty.idle_rss_kb=186240
-ghostty.exec_ms=418
-ghostty.drain_ms=237
-ghostty.peak_rss_kb=205912
+oxterm.startup_ms=476
+oxterm.idle_rss_kb=110912
+oxterm.exec_ms=262
+oxterm.drain_ms=149
+oxterm.peak_rss_kb=113364
+oxterm.drain_cpu_ms=221.7
+oxterm.drain_gui_cpu_ms=99.6
+ghostty.startup_ms=423
+ghostty.idle_rss_kb=185792
+ghostty.exec_ms=447
+ghostty.drain_ms=213
+ghostty.peak_rss_kb=205540
+ghostty.drain_cpu_ms=395.6
+ghostty.drain_gui_cpu_ms=337.7
