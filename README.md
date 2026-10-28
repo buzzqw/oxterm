@@ -663,11 +663,13 @@ machine actually spends. It is sampled from the threads of the terminal's own
 processes (`schedstat`), excluding the shell and the payload command, so it
 covers Oxterm's PTY broker and Ghostty's worker threads alike.
 
-Oxterm is ahead on every row in this synthetic workload, but the margins are not
-the whole story: `drain_ms` varies by about 50% between runs at this payload
-size, and Ghostty's real advantage is smoothness, input latency and rendering
-quality, which this script does not measure (the next section measures the part
-it can).
+Oxterm is ahead on execution, drain, CPU and memory in every set; only startup
+is a coin flip, swapping places between sets within run-to-run noise. The drain
+margin is real but imprecise: Oxterm's minimum ranged from 85 ms to 156 ms
+across three sets of five runs, while Ghostty stayed within 10%, so read it as
+an order of magnitude. What the script cannot see is Ghostty's actual strength,
+smoothness and rendering quality; the next section bounds Oxterm's own input
+path, but it does not compare it with Ghostty.
 
 The window metrics need X11 and `xdotool`; Wayland-only sessions are not
 supported yet (run the script under `xvfb-run` in CI). Windows are matched by
