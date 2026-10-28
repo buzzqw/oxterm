@@ -1,5 +1,14 @@
-use std::cell::Cell;
-use std::cell::RefCell;
+//! Preferences and information dialogs.
+//!
+//! The preferences window is a searchable stack of focused pages. A filter box
+//! at the top hides every setting that does not match the query and switches to
+//! the first page with a hit; each row shows its explanation under the label
+//! instead of hiding it in a tooltip. Rows register themselves while the pages
+//! are built (see [`Page`]), so a new setting is searchable as soon as it is
+//! added. Every page is restored independently, and the dialog as a whole can
+//! be reset to the documented defaults from `spec`.
+
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -27,98 +36,1556 @@ fn rgba_to_hex(rgba: &gdk::RGBA) -> String {
     )
 }
 
+// -- Documented defaults ----------------------------------------------------
+//
+// `spec` is the single source of truth for defaults, so "Restore Defaults"
+// cannot drift from `--show-config` or the generated documentation.
+
+fn default_value(key: &str) -> serde_json::Value {
+    spec::find(key)
+        .map(|setting| setting.default_value())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+fn default_str(key: &str) -> String {
+    default_value(key).as_str().unwrap_or("").to_string()
+}
+
+fn default_bool(key: &str) -> bool {
+    default_value(key).as_bool().unwrap_or(false)
+}
+
+fn default_i64(key: &str) -> i64 {
+    default_value(key).as_i64().unwrap_or(0)
+}
+
+fn default_f64(key: &str) -> f64 {
+    default_value(key).as_f64().unwrap_or(0.0)
+}
+
+// -- Enumerated values ------------------------------------------------------
+//
+// Each entry is (stored value, label). Keeping them in one place means the
+// combo box, the apply step and the reset step agree on the ordering.
+
+type Choices = &'static [(&'static str, &'static str)];
+
+const DYNAMIC_TITLE: Choices = &[
+    ("replace", "Replace initial title"),
+    ("before", "Goes before initial title"),
+    ("after", "Goes after initial title"),
+    ("hide", "Isn't displayed"),
+];
+
+const SCROLLBAR_POSITION: Choices = &[
+    ("right", "Right side"),
+    ("left", "Left side"),
+    ("disabled", "Disabled"),
+];
+
+const CURSOR_SHAPE: Choices = &[
+    ("block", "Block (filled rectangle)"),
+    ("underline", "Underline"),
+    ("ibeam", "I-beam"),
+];
+
+const UNDERLINE_STYLE: Choices = &[
+    ("single", "Single"),
+    ("double", "Double"),
+    ("curly", "Curly"),
+    ("dashed", "Dashed"),
+    ("dotted", "Dotted"),
+];
+
+const BACKSPACE_BINDING: Choices = &[
+    ("auto", "Auto-detect"),
+    ("ascii-del", "ASCII DEL (127)"),
+    ("escape-sequence", "Escape sequence"),
+    ("control-h", "Control-H (8)"),
+];
+
+const DELETE_BINDING: Choices = &[
+    ("auto", "Auto-detect"),
+    ("escape-sequence", "Escape sequence"),
+    ("ascii-del", "ASCII DEL (127)"),
+    ("control-h", "Control-H (8)"),
+];
+
+const ENCODINGS: &[&str] = &[
+    "UTF-8",
+    "ISO-8859-1",
+    "ISO-8859-15",
+    "UTF-16",
+    "UTF-16BE",
+    "UTF-16LE",
+    "CP1252",
+    "CP850",
+    "ASCII",
+    "KOI8-R",
+    "Shift_JIS",
+    "EUC-JP",
+    "GBK",
+];
+
+fn index_of(choices: Choices, value: &str) -> u32 {
+    choices
+        .iter()
+        .position(|(stored, _)| *stored == value)
+        .unwrap_or(0) as u32
+}
+
+fn combo_for(choices: Choices, current: &str) -> gtk::ComboBoxText {
+    let combo = gtk::ComboBoxText::new();
+    for (_, label) in choices {
+        combo.append_text(label);
+    }
+    combo.set_active(Some(index_of(choices, current)));
+    combo
+}
+
+fn combo_value(combo: &gtk::ComboBoxText, choices: Choices, fallback: &str) -> String {
+    combo
+        .active()
+        .and_then(|index| choices.get(index as usize))
+        .map(|(stored, _)| (*stored).to_string())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn theme_combo(current: &str) -> gtk::ComboBoxText {
+    let combo = gtk::ComboBoxText::new();
+    let mut names = Vec::new();
+    for name in settings::color_schemes().keys() {
+        combo.append_text(name);
+        names.push(name.to_string());
+    }
+    let index = names.iter().position(|name| name == current).unwrap_or(0);
+    combo.set_active(Some(index as u32));
+    combo
+}
+
+fn encoding_combo(current: &str) -> gtk::ComboBoxText {
+    let combo = gtk::ComboBoxText::new();
+    for encoding in ENCODINGS {
+        combo.append_text(encoding);
+    }
+    let index = ENCODINGS
+        .iter()
+        .position(|name| *name == current)
+        .unwrap_or(0);
+    combo.set_active(Some(index as u32));
+    combo
+}
+
+// -- Search index -----------------------------------------------------------
+
+#[derive(Default)]
+struct FilterIndex {
+    rows: RefCell<Vec<FilterRow>>,
+    sections: RefCell<Vec<FilterSection>>,
+}
+
+struct FilterRow {
+    widgets: Vec<gtk::Widget>,
+    /// Lower-cased text matched against the search query.
+    haystack: String,
+    page: &'static str,
+}
+
+struct FilterSection {
+    header: gtk::Widget,
+    /// Indices into [`FilterIndex::rows`] belonging to this section.
+    rows: Vec<usize>,
+    /// Explanatory paragraphs that follow the section header.
+    extras: Vec<gtk::Widget>,
+}
+
+fn caption_label(text: &str) -> gtk::Label {
+    let label = gtk::Label::new(Some(text));
+    label.set_xalign(0.0);
+    label.set_halign(gtk::Align::Start);
+    label.set_line_wrap(true);
+    label.set_max_width_chars(46);
+    label.style_context().add_class("dim-label");
+    label.style_context().add_class("settings-caption");
+    label
+}
+
+/// Builds one preferences page and records every row for the search filter.
+struct Page {
+    id: &'static str,
+    title: &'static str,
+    grid: gtk::Grid,
+    index: Rc<FilterIndex>,
+    next_row: Cell<i32>,
+    section: Cell<Option<usize>>,
+}
+
+impl Page {
+    fn new(id: &'static str, title: &'static str, index: Rc<FilterIndex>) -> Page {
+        let grid = gtk::Grid::new();
+        grid.set_column_spacing(18);
+        grid.set_row_spacing(10);
+        Page {
+            id,
+            title,
+            grid,
+            index,
+            next_row: Cell::new(0),
+            section: Cell::new(None),
+        }
+    }
+
+    fn section(&self, title: &str) {
+        let row = self.next_row.get();
+        let label = gtk::Label::new(None);
+        label.set_markup(&format!("<b>{}</b>", title));
+        label.set_halign(gtk::Align::Start);
+        label.set_xalign(0.0);
+        label.set_margin_top(if row == 0 { 0 } else { 14 });
+        self.grid.attach(&label, 0, row, 2, 1);
+        self.next_row.set(row + 1);
+        self.index.sections.borrow_mut().push(FilterSection {
+            header: label.upcast(),
+            rows: Vec::new(),
+            extras: Vec::new(),
+        });
+        self.section
+            .set(Some(self.index.sections.borrow().len() - 1));
+    }
+
+    /// Adds a labelled setting. The explanation is the tooltip text, mirrored
+    /// under the label so it is readable without hovering.
+    fn row(&self, label: &str, widget: &impl IsA<gtk::Widget>) -> &Self {
+        self.row_keyed(label, widget, None)
+    }
+
+    fn row_keyed(&self, label: &str, widget: &impl IsA<gtk::Widget>, key: Option<&str>) -> &Self {
+        let row = self.next_row.get();
+        self.next_row.set(row + 1);
+
+        let title = gtk::Label::new(Some(label));
+        title.set_halign(gtk::Align::Start);
+        title.set_xalign(0.0);
+        let cell = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        cell.pack_start(&title, false, false, 0);
+
+        let mut haystack = format!("{} {}", self.title, label);
+        if let Some(key) = key {
+            haystack.push(' ');
+            haystack.push_str(key);
+            if let Some(setting) = spec::find(key) {
+                haystack.push(' ');
+                haystack.push_str(setting.description);
+            }
+        }
+        if let Some(tooltip) = widget.tooltip_text() {
+            cell.pack_start(&caption_label(&tooltip), false, false, 0);
+            haystack.push(' ');
+            haystack.push_str(&tooltip);
+        }
+
+        let widget_ref: &gtk::Widget = widget.upcast_ref();
+        widget_ref.set_hexpand(true);
+        widget_ref.set_valign(gtk::Align::Center);
+        self.grid.attach(&cell, 0, row, 1, 1);
+        self.grid.attach(widget_ref, 1, row, 1, 1);
+
+        self.register(vec![cell.upcast(), widget_ref.clone()], &haystack);
+        self
+    }
+
+    /// Adds a full-width explanatory paragraph tied to the current section.
+    fn note(&self, text: &str) -> &Self {
+        let row = self.next_row.get();
+        self.next_row.set(row + 1);
+        let label = caption_label(text);
+        self.grid.attach(&label, 0, row, 2, 1);
+        if let Some(section) = self.section.get() {
+            if let Some(section) = self.index.sections.borrow_mut().get_mut(section) {
+                section.extras.push(label.upcast());
+            }
+        }
+        self
+    }
+
+    /// Adds a full-width widget outside the label/value layout.
+    fn full(&self, widget: &impl IsA<gtk::Widget>) -> &Self {
+        let row = self.next_row.get();
+        self.next_row.set(row + 1);
+        self.grid.attach(widget, 0, row, 2, 1);
+        self
+    }
+
+    /// Adds a full-width control that belongs to the current section and is
+    /// hidden with it while filtering.
+    fn extra(&self, widget: &impl IsA<gtk::Widget>) -> &Self {
+        self.full(widget);
+        if let Some(section) = self.section.get() {
+            if let Some(section) = self.index.sections.borrow_mut().get_mut(section) {
+                let widget: &gtk::Widget = widget.upcast_ref();
+                section.extras.push(widget.clone());
+            }
+        }
+        self
+    }
+
+    fn register(&self, widgets: Vec<gtk::Widget>, haystack: &str) {
+        let row = self.index.rows.borrow().len();
+        self.index.rows.borrow_mut().push(FilterRow {
+            widgets,
+            haystack: haystack.to_lowercase(),
+            page: self.id,
+        });
+        if let Some(section) = self.section.get() {
+            if let Some(section) = self.index.sections.borrow_mut().get_mut(section) {
+                section.rows.push(row);
+            }
+        }
+    }
+
+    fn finish(self) -> gtk::ScrolledWindow {
+        self.grid.set_margin_start(18);
+        self.grid.set_margin_end(18);
+        self.grid.set_margin_top(12);
+        self.grid.set_margin_bottom(16);
+        let scroll = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
+        scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        scroll.set_min_content_width(520);
+        scroll.add(&self.grid);
+        scroll
+    }
+}
+
+fn make_color_button(hex_color: &str, tooltip: &str) -> gtk::ColorButton {
+    let rgba = hex_to_rgba(hex_color);
+    let btn = gtk::ColorButton::with_rgba(&rgba);
+    btn.set_size_request(56, 24);
+    btn.set_halign(gtk::Align::Start);
+    btn.set_tooltip_text(Some(tooltip));
+    btn
+}
+
+/// Theme picker with a live filter; the built-in list has hundreds of entries,
+/// so scrolling a plain combo box would be unusable.
+fn choose_theme(parent: Option<&gtk::Window>, title: &str) -> Option<String> {
+    let dialog = gtk::Dialog::new();
+    dialog.set_title(title);
+    dialog.set_transient_for(parent);
+    dialog.set_modal(true);
+    dialog.set_destroy_with_parent(true);
+    dialog.set_default_size(400, 560);
+
+    let search = gtk::SearchEntry::new();
+    search.set_placeholder_text(Some("Search themes..."));
+    search.set_margin_start(8);
+    search.set_margin_end(8);
+    search.set_margin_top(8);
+
+    let list = gtk::ListBox::new();
+    list.set_activate_on_single_click(true);
+    for name in settings::color_schemes().keys() {
+        let row = gtk::ListBoxRow::new();
+        row.set_widget_name(name);
+        let label = gtk::Label::new(Some(name));
+        label.set_halign(gtk::Align::Start);
+        label.set_margin_start(8);
+        label.set_margin_end(8);
+        label.set_margin_top(6);
+        label.set_margin_bottom(6);
+        row.add(&label);
+        list.add(&row);
+    }
+
+    let query = Rc::new(RefCell::new(String::new()));
+    list.set_filter_func(Some(Box::new({
+        let query = query.clone();
+        move |row: &gtk::ListBoxRow| {
+            let query = query.borrow().clone();
+            query.is_empty() || row.widget_name().to_lowercase().contains(&query)
+        }
+    })));
+    {
+        let query = query.clone();
+        let list = list.clone();
+        search.connect_search_changed(move |entry| {
+            *query.borrow_mut() = entry.text().to_lowercase();
+            list.invalidate_filter();
+        });
+    }
+
+    let selected: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    {
+        let selected = selected.clone();
+        let dialog = dialog.clone();
+        list.connect_row_activated(move |_, row| {
+            *selected.borrow_mut() = Some(row.widget_name().to_string());
+            dialog.response(gtk::ResponseType::Ok);
+        });
+    }
+
+    let scroll = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
+    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    scroll.add(&list);
+    dialog.content_area().pack_start(&search, false, false, 0);
+    dialog.content_area().pack_start(
+        &gtk::Separator::new(gtk::Orientation::Horizontal),
+        false,
+        false,
+        0,
+    );
+    dialog.content_area().pack_start(&scroll, true, true, 0);
+
+    let cancel = gtk::Button::with_label("Cancel");
+    let select = gtk::Button::with_label("Select");
+    select.style_context().add_class("suggested-action");
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.response(gtk::ResponseType::Cancel));
+    }
+    {
+        let dialog = dialog.clone();
+        select.connect_clicked(move |_| dialog.response(gtk::ResponseType::Ok));
+    }
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    actions.pack_end(&select, false, false, 0);
+    actions.pack_end(&cancel, false, false, 0);
+    actions.set_margin_start(12);
+    actions.set_margin_end(12);
+    actions.set_margin_top(8);
+    actions.set_margin_bottom(10);
+    dialog.content_area().pack_start(&actions, false, false, 0);
+
+    dialog.show_all();
+    // Focus the first row rather than the filter box: a focused GtkEntry
+    // hides its placeholder, and arrow keys work straight away.
+    if let Some(row) = list.row_at_index(0) {
+        dialog.set_focus(Some(&row));
+    }
+
+    let response = dialog.run();
+    dialog.close();
+    if response == gtk::ResponseType::Ok {
+        selected.borrow().clone()
+    } else {
+        None
+    }
+}
+
+// -- Pages ------------------------------------------------------------------
+
+struct GeneralPage {
+    title: gtk::Entry,
+    dynamic: gtk::ComboBoxText,
+    login: gtk::CheckButton,
+    shell: gtk::Entry,
+    columns: gtk::SpinButton,
+    rows: gtk::SpinButton,
+    session_restore: gtk::CheckButton,
+    ssh_sharing: gtk::CheckButton,
+    confirm_close: gtk::CheckButton,
+    auto_copy: gtk::CheckButton,
+    warn_paste: gtk::CheckButton,
+    file_manager: gtk::Entry,
+}
+
+fn build_general(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, GeneralPage) {
+    let page = Page::new("general", "General", index.clone());
+
+    page.section("Tab titles");
+    let title = gtk::Entry::new();
+    title.set_text(&s.get_str_default("tab_title", "Terminal"));
+    title.set_tooltip_text(Some(
+        "Name displayed on each new tab until a program changes it.",
+    ));
+    page.row_keyed("Initial title", &title, Some("tab_title"));
+
+    let dynamic = combo_for(
+        DYNAMIC_TITLE,
+        &s.get_str_default("dynamic_title", "replace"),
+    );
+    dynamic.set_tooltip_text(Some(
+        "How a title set by the shell (OSC escape) is combined with the initial title.",
+    ));
+    page.row_keyed("Dynamic title", &dynamic, Some("dynamic_title"));
+
+    page.section("Shell");
+    let login = gtk::CheckButton::new();
+    login.set_active(s.get_bool("login_shell"));
+    login.set_tooltip_text(Some(
+        "Start the shell as a login shell, so .profile and .bash_profile are loaded.",
+    ));
+    page.row_keyed("Login shell", &login, Some("login_shell"));
+
+    let shell = gtk::Entry::new();
+    shell.set_text(&s.get_str_default("shell_command", "/bin/bash"));
+    shell.set_placeholder_text(Some("$SHELL"));
+    shell.set_tooltip_text(Some(
+        "Custom shell command or path. Use $SHELL for the default shell.",
+    ));
+    page.row_keyed("Shell", &shell, Some("shell_command"));
+
+    page.section("Window");
+    let size_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let columns = gtk::SpinButton::with_range(40.0, 300.0, 1.0);
+    columns.set_value(s.get_i64("terminal_columns") as f64);
+    columns.set_tooltip_text(Some(
+        "Width of a new terminal in character columns (40-300).",
+    ));
+    let rows = gtk::SpinButton::with_range(10.0, 120.0, 1.0);
+    rows.set_value(s.get_i64("terminal_rows") as f64);
+    rows.set_tooltip_text(Some("Height of a new terminal in character rows (10-120)."));
+    size_box.pack_start(&columns, false, false, 0);
+    size_box.pack_start(&gtk::Label::new(Some("x")), false, false, 2);
+    size_box.pack_start(&rows, false, false, 0);
+    size_box.set_tooltip_text(Some(
+        "Default size of a new terminal window, in characters.",
+    ));
+    page.row_keyed("Size (cols x rows)", &size_box, Some("terminal_columns"));
+
+    page.section("Session");
+    let session_restore = gtk::CheckButton::new();
+    session_restore.set_active(s.get_bool("session_restore"));
+    session_restore.set_tooltip_text(Some(
+        "Reopen the tabs and splits from the last session when Oxterm starts.",
+    ));
+    page.row_keyed(
+        "Restore last session",
+        &session_restore,
+        Some("session_restore"),
+    );
+
+    let ssh_sharing = gtk::CheckButton::new();
+    ssh_sharing.set_active(s.get_bool("ssh_connection_sharing"));
+    ssh_sharing.set_tooltip_text(Some(
+        "Reuse one SSH connection per server across tabs, for faster logins and live \
+         remote stats. Ignored when your ssh config sets ControlPath. Applies to new tabs.",
+    ));
+    page.row_keyed(
+        "Share SSH connections",
+        &ssh_sharing,
+        Some("ssh_connection_sharing"),
+    );
+
+    page.section("Behaviour");
+    let confirm_close = gtk::CheckButton::new();
+    confirm_close.set_active(s.get_bool("confirm_close"));
+    confirm_close.set_tooltip_text(Some(
+        "Ask for confirmation before closing a terminal that is still running a command.",
+    ));
+    page.row_keyed("Confirm close", &confirm_close, Some("confirm_close"));
+
+    let auto_copy = gtk::CheckButton::new();
+    auto_copy.set_active(s.get_bool("auto_copy_selection"));
+    auto_copy.set_tooltip_text(Some("Copy selected text to the clipboard automatically."));
+    page.row_keyed(
+        "Auto-copy selection",
+        &auto_copy,
+        Some("auto_copy_selection"),
+    );
+
+    let warn_paste = gtk::CheckButton::new();
+    warn_paste.set_active(s.get_bool("show_unsafe_paste_dialog"));
+    warn_paste.set_tooltip_text(Some(
+        "Warn before pasting multi-line text that may contain harmful commands.",
+    ));
+    page.row_keyed(
+        "Warn on multi-line paste",
+        &warn_paste,
+        Some("show_unsafe_paste_dialog"),
+    );
+
+    let file_manager = gtk::Entry::new();
+    file_manager.set_text(&s.get_str("file_manager"));
+    file_manager.set_placeholder_text(Some("auto-detect"));
+    file_manager.set_tooltip_text(Some(
+        "Override the file manager used by the Open-folder action (nemo, thunar, dolphin...). \
+         Leave blank to auto-detect.",
+    ));
+    page.row_keyed("File manager", &file_manager, Some("file_manager"));
+
+    let state = GeneralPage {
+        title,
+        dynamic,
+        login,
+        shell,
+        columns,
+        rows,
+        session_restore,
+        ssh_sharing,
+        confirm_close,
+        auto_copy,
+        warn_paste,
+        file_manager,
+    };
+    (page.finish(), state)
+}
+
+struct ScrollingPage {
+    scrollbar_position: gtk::ComboBoxText,
+    scrollback_unlimited: gtk::CheckButton,
+    scrollback: gtk::SpinButton,
+    scroll_on_output: gtk::CheckButton,
+    scroll_on_keystroke: gtk::CheckButton,
+    smooth_scroll: gtk::CheckButton,
+}
+
+fn build_scrolling(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, ScrollingPage) {
+    let page = Page::new("scrolling", "Scrolling", index.clone());
+
+    page.section("Scrollbar");
+    let scrollbar_position = combo_for(
+        SCROLLBAR_POSITION,
+        &s.get_str_default("scrollbar_position", "right"),
+    );
+    scrollbar_position.set_tooltip_text(Some(
+        "Where to draw the scrollbar, or hide it entirely (the mouse wheel still works).",
+    ));
+    page.row_keyed(
+        "Scrollbar position",
+        &scrollbar_position,
+        Some("scrollbar_position"),
+    );
+
+    page.section("Buffer");
+    let scrollback_unlimited = gtk::CheckButton::new();
+    scrollback_unlimited.set_active(s.get_i64("scrollback_lines") == -1);
+    scrollback_unlimited.set_tooltip_text(Some(
+        "Keep every line for the whole session. Memory use grows with the output.",
+    ));
+    page.row_keyed(
+        "Unlimited scrollback",
+        &scrollback_unlimited,
+        Some("scrollback_lines"),
+    );
+
+    let scrollback = gtk::SpinButton::with_range(1.0, 1_000_000.0, 100.0);
+    let saved_scrollback = s.get_i64("scrollback_lines");
+    scrollback.set_value(if saved_scrollback > 0 {
+        saved_scrollback as f64
+    } else {
+        10_000.0
+    });
+    scrollback.set_tooltip_text(Some(
+        "Maximum number of lines kept above the visible screen.",
+    ));
+    page.row_keyed("Scrollback lines", &scrollback, Some("scrollback_lines"));
+    scrollback.set_sensitive(!scrollback_unlimited.is_active());
+    {
+        let spin = scrollback.clone();
+        scrollback_unlimited.connect_toggled(move |check| {
+            spin.set_sensitive(!check.is_active());
+        });
+    }
+
+    page.section("Auto-scroll");
+    let scroll_on_output = gtk::CheckButton::new();
+    scroll_on_output.set_active(s.get_bool("scroll_on_output"));
+    scroll_on_output.set_tooltip_text(Some(
+        "Jump to the bottom when new output arrives, even while reading older lines.",
+    ));
+    page.row_keyed(
+        "Scroll on output",
+        &scroll_on_output,
+        Some("scroll_on_output"),
+    );
+
+    let scroll_on_keystroke = gtk::CheckButton::new();
+    scroll_on_keystroke.set_active(s.get_bool("scroll_on_keystroke"));
+    scroll_on_keystroke.set_tooltip_text(Some("Jump to the bottom as soon as you type."));
+    page.row_keyed(
+        "Scroll on keystroke",
+        &scroll_on_keystroke,
+        Some("scroll_on_keystroke"),
+    );
+
+    let smooth_scroll = gtk::CheckButton::new();
+    smooth_scroll.set_active(s.get_bool("smooth_scroll"));
+    smooth_scroll.set_tooltip_text(Some("Scroll by pixels instead of whole lines."));
+    page.row_keyed("Smooth scrolling", &smooth_scroll, Some("smooth_scroll"));
+
+    let state = ScrollingPage {
+        scrollbar_position,
+        scrollback_unlimited,
+        scrollback,
+        scroll_on_output,
+        scroll_on_keystroke,
+        smooth_scroll,
+    };
+    (page.finish(), state)
+}
+
+struct InputPage {
+    hint_mode: gtk::CheckButton,
+    vi_copy: gtk::CheckButton,
+    tmux_prefix: gtk::CheckButton,
+    tmux_prefix_key: gtk::Entry,
+    backspace: gtk::ComboBoxText,
+    delete: gtk::ComboBoxText,
+    word_chars: gtk::Entry,
+}
+
+fn build_input(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, InputPage) {
+    let page = Page::new("input", "Input", index.clone());
+
+    page.section("Keyboard modes");
+    let hint_mode = gtk::CheckButton::new();
+    hint_mode.set_active(s.get_bool("hint_mode_enabled"));
+    hint_mode.set_tooltip_text(Some(
+        "Ctrl+Shift+H highlights URLs, paths and git hashes with keyboard-selectable labels.",
+    ));
+    page.row_keyed("Hint mode", &hint_mode, Some("hint_mode_enabled"));
+
+    let vi_copy = gtk::CheckButton::new();
+    vi_copy.set_active(s.get_bool("vi_copy_mode_enabled"));
+    vi_copy.set_tooltip_text(Some(
+        "Ctrl+Shift+Y opens a VI-style copy mode: hjkl to move, v to select, y to yank, Esc to exit.",
+    ));
+    page.row_keyed("VI copy mode", &vi_copy, Some("vi_copy_mode_enabled"));
+
+    let tmux_prefix = gtk::CheckButton::new();
+    tmux_prefix.set_active(s.get_bool("tmux_prefix_enabled"));
+    tmux_prefix.set_tooltip_text(Some(
+        "Use a Ctrl+letter prefix for tab and split shortcuts. Disable it to pass that key \
+         through to programs such as tmux or screen.",
+    ));
+    page.row_keyed(
+        "tmux-style prefix keys",
+        &tmux_prefix,
+        Some("tmux_prefix_enabled"),
+    );
+
+    let tmux_prefix_key = gtk::Entry::new();
+    tmux_prefix_key.set_text(&s.get_str_default("tmux_prefix_key", "b"));
+    tmux_prefix_key.set_max_length(1);
+    tmux_prefix_key.set_width_chars(3);
+    tmux_prefix_key.set_max_width_chars(3);
+    tmux_prefix_key.set_sensitive(tmux_prefix.is_active());
+    tmux_prefix_key.set_tooltip_text(Some(
+        "Letter pressed with Ctrl as the prefix (default b). Change it to keep Ctrl+B for tmux.",
+    ));
+    page.row_keyed(
+        "Prefix key (Ctrl+)",
+        &tmux_prefix_key,
+        Some("tmux_prefix_key"),
+    );
+    tmux_prefix_key.set_hexpand(false);
+    {
+        let entry = tmux_prefix_key.clone();
+        tmux_prefix.connect_toggled(move |check| entry.set_sensitive(check.is_active()));
+    }
+
+    page.section("Key bindings");
+    let backspace = combo_for(
+        BACKSPACE_BINDING,
+        &s.get_str_default("backspace_binding", "ascii-del"),
+    );
+    backspace.set_tooltip_text(Some(
+        "Sequence sent when Backspace is pressed. Auto-detect matches most setups.",
+    ));
+    page.row_keyed("Backspace sends", &backspace, Some("backspace_binding"));
+
+    let delete = combo_for(
+        DELETE_BINDING,
+        &s.get_str_default("delete_binding", "escape-sequence"),
+    );
+    delete.set_tooltip_text(Some("Sequence sent when the Delete key is pressed."));
+    page.row_keyed("Delete sends", &delete, Some("delete_binding"));
+
+    page.section("Selection");
+    let word_chars = gtk::Entry::new();
+    word_chars.set_text(&s.get_str_default("word_char_exceptions", "-./?%&#:_=+@~"));
+    word_chars.set_tooltip_text(Some(
+        "Extra characters treated as part of a word by double-click selection, \
+         so that paths and URLs select in one go.",
+    ));
+    page.row_keyed("Word characters", &word_chars, Some("word_char_exceptions"));
+
+    let state = InputPage {
+        hint_mode,
+        vi_copy,
+        tmux_prefix,
+        tmux_prefix_key,
+        backspace,
+        delete,
+        word_chars,
+    };
+    (page.finish(), state)
+}
+
+struct NotificationsPage {
+    notify: gtk::CheckButton,
+    only_unfocused: gtk::CheckButton,
+    min_seconds: gtk::SpinButton,
+    notify_failure: gtk::CheckButton,
+}
+
+fn build_notifications(
+    s: &Settings,
+    index: &Rc<FilterIndex>,
+) -> (gtk::ScrolledWindow, NotificationsPage) {
+    let page = Page::new("notifications", "Notifications", index.clone());
+
+    page.section("Command notifications");
+    page.note(
+        "Desktop notifications use OSC 133 shell integration, which Oxterm enables in the \
+         shells it starts. Failure notifications also work with the command markers Oxterm \
+         adds itself.",
+    );
+
+    let notify = gtk::CheckButton::new();
+    notify.set_active(s.get_bool("bell_notification"));
+    notify.set_tooltip_text(Some("Show a desktop notification when a command finishes."));
+    page.row_keyed(
+        "Notify when a command finishes",
+        &notify,
+        Some("bell_notification"),
+    );
+
+    let only_unfocused = gtk::CheckButton::new();
+    only_unfocused.set_active(s.get_bool("notify_only_unfocused"));
+    only_unfocused.set_tooltip_text(Some(
+        "Stay quiet while you are watching the terminal; notify only when it is in the background.",
+    ));
+    page.row_keyed(
+        "Only when unfocused",
+        &only_unfocused,
+        Some("notify_only_unfocused"),
+    );
+
+    let min_seconds = gtk::SpinButton::with_range(0.0, 86_400.0, 1.0);
+    min_seconds.set_value(s.get_i64("notify_min_seconds") as f64);
+    min_seconds.set_tooltip_text(Some(
+        "Skip notifications for commands shorter than this. Zero notifies for every command; \
+         failures always notify when enabled below.",
+    ));
+    page.row_keyed(
+        "Minimum duration (s)",
+        &min_seconds,
+        Some("notify_min_seconds"),
+    );
+
+    let notify_failure = gtk::CheckButton::new();
+    notify_failure.set_active(s.get_bool("notify_on_failure"));
+    notify_failure.set_tooltip_text(Some(
+        "Notify when a command exits non-zero even if it was faster than the minimum duration.",
+    ));
+    page.row_keyed(
+        "Always notify failures",
+        &notify_failure,
+        Some("notify_on_failure"),
+    );
+
+    // The detailed options only make sense while notifications are enabled.
+    let dependent: Vec<gtk::Widget> = vec![
+        only_unfocused.clone().upcast(),
+        min_seconds.clone().upcast(),
+        notify_failure.clone().upcast(),
+    ];
+    for widget in &dependent {
+        widget.set_sensitive(notify.is_active());
+    }
+    notify.connect_toggled(move |check| {
+        for widget in &dependent {
+            widget.set_sensitive(check.is_active());
+        }
+    });
+
+    let state = NotificationsPage {
+        notify,
+        only_unfocused,
+        min_seconds,
+        notify_failure,
+    };
+    (page.finish(), state)
+}
+
+struct AppearancePage {
+    font: gtk::FontButton,
+    bold: gtk::CheckButton,
+    scheme: gtk::ComboBoxText,
+    auto_theme: gtk::CheckButton,
+    light_theme: gtk::ComboBoxText,
+    dark_theme: gtk::ComboBoxText,
+    fg_color: gtk::ColorButton,
+    bg_color: gtk::ColorButton,
+    cursor_color: gtk::ColorButton,
+    highlight: gtk::ColorButton,
+    highlight_bg: gtk::ColorButton,
+    tab_title_color: gtk::ColorButton,
+    tab_active_color: gtk::ColorButton,
+    cursor_shape: gtk::ComboBoxText,
+    cursor_blink: gtk::CheckButton,
+    transparency: gtk::CheckButton,
+    opacity: gtk::SpinButton,
+    pad_h: gtk::SpinButton,
+    pad_v: gtk::SpinButton,
+    undercurl: gtk::ComboBoxText,
+}
+
+type PaletteButtons = Rc<BTreeMap<String, (gtk::ColorButton, gtk::Label)>>;
+
+fn apply_palette(
+    buttons: &BTreeMap<String, (gtk::ColorButton, gtk::Label)>,
+    palette: &BTreeMap<String, String>,
+) {
+    for (key, (button, label)) in buttons {
+        if let Some(hex) = palette.get(key) {
+            button.set_rgba(&hex_to_rgba(hex));
+            label.set_text(hex);
+        }
+    }
+}
+
+fn build_appearance(
+    s: &Settings,
+    index: &Rc<FilterIndex>,
+    palette_buttons: &PaletteButtons,
+    scheme_name: &Rc<RefCell<String>>,
+) -> (gtk::ScrolledWindow, AppearancePage) {
+    let page = Page::new("appearance", "Appearance", index.clone());
+
+    page.section("Font");
+    let font_desc = format!(
+        "{} {}",
+        s.get_str_default("font_name", "Monospace"),
+        s.get_i64("font_size")
+    );
+    let font = gtk::FontButton::new();
+    font.set_font(&font_desc);
+    font.set_tooltip_text(Some("Font family and size used by the terminal."));
+    page.row("Font", &font);
+
+    let bold = gtk::CheckButton::new();
+    bold.set_active(s.get_bool("allow_bold_text"));
+    bold.set_tooltip_text(Some(
+        "Render bold text with a heavier weight. Disable for uniform text.",
+    ));
+    page.row_keyed("Allow bold text", &bold, Some("allow_bold_text"));
+
+    page.section("Theme");
+    let scheme = gtk::ComboBoxText::new();
+    for name in settings::color_schemes().keys() {
+        scheme.append_text(name);
+    }
+    let current = s.get_str_default("color_scheme", "Dark (Default)");
+    let names: Vec<String> = settings::color_schemes().keys().cloned().collect();
+    let scheme_index = names.iter().position(|name| *name == current).unwrap_or(0);
+    scheme.set_active(Some(scheme_index as u32));
+    scheme.set_tooltip_text(Some(
+        "Color scheme for the terminal. Drop Ghostty or iTerm2 theme files into \
+         ~/.config/oxterm/themes/ to add more.",
+    ));
+    page.row_keyed("Color scheme", &scheme, Some("color_scheme"));
+
+    let auto_theme = gtk::CheckButton::new();
+    auto_theme.set_active(s.get_bool("auto_theme"));
+    auto_theme.set_tooltip_text(Some(
+        "Switch between the light and dark theme below when the desktop changes appearance.",
+    ));
+    page.row_keyed("Follow system dark mode", &auto_theme, Some("auto_theme"));
+
+    let light_theme = theme_combo(&s.get_str_default("theme_light", "Light"));
+    light_theme.set_tooltip_text(Some(
+        "Theme used when the desktop prefers a light appearance.",
+    ));
+    page.row_keyed("Light theme", &light_theme, Some("theme_light"));
+
+    let dark_theme = theme_combo(&s.get_str_default("theme_dark", "Dark (Default)"));
+    dark_theme.set_tooltip_text(Some(
+        "Theme used when the desktop prefers a dark appearance.",
+    ));
+    page.row_keyed("Dark theme", &dark_theme, Some("theme_dark"));
+
+    for combo in [&light_theme, &dark_theme] {
+        combo.set_sensitive(auto_theme.is_active());
+    }
+    {
+        let light = light_theme.clone();
+        let dark = dark_theme.clone();
+        auto_theme.connect_toggled(move |check| {
+            light.set_sensitive(check.is_active());
+            dark.set_sensitive(check.is_active());
+        });
+    }
+
+    page.section("Colors");
+    let fg_color = make_color_button(
+        &s.get_fg_color(),
+        "Default text color. Click to override the theme foreground.",
+    );
+    page.row_keyed("Foreground", &fg_color, Some("foreground_color"));
+    let bg_color = make_color_button(
+        &s.get_bg_color(),
+        "Terminal background. Click to override the theme background.",
+    );
+    page.row_keyed("Background", &bg_color, Some("background_color"));
+    let cursor_color = make_color_button(
+        &s.get_str_default("cursor_color", "#ffffff"),
+        "Color of the text cursor.",
+    );
+    page.row_keyed("Cursor", &cursor_color, Some("cursor_color"));
+    let highlight = make_color_button(
+        &s.get_str_default("highlight_color", "#ffffff"),
+        "Text color of the current selection.",
+    );
+    page.row_keyed("Selection text", &highlight, Some("highlight_color"));
+    let highlight_bg = make_color_button(
+        &s.get_str_default("highlight_bg_color", "#446688"),
+        "Background color of the current selection.",
+    );
+    page.row_keyed(
+        "Selection background",
+        &highlight_bg,
+        Some("highlight_bg_color"),
+    );
+
+    page.section("Tabs");
+    let tab_title_color = make_color_button(
+        &s.get_str_default("tab_title_color", "#ffffff"),
+        "Color of inactive tab titles.",
+    );
+    page.row_keyed("Tab title", &tab_title_color, Some("tab_title_color"));
+    let tab_active_color = make_color_button(
+        &s.get_str_default("tab_active_title_color", "#ffffff"),
+        "Color of the active tab title.",
+    );
+    page.row_keyed(
+        "Active tab title",
+        &tab_active_color,
+        Some("tab_active_title_color"),
+    );
+
+    page.section("Cursor");
+    let cursor_shape = combo_for(CURSOR_SHAPE, &s.get_str_default("cursor_shape", "block"));
+    cursor_shape.set_tooltip_text(Some("Shape of the text cursor."));
+    page.row_keyed("Cursor shape", &cursor_shape, Some("cursor_shape"));
+
+    let cursor_blink = gtk::CheckButton::new();
+    cursor_blink.set_active(s.get_bool("cursor_blink"));
+    cursor_blink.set_tooltip_text(Some("Make the cursor blink periodically."));
+    page.row_keyed("Blinking cursor", &cursor_blink, Some("cursor_blink"));
+
+    page.section("Window");
+    let transparency = gtk::CheckButton::new();
+    transparency.set_active(s.get_bool("enable_transparency"));
+    transparency.set_tooltip_text(Some(
+        "Enable RGBA transparency. Requires a compositor such as picom or a Wayland desktop.",
+    ));
+    page.row_keyed("Transparency", &transparency, Some("enable_transparency"));
+
+    let opacity = gtk::SpinButton::with_range(0.1, 1.0, 0.05);
+    opacity.set_digits(2);
+    opacity.set_value(s.get_f64("opacity"));
+    opacity.set_tooltip_text(Some(
+        "Window opacity: 1.00 is fully opaque, 0.30 is almost transparent.",
+    ));
+    page.row_keyed("Opacity", &opacity, Some("opacity"));
+    opacity.set_sensitive(transparency.is_active());
+    {
+        let spin = opacity.clone();
+        transparency.connect_toggled(move |check| spin.set_sensitive(check.is_active()));
+    }
+
+    let pad_h = gtk::SpinButton::with_range(0.0, 100.0, 1.0);
+    pad_h.set_value(s.get_i64("window_padding_horizontal") as f64);
+    pad_h.set_tooltip_text(Some(
+        "Horizontal padding inside the terminal window, in pixels.",
+    ));
+    page.row_keyed(
+        "Horizontal padding",
+        &pad_h,
+        Some("window_padding_horizontal"),
+    );
+    let pad_v = gtk::SpinButton::with_range(0.0, 100.0, 1.0);
+    pad_v.set_value(s.get_i64("window_padding_vertical") as f64);
+    pad_v.set_tooltip_text(Some(
+        "Vertical padding inside the terminal window, in pixels.",
+    ));
+    page.row_keyed("Vertical padding", &pad_v, Some("window_padding_vertical"));
+
+    page.section("Underlines");
+    let undercurl = combo_for(
+        UNDERLINE_STYLE,
+        &s.get_str_default("undercurl_style", "single"),
+    );
+    undercurl.set_tooltip_text(Some(
+        "Style of underlined text, for example compiler errors and spell check. \
+         Curly requires VTE 0.58 or newer.",
+    ));
+    page.row_keyed("Underline style", &undercurl, Some("undercurl_style"));
+
+    // Live preview: picking a scheme previews its foreground, background and
+    // palette without touching the settings file.
+    {
+        let fg = fg_color.clone();
+        let bg = bg_color.clone();
+        let buttons = palette_buttons.clone();
+        let scheme_name = scheme_name.clone();
+        scheme.connect_changed(move |combo| {
+            let Some(name) = combo.active_text() else {
+                return;
+            };
+            *scheme_name.borrow_mut() = name.to_string();
+            if let Some(theme) = settings::color_schemes().get(name.as_str()) {
+                fg.set_rgba(&hex_to_rgba(&theme.foreground));
+                bg.set_rgba(&hex_to_rgba(&theme.background));
+                apply_palette(&buttons, &theme.palette);
+            }
+        });
+    }
+
+    let state = AppearancePage {
+        font,
+        bold,
+        scheme,
+        auto_theme,
+        light_theme,
+        dark_theme,
+        fg_color,
+        bg_color,
+        cursor_color,
+        highlight,
+        highlight_bg,
+        tab_title_color,
+        tab_active_color,
+        cursor_shape,
+        cursor_blink,
+        transparency,
+        opacity,
+        pad_h,
+        pad_v,
+        undercurl,
+    };
+    (page.finish(), state)
+}
+
+const PALETTE_NAMES: [[(&str, &str); 4]; 4] = [
+    [
+        ("black", "Black"),
+        ("red", "Red"),
+        ("green", "Green"),
+        ("yellow", "Yellow"),
+    ],
+    [
+        ("blue", "Blue"),
+        ("magenta", "Magenta"),
+        ("cyan", "Cyan"),
+        ("white", "White"),
+    ],
+    [
+        ("brightblack", "Bright black"),
+        ("brightred", "Bright red"),
+        ("brightgreen", "Bright green"),
+        ("brightyellow", "Bright yellow"),
+    ],
+    [
+        ("brightblue", "Bright blue"),
+        ("brightmagenta", "Bright magenta"),
+        ("brightcyan", "Bright cyan"),
+        ("brightwhite", "Bright white"),
+    ],
+];
+
+fn build_colors(
+    s: &Settings,
+    index: &Rc<FilterIndex>,
+    scheme_name: &Rc<RefCell<String>>,
+) -> (gtk::ScrolledWindow, PaletteButtons) {
+    let page = Page::new("colors", "Colors", index.clone());
+    page.section("16-color palette");
+    page.note(
+        "These colors override the selected theme. Loading a preset or resetting the page only \
+         changes what you see here: nothing is saved until you press OK.",
+    );
+
+    let saved = s.get("custom_palette");
+    let theme = s.effective_theme();
+
+    let grid = gtk::Grid::new();
+    grid.set_row_spacing(10);
+    grid.set_column_spacing(18);
+    grid.set_column_homogeneous(true);
+    grid.set_halign(gtk::Align::Start);
+    let mut buttons: BTreeMap<String, (gtk::ColorButton, gtk::Label)> = BTreeMap::new();
+    for (row_index, row) in PALETTE_NAMES.iter().enumerate() {
+        for (column_index, (key, name)) in row.iter().enumerate() {
+            let hex = saved
+                .as_object()
+                .and_then(|custom| custom.get(*key))
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+                .or_else(|| theme.palette.get(*key).cloned())
+                .unwrap_or_else(|| "#000000".to_string());
+            let button = make_color_button(&hex, &format!("ANSI color: {}", name));
+            button.set_size_request(64, 26);
+            let hex_label = gtk::Label::new(Some(&hex));
+            hex_label.style_context().add_class("dim-label");
+            hex_label.set_halign(gtk::Align::Start);
+            let cell = gtk::Box::new(gtk::Orientation::Vertical, 3);
+            cell.pack_start(&gtk::Label::new(Some(name)), false, false, 0);
+            cell.pack_start(&button, false, false, 0);
+            cell.pack_start(&hex_label, false, false, 0);
+            grid.attach(&cell, column_index as i32, row_index as i32, 1, 1);
+            buttons.insert(key.to_string(), (button, hex_label));
+        }
+    }
+
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let load = gtk::Button::with_label("Load Preset...");
+    load.set_tooltip_text(Some(
+        "Fill the palette from any installed or imported theme.",
+    ));
+    {
+        let buttons = buttons.clone();
+        load.connect_clicked(move |button| {
+            let parent = button
+                .toplevel()
+                .and_then(|window| window.downcast::<gtk::Window>().ok());
+            let Some(name) = choose_theme(parent.as_ref(), "Load Palette") else {
+                return;
+            };
+            if let Some(theme) = settings::color_schemes().get(name.as_str()) {
+                apply_palette(&buttons, &theme.palette);
+            }
+        });
+    }
+
+    let reset = gtk::Button::with_label("Reset to Theme");
+    reset.set_tooltip_text(Some(
+        "Discard the custom palette and use the colors of the selected theme.",
+    ));
+    {
+        let buttons = buttons.clone();
+        let scheme_name = scheme_name.clone();
+        reset.connect_clicked(move |_| {
+            let name = scheme_name.borrow().clone();
+            if let Some(theme) = settings::color_schemes().get(name.as_str()) {
+                apply_palette(&buttons, &theme.palette);
+            }
+        });
+    }
+
+    actions.pack_start(&load, false, false, 0);
+    actions.pack_start(&reset, false, false, 0);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 14);
+    content.pack_start(&grid, false, false, 0);
+    content.pack_start(&actions, false, false, 0);
+    page.full(&content);
+    page.register(
+        vec![content.upcast()],
+        "palette colors ansi normal bright custom_palette",
+    );
+
+    (page.finish(), Rc::new(buttons))
+}
+
+struct CompatibilityPage {
+    encoding: gtk::ComboBoxText,
+    bold_is_bright: gtk::CheckButton,
+    sixel: gtk::CheckButton,
+    osc133: gtk::CheckButton,
+}
+
+fn build_compatibility(
+    s: &Settings,
+    index: &Rc<FilterIndex>,
+) -> (gtk::ScrolledWindow, CompatibilityPage) {
+    let page = Page::new("compatibility", "Compatibility", index.clone());
+
+    page.section("Encoding");
+    let encoding = encoding_combo(&s.get_str_default("encoding", "UTF-8"));
+    encoding.set_tooltip_text(Some("Character encoding used by new terminal tabs."));
+    page.row_keyed("Default encoding", &encoding, Some("encoding"));
+
+    page.section("Rendering");
+    let bold_is_bright = gtk::CheckButton::new();
+    bold_is_bright.set_active(s.get_bool("bold_is_bright"));
+    bold_is_bright.set_tooltip_text(Some(
+        "Match xterm and most Linux terminals: bold text uses the bright palette color.",
+    ));
+    page.row_keyed(
+        "Bold text uses bright colors",
+        &bold_is_bright,
+        Some("bold_is_bright"),
+    );
+
+    let sixel = gtk::CheckButton::new();
+    sixel.set_active(s.get_bool("sixel"));
+    sixel.set_tooltip_text(Some(
+        "Let applications draw inline images with Sixel (lsix, chafa, img2sixel). \
+         Off by default because images consume memory.",
+    ));
+    page.row_keyed("Sixel images", &sixel, Some("sixel"));
+
+    page.section("Integration");
+    let osc133 = gtk::CheckButton::new();
+    osc133.set_active(s.get_bool("osc133"));
+    osc133.set_tooltip_text(Some(
+        "Enable shell integration (OSC 133) in shells started by Oxterm. Your shell \
+         configuration files are never modified.",
+    ));
+    page.row_keyed("Shell integration (OSC 133)", &osc133, Some("osc133"));
+
+    let reset = gtk::Button::with_label("Reset this page to defaults");
+    reset.set_tooltip_text(Some(
+        "Restore only the compatibility settings listed above.",
+    ));
+    reset.set_halign(gtk::Align::Start);
+    let page_state = CompatibilityPage {
+        encoding: encoding.clone(),
+        bold_is_bright: bold_is_bright.clone(),
+        sixel: sixel.clone(),
+        osc133: osc133.clone(),
+    };
+    {
+        let encoding = page_state.encoding.clone();
+        let bold_is_bright = page_state.bold_is_bright.clone();
+        let sixel = page_state.sixel.clone();
+        let osc133 = page_state.osc133.clone();
+        reset.connect_clicked(move |_| {
+            encoding.set_active(Some(
+                ENCODINGS
+                    .iter()
+                    .position(|name| *name == default_str("encoding"))
+                    .unwrap_or(0) as u32,
+            ));
+            bold_is_bright.set_active(default_bool("bold_is_bright"));
+            sixel.set_active(default_bool("sixel"));
+            osc133.set_active(default_bool("osc133"));
+        });
+    }
+    page.extra(&reset);
+
+    (page.finish(), page_state)
+}
+
+struct NotesPage {
+    notes_dir: gtk::Entry,
+    notes_file: gtk::Entry,
+    editor: gtk::Entry,
+    record_context: gtk::CheckButton,
+    template: gtk::Entry,
+}
+
+fn build_notes(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, NotesPage) {
+    let page = Page::new("notes", "Notes", index.clone());
+
+    page.section("Storage");
+    let notes_dir = gtk::Entry::new();
+    notes_dir.set_text(&s.get_str("notes_dir"));
+    let default_dir = crate::notes::default_notes_dir();
+    notes_dir.set_placeholder_text(Some(default_dir.to_string_lossy().as_ref()));
+    notes_dir.set_tooltip_text(Some(
+        "Directory where note files are stored. Leave empty to use the default data directory.",
+    ));
+    page.row_keyed("Notes directory", &notes_dir, Some("notes_dir"));
+
+    let notes_file = gtk::Entry::new();
+    notes_file.set_text(&s.get_str("notes_file"));
+    notes_file.set_placeholder_text(Some("notes.md"));
+    notes_file.set_tooltip_text(Some(
+        "Default notes file, created the first time you use /wnotes.",
+    ));
+    page.row_keyed("Default notes file", &notes_file, Some("notes_file"));
+
+    let editor = gtk::Entry::new();
+    editor.set_text(&s.get_str_default("editor_command", "nano"));
+    editor.set_tooltip_text(Some(
+        "Fallback editor for /onotes, used only when xdg-open is unavailable.",
+    ));
+    page.row_keyed("Fallback editor", &editor, Some("editor_command"));
+
+    page.section("New notes");
+    let record_context = gtk::CheckButton::new();
+    record_context.set_active(s.get_bool("notes_record_context"));
+    record_context.set_tooltip_text(Some(
+        "Add a small HTML comment with the source, working directory and host to each entry.",
+    ));
+    page.row_keyed(
+        "Record context",
+        &record_context,
+        Some("notes_record_context"),
+    );
+
+    let template = gtk::Entry::new();
+    template.set_text(&s.get_str("notes_template"));
+    template.set_placeholder_text(Some("e.g. Task: {command} (cwd {cwd})"));
+    template.set_tooltip_text(Some(
+        "Template pre-filled in new notes. Placeholders: {date} {time} {cwd} {host} {command}.",
+    ));
+    page.row_keyed("Template", &template, Some("notes_template"));
+
+    let state = NotesPage {
+        notes_dir,
+        notes_file,
+        editor,
+        record_context,
+        template,
+    };
+    (page.finish(), state)
+}
+
+// -- Dialog -----------------------------------------------------------------
+
 struct DialogState {
-    #[allow(dead_code)]
-    dialog: gtk::Dialog,
-    palette_btns: RefCell<BTreeMap<String, (gtk::ColorButton, String)>>,
-    _fg_btn: gtk::ColorButton,
-    _bg_btn: gtk::ColorButton,
+    general: GeneralPage,
+    scrolling: ScrollingPage,
+    input: InputPage,
+    notifications: NotificationsPage,
+    appearance: AppearancePage,
+    compatibility: CompatibilityPage,
+    notes: NotesPage,
+    palette_btns: PaletteButtons,
     fg_override: Rc<Cell<bool>>,
     bg_override: Rc<Cell<bool>>,
-    // General
-    entry_title: gtk::Entry,
-    combo_dynamic: gtk::ComboBoxText,
-    chk_login: gtk::CheckButton,
-    entry_shell: gtk::Entry,
-    spin_columns: gtk::SpinButton,
-    spin_rows: gtk::SpinButton,
-    combo_scrollbar_pos: gtk::ComboBoxText,
-    chk_scrollback_unlimited: gtk::CheckButton,
-    spin_scrollback: gtk::SpinButton,
-    chk_scroll_output: gtk::CheckButton,
-    chk_scroll_keystroke: gtk::CheckButton,
-    chk_confirm_close: gtk::CheckButton,
-    chk_auto_copy: gtk::CheckButton,
-    chk_warn_paste: gtk::CheckButton,
-    entry_fm: gtk::Entry,
-    chk_session_restore: gtk::CheckButton,
-    chk_bell_notify: gtk::CheckButton,
-    chk_notify_unfocused: gtk::CheckButton,
-    spin_notify_min: gtk::SpinButton,
-    chk_notify_failure: gtk::CheckButton,
-    chk_hint_mode: gtk::CheckButton,
-    chk_vi_copy: gtk::CheckButton,
-    chk_tmux_prefix: gtk::CheckButton,
-    entry_tmux_prefix_key: gtk::Entry,
-    chk_ssh_sharing: gtk::CheckButton,
-    // Appearance
-    font_btn: gtk::FontButton,
-    chk_bold: gtk::CheckButton,
-    combo_scheme: gtk::ComboBoxText,
-    fg_color_btn: gtk::ColorButton,
-    bg_color_btn: gtk::ColorButton,
-    cursor_color_btn: gtk::ColorButton,
-    highlight_btn: gtk::ColorButton,
-    highlight_bg_btn: gtk::ColorButton,
-    tab_title_color_btn: gtk::ColorButton,
-    tab_active_color_btn: gtk::ColorButton,
-    combo_cursor_shape: gtk::ComboBoxText,
-    chk_cursor_blink: gtk::CheckButton,
-    spin_opacity: gtk::SpinButton,
-    chk_transparency: gtk::CheckButton,
-    spin_pad_h: gtk::SpinButton,
-    spin_pad_v: gtk::SpinButton,
-    combo_undercurl: gtk::ComboBoxText,
-    chk_auto_theme: gtk::CheckButton,
-    combo_light_theme: gtk::ComboBoxText,
-    combo_dark_theme: gtk::ComboBoxText,
-    // Compatibility
-    combo_backspace: gtk::ComboBoxText,
-    combo_delete: gtk::ComboBoxText,
-    combo_encoding: gtk::ComboBoxText,
-    chk_osc133: gtk::CheckButton,
-    chk_bold_is_bright: gtk::CheckButton,
-    chk_sixel: gtk::CheckButton,
-    chk_smooth_scroll: gtk::CheckButton,
-    entry_word_chars: gtk::Entry,
-    // Notes
-    entry_notes_dir: gtk::Entry,
-    entry_notes_file: gtk::Entry,
-    entry_editor: gtk::Entry,
-    chk_notes_context: gtk::CheckButton,
-    entry_notes_template: gtk::Entry,
 }
 
 pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
     let s = settings();
-    let dialog = gtk::Dialog::with_buttons(
-        Some("Preferences - Oxterm"),
-        parent,
-        gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
-        &[
-            ("Cancel", gtk::ResponseType::Cancel),
-            ("OK", gtk::ResponseType::Ok),
-        ],
-    );
-    dialog.set_default_size(880, 700);
+    let dialog = gtk::Dialog::new();
+    dialog.set_title("Preferences - Oxterm");
+    dialog.set_transient_for(parent);
+    dialog.set_modal(true);
+    dialog.set_destroy_with_parent(true);
+    dialog.set_default_size(960, 720);
+
+    let index = Rc::new(FilterIndex::default());
+    let scheme_name = Rc::new(RefCell::new(
+        s.get_str_default("color_scheme", "Dark (Default)"),
+    ));
 
     let stack = gtk::Stack::new();
     stack.set_transition_type(gtk::StackTransitionType::Crossfade);
     stack.set_transition_duration(120);
 
+    let (colors_widget, palette_btns) = build_colors(&s, &index, &scheme_name);
+    let (general_widget, general) = build_general(&s, &index);
+    let (scrolling_widget, scrolling) = build_scrolling(&s, &index);
+    let (input_widget, input) = build_input(&s, &index);
+    let (notifications_widget, notifications) = build_notifications(&s, &index);
+    let (appearance_widget, appearance) = build_appearance(&s, &index, &palette_btns, &scheme_name);
+    let (compat_widget, compatibility) = build_compatibility(&s, &index);
+    let (notes_widget, notes) = build_notes(&s, &index);
+
+    stack.add_titled(&general_widget, "general", "General");
+    stack.add_titled(&appearance_widget, "appearance", "Appearance");
+    stack.add_titled(&colors_widget, "colors", "Colors");
+    stack.add_titled(&scrolling_widget, "scrolling", "Scrolling");
+    stack.add_titled(&input_widget, "input", "Input");
+    stack.add_titled(&notifications_widget, "notifications", "Notifications");
+    stack.add_titled(&compat_widget, "compatibility", "Compatibility");
+    stack.add_titled(&notes_widget, "notes", "Notes");
+
     let sidebar = gtk::StackSidebar::new();
     sidebar.set_stack(&stack);
-    sidebar.set_size_request(160, -1);
+    sidebar.set_size_request(190, -1);
+    // The page list takes the initial focus so the filter box keeps showing
+    // its placeholder; Ctrl+F jumps to the search field.
+    sidebar.set_can_focus(true);
+
+    // Search bar: filters every registered setting and jumps to a page that
+    // still has matches.
+    let search = gtk::SearchEntry::new();
+    search.set_placeholder_text(Some("Search settings..."));
+    search.set_tooltip_text(Some("Type to filter every page (Ctrl+F)."));
+    search.set_hexpand(true);
+    let status = gtk::Label::new(None);
+    status.style_context().add_class("dim-label");
+    status.set_xalign(1.0);
+    let search_bar = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    search_bar.pack_start(&search, true, true, 0);
+    search_bar.pack_start(&status, false, false, 0);
+    search_bar.set_margin_start(14);
+    search_bar.set_margin_end(14);
+    search_bar.set_margin_top(8);
+    search_bar.set_margin_bottom(8);
+
+    {
+        let index = index.clone();
+        let stack = stack.clone();
+        let status = status.clone();
+        search.connect_search_changed(move |entry| {
+            let query = entry.text().trim().to_lowercase();
+            let visible: Vec<bool> = index
+                .rows
+                .borrow()
+                .iter()
+                .map(|row| query.is_empty() || row.haystack.contains(&query))
+                .collect();
+
+            {
+                let rows = index.rows.borrow();
+                for (row, shown) in rows.iter().zip(&visible) {
+                    for widget in &row.widgets {
+                        widget.set_visible(*shown);
+                    }
+                }
+            }
+            for section in index.sections.borrow().iter() {
+                let any = section
+                    .rows
+                    .iter()
+                    .any(|index| visible.get(*index).copied().unwrap_or(false));
+                section.header.set_visible(any);
+                for extra in &section.extras {
+                    extra.set_visible(any);
+                }
+            }
+
+            if query.is_empty() {
+                status.set_text("");
+                return;
+            }
+
+            let mut pages: Vec<&str> = Vec::new();
+            let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+            {
+                let rows = index.rows.borrow();
+                for (row, shown) in rows.iter().zip(&visible) {
+                    if *shown {
+                        if !pages.contains(&row.page) {
+                            pages.push(row.page);
+                        }
+                        *counts.entry(row.page).or_insert(0) += 1;
+                    }
+                }
+            }
+            let total: usize = counts.values().sum();
+            status.set_text(&match total {
+                0 => "No matching settings".to_string(),
+                1 => "1 setting".to_string(),
+                n => format!("{n} settings"),
+            });
+
+            let current = stack
+                .visible_child_name()
+                .map(|name| name.to_string())
+                .unwrap_or_default();
+            if counts.get(current.as_str()).copied().unwrap_or(0) == 0 {
+                if let Some(page) = pages.first() {
+                    stack.set_visible_child_name(page);
+                }
+            }
+        });
+    }
+    {
+        let search = search.clone();
+        search.connect_stop_search(move |entry| entry.set_text(""));
+    }
+    {
+        let search = search.clone();
+        dialog.connect_key_press_event(move |_, event| {
+            if event.state().contains(gdk::ModifierType::CONTROL_MASK)
+                && event.keyval() == gdk::keys::constants::f
+            {
+                search.grab_focus();
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+    }
 
     let content_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     content_box.pack_start(&sidebar, false, false, 0);
@@ -131,159 +1598,118 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
     content_box.pack_start(&stack, true, true, 0);
     dialog
         .content_area()
+        .pack_start(&search_bar, false, false, 0);
+    dialog.content_area().pack_start(
+        &gtk::Separator::new(gtk::Orientation::Horizontal),
+        false,
+        false,
+        0,
+    );
+    dialog
+        .content_area()
         .pack_start(&content_box, true, true, 8);
 
-    // Build pages
-    let (general_widget, general) = build_general(&s);
-    let (appearance_widget, appearance) = build_appearance(&s);
-    let (colors_widget, colors) = build_colors(&s);
-    let (compat_widget, compat) = build_compatibility(&s);
-    let (notes_widget, notes) = build_notes(&s);
+    dialog.content_area().pack_start(
+        &gtk::Separator::new(gtk::Orientation::Horizontal),
+        false,
+        false,
+        0,
+    );
+    let restore = gtk::Button::with_label("Restore Defaults");
+    restore.set_tooltip_text(Some("Reset every page to the documented defaults."));
+    let cancel = gtk::Button::with_label("Cancel");
+    let ok = gtk::Button::with_label("OK");
+    ok.style_context().add_class("suggested-action");
+    {
+        let dialog = dialog.clone();
+        cancel.connect_clicked(move |_| dialog.response(gtk::ResponseType::Cancel));
+    }
+    {
+        let dialog = dialog.clone();
+        ok.connect_clicked(move |_| dialog.response(gtk::ResponseType::Ok));
+    }
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    actions.pack_start(&restore, false, false, 0);
+    actions.pack_end(&ok, false, false, 0);
+    actions.pack_end(&cancel, false, false, 0);
+    actions.set_margin_start(14);
+    actions.set_margin_end(14);
+    actions.set_margin_top(10);
+    actions.set_margin_bottom(10);
+    dialog.content_area().pack_start(&actions, false, false, 0);
 
-    stack.add_titled(&general_widget, "general", "General");
-    stack.add_titled(&appearance_widget, "appearance", "Appearance");
-    stack.add_titled(&colors_widget, "colors", "Colors");
-    stack.add_titled(&compat_widget, "compatibility", "Compatibility");
-    stack.add_titled(&notes_widget, "notes", "Notes");
-
-    let readability_css = gtk::CssProvider::new();
-    let _ = readability_css.load_from_data(
-        b"stacksidebar row { padding: 8px 10px; }
-           stacksidebar row label { font-size: 1.05em; }
+    let dialog_css = gtk::CssProvider::new();
+    let _ = dialog_css.load_from_data(
+        b"stacksidebar list row { padding: 10px 12px; margin: 2px 8px; border-radius: 8px; }
+           stacksidebar list row label { font-size: 1.05em; }
+           stacksidebar list row:selected label { font-weight: bold; }
            entry, spinbutton, combobox button, checkbutton label,
            radiobutton label { font-size: 1.03em; }
-           entry, spinbutton { padding: 4px 6px; }",
+           entry, spinbutton { padding: 4px 6px; }
+           .settings-caption { font-size: 0.92em; }",
     );
     dialog
         .style_context()
-        .add_provider(&readability_css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+        .add_provider(&dialog_css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
 
-    let ok_btn = dialog
-        .widget_for_response(gtk::ResponseType::Ok)
-        .and_then(|w| w.downcast::<gtk::Button>().ok());
-    if let Some(btn) = ok_btn {
-        btn.style_context().add_class("suggested-action");
-    }
-
-    let state = DialogState {
-        dialog: dialog.clone(),
-        palette_btns: RefCell::new(colors),
-        _fg_btn: appearance.4.clone(),
-        _bg_btn: appearance.5.clone(),
+    let state = Rc::new(DialogState {
+        general,
+        scrolling,
+        input,
+        notifications,
+        appearance,
+        compatibility,
+        notes,
+        palette_btns,
         fg_override: Rc::new(Cell::new(!s.get_str("foreground_color").is_empty())),
         bg_override: Rc::new(Cell::new(!s.get_str("background_color").is_empty())),
-        entry_title: general.0,
-        combo_dynamic: general.1,
-        chk_login: general.2,
-        entry_shell: general.3,
-        spin_columns: general.4,
-        spin_rows: general.5,
-        combo_scrollbar_pos: general.6,
-        chk_scrollback_unlimited: general.7,
-        spin_scrollback: general.8,
-        chk_scroll_output: general.9,
-        chk_scroll_keystroke: general.10,
-        chk_confirm_close: general.11,
-        chk_auto_copy: general.12,
-        chk_warn_paste: general.13,
-        entry_fm: general.14,
-        chk_session_restore: general.15,
-        chk_bell_notify: general.16,
-        chk_hint_mode: general.17,
-        chk_vi_copy: general.18,
-        chk_tmux_prefix: general.19,
-        entry_tmux_prefix_key: general.20,
-        chk_ssh_sharing: general.21,
-        chk_notify_unfocused: general.22,
-        spin_notify_min: general.23,
-        chk_notify_failure: general.24,
-        font_btn: appearance.0,
-        chk_bold: appearance.1,
-        combo_scheme: appearance.2,
-        fg_color_btn: appearance.4.clone(),
-        bg_color_btn: appearance.5.clone(),
-        cursor_color_btn: appearance.6,
-        highlight_btn: appearance.7,
-        highlight_bg_btn: appearance.8,
-        tab_title_color_btn: appearance.9,
-        tab_active_color_btn: appearance.10,
-        combo_cursor_shape: appearance.11,
-        chk_cursor_blink: appearance.12,
-        spin_opacity: appearance.13,
-        chk_transparency: appearance.14,
-        spin_pad_h: appearance.15,
-        spin_pad_v: appearance.16,
-        combo_undercurl: appearance.17,
-        chk_auto_theme: appearance.18,
-        combo_light_theme: appearance.19,
-        combo_dark_theme: appearance.20,
-        combo_backspace: compat.0,
-        combo_delete: compat.1,
-        combo_encoding: compat.2,
-        chk_osc133: compat.3,
-        chk_bold_is_bright: compat.4,
-        chk_sixel: compat.5,
-        chk_smooth_scroll: compat.6,
-        entry_word_chars: compat.7,
-        entry_notes_dir: notes.0,
-        entry_notes_file: notes.1,
-        entry_editor: notes.2,
-        chk_notes_context: notes.3,
-        entry_notes_template: notes.4,
-    };
+    });
 
     {
         let override_flag = state.fg_override.clone();
         state
-            .fg_color_btn
+            .appearance
+            .fg_color
             .connect_color_set(move |_| override_flag.set(true));
         let override_flag = state.bg_override.clone();
         state
-            .bg_color_btn
+            .appearance
+            .bg_color
             .connect_color_set(move |_| override_flag.set(true));
     }
 
-    // Live preview: switching the scheme updates fg/bg and palette buttons.
+    // "Restore Defaults" clears the whole form but does not write anything:
+    // pressing Cancel still leaves the configuration untouched.
     {
-        let combo = state.combo_scheme.clone();
-        let fg_btn = state.fg_color_btn.clone();
-        let bg_btn = state.bg_color_btn.clone();
-        let palette_btns = state.palette_btns.clone();
-        combo.connect_changed(move |combo| {
-            let Some(name) = combo.active_text() else {
-                return;
-            };
-            if let Some(theme) = settings::color_schemes().get(name.as_str()) {
-                fg_btn.set_rgba(&hex_to_rgba(&theme.foreground));
-                bg_btn.set_rgba(&hex_to_rgba(&theme.background));
-                for (key, (btn, _)) in palette_btns.borrow().iter() {
-                    if let Some(hex) = theme.palette.get(key.as_str()) {
-                        btn.set_rgba(&hex_to_rgba(hex));
-                    }
+        let state = state.clone();
+        restore.connect_clicked(move |_| state.reset_defaults());
+    }
+
+    {
+        let state = state.clone();
+        dialog.connect_response(move |dlg, response| {
+            if response == gtk::ResponseType::Ok {
+                let errors = state.apply();
+                if !errors.is_empty() {
+                    let msg = gtk::MessageDialog::new(
+                        Some(dlg),
+                        gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+                        gtk::MessageType::Warning,
+                        gtk::ButtonsType::Close,
+                        &format!("Some settings were not saved:\n\n{}", errors.join("\n")),
+                    );
+                    msg.run();
+                    msg.close();
                 }
             }
+            dlg.close();
         });
     }
 
-    dialog.connect_response(move |dlg, response| {
-        if response == gtk::ResponseType::Ok {
-            let errors = state.apply();
-            if !errors.is_empty() {
-                let msg = gtk::MessageDialog::new(
-                    Some(dlg),
-                    gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
-                    gtk::MessageType::Warning,
-                    gtk::ButtonsType::Close,
-                    &format!("Some settings were not saved:\n\n{}", errors.join("\n")),
-                );
-                msg.run();
-                msg.close();
-            }
-        }
-        // destroy handled by response default
-    });
-
     dialog.show_all();
+    // Keep the filter box empty and quiet: a focused GtkEntry hides its
+    // placeholder, so the page list takes the initial focus instead.
+    dialog.set_focus(Some(&sidebar));
     let _ = dialog.run();
     dialog.close();
 }
@@ -453,1017 +1879,64 @@ pub fn show_diagnostics_dialog(parent: Option<&gtk::Window>, panes: usize) {
     dialog.close();
 }
 
-fn section(grid: &gtk::Grid, row: i32, title: &str) -> i32 {
-    let label = gtk::Label::new(Some(title));
-    label.set_use_markup(true);
-    label.set_halign(gtk::Align::Start);
-    label.set_hexpand(true);
-    grid.attach(&label, 0, row, 2, 1);
-    row + 1
-}
-
-fn row(grid: &gtk::Grid, row: i32, label_text: &str, widget: &impl IsA<gtk::Widget>) -> i32 {
-    let lbl = gtk::Label::new(Some(label_text));
-    lbl.set_halign(gtk::Align::End);
-    lbl.set_margin_end(8);
-    grid.attach(&lbl, 0, row, 1, 1);
-    grid.attach(widget, 1, row, 1, 1);
-    row + 1
-}
-
-fn make_color_button(hex_color: &str, tooltip: &str) -> gtk::ColorButton {
-    let rgba = hex_to_rgba(hex_color);
-    let btn = gtk::ColorButton::with_rgba(&rgba);
-    btn.set_size_request(48, 22);
-    btn.set_halign(gtk::Align::Start);
-    btn.set_tooltip_text(Some(tooltip));
-    btn
-}
-
-// Returns (widget, individual fields)
-fn build_general(
-    s: &Settings,
-) -> (
-    gtk::ScrolledWindow,
-    (
-        gtk::Entry,
-        gtk::ComboBoxText,
-        gtk::CheckButton,
-        gtk::Entry,
-        gtk::SpinButton,
-        gtk::SpinButton,
-        gtk::ComboBoxText,
-        gtk::CheckButton,
-        gtk::SpinButton,
-        gtk::CheckButton,
-        gtk::CheckButton,
-        gtk::CheckButton,
-        gtk::CheckButton,
-        gtk::CheckButton,
-        gtk::Entry,
-        gtk::CheckButton,
-        gtk::CheckButton,
-        gtk::CheckButton,
-        gtk::CheckButton,
-        gtk::CheckButton,
-        gtk::Entry,
-        gtk::CheckButton,
-        gtk::CheckButton,
-        gtk::SpinButton,
-        gtk::CheckButton,
-    ),
-) {
-    let sw = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
-    sw.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-    let grid = gtk::Grid::new();
-    grid.set_margin_start(12);
-    grid.set_margin_end(12);
-    grid.set_margin_top(8);
-    grid.set_margin_bottom(8);
-    grid.set_row_spacing(9);
-    grid.set_column_spacing(12);
-    let mut r = 0;
-
-    r = section(&grid, r, "Title");
-    let entry_title = gtk::Entry::new();
-    entry_title.set_text(&s.get_str_default("tab_title", "Terminal"));
-    entry_title.set_tooltip_text(Some("Default name displayed on each new tab"));
-    r = row(&grid, r, "Initial title:", &entry_title);
-
-    let combo_dynamic = gtk::ComboBoxText::new();
-    combo_dynamic.append_text("Replace initial title");
-    combo_dynamic.append_text("Goes before initial title");
-    combo_dynamic.append_text("Goes after initial title");
-    combo_dynamic.append_text("Isn't displayed");
-    let dyn_map = [("replace", 0), ("before", 1), ("after", 2), ("hide", 3)];
-    let current = s.get_str_default("dynamic_title", "replace");
-    let idx = dyn_map
-        .iter()
-        .find(|(k, _)| *k == current)
-        .map(|(_, v)| *v)
-        .unwrap_or(0);
-    combo_dynamic.set_active(Some(idx));
-    combo_dynamic.set_tooltip_text(Some(
-        "How to combine a title set by the shell (OSC escape) with the initial title",
-    ));
-    r = row(&grid, r, "Dynamic title:", &combo_dynamic);
-
-    r += 1;
-    r = section(&grid, r, "Command");
-    let chk_login = gtk::CheckButton::with_label("Run as login shell");
-    chk_login.set_active(s.get_bool("login_shell"));
-    chk_login.set_tooltip_text(Some(
-        "Start the shell as a login shell (loads .profile / .bash_profile)",
-    ));
-    r = row(&grid, r, "Login shell:", &chk_login);
-
-    let entry_shell = gtk::Entry::new();
-    entry_shell.set_text(&s.get_str_default("shell_command", "/bin/bash"));
-    entry_shell.set_tooltip_text(Some(
-        "Custom shell command or path. Use $SHELL for the default shell",
-    ));
-    r = row(&grid, r, "Shell:", &entry_shell);
-
-    let size_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    let spin_columns = gtk::SpinButton::with_range(40.0, 300.0, 1.0);
-    spin_columns.set_value(s.get_i64("terminal_columns") as f64);
-    spin_columns.set_tooltip_text(Some("Default terminal width in character columns (40-300)"));
-    let spin_rows = gtk::SpinButton::with_range(10.0, 120.0, 1.0);
-    spin_rows.set_value(s.get_i64("terminal_rows") as f64);
-    spin_rows.set_tooltip_text(Some("Default terminal height in character rows (10-120)"));
-    size_box.pack_start(&spin_columns, false, false, 0);
-    size_box.pack_start(&gtk::Label::new(Some("x")), false, false, 2);
-    size_box.pack_start(&spin_rows, false, false, 0);
-    size_box.pack_start(&gtk::Label::new(Some("(cols x rows)")), false, false, 6);
-    r = row(&grid, r, "Size:", &size_box);
-
-    r += 1;
-    r = section(&grid, r, "Scrolling");
-    let combo_scrollbar_pos = gtk::ComboBoxText::new();
-    combo_scrollbar_pos.append_text("Right side");
-    combo_scrollbar_pos.append_text("Left side");
-    combo_scrollbar_pos.append_text("Disabled");
-    let pos_map = [("right", 0), ("left", 1), ("disabled", 2)];
-    let current = s.get_str_default("scrollbar_position", "right");
-    combo_scrollbar_pos.set_active(Some(
-        pos_map
-            .iter()
-            .find(|(k, _)| *k == current)
-            .map(|(_, v)| *v)
-            .unwrap_or(0),
-    ));
-    combo_scrollbar_pos.set_tooltip_text(Some("Position of the scrollbar or disable it entirely"));
-    r = row(&grid, r, "Scrollbar is:", &combo_scrollbar_pos);
-
-    let chk_scrollback_unlimited = gtk::CheckButton::new();
-    chk_scrollback_unlimited.set_active(s.get_i64("scrollback_lines") == -1);
-    chk_scrollback_unlimited.set_tooltip_text(Some("Unlimited scrollback buffer"));
-    let spin_scrollback = gtk::SpinButton::with_range(1.0, 1_000_000.0, 1.0);
-    {
-        let val = s.get_i64("scrollback_lines");
-        spin_scrollback.set_value(if val > 0 { val as f64 } else { 10000.0 });
-        spin_scrollback.set_sensitive(val > 0);
-    }
-    spin_scrollback.set_tooltip_text(Some(
-        "Maximum number of lines kept in the scrollback buffer",
-    ));
-    {
-        let spin = spin_scrollback.clone();
-        chk_scrollback_unlimited.connect_toggled(move |chk| {
-            spin.set_sensitive(!chk.is_active());
-        });
-    }
-    r = row(&grid, r, "Unlimited scrollback:", &chk_scrollback_unlimited);
-    r = row(&grid, r, "Scrollback lines:", &spin_scrollback);
-
-    let chk_scroll_output = gtk::CheckButton::new();
-    chk_scroll_output.set_active(s.get_bool("scroll_on_output"));
-    chk_scroll_output.set_tooltip_text(Some(
-        "Automatically scroll to the bottom when new output appears",
-    ));
-    r = row(&grid, r, "Scroll on output:", &chk_scroll_output);
-
-    let chk_scroll_keystroke = gtk::CheckButton::new();
-    chk_scroll_keystroke.set_active(s.get_bool("scroll_on_keystroke"));
-    chk_scroll_keystroke.set_tooltip_text(Some("Automatically scroll to the bottom when typing"));
-    r = row(&grid, r, "Scroll on keystroke:", &chk_scroll_keystroke);
-
-    r += 1;
-    r = section(&grid, r, "Other");
-    let chk_confirm_close = gtk::CheckButton::new();
-    chk_confirm_close.set_active(s.get_bool("confirm_close"));
-    chk_confirm_close.set_tooltip_text(Some(
-        "Ask for confirmation only when a process is active in the terminal",
-    ));
-    r = row(
-        &grid,
-        r,
-        "Confirm before closing active terminals:",
-        &chk_confirm_close,
-    );
-
-    let chk_auto_copy = gtk::CheckButton::new();
-    chk_auto_copy.set_active(s.get_bool("auto_copy_selection"));
-    chk_auto_copy.set_tooltip_text(Some("Automatically copy selected text to the clipboard"));
-    r = row(&grid, r, "Auto-copy selection:", &chk_auto_copy);
-
-    let chk_warn_paste = gtk::CheckButton::new();
-    chk_warn_paste.set_active(s.get_bool("show_unsafe_paste_dialog"));
-    chk_warn_paste.set_tooltip_text(Some(
-        "Warn before pasting multi-line text that may contain harmful commands",
-    ));
-    r = row(&grid, r, "Warn multi-line paste:", &chk_warn_paste);
-
-    let entry_fm = gtk::Entry::new();
-    entry_fm.set_text(&s.get_str("file_manager"));
-    entry_fm.set_placeholder_text(Some("auto-detect"));
-    entry_fm.set_tooltip_text(Some(
-        "Override the file manager (e.g. nemo, thunar, dolphin). Leave blank to auto-detect",
-    ));
-    r = row(&grid, r, "File manager:", &entry_fm);
-
-    r += 1;
-    r = section(&grid, r, "Session");
-    let chk_session_restore = gtk::CheckButton::new();
-    chk_session_restore.set_active(s.get_bool("session_restore"));
-    chk_session_restore
-        .set_tooltip_text(Some("Restore tabs and splits from last session on startup"));
-    r = row(&grid, r, "Restore last session:", &chk_session_restore);
-
-    let chk_bell_notify = gtk::CheckButton::new();
-    chk_bell_notify.set_active(s.get_bool("bell_notification"));
-    chk_bell_notify.set_tooltip_text(Some(
-        "Show a desktop notification when a command finishes (requires OSC 133 shell integration)",
-    ));
-    r = row(&grid, r, "Notify on command completion:", &chk_bell_notify);
-
-    let chk_notify_unfocused = gtk::CheckButton::new();
-    chk_notify_unfocused.set_active(s.get_bool("notify_only_unfocused"));
-    chk_notify_unfocused.set_tooltip_text(Some(
-        "Stay quiet while you are watching the terminal; notify only when it is in the background",
-    ));
-    r = row(&grid, r, "Only when unfocused:", &chk_notify_unfocused);
-
-    let spin_notify_min = gtk::SpinButton::with_range(0.0, 86_400.0, 1.0);
-    spin_notify_min.set_value(s.get_i64("notify_min_seconds") as f64);
-    spin_notify_min.set_tooltip_text(Some(
-        "Skip notifications for commands shorter than this (0 = every command). Failures always notify when enabled",
-    ));
-    r = row(&grid, r, "Minimum duration (s):", &spin_notify_min);
-
-    let chk_notify_failure = gtk::CheckButton::new();
-    chk_notify_failure.set_active(s.get_bool("notify_on_failure"));
-    chk_notify_failure.set_tooltip_text(Some(
-        "Notify when a command exits non-zero even if it was faster than the minimum duration",
-    ));
-    r = row(&grid, r, "Always notify failures:", &chk_notify_failure);
-
-    r += 1;
-    r = section(&grid, r, "Keyboard Modes");
-    let chk_hint_mode = gtk::CheckButton::new();
-    chk_hint_mode.set_active(s.get_bool("hint_mode_enabled"));
-    chk_hint_mode.set_tooltip_text(Some(
-        "Ctrl+Shift+H: highlight URLs, paths and git SHAs with keyboard-selectable labels",
-    ));
-    r = row(&grid, r, "Hint mode:", &chk_hint_mode);
-
-    let chk_vi_copy = gtk::CheckButton::new();
-    chk_vi_copy.set_active(s.get_bool("vi_copy_mode_enabled"));
-    chk_vi_copy.set_tooltip_text(Some(
-        "Ctrl+Shift+Y: VI-style copy mode (hjkl scroll, v select, y yank, Esc exit)",
-    ));
-    r = row(&grid, r, "VI copy mode:", &chk_vi_copy);
-
-    let chk_tmux_prefix = gtk::CheckButton::new();
-    chk_tmux_prefix.set_active(s.get_bool("tmux_prefix_enabled"));
-    chk_tmux_prefix.set_tooltip_text(Some(
-        "Use a Ctrl+letter prefix for tab and split shortcuts. Disable to pass that key to programs",
-    ));
-    r = row(&grid, r, "tmux-style prefix keys:", &chk_tmux_prefix);
-
-    let entry_tmux_prefix_key = gtk::Entry::new();
-    entry_tmux_prefix_key.set_text(&s.get_str_default("tmux_prefix_key", "b"));
-    entry_tmux_prefix_key.set_max_length(1);
-    entry_tmux_prefix_key.set_width_chars(3);
-    entry_tmux_prefix_key.set_max_width_chars(3);
-    entry_tmux_prefix_key.set_sensitive(chk_tmux_prefix.is_active());
-    entry_tmux_prefix_key.set_tooltip_text(Some(
-        "Letter pressed with Ctrl as the prefix (default b). Change it to keep Ctrl+B for tmux or screen",
-    ));
-    {
-        let entry = entry_tmux_prefix_key.clone();
-        chk_tmux_prefix.connect_toggled(move |chk| entry.set_sensitive(chk.is_active()));
-    }
-    r = row(&grid, r, "Prefix key (Ctrl+):", &entry_tmux_prefix_key);
-
-    let chk_ssh_sharing = gtk::CheckButton::new();
-    chk_ssh_sharing.set_active(s.get_bool("ssh_connection_sharing"));
-    chk_ssh_sharing.set_tooltip_text(Some(
-        "Reuse one SSH connection per server across tabs (faster logins, live remote stats). Ignored when your ssh config sets ControlPath. Applies to new tabs",
-    ));
-    row(&grid, r, "SSH connection sharing:", &chk_ssh_sharing);
-
-    sw.add(&grid);
-    (
-        sw,
-        (
-            entry_title,
-            combo_dynamic,
-            chk_login,
-            entry_shell,
-            spin_columns,
-            spin_rows,
-            combo_scrollbar_pos,
-            chk_scrollback_unlimited,
-            spin_scrollback,
-            chk_scroll_output,
-            chk_scroll_keystroke,
-            chk_confirm_close,
-            chk_auto_copy,
-            chk_warn_paste,
-            entry_fm,
-            chk_session_restore,
-            chk_bell_notify,
-            chk_hint_mode,
-            chk_vi_copy,
-            chk_tmux_prefix,
-            entry_tmux_prefix_key,
-            chk_ssh_sharing,
-            chk_notify_unfocused,
-            spin_notify_min,
-            chk_notify_failure,
-        ),
-    )
-}
-
-fn build_appearance(
-    s: &Settings,
-) -> (
-    gtk::ScrolledWindow,
-    (
-        gtk::FontButton,
-        gtk::CheckButton,
-        gtk::ComboBoxText,
-        gtk::ScrolledWindow,
-        gtk::ColorButton,
-        gtk::ColorButton,
-        gtk::ColorButton,
-        gtk::ColorButton,
-        gtk::ColorButton,
-        gtk::ColorButton,
-        gtk::ColorButton,
-        gtk::ComboBoxText,
-        gtk::CheckButton,
-        gtk::SpinButton,
-        gtk::CheckButton,
-        gtk::SpinButton,
-        gtk::SpinButton,
-        gtk::ComboBoxText,
-        gtk::CheckButton,
-        gtk::ComboBoxText,
-        gtk::ComboBoxText,
-    ),
-) {
-    let sw = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
-    sw.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-    let grid = gtk::Grid::new();
-    grid.set_margin_start(12);
-    grid.set_margin_end(12);
-    grid.set_margin_top(8);
-    grid.set_margin_bottom(8);
-    grid.set_row_spacing(9);
-    grid.set_column_spacing(12);
-    let mut r = 0;
-
-    r = section(&grid, r, "Font");
-    let font_desc = format!(
-        "{} {}",
-        s.get_str_default("font_name", "Monospace"),
-        s.get_i64("font_size")
-    );
-    let font_btn = gtk::FontButton::new();
-    font_btn.set_font(&font_desc);
-    font_btn.set_tooltip_text(Some("Choose a font family and size"));
-    r = row(&grid, r, "Font:", &font_btn);
-
-    let chk_bold = gtk::CheckButton::new();
-    chk_bold.set_active(s.get_bool("allow_bold_text"));
-    chk_bold.set_tooltip_text(Some(
-        "Render bold text as bold. Disable for uniform text weight",
-    ));
-    r = row(&grid, r, "Allow bold text:", &chk_bold);
-
-    r += 1;
-    r = section(&grid, r, "Color Scheme");
-    let combo_scheme = gtk::ComboBoxText::new();
-    let mut scheme_names: Vec<String> = Vec::new();
-    for name in settings::color_schemes().keys() {
-        combo_scheme.append_text(name);
-        scheme_names.push(name.to_string());
-    }
-    let current = s.get_str_default("color_scheme", "Dark (Default)");
-    let idx = scheme_names.iter().position(|n| *n == current).unwrap_or(0);
-    combo_scheme.set_active(Some(idx as u32));
-    combo_scheme.set_tooltip_text(Some(
-        "Choose a theme. Drop Ghostty or iTerm2 theme files into ~/.config/oxterm/themes/ \
-         to add more",
-    ));
-    r = row(&grid, r, "Scheme:", &combo_scheme);
-
-    let chk_auto_theme = gtk::CheckButton::with_label("Follow system dark mode");
-    chk_auto_theme.set_active(s.get_bool("auto_theme"));
-    chk_auto_theme.set_tooltip_text(Some(
-        "Switch between the light and dark theme below when the desktop changes appearance",
-    ));
-    r = row(&grid, r, "Automatic theme:", &chk_auto_theme);
-
-    let theme_combo = |current: String| {
-        let combo = gtk::ComboBoxText::new();
-        let mut names = Vec::new();
-        for name in settings::color_schemes().keys() {
-            combo.append_text(name);
-            names.push(name.to_string());
-        }
-        let index = names.iter().position(|name| *name == current).unwrap_or(0);
-        combo.set_active(Some(index as u32));
-        combo
-    };
-    let combo_light_theme = theme_combo(s.get_str_default("theme_light", "Light"));
-    combo_light_theme.set_tooltip_text(Some("Theme used when the desktop is in light mode"));
-    r = row(&grid, r, "Light theme:", &combo_light_theme);
-    let combo_dark_theme = theme_combo(s.get_str_default("theme_dark", "Dark (Default)"));
-    combo_dark_theme.set_tooltip_text(Some("Theme used when the desktop is in dark mode"));
-    r = row(&grid, r, "Dark theme:", &combo_dark_theme);
-
-    r += 1;
-    r = section(&grid, r, "Individual Colors");
-    let fg_color_btn = make_color_button(
-        &s.get_fg_color(),
-        "Default text foreground color – click to change",
-    );
-    let bg_color_btn = make_color_button(
-        &s.get_bg_color(),
-        "Terminal background color – click to change",
-    );
-    let cursor_color_btn = make_color_button(
-        &s.get_str_default("cursor_color", "#ffffff"),
-        "Cursor color – click to change",
-    );
-    let highlight_btn = make_color_button(
-        &s.get_str_default("highlight_color", "#ffffff"),
-        "Selected text color – click to change",
-    );
-    let highlight_bg_btn = make_color_button(
-        &s.get_str_default("highlight_bg_color", "#446688"),
-        "Selection background color – click to change",
-    );
-
-    let color_grid = gtk::Grid::new();
-    color_grid.set_column_spacing(12);
-    color_grid.set_row_spacing(4);
-    color_grid.attach(&gtk::Label::new(Some("Foreground:")), 0, 0, 1, 1);
-    color_grid.attach(&fg_color_btn, 1, 0, 1, 1);
-    color_grid.attach(&gtk::Label::new(Some("Background:")), 0, 1, 1, 1);
-    color_grid.attach(&bg_color_btn, 1, 1, 1, 1);
-    color_grid.attach(&gtk::Label::new(Some("Cursor:")), 0, 2, 1, 1);
-    color_grid.attach(&cursor_color_btn, 1, 2, 1, 1);
-    color_grid.attach(&gtk::Label::new(Some("Highlight text:")), 2, 0, 1, 1);
-    color_grid.attach(&highlight_btn, 3, 0, 1, 1);
-    color_grid.attach(&gtk::Label::new(Some("Highlight bg:")), 2, 1, 1, 1);
-    color_grid.attach(&highlight_bg_btn, 3, 1, 1, 1);
-    r = row(&grid, r, "", &color_grid);
-
-    r += 1;
-    r = section(&grid, r, "Tab Colors");
-    let tab_title_color_btn = make_color_button(
-        &s.get_str_default("tab_title_color", "#ffffff"),
-        "Color for inactive tab titles – click to change",
-    );
-    r = row(&grid, r, "Tab title:", &tab_title_color_btn);
-    let tab_active_color_btn = make_color_button(
-        &s.get_str_default("tab_active_title_color", "#ffffff"),
-        "Color for the active tab title – click to change",
-    );
-    r = row(&grid, r, "Active tab:", &tab_active_color_btn);
-
-    r += 1;
-    r = section(&grid, r, "Cursor");
-    let combo_cursor_shape = gtk::ComboBoxText::new();
-    combo_cursor_shape.append_text("block");
-    combo_cursor_shape.append_text("underline");
-    combo_cursor_shape.append_text("ibeam");
-    let shape = s.get_str_default("cursor_shape", "block");
-    combo_cursor_shape.set_active(Some(match shape.as_str() {
-        "underline" => 1,
-        "ibeam" => 2,
-        _ => 0,
-    }));
-    combo_cursor_shape.set_tooltip_text(Some(
-        "Cursor appearance: block (filled rectangle), underline (_), ibeam (|)",
-    ));
-    r = row(&grid, r, "Cursor shape:", &combo_cursor_shape);
-
-    let chk_cursor_blink = gtk::CheckButton::new();
-    chk_cursor_blink.set_active(s.get_bool("cursor_blink"));
-    chk_cursor_blink.set_tooltip_text(Some("Make the cursor blink periodically"));
-    r = row(&grid, r, "Cursor blinking:", &chk_cursor_blink);
-
-    r += 1;
-    r = section(&grid, r, "Transparency");
-    let spin_opacity = gtk::SpinButton::with_range(0.1, 1.0, 0.05);
-    spin_opacity.set_value(s.get_f64("opacity"));
-    spin_opacity.set_tooltip_text(Some(
-        "Window opacity (1.0 = fully opaque, 0.3 = almost transparent)",
-    ));
-    r = row(&grid, r, "Opacity:", &spin_opacity);
-    let chk_transparency = gtk::CheckButton::new();
-    chk_transparency.set_active(s.get_bool("enable_transparency"));
-    chk_transparency.set_tooltip_text(Some(
-        "Enable RGBA compositing transparency. Requires a compositor (e.g. picom, Wayland)",
-    ));
-    r = row(&grid, r, "Enable transparency:", &chk_transparency);
-
-    r += 1;
-    r = section(&grid, r, "Padding");
-    let pad_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    let spin_pad_h = gtk::SpinButton::with_range(0.0, 100.0, 1.0);
-    spin_pad_h.set_value(s.get_i64("window_padding_horizontal") as f64);
-    spin_pad_h.set_tooltip_text(Some(
-        "Horizontal padding inside the terminal window (pixels)",
-    ));
-    pad_box.pack_start(&gtk::Label::new(Some("H:")), false, false, 0);
-    pad_box.pack_start(&spin_pad_h, false, false, 0);
-    let spin_pad_v = gtk::SpinButton::with_range(0.0, 100.0, 1.0);
-    spin_pad_v.set_value(s.get_i64("window_padding_vertical") as f64);
-    spin_pad_v.set_tooltip_text(Some("Vertical padding inside the terminal window (pixels)"));
-    pad_box.pack_start(&gtk::Label::new(Some("V:")), false, false, 0);
-    pad_box.pack_start(&spin_pad_v, false, false, 0);
-    r = row(&grid, r, "Border:", &pad_box);
-
-    r += 1;
-    r = section(&grid, r, "Underlines");
-    let combo_undercurl = gtk::ComboBoxText::new();
-    for style in ["single", "double", "curly", "dashed", "dotted"] {
-        combo_undercurl.append_text(style);
-    }
-    let curl_style = s.get_str_default("undercurl_style", "single");
-    let idx = ["single", "double", "curly", "dashed", "dotted"]
-        .iter()
-        .position(|x| *x == curl_style)
-        .unwrap_or(0);
-    combo_undercurl.set_active(Some(idx as u32));
-    combo_undercurl.set_tooltip_text(Some(
-        "Style for underlined text (e.g. compiler errors, spelling). curly requires VTE >= 0.58",
-    ));
-    row(&grid, r, "Underline style:", &combo_undercurl);
-
-    sw.add(&grid);
-    let sw_ret = sw.clone();
-    (
-        sw,
-        (
-            font_btn,
-            chk_bold,
-            combo_scheme,
-            sw_ret,
-            fg_color_btn,
-            bg_color_btn,
-            cursor_color_btn,
-            highlight_btn,
-            highlight_bg_btn,
-            tab_title_color_btn,
-            tab_active_color_btn,
-            combo_cursor_shape,
-            chk_cursor_blink,
-            spin_opacity,
-            chk_transparency,
-            spin_pad_h,
-            spin_pad_v,
-            combo_undercurl,
-            chk_auto_theme,
-            combo_light_theme,
-            combo_dark_theme,
-        ),
-    )
-}
-
-fn build_colors(
-    s: &Settings,
-) -> (
-    gtk::ScrolledWindow,
-    BTreeMap<String, (gtk::ColorButton, String)>,
-) {
-    let sw = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
-    sw.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    vbox.set_margin_start(12);
-    vbox.set_margin_end(12);
-    vbox.set_margin_top(8);
-    vbox.set_margin_bottom(8);
-
-    let label = gtk::Label::new(Some("16-Color Palette"));
-    label.set_use_markup(true);
-    label.set_halign(gtk::Align::Start);
-    vbox.pack_start(&label, false, false, 4);
-
-    let saved = s.get("custom_palette");
-    let default_palette = s.effective_theme();
-
-    let labels_16: [[&str; 4]; 4] = [
-        ["Black", "Red", "Green", "Yellow"],
-        ["Blue", "Magenta", "Cyan", "White"],
-        ["B.Black", "B.Red", "B.Green", "B.Yellow"],
-        ["B.Blue", "B.Magenta", "B.Cyan", "B.White"],
-    ];
-    let keys_16: [[&str; 4]; 4] = [
-        ["black", "red", "green", "yellow"],
-        ["blue", "magenta", "cyan", "white"],
-        ["brightblack", "brightred", "brightgreen", "brightyellow"],
-        ["brightblue", "brightmagenta", "brightcyan", "brightwhite"],
-    ];
-    let mut palette_btns: BTreeMap<String, (gtk::ColorButton, String)> = BTreeMap::new();
-    let palette_grid = gtk::Grid::new();
-    palette_grid.set_row_spacing(2);
-    palette_grid.set_column_spacing(12);
-    for ri in 0..4 {
-        for ci in 0..4 {
-            let key = keys_16[ri][ci];
-            let name = labels_16[ri][ci];
-            let hex = if let Some(custom) = saved.as_object() {
-                custom
-                    .get(key)
-                    .and_then(|v| v.as_str())
-                    .map(|x| x.to_string())
-                    .unwrap_or_else(|| {
-                        default_palette
-                            .palette
-                            .get(key)
-                            .map(String::as_str)
-                            .unwrap_or("#000000")
-                            .to_string()
-                    })
-            } else {
-                default_palette
-                    .palette
-                    .get(key)
-                    .map(String::as_str)
-                    .unwrap_or("#000000")
-                    .to_string()
-            };
-            let btn = make_color_button(&hex, name);
-            btn.set_size_request(48, 22);
-            palette_btns.insert(key.to_string(), (btn.clone(), hex));
-            let cell = gtk::Box::new(gtk::Orientation::Vertical, 1);
-            let lbl = gtk::Label::new(Some(name));
-            lbl.set_margin_start(4);
-            cell.pack_start(&lbl, false, false, 0);
-            cell.pack_start(&btn, false, false, 0);
-            palette_grid.attach(&cell, ci as i32, ri as i32, 1, 1);
-        }
-    }
-    vbox.pack_start(&palette_grid, false, false, 8);
-
-    let btn_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    let load_btn = gtk::Button::with_label("Load Preset...");
-    let btns = palette_btns.clone();
-    load_btn.connect_clicked(move |_| {
-        let dialog = gtk::Dialog::with_buttons(
-            Some("Load Palette"),
-            None::<&gtk::Window>,
-            gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
-            &[
-                ("Cancel", gtk::ResponseType::Cancel),
-                ("Load", gtk::ResponseType::Ok),
-            ],
-        );
-        let combo = gtk::ComboBoxText::new();
-        for name in settings::color_palettes().keys() {
-            combo.append_text(name);
-        }
-        combo.set_active(Some(0));
-        dialog.content_area().pack_start(&combo, true, true, 8);
-        dialog.show_all();
-        if dialog.run() == gtk::ResponseType::Ok {
-            let name = combo.active_text().unwrap_or_default();
-            if let Some(theme) = settings::color_palettes().get(name.as_str()) {
-                for (key, (btn, _)) in &btns {
-                    if let Some(hex) = theme.palette.get(key.as_str()) {
-                        btn.set_rgba(&hex_to_rgba(hex));
-                    }
-                }
-            }
-        }
-        dialog.close();
-    });
-    load_btn.set_tooltip_text(Some(
-        "Load a complete palette from any installed or imported theme",
-    ));
-    let save_btn = gtk::Button::with_label("Save As Custom");
-    let btns = palette_btns.clone();
-    save_btn.connect_clicked(move |_| {
-        let mut palette = serde_json::Map::new();
-        for (key, (btn, _)) in &btns {
-            palette.insert(key.clone(), serde_json::json!(rgba_to_hex(&btn.rgba())));
-        }
-        let _ = settings().set("custom_palette", serde_json::Value::Object(palette));
-    });
-    let reset_btn = gtk::Button::with_label("Reset to Default");
-    let btns2 = palette_btns.clone();
-    reset_btn.connect_clicked(move |_| {
-        if let Some(theme) = settings::color_palettes().get("Dark (Default)") {
-            for (key, (btn, _)) in &btns2 {
-                if let Some(hex) = theme.palette.get(key.as_str()) {
-                    btn.set_rgba(&hex_to_rgba(hex));
-                }
-            }
-        }
-    });
-    btn_box.pack_start(&load_btn, false, false, 0);
-    btn_box.pack_start(&save_btn, false, false, 0);
-    btn_box.pack_start(&reset_btn, false, false, 0);
-    vbox.pack_start(&btn_box, false, false, 0);
-
-    sw.add(&vbox);
-    (sw, palette_btns)
-}
-
-fn build_compatibility(
-    s: &Settings,
-) -> (
-    gtk::Grid,
-    (
-        gtk::ComboBoxText,
-        gtk::ComboBoxText,
-        gtk::ComboBoxText,
-        gtk::CheckButton,
-        gtk::CheckButton,
-        gtk::CheckButton,
-        gtk::CheckButton,
-        gtk::Entry,
-    ),
-) {
-    let grid = gtk::Grid::new();
-    grid.set_margin_start(12);
-    grid.set_margin_end(12);
-    grid.set_margin_top(8);
-    grid.set_margin_bottom(8);
-    grid.set_row_spacing(9);
-    grid.set_column_spacing(12);
-    let mut r = 0;
-
-    r = section(&grid, r, "Keyboard");
-    let combo_backspace = gtk::ComboBoxText::new();
-    combo_backspace.append_text("Auto-detect");
-    combo_backspace.append_text("ASCII DEL (127)");
-    combo_backspace.append_text("Escape sequence");
-    combo_backspace.append_text("Control-H (8)");
-    let bs_map = [
-        ("auto", 0),
-        ("ascii-del", 1),
-        ("escape-sequence", 2),
-        ("control-h", 3),
-    ];
-    let bs = s.get_str_default("backspace_binding", "ascii-del");
-    combo_backspace.set_active(Some(
-        bs_map
-            .iter()
-            .find(|(k, _)| *k == bs)
-            .map(|(_, v)| *v)
-            .unwrap_or(1),
-    ));
-    combo_backspace.set_tooltip_text(Some(
-        "The character sequence sent when Backspace is pressed.",
-    ));
-    r = row(&grid, r, "Backspace key:", &combo_backspace);
-
-    let combo_delete = gtk::ComboBoxText::new();
-    combo_delete.append_text("Auto-detect");
-    combo_delete.append_text("Escape sequence");
-    combo_delete.append_text("ASCII DEL (127)");
-    combo_delete.append_text("Control-H (8)");
-    let del_map = [
-        ("auto", 0),
-        ("escape-sequence", 1),
-        ("ascii-del", 2),
-        ("control-h", 3),
-    ];
-    let dl = s.get_str_default("delete_binding", "escape-sequence");
-    combo_delete.set_active(Some(
-        del_map
-            .iter()
-            .find(|(k, _)| *k == dl)
-            .map(|(_, v)| *v)
-            .unwrap_or(1),
-    ));
-    combo_delete.set_tooltip_text(Some("The character sequence sent when Delete is pressed."));
-    r = row(&grid, r, "Delete key:", &combo_delete);
-
-    r += 1;
-    r = section(&grid, r, "Encoding");
-    let combo_encoding = gtk::ComboBoxText::new();
-    let encodings = [
-        "UTF-8",
-        "ISO-8859-1",
-        "ISO-8859-15",
-        "UTF-16",
-        "UTF-16BE",
-        "UTF-16LE",
-        "CP1252",
-        "CP850",
-        "ASCII",
-        "KOI8-R",
-        "Shift_JIS",
-        "EUC-JP",
-        "GBK",
-    ];
-    for enc in encodings {
-        combo_encoding.append_text(enc);
-    }
-    let cur_enc = s.get_str_default("encoding", "UTF-8");
-    let idx = encodings.iter().position(|e| *e == cur_enc).unwrap_or(0);
-    combo_encoding.set_active(Some(idx as u32));
-    combo_encoding.set_tooltip_text(Some("Default character encoding for new terminal tabs."));
-    r = row(&grid, r, "Default encoding:", &combo_encoding);
-
-    r += 1;
-    r = section(&grid, r, "Rendering");
-    let chk_bold_is_bright = gtk::CheckButton::with_label("Bold text uses bright colors");
-    chk_bold_is_bright.set_active(s.get_bool("bold_is_bright"));
-    chk_bold_is_bright.set_tooltip_text(Some(
-        "Match xterm and most Linux terminals: bold text picks the bright palette color",
-    ));
-    r = row(&grid, r, "Bold is bright:", &chk_bold_is_bright);
-
-    let chk_sixel = gtk::CheckButton::with_label("Allow Sixel images");
-    chk_sixel.set_active(s.get_bool("sixel"));
-    chk_sixel.set_tooltip_text(Some(
-        "Let applications draw inline images with Sixel (lsix, chafa, img2sixel). \
-         Off by default because images consume memory",
-    ));
-    r = row(&grid, r, "Sixel images:", &chk_sixel);
-
-    let chk_smooth_scroll = gtk::CheckButton::with_label("Smooth scrolling");
-    chk_smooth_scroll.set_active(s.get_bool("smooth_scroll"));
-    chk_smooth_scroll.set_tooltip_text(Some("Scroll by pixels instead of whole lines"));
-    r = row(&grid, r, "Smooth scroll:", &chk_smooth_scroll);
-
-    let entry_word_chars = gtk::Entry::new();
-    entry_word_chars.set_text(&s.get_str_default("word_char_exceptions", "-./?%&#:_=+@~"));
-    entry_word_chars.set_tooltip_text(Some(
-        "Characters treated as part of a word by double-click selection (e.g. to select a path)",
-    ));
-    r = row(&grid, r, "Word characters:", &entry_word_chars);
-
-    r += 1;
-    r = section(&grid, r, "Integration");
-    let chk_osc133 = gtk::CheckButton::with_label("Enable shell integration (OSC 133)");
-    chk_osc133.set_active(s.get_bool("osc133"));
-    chk_osc133.set_tooltip_text(Some(
-        "Enables OSC 133 only in shells started by Oxterm (bash/zsh/fish); user shell configs are not modified.",
-    ));
-    r = row(&grid, r, "OSC 133:", &chk_osc133);
-
-    r += 1;
-    let reset_btn = gtk::Button::with_label("Reset Compatibility Options to Defaults");
-    reset_btn.set_tooltip_text(Some(
-        "Reset backspace/delete bindings, encoding, and OSC 133 to their default values",
-    ));
-    let bs = combo_backspace.clone();
-    let dl = combo_delete.clone();
-    let enc = combo_encoding.clone();
-    let osc = chk_osc133.clone();
-    let bold_bright = chk_bold_is_bright.clone();
-    let sixel = chk_sixel.clone();
-    let smooth = chk_smooth_scroll.clone();
-    let word_chars = entry_word_chars.clone();
-    reset_btn.connect_clicked(move |_| {
-        bs.set_active(Some(1));
-        dl.set_active(Some(1));
-        enc.set_active(Some(0));
-        osc.set_active(false);
-        bold_bright.set_active(false);
-        sixel.set_active(false);
-        smooth.set_active(false);
-        word_chars.set_text("-./?%&#:_=+@~");
-    });
-    grid.attach(&reset_btn, 0, r, 2, 1);
-
-    (
-        grid,
-        (
-            combo_backspace,
-            combo_delete,
-            combo_encoding,
-            chk_osc133,
-            chk_bold_is_bright,
-            chk_sixel,
-            chk_smooth_scroll,
-            entry_word_chars,
-        ),
-    )
-}
-
-fn build_notes(
-    s: &Settings,
-) -> (
-    gtk::Grid,
-    (
-        gtk::Entry,
-        gtk::Entry,
-        gtk::Entry,
-        gtk::CheckButton,
-        gtk::Entry,
-    ),
-) {
-    let grid = gtk::Grid::new();
-    grid.set_margin_start(12);
-    grid.set_margin_end(12);
-    grid.set_margin_top(8);
-    grid.set_margin_bottom(8);
-    grid.set_row_spacing(9);
-    grid.set_column_spacing(12);
-    let mut rr = 0;
-
-    rr = section(&grid, rr, "Notes");
-    let entry_notes_dir = gtk::Entry::new();
-    entry_notes_dir.set_text(&s.get_str("notes_dir"));
-    let default_dir = crate::notes::default_notes_dir();
-    entry_notes_dir.set_placeholder_text(Some(default_dir.to_string_lossy().as_ref()));
-    entry_notes_dir.set_tooltip_text(Some(
-        "Directory where note files are stored. Leave empty to use the default data directory",
-    ));
-    rr = row(&grid, rr, "Notes directory:", &entry_notes_dir);
-
-    let entry_notes_file = gtk::Entry::new();
-    entry_notes_file.set_text(&s.get_str("notes_file"));
-    entry_notes_file.set_placeholder_text(Some("notes.md"));
-    entry_notes_file.set_tooltip_text(Some(
-        "Default notes filename. Created automatically when you use /wnotes",
-    ));
-    rr = row(&grid, rr, "Default notes file:", &entry_notes_file);
-
-    let entry_editor = gtk::Entry::new();
-    entry_editor.set_text(&s.get_str_default("editor_command", "nano"));
-    entry_editor.set_tooltip_text(Some(
-        "Fallback editor for /onotes, used only if xdg-open is unavailable.",
-    ));
-    rr = row(&grid, rr, "Fallback editor:", &entry_editor);
-
-    let chk_notes_context =
-        gtk::CheckButton::with_label("Record terminal context (cwd, host) in note entries");
-    chk_notes_context.set_active(s.get_bool("notes_record_context"));
-    chk_notes_context.set_tooltip_text(Some(
-        "Add a small HTML comment with the source, working directory and host to each entry",
-    ));
-    grid.attach(&chk_notes_context, 0, rr, 2, 1);
-
-    rr += 1;
-    let entry_notes_template = gtk::Entry::new();
-    entry_notes_template.set_text(&s.get_str("notes_template"));
-    entry_notes_template.set_placeholder_text(Some("e.g. Task: {command} (cwd {cwd})"));
-    entry_notes_template.set_tooltip_text(Some(
-        "Optional template pre-filled in new notes. Placeholders: {date} {time} {cwd} {host} {command}",
-    ));
-    row(&grid, rr, "New note template:", &entry_notes_template);
-
-    (
-        grid,
-        (
-            entry_notes_dir,
-            entry_notes_file,
-            entry_editor,
-            chk_notes_context,
-            entry_notes_template,
-        ),
-    )
-}
-
 impl DialogState {
     /// Apply the dialog to the settings; returns values that were rejected.
     fn apply(&self) -> Vec<String> {
         let s = settings();
         s.begin_batch();
 
-        s.set_str("tab_title", &self.entry_title.text());
-        let idx = self.combo_dynamic.active().unwrap_or(0) as i32;
-        let dynamic = match idx {
-            1 => "before",
-            2 => "after",
-            3 => "hide",
-            _ => "replace",
-        };
-        s.set_str("dynamic_title", dynamic);
+        s.set_str("tab_title", &self.general.title.text());
+        s.set_str(
+            "dynamic_title",
+            &combo_value(&self.general.dynamic, DYNAMIC_TITLE, "replace"),
+        );
+        s.set_bool("login_shell", self.general.login.is_active());
+        s.set_str("shell_command", &self.general.shell.text());
+        s.set_i64("terminal_columns", self.general.columns.value() as i64);
+        s.set_i64("terminal_rows", self.general.rows.value() as i64);
+        s.set_bool("session_restore", self.general.session_restore.is_active());
+        s.set_bool(
+            "ssh_connection_sharing",
+            self.general.ssh_sharing.is_active(),
+        );
+        s.set_bool("confirm_close", self.general.confirm_close.is_active());
+        s.set_bool("auto_copy_selection", self.general.auto_copy.is_active());
+        s.set_bool(
+            "show_unsafe_paste_dialog",
+            self.general.warn_paste.is_active(),
+        );
+        s.set_str("file_manager", &self.general.file_manager.text());
 
-        s.set_bool("login_shell", self.chk_login.is_active());
-        s.set_str("shell_command", &self.entry_shell.text());
-        s.set_i64("terminal_columns", self.spin_columns.value() as i64);
-        s.set_i64("terminal_rows", self.spin_rows.value() as i64);
-
-        let pos_map = ["right", "left", "disabled"];
-        let idx = self.combo_scrollbar_pos.active().unwrap_or(0) as usize;
         s.set_str(
             "scrollbar_position",
-            pos_map.get(idx).copied().unwrap_or("right"),
+            &combo_value(
+                &self.scrolling.scrollbar_position,
+                SCROLLBAR_POSITION,
+                "right",
+            ),
         );
-        let scrollback = if self.chk_scrollback_unlimited.is_active() {
+        let scrollback = if self.scrolling.scrollback_unlimited.is_active() {
             -1
         } else {
-            self.spin_scrollback.value() as i64
+            self.scrolling.scrollback.value() as i64
         };
         s.set_i64("scrollback_lines", scrollback);
-        s.set_bool("scroll_on_output", self.chk_scroll_output.is_active());
-        s.set_bool("scroll_on_keystroke", self.chk_scroll_keystroke.is_active());
-        s.set_bool("confirm_close", self.chk_confirm_close.is_active());
-        s.set_bool("auto_copy_selection", self.chk_auto_copy.is_active());
-        s.set_bool("show_unsafe_paste_dialog", self.chk_warn_paste.is_active());
-        s.set_str("file_manager", &self.entry_fm.text());
-        s.set_bool("session_restore", self.chk_session_restore.is_active());
-        s.set_bool("bell_notification", self.chk_bell_notify.is_active());
-        s.set_bool("hint_mode_enabled", self.chk_hint_mode.is_active());
-        s.set_bool("vi_copy_mode_enabled", self.chk_vi_copy.is_active());
-        s.set_bool("tmux_prefix_enabled", self.chk_tmux_prefix.is_active());
+        s.set_bool(
+            "scroll_on_output",
+            self.scrolling.scroll_on_output.is_active(),
+        );
+        s.set_bool(
+            "scroll_on_keystroke",
+            self.scrolling.scroll_on_keystroke.is_active(),
+        );
+        s.set_bool("smooth_scroll", self.scrolling.smooth_scroll.is_active());
+
+        s.set_bool("hint_mode_enabled", self.input.hint_mode.is_active());
+        s.set_bool("vi_copy_mode_enabled", self.input.vi_copy.is_active());
+        s.set_bool("tmux_prefix_enabled", self.input.tmux_prefix.is_active());
         let prefix_key = self
-            .entry_tmux_prefix_key
+            .input
+            .tmux_prefix_key
             .text()
             .trim()
             .chars()
@@ -1471,18 +1944,35 @@ impl DialogState {
             .map(|c| c.to_ascii_lowercase().to_string())
             .unwrap_or_else(|| "b".to_string());
         s.set_str("tmux_prefix_key", &prefix_key);
-        s.set_bool("ssh_connection_sharing", self.chk_ssh_sharing.is_active());
+        s.set_str(
+            "backspace_binding",
+            &combo_value(&self.input.backspace, BACKSPACE_BINDING, "ascii-del"),
+        );
+        s.set_str(
+            "delete_binding",
+            &combo_value(&self.input.delete, DELETE_BINDING, "escape-sequence"),
+        );
+        s.set_str("word_char_exceptions", self.input.word_chars.text().trim());
+
+        s.set_bool("bell_notification", self.notifications.notify.is_active());
         s.set_bool(
             "notify_only_unfocused",
-            self.chk_notify_unfocused.is_active(),
+            self.notifications.only_unfocused.is_active(),
         );
-        s.set_i64("notify_min_seconds", self.spin_notify_min.value() as i64);
-        s.set_bool("notify_on_failure", self.chk_notify_failure.is_active());
+        s.set_i64(
+            "notify_min_seconds",
+            self.notifications.min_seconds.value() as i64,
+        );
+        s.set_bool(
+            "notify_on_failure",
+            self.notifications.notify_failure.is_active(),
+        );
 
         let font_name = self
-            .font_btn
+            .appearance
+            .font
             .font()
-            .map(|f| f.to_string())
+            .map(|font| font.to_string())
             .unwrap_or_default();
         let mut parts = font_name.rsplitn(2, ' ');
         let size = parts.next().unwrap_or("").to_string();
@@ -1491,120 +1981,331 @@ impl DialogState {
         if let Ok(size) = size.parse::<i64>() {
             s.set_i64("font_size", size);
         }
-        s.set_bool("allow_bold_text", self.chk_bold.is_active());
+        s.set_bool("allow_bold_text", self.appearance.bold.is_active());
 
-        if let Some(name) = self.combo_scheme.active_text() {
+        if let Some(name) = self.appearance.scheme.active_text() {
             s.set_str("color_scheme", &name);
         }
-        s.set_bool("auto_theme", self.chk_auto_theme.is_active());
-        if let Some(name) = self.combo_light_theme.active_text() {
+        s.set_bool("auto_theme", self.appearance.auto_theme.is_active());
+        if let Some(name) = self.appearance.light_theme.active_text() {
             s.set_str("theme_light", &name);
         }
-        if let Some(name) = self.combo_dark_theme.active_text() {
+        if let Some(name) = self.appearance.dark_theme.active_text() {
             s.set_str("theme_dark", &name);
         }
 
         let foreground = if self.fg_override.get() {
-            rgba_to_hex(&self.fg_color_btn.rgba())
+            rgba_to_hex(&self.appearance.fg_color.rgba())
         } else {
             String::new()
         };
         let background = if self.bg_override.get() {
-            rgba_to_hex(&self.bg_color_btn.rgba())
+            rgba_to_hex(&self.appearance.bg_color.rgba())
         } else {
             String::new()
         };
         s.set_str("foreground_color", &foreground);
         s.set_str("background_color", &background);
-        s.set_str("cursor_color", &rgba_to_hex(&self.cursor_color_btn.rgba()));
-        s.set_str("highlight_color", &rgba_to_hex(&self.highlight_btn.rgba()));
+        s.set_str(
+            "cursor_color",
+            &rgba_to_hex(&self.appearance.cursor_color.rgba()),
+        );
+        s.set_str(
+            "highlight_color",
+            &rgba_to_hex(&self.appearance.highlight.rgba()),
+        );
         s.set_str(
             "highlight_bg_color",
-            &rgba_to_hex(&self.highlight_bg_btn.rgba()),
+            &rgba_to_hex(&self.appearance.highlight_bg.rgba()),
         );
         s.set_str(
             "tab_title_color",
-            &rgba_to_hex(&self.tab_title_color_btn.rgba()),
+            &rgba_to_hex(&self.appearance.tab_title_color.rgba()),
         );
         s.set_str(
             "tab_active_title_color",
-            &rgba_to_hex(&self.tab_active_color_btn.rgba()),
+            &rgba_to_hex(&self.appearance.tab_active_color.rgba()),
         );
-
-        let shapes = ["block", "underline", "ibeam"];
-        let idx = self.combo_cursor_shape.active().unwrap_or(0) as usize;
-        s.set_str("cursor_shape", shapes.get(idx).copied().unwrap_or("block"));
-        s.set_bool("cursor_blink", self.chk_cursor_blink.is_active());
-        let _ = s.set("opacity", serde_json::json!(self.spin_opacity.value()));
-        s.set_bool("enable_transparency", self.chk_transparency.is_active());
-        s.set_i64("window_padding_horizontal", self.spin_pad_h.value() as i64);
-        s.set_i64("window_padding_vertical", self.spin_pad_v.value() as i64);
-        let curl_styles = ["single", "double", "curly", "dashed", "dotted"];
-        let idx = self.combo_undercurl.active().unwrap_or(0) as usize;
+        s.set_str(
+            "cursor_shape",
+            &combo_value(&self.appearance.cursor_shape, CURSOR_SHAPE, "block"),
+        );
+        s.set_bool("cursor_blink", self.appearance.cursor_blink.is_active());
+        let _ = s.set(
+            "opacity",
+            serde_json::json!(self.appearance.opacity.value()),
+        );
+        s.set_bool(
+            "enable_transparency",
+            self.appearance.transparency.is_active(),
+        );
+        s.set_i64(
+            "window_padding_horizontal",
+            self.appearance.pad_h.value() as i64,
+        );
+        s.set_i64(
+            "window_padding_vertical",
+            self.appearance.pad_v.value() as i64,
+        );
         s.set_str(
             "undercurl_style",
-            curl_styles.get(idx).copied().unwrap_or("single"),
+            &combo_value(&self.appearance.undercurl, UNDERLINE_STYLE, "single"),
         );
 
         let mut palette = BTreeMap::new();
-        for (key, (btn, _)) in self.palette_btns.borrow().iter() {
-            palette.insert(key.clone(), serde_json::json!(rgba_to_hex(&btn.rgba())));
+        for (key, (button, _)) in self.palette_btns.iter() {
+            palette.insert(key.clone(), serde_json::json!(rgba_to_hex(&button.rgba())));
         }
-        let scheme_name = self.combo_scheme.active_text().unwrap_or_default();
+        let scheme_name = self.appearance.scheme.active_text().unwrap_or_default();
         let preset = settings::color_palettes()
             .get(scheme_name.as_str())
             .unwrap_or_else(|| settings::color_palettes().get("Dark (Default)").unwrap());
         let preset_json: BTreeMap<String, serde_json::Value> = preset
             .palette
             .iter()
-            .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+            .map(|(key, value)| (key.to_string(), serde_json::json!(value)))
             .collect();
         if palette == preset_json {
             let _ = s.set("custom_palette", serde_json::Value::Null);
         } else {
-            let mut obj = serde_json::Map::new();
-            for (k, v) in palette {
-                obj.insert(k, v);
+            let mut object = serde_json::Map::new();
+            for (key, value) in palette {
+                object.insert(key, value);
             }
-            let _ = s.set("custom_palette", serde_json::Value::Object(obj));
+            let _ = s.set("custom_palette", serde_json::Value::Object(object));
         }
 
-        let bs_map = ["auto", "ascii-del", "escape-sequence", "control-h"];
-        let idx = self.combo_backspace.active().unwrap_or(0) as usize;
-        s.set_str(
-            "backspace_binding",
-            bs_map.get(idx).copied().unwrap_or("ascii-del"),
-        );
-        let del_map = ["auto", "escape-sequence", "ascii-del", "control-h"];
-        let idx = self.combo_delete.active().unwrap_or(0) as usize;
-        s.set_str(
-            "delete_binding",
-            del_map.get(idx).copied().unwrap_or("escape-sequence"),
-        );
         s.set_str(
             "encoding",
             &self
-                .combo_encoding
+                .compatibility
+                .encoding
                 .active_text()
-                .map(|t| t.to_string())
+                .map(|text| text.to_string())
                 .unwrap_or_else(|| "UTF-8".to_string()),
         );
+        s.set_bool(
+            "bold_is_bright",
+            self.compatibility.bold_is_bright.is_active(),
+        );
+        s.set_bool("sixel", self.compatibility.sixel.is_active());
+        s.set_bool("osc133", self.compatibility.osc133.is_active());
 
-        let osc133_now_enabled = self.chk_osc133.is_active();
-        s.set_bool("osc133", osc133_now_enabled);
-        s.set_bool("bold_is_bright", self.chk_bold_is_bright.is_active());
-        s.set_bool("sixel", self.chk_sixel.is_active());
-        s.set_bool("smooth_scroll", self.chk_smooth_scroll.is_active());
-        s.set_str("word_char_exceptions", self.entry_word_chars.text().trim());
-
-        s.set_str("notes_dir", self.entry_notes_dir.text().trim());
-        s.set_str("notes_file", self.entry_notes_file.text().trim());
-        s.set_str("editor_command", self.entry_editor.text().trim());
-        s.set_bool("notes_record_context", self.chk_notes_context.is_active());
-        s.set_str("notes_template", self.entry_notes_template.text().trim());
+        s.set_str("notes_dir", self.notes.notes_dir.text().trim());
+        s.set_str("notes_file", self.notes.notes_file.text().trim());
+        s.set_str("editor_command", self.notes.editor.text().trim());
+        s.set_bool(
+            "notes_record_context",
+            self.notes.record_context.is_active(),
+        );
+        s.set_str("notes_template", self.notes.template.text().trim());
 
         s.end_batch();
         s.notify_changed();
         Vec::new()
+    }
+
+    /// Put every widget back to its documented default without saving. The
+    /// reset is purely visual until the user presses OK.
+    fn reset_defaults(&self) {
+        // General
+        self.general.title.set_text(&default_str("tab_title"));
+        self.general
+            .dynamic
+            .set_active(Some(index_of(DYNAMIC_TITLE, &default_str("dynamic_title"))));
+        self.general.login.set_active(default_bool("login_shell"));
+        self.general.shell.set_text(&default_str("shell_command"));
+        self.general
+            .columns
+            .set_value(default_i64("terminal_columns") as f64);
+        self.general
+            .rows
+            .set_value(default_i64("terminal_rows") as f64);
+        self.general
+            .session_restore
+            .set_active(default_bool("session_restore"));
+        self.general
+            .ssh_sharing
+            .set_active(default_bool("ssh_connection_sharing"));
+        self.general
+            .confirm_close
+            .set_active(default_bool("confirm_close"));
+        self.general
+            .auto_copy
+            .set_active(default_bool("auto_copy_selection"));
+        self.general
+            .warn_paste
+            .set_active(default_bool("show_unsafe_paste_dialog"));
+        self.general
+            .file_manager
+            .set_text(&default_str("file_manager"));
+
+        // Scrolling
+        self.scrolling.scrollbar_position.set_active(Some(index_of(
+            SCROLLBAR_POSITION,
+            &default_str("scrollbar_position"),
+        )));
+        let scrollback_default = default_i64("scrollback_lines");
+        self.scrolling
+            .scrollback_unlimited
+            .set_active(scrollback_default == -1);
+        self.scrolling
+            .scrollback
+            .set_value(if scrollback_default > 0 {
+                scrollback_default as f64
+            } else {
+                10_000.0
+            });
+        self.scrolling
+            .scrollback
+            .set_sensitive(scrollback_default != -1);
+        self.scrolling
+            .scroll_on_output
+            .set_active(default_bool("scroll_on_output"));
+        self.scrolling
+            .scroll_on_keystroke
+            .set_active(default_bool("scroll_on_keystroke"));
+        self.scrolling
+            .smooth_scroll
+            .set_active(default_bool("smooth_scroll"));
+
+        // Input
+        self.input
+            .hint_mode
+            .set_active(default_bool("hint_mode_enabled"));
+        self.input
+            .vi_copy
+            .set_active(default_bool("vi_copy_mode_enabled"));
+        self.input
+            .tmux_prefix
+            .set_active(default_bool("tmux_prefix_enabled"));
+        self.input
+            .tmux_prefix_key
+            .set_text(&default_str("tmux_prefix_key"));
+        self.input.backspace.set_active(Some(index_of(
+            BACKSPACE_BINDING,
+            &default_str("backspace_binding"),
+        )));
+        self.input.delete.set_active(Some(index_of(
+            DELETE_BINDING,
+            &default_str("delete_binding"),
+        )));
+        self.input
+            .word_chars
+            .set_text(&default_str("word_char_exceptions"));
+
+        // Notifications
+        self.notifications
+            .notify
+            .set_active(default_bool("bell_notification"));
+        self.notifications
+            .only_unfocused
+            .set_active(default_bool("notify_only_unfocused"));
+        self.notifications
+            .min_seconds
+            .set_value(default_i64("notify_min_seconds") as f64);
+        self.notifications
+            .notify_failure
+            .set_active(default_bool("notify_on_failure"));
+
+        // Appearance
+        let font = format!("{} {}", default_str("font_name"), default_i64("font_size"));
+        self.appearance.font.set_font(&font);
+        self.appearance
+            .bold
+            .set_active(default_bool("allow_bold_text"));
+        let default_scheme = default_str("color_scheme");
+        let scheme_names: Vec<String> = settings::color_schemes().keys().cloned().collect();
+        self.appearance.scheme.set_active(Some(
+            scheme_names
+                .iter()
+                .position(|name| *name == default_scheme)
+                .unwrap_or(0) as u32,
+        ));
+        self.appearance
+            .auto_theme
+            .set_active(default_bool("auto_theme"));
+        for (combo, key) in [
+            (&self.appearance.light_theme, "theme_light"),
+            (&self.appearance.dark_theme, "theme_dark"),
+        ] {
+            let value = default_str(key);
+            combo.set_active(Some(
+                scheme_names
+                    .iter()
+                    .position(|name| *name == value)
+                    .unwrap_or(0) as u32,
+            ));
+        }
+        self.appearance
+            .cursor_color
+            .set_rgba(&hex_to_rgba(&default_str("cursor_color")));
+        self.appearance
+            .highlight
+            .set_rgba(&hex_to_rgba(&default_str("highlight_color")));
+        self.appearance
+            .highlight_bg
+            .set_rgba(&hex_to_rgba(&default_str("highlight_bg_color")));
+        self.appearance
+            .tab_title_color
+            .set_rgba(&hex_to_rgba(&default_str("tab_title_color")));
+        self.appearance
+            .tab_active_color
+            .set_rgba(&hex_to_rgba(&default_str("tab_active_title_color")));
+        self.appearance
+            .cursor_shape
+            .set_active(Some(index_of(CURSOR_SHAPE, &default_str("cursor_shape"))));
+        self.appearance
+            .cursor_blink
+            .set_active(default_bool("cursor_blink"));
+        self.appearance
+            .transparency
+            .set_active(default_bool("enable_transparency"));
+        self.appearance.opacity.set_value(default_f64("opacity"));
+        self.appearance
+            .pad_h
+            .set_value(default_i64("window_padding_horizontal") as f64);
+        self.appearance
+            .pad_v
+            .set_value(default_i64("window_padding_vertical") as f64);
+        self.appearance.undercurl.set_active(Some(index_of(
+            UNDERLINE_STYLE,
+            &default_str("undercurl_style"),
+        )));
+
+        // Foreground, background and palette follow the default theme.
+        if let Some(theme) = settings::color_schemes().get(default_scheme.as_str()) {
+            self.appearance
+                .fg_color
+                .set_rgba(&hex_to_rgba(&theme.foreground));
+            self.appearance
+                .bg_color
+                .set_rgba(&hex_to_rgba(&theme.background));
+            apply_palette(&self.palette_btns, &theme.palette);
+        }
+        self.fg_override.set(false);
+        self.bg_override.set(false);
+
+        // Compatibility
+        self.compatibility.encoding.set_active(Some(
+            ENCODINGS
+                .iter()
+                .position(|name| *name == default_str("encoding"))
+                .unwrap_or(0) as u32,
+        ));
+        self.compatibility
+            .bold_is_bright
+            .set_active(default_bool("bold_is_bright"));
+        self.compatibility.sixel.set_active(default_bool("sixel"));
+        self.compatibility.osc133.set_active(default_bool("osc133"));
+
+        // Notes
+        self.notes.notes_dir.set_text(&default_str("notes_dir"));
+        self.notes.notes_file.set_text(&default_str("notes_file"));
+        self.notes.editor.set_text(&default_str("editor_command"));
+        self.notes
+            .record_context
+            .set_active(default_bool("notes_record_context"));
+        self.notes.template.set_text(&default_str("notes_template"));
     }
 }

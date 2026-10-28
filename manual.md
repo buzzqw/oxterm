@@ -260,7 +260,7 @@ pager exits.
 
 ### VI copy mode
 
-Enable it in **Preferences > General** and press `Ctrl+Shift+Y`. The terminal
+Enable it in **Preferences > Input** and press `Ctrl+Shift+Y`. The terminal
 cursor becomes a block you move with `h`, `j`, `k`, `l`, `w`, `b`, `e`, `0`,
 `^`, `$`, `gg`, `G`, `{` and `}` (previous/next prompt), with optional counts
 (`10j`, `3w`). `Ctrl+U`/`Ctrl+D` scroll half a page and `Ctrl+F`/`Ctrl+B` a
@@ -510,32 +510,59 @@ versioned release for a stable installation.
 
 ## Preferences
 
-Open **Edit > Preferences**. Changes are applied live where possible.
+Open **Edit > Preferences**. Settings are written when you press **OK**.
+
+Type in the filter at the top (or press `Ctrl+F`) to hide every setting that
+does not match: the dialog jumps to the first page with a hit and shows how
+many settings were found. Each setting carries its explanation under the name,
+so the common options do not require hovering.
+
+Pages keep their changes pending until you press **OK**; **Cancel** discards
+them. **Restore Defaults** puts every page back to the documented defaults
+without writing anything, so it can still be cancelled.
 
 ### General
 
 Configure the default and dynamic tab title, login shell, custom shell command,
-terminal dimensions, scrollbar, scrollback, scroll behavior, close confirmation,
-selection copying, unsafe-paste warnings, file manager, session restore, bell
-notifications, hints, and VI copy mode.
+terminal dimensions, session restore, SSH connection sharing, close
+confirmation, selection copying, unsafe-paste warnings, and the file manager.
 
 ### Appearance
 
-Choose the font and size, bold text, color scheme, foreground/background/cursor
-colors, selection colors, tab colors, cursor shape, cursor blinking, opacity,
-transparency, padding, and undercurl style.
+Choose the font and size, bold text, color scheme, automatic light/dark theme,
+foreground, background, cursor and selection colors, tab colors, cursor shape
+and blinking, transparency and opacity, padding, and underline style.
 
 ### Colors
 
-Edit all 16 ANSI palette entries individually. Built-in presets include Dark,
-Light, Solarized, Monokai, Gruvbox, Nord, and Matrix variants. Use **Save As
-Custom** to persist the current palette.
+Edit all 16 ANSI palette entries individually; the current hex value is shown
+under each swatch. **Load Preset...** fills the palette from any installed or
+imported theme, and **Reset to Theme** restores the colors of the selected
+scheme. Nothing is written until you press OK.
+
+### Scrolling
+
+Configure the scrollbar position, the scrollback size (or unlimited), scrolling
+on output and on keystroke, and smooth scrolling.
+
+### Input
+
+Configure hint mode, VI copy mode, the tmux-style prefix key, the Backspace and
+Delete sequences, and the characters treated as part of a word by double-click
+selection.
+
+### Notifications
+
+Configure desktop notifications when a command finishes, whether to notify only
+while the terminal is in the background, the minimum command duration, and
+failure notifications. These options rely on OSC 133 shell integration.
 
 ### Compatibility
 
-Configure Backspace and Delete bindings, terminal encoding, and OSC 133 shell
-integration. Supported encodings include UTF-8, ISO-8859 variants, UTF-16
-variants, CP1252, CP850, ASCII, KOI8-R, Shift_JIS, EUC-JP, and GBK.
+Configure the terminal encoding, bold-as-bright text, Sixel images, and OSC 133
+shell integration. Supported encodings include UTF-8, ISO-8859 variants, UTF-16
+variants, CP1252, CP850, ASCII, KOI8-R, Shift_JIS, EUC-JP, and GBK. A button at
+the bottom restores only the compatibility options.
 
 ### Notes
 
@@ -632,7 +659,7 @@ remote tmux detaches instead of the local terminal.
 <!-- END GENERATED KEYBINDS -->
 
 The tmux-style prefix defaults to `Ctrl+B`. Change it under Preferences →
-General → "tmux-style prefix keys" and the "Prefix key (Ctrl+)" field, for
+Input → "tmux-style prefix keys" and the "Prefix key (Ctrl+)" field, for
 example to `Ctrl+A` when you use tmux or screen inside Oxterm. Any other key
 after the prefix is passed to the running program together with the prefix.
 
@@ -679,7 +706,7 @@ values, so it is safe to include in a bug report.
 
 ### Notifications and failure markers
 
-Enable **Preferences → General → Notify on command completion** (requires
+Enable **Preferences → Notifications → Notify when a command finishes** (requires
 OSC 133 shell integration) to receive a desktop notification when a command
 finishes. Notifications are intentionally selective:
 

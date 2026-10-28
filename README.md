@@ -467,7 +467,7 @@ completion.
 
 Any other key after the prefix is passed to the running program together with
 the prefix. The prefix defaults to `Ctrl+B` and can be changed under
-Preferences → General → "tmux-style prefix keys" and the "Prefix key (Ctrl+)"
+Preferences → Input → "tmux-style prefix keys" and the "Prefix key (Ctrl+)"
 field. Set it to `Ctrl+A` (or turn the prefix off) when you use tmux or screen
 inside Oxterm and need `Ctrl+B` to reach them.
 
@@ -514,7 +514,7 @@ appearance (for example at sunset) and re-colors open terminals immediately.
 
 ### Notifications and failure markers
 
-With **Preferences → General → Notify on command completion** enabled (requires
+With **Preferences → Notifications → Notify when a command finishes** enabled (requires
 OSC 133 shell integration), Oxterm sends a desktop notification only when it is
 useful:
 
@@ -533,11 +533,14 @@ that tab (or when the next command succeeds). When a command fails while you
 are watching its tab, no dot is shown because you can already see the error.
 
 Compatibility switches live under **Preferences → Compatibility**: bold text
-using bright colors, inline Sixel images, pixel-smooth scrolling, and the
-characters treated as part of a word by double-click selection.
+using bright colors, inline Sixel images, and OSC 133. Pixel-smooth scrolling is
+on the **Scrolling** page, and the characters treated as part of a word by
+double-click selection are on the **Input** page.
 
 Open **Edit > Preferences** to configure the terminal, appearance, colors,
-compatibility, and notes. Most changes are applied immediately.
+scrolling, input, notifications, compatibility, and notes. The filter box at the
+top searches every page, and each setting shows its explanation under its name.
+Most changes are applied immediately.
 
 URLs opened from terminal output are restricted to `http://` and `https://`.
 Links using other schemes are not passed to desktop URL handlers.
