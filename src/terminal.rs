@@ -302,6 +302,16 @@ fn format_duration_ms(duration_ms: i64) -> String {
     }
 }
 
+/// Whether a prompt marker belongs at `row`, given the last marker recorded.
+///
+/// The integration reports the initial prompt when it loads and again from the
+/// first `precmd`, and a shell that re-sources it reports the current prompt
+/// again. Two markers on one row make prompt navigation stop twice on the same
+/// line, so a prompt that repeats the last prompt row is dropped.
+fn should_add_prompt_marker(last: Option<&(i64, String, Option<i64>)>, row: i64) -> bool {
+    !matches!(last, Some((last_row, kind, _)) if kind == "prompt" && *last_row == row)
+}
+
 /// What the tab's failure marker should do with a reported exit status.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FailureMark {
@@ -2432,7 +2442,9 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 let last_exit = *self.imp().osc133_last_exit.borrow();
                 if cursor_row > 0 {
                     let mut markers = self.imp().osc133_markers.borrow_mut();
-                    markers.push((cursor_row, "prompt".into(), last_exit));
+                    if should_add_prompt_marker(markers.last(), cursor_row) {
+                        markers.push((cursor_row, "prompt".into(), last_exit));
+                    }
                     if markers.len() > 1000 {
                         let drain = markers.len() - 1000;
                         markers.drain(0..drain);
@@ -4297,6 +4309,25 @@ mod command_block_tests {
         assert_eq!(
             TerminalBox::sticky_header_text(&block("echo\u{1b}[31mred\nnow", true, 0, 10)),
             "✓ echo [31mred now  —  10ms"
+        );
+    }
+
+    #[test]
+    fn repeated_prompt_markers_on_one_row_are_collapsed() {
+        let prompt = (3, "prompt".to_string(), Some(0));
+        let start = (3, "cmd_start".to_string(), None);
+        assert!(should_add_prompt_marker(None, 3), "the first prompt counts");
+        assert!(
+            !should_add_prompt_marker(Some(&prompt), 3),
+            "the same prompt row twice is the startup duplicate"
+        );
+        assert!(
+            should_add_prompt_marker(Some(&prompt), 4),
+            "a new prompt on a later row counts"
+        );
+        assert!(
+            should_add_prompt_marker(Some(&start), 3),
+            "a prompt after a command on the same row still counts"
         );
     }
 

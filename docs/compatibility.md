@@ -138,9 +138,10 @@ divergence without one.
   `sticky_header_admits_an_unknown_status`,
   `only_a_reported_status_moves_the_tab_failure_mark` and
   `an_unknown_status_is_neither_success_nor_failure`.
-- ⚠️ **A repeated `A` adds a second prompt marker on the same row.** The
-  integration sends `A` when it loads and again from the first `precmd`; the
-  gutter draws two marks at one row.
+- ✔ **A repeated `A` no longer adds a second prompt marker on the same row.**
+  The integration sends `A` when it loads and again from the first `precmd`,
+  which used to make prompt navigation stop twice on one line. Covered by
+  `repeated_prompt_markers_on_one_row_are_collapsed`.
 - ⚠️ **OSC 7 is emitted but unused**, so remote tabs report the local `ssh`
   client's directory in history entries and new tabs. A safe fix reads the URI
   from VTE only for display, never as a spawn directory.
