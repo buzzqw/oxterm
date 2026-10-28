@@ -637,13 +637,22 @@ sudo pacman -S ghostty xdotool              # Ghostty is the default opponent
 GHOSTTY_BIN=/path/to/other-terminal ./scripts/bench-compare.sh
 ```
 
+Measured on CachyOS with an X11 session at 1920x1080, default configuration,
+font size 12, release build, minimum of five runs; absolute values depend on
+the machine:
+
 | Measurement | Oxterm | Ghostty 1.3.1 |
 | --- | --- | --- |
-| Spawn to first visible window | ~370 ms | ~390 ms |
-| Spawn to the command inside the terminal | ~210 ms | ~420 ms |
-| Drain 100 000 ANSI-coloured lines (8.8 MB) | ~110 ms | ~240 ms |
-| Total tree RSS when idle | ~108 MB | ~182 MB |
-| Peak tree RSS under the payload | ~112 MB | ~201 MB |
+| Spawn to first visible window | 369 ms | 387 ms |
+| Spawn to the command inside the terminal | 211 ms | 418 ms |
+| Drain 100 000 ANSI-coloured lines (8.8 MB) | 112 ms | 237 ms |
+| Total tree RSS when idle | 108 MB | 182 MB |
+| Peak tree RSS under the payload | 112 MB | 201 MB |
+
+Oxterm is ahead on every row, but the margins are not the whole story:
+`drain_ms` varies by about 50% between runs at this payload size, and Ghostty's
+real advantage is smoothness, input latency and rendering quality, none of which
+this script measures.
 
 The window metrics need X11 and `xdotool`; Wayland-only sessions are not
 supported yet (run the script under `xvfb-run` in CI). Windows are matched by
