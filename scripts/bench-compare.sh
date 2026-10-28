@@ -34,8 +34,9 @@
 #   BENCH_RUNS          repetitions (default: 3)
 #   BENCH_TOLERANCE     allowed multiplier over the baseline (default: 4)
 #   BENCH_BASELINE      baseline file (default: bench/compare-baseline.txt)
-#   BENCH_PAYLOAD_LINES lines in the throughput payload (default: 40000)
+#   BENCH_PAYLOAD_LINES lines in the throughput payload (default: 100000)
 #   BENCH_GHOSTTY_ARGS  extra arguments for Ghostty (word-split)
+#   BENCH_FONT_SIZE     font size used by both terminals (default: 12)
 
 set -euo pipefail
 
@@ -45,7 +46,8 @@ GHOSTTY_BIN="${GHOSTTY_BIN:-$(command -v ghostty || true)}"
 BASELINE="${BENCH_BASELINE:-${ROOT_DIR}/bench/compare-baseline.txt}"
 RUNS="${BENCH_RUNS:-3}"
 TOLERANCE="${BENCH_TOLERANCE:-4}"
-PAYLOAD_LINES="${BENCH_PAYLOAD_LINES:-40000}"
+PAYLOAD_LINES="${BENCH_PAYLOAD_LINES:-100000}"
+FONT_SIZE="${BENCH_FONT_SIZE:-12}"
 STARTUP_TIMEOUT=25
 PAYLOAD_TIMEOUT=120
 MODE="${1:-run}"
@@ -128,16 +130,35 @@ stop_term() {
 # --- launching -------------------------------------------------------------
 
 GHOSTTY_CLASS_OK=""
+GHOSTTY_SINGLE_OK=""
+# Ghostty exposes every configuration key as a command line option, but its
+# --help does not list them. Ask for the defaults instead.
+ghostty_option_exists() {
+    local name="$1" cache key
+    "${GHOSTTY_BIN}" +show-config --default 2>/dev/null \
+        | grep -qE "^${name} = "
+}
+
 ghostty_supports_class() {
     if [[ -z "${GHOSTTY_CLASS_OK}" ]]; then
-        if [[ -n "${GHOSTTY_BIN}" ]] \
-            && "${GHOSTTY_BIN}" --help 2>&1 | grep -q -- '--class'; then
+        if [[ -n "${GHOSTTY_BIN}" ]] && ghostty_option_exists class; then
             GHOSTTY_CLASS_OK=1
         else
             GHOSTTY_CLASS_OK=0
         fi
     fi
     [[ "${GHOSTTY_CLASS_OK}" == 1 ]]
+}
+
+ghostty_supports_single_instance() {
+    if [[ -z "${GHOSTTY_SINGLE_OK}" ]]; then
+        if [[ -n "${GHOSTTY_BIN}" ]] && ghostty_option_exists gtk-single-instance; then
+            GHOSTTY_SINGLE_OK=1
+        else
+            GHOSTTY_SINGLE_OK=0
+        fi
+    fi
+    [[ "${GHOSTTY_SINGLE_OK}" == 1 ]]
 }
 
 declare -a GHOSTTY_EXTRA=()
@@ -147,8 +168,8 @@ if [[ -n "${BENCH_GHOSTTY_ARGS:-}" ]]; then
 fi
 
 # launch_term TERM CLASS HOME RUNTIME [ARGS...]
-# Sets APP_PID. The window class is unique per run so a leftover window from a
-# previous iteration can never be mistaken for the fresh one.
+# Sets APP_PID. The class is still set for isolation and for future Wayland
+# support, but windows are matched by _NET_WM_PID (see wait_for_window).
 launch_term() {
     local term="$1" class="$2" home="$3" runtime="$4"
     shift 4
@@ -157,13 +178,17 @@ launch_term() {
     chmod 700 "${runtime}"
     case "${term}" in
         oxterm)
-            cmd=("${OXTERM_BIN}" --no-restore --class "${class}")
+            cmd=("${OXTERM_BIN}" --no-restore --class "${class}" -o "font_size=${FONT_SIZE}")
             ;;
         ghostty)
-            cmd=("${GHOSTTY_BIN}" --gtk-single-instance=false)
+            cmd=("${GHOSTTY_BIN}")
+            if ghostty_supports_single_instance; then
+                cmd+=("--gtk-single-instance=false")
+            fi
             if ghostty_supports_class; then
                 cmd+=("--class=${class}")
             fi
+            cmd+=("--font-size=${FONT_SIZE}")
             cmd+=("${GHOSTTY_EXTRA[@]}")
             ;;
     esac
@@ -183,27 +208,25 @@ report_launch_failure() {
     fi
 }
 
-search_class() {
-    local term="$1" class="$2"
-    if [[ "${term}" == ghostty ]] && ! ghostty_supports_class; then
-        printf '%s' "com.mitchellh.ghostty"
-    else
-        printf '%s' "${class}"
-    fi
-}
-
+# Ghostty ignores --class on X11 (its WM_CLASS stays "ghostty"), and even
+# Oxterm's class would only be unique per run if the terminal honoured it. Match
+# the window by _NET_WM_PID instead: it is exact and needs no per-terminal flag.
 wait_for_window() {
-    local class="$1" limit
+    local pid="$1" limit child
     limit="$(deadline_ns "${2}")"
     while (( $(now_ns) < limit )); do
-        if xdotool search --onlyvisible --class "${class}" >/dev/null 2>&1; then
+        if xdotool search --onlyvisible --pid "${pid}" >/dev/null 2>&1; then
             return 0
         fi
+        # A wrapper may exec or fork, so also accept a window owned by a child.
+        for child in $(children_of "${pid}"); do
+            if xdotool search --onlyvisible --pid "${child}" >/dev/null 2>&1; then
+                return 0
+            fi
+        done
         # A crash must not look like a slow start.
-        if [[ -n "${APP_PID}" ]] && ! kill -0 "${APP_PID}" 2>/dev/null; then
-            return 1
-        fi
-        sleep 0.01
+        kill -0 "${pid}" 2>/dev/null || [[ -n "$(children_of "${pid}")" ]] || return 1
+        sleep 0.02
     done
     return 1
 }
@@ -234,7 +257,7 @@ measure_startup() {
 
     start="$(now_ns)"
     launch_term "${term}" "${class}" "${home}" "${runtime}"
-    if ! wait_for_window "$(search_class "${term}" "${class}")" "${STARTUP_TIMEOUT}"; then
+    if ! wait_for_window "${APP_PID}" "${STARTUP_TIMEOUT}"; then
         stop_term
         report_launch_failure "${term}"
         return 1
