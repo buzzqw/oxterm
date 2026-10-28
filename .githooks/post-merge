@@ -25,32 +25,6 @@ fi
 BUILT="$ROOT_DIR/target/release/oxterm"
 install -m 0755 "$BUILT" "$ROOT_DIR/oxterm-linux-x86-64"
 
-updated=false
-
-# Refresh a per-user installation if one is present (no sudo required).
-USER_BIN="${PREFIX:-${HOME}/.local}/bin/oxterm"
-if [[ -f "$USER_BIN" ]]; then
-    install -m 0755 "$BUILT" "$USER_BIN"
-    printf '%s\n' "Oxterm post-merge: updated ${USER_BIN}"
-    updated=true
-fi
-
-# Refresh a system-wide installation when it can be done without a password.
-SYSTEM_BIN="/usr/bin/oxterm"
-if [[ -f "$SYSTEM_BIN" ]]; then
-    if [[ -w "$(dirname "$SYSTEM_BIN")" ]]; then
-        install -m 0755 "$BUILT" "$SYSTEM_BIN"
-        printf '%s\n' "Oxterm post-merge: updated ${SYSTEM_BIN}"
-        updated=true
-    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-        sudo -n install -m 0755 "$BUILT" "$SYSTEM_BIN"
-        printf '%s\n' "Oxterm post-merge: updated ${SYSTEM_BIN}"
-        updated=true
-    else
-        printf '%s\n' 'Oxterm post-merge: /usr/bin/oxterm not refreshed (sudo required); run ./update.sh' >&2
-    fi
-fi
-
-if [[ "$updated" == false ]]; then
-    printf '%s\n' 'Oxterm post-merge: build ready; run ./update.sh to install the binary' >&2
-fi
+# Refresh the copies `oxterm` in PATH resolves to, so the next launch runs this
+# build instead of whichever version was installed last.
+"$ROOT_DIR/scripts/refresh-installed.sh"

@@ -6,9 +6,14 @@ must pass a release build. The repository hook `.githooks/pre-commit` runs
 build fails.
 
 Run `./setup.sh` once after cloning to configure Git to use the repository
-hooks. The `post-commit` hook then updates the release executable in
-`oxterm-linux-x86-64`, and `post-merge`/`post-rewrite` rebuild after a `git
-pull` (merge or rebase) and refresh an existing per-user installation.
+hooks. The `post-commit` hook then rebuilds the release executable, refreshes
+`oxterm-linux-x86-64`, and updates the copy that `oxterm` in `PATH` resolves to,
+so the next launch runs this build instead of an older installed binary.
+`post-merge`/`post-rewrite` do the same after a `git pull`. The refresh never
+prompts: an existing `~/.local/bin/oxterm` is updated first, and when
+`/usr/bin/oxterm` needs a password and `~/.local/bin` is in `PATH`, a user copy
+is installed there so it shadows the system one. `scripts/refresh-installed.sh`
+does the work; when no copy can be written it prints the `./update.sh` reminder.
 
 Screenshots used by the README live in `docs/screenshots/`. After a change that
 affects the UI, refresh them with `scripts/capture-screenshots.sh` (it needs

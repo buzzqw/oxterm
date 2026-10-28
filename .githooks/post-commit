@@ -21,3 +21,7 @@ fi
 
 install -m 0755 "$ROOT_DIR/target/release/oxterm" "$ROOT_DIR/oxterm-linux-x86-64"
 printf '%s\n' "Oxterm post-commit: created $ROOT_DIR/oxterm-linux-x86-64"
+
+# Keep `oxterm` in PATH on the build that was just made; otherwise a launch
+# starts the old installed version while this checkout is current.
+"$ROOT_DIR/scripts/refresh-installed.sh"
