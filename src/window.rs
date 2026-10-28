@@ -1677,11 +1677,7 @@ impl MainWindow {
             )
         });
         let font_size = s.get_i64("font_size");
-        let (w, h) = window_size_for(window_size_key_with(
-            cols as i64,
-            rows as i64,
-            font_size,
-        ));
+        let (w, h) = window_size_for(window_size_key_with(cols as i64, rows as i64, font_size));
         self.set_default_size(w, h);
         // The initial size (possibly from --geometry) is already applied;
         // don't snap back to the configured size on the next settings change.

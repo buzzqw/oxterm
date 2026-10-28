@@ -2302,10 +2302,9 @@ impl DialogState {
             FONT_RENDERING,
             &default_str("font_rendering"),
         )));
-        self.appearance.font_hinting.set_active(Some(index_of(
-            FONT_HINTING,
-            &default_str("font_hinting"),
-        )));
+        self.appearance
+            .font_hinting
+            .set_active(Some(index_of(FONT_HINTING, &default_str("font_hinting"))));
         self.appearance
             .cell_height
             .set_value(default_f64("cell_height_scale"));
