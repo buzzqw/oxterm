@@ -180,24 +180,24 @@ impl TerminalBox {
             return;
         }
         let (_, cur_row) = self.vte().cursor_position();
-        let prompts: Vec<(i64, i64)> = markers
+        let prompts: Vec<i64> = markers
             .iter()
             .filter(|(_, t, _)| t == "prompt")
-            .map(|(r, _, e)| (*r, *e))
+            .map(|(r, _, _)| *r)
             .collect();
         if prompts.is_empty() {
             return;
         }
         let mut target: Option<i64> = None;
         if direction_up {
-            for (r, _) in prompts.iter().rev() {
+            for r in prompts.iter().rev() {
                 if *r < cur_row - 1 {
                     target = Some(*r);
                     break;
                 }
             }
         } else {
-            for (r, _) in &prompts {
+            for r in &prompts {
                 if *r > cur_row {
                     target = Some(*r);
                     break;

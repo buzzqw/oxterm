@@ -92,7 +92,8 @@ pub const VERBS: &[Verb] = &[
         summary: "Wait for the next command to finish",
         help: "Usage: oxterm wait [--pane ID] [--timeout SECONDS]\n\n\
                Wait for the next command in the pane to finish and exit with its\n\
-               status. Without a timeout it waits indefinitely.\n",
+               status. Without a timeout it waits indefinitely. Exits 1 with an\n\
+               error when the shell reports no status for the command.\n",
     },
 ];
 

@@ -243,8 +243,12 @@ fn wait_for_command(target: &Target, timeout: Option<Duration>) -> i32 {
         };
         let generation = reply["generation"].as_u64().unwrap_or(0);
         if generation > baseline {
-            let exit = reply["exit"].as_i64().unwrap_or(0);
-            return exit.clamp(0, 255) as i32;
+            // A command whose status the shell did not report must not look
+            // like a success to a script that chains on `oxterm wait`.
+            return match reply["exit"].as_i64() {
+                Some(exit) => exit.clamp(0, 255) as i32,
+                None => fail(1, "wait", "the command finished without reporting a status"),
+            };
         }
         if reply["alive"].as_bool() == Some(false) {
             return fail(1, "wait", "the pane closed before a command finished");

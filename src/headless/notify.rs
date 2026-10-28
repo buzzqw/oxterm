@@ -12,7 +12,8 @@ pub struct Notification<'a> {
     pub focused: bool,
     /// Skip notifications while focused (`notify_only_unfocused`).
     pub only_unfocused: bool,
-    pub exit_code: i64,
+    /// `None` when the shell closed the command without reporting a status.
+    pub exit_code: Option<i64>,
     /// How long the command ran, when the shell integration reported it.
     pub duration_ms: Option<i64>,
     /// Minimum runtime for successful commands (`notify_min_seconds`).
@@ -30,7 +31,7 @@ pub fn should_notify(notification: &Notification<'_>) -> bool {
     if notification.only_unfocused && notification.focused {
         return false;
     }
-    let failed = notification.exit_code != 0;
+    let failed = matches!(notification.exit_code, Some(code) if code != 0);
     if failed && notification.notify_on_failure {
         return true;
     }
@@ -40,10 +41,10 @@ pub fn should_notify(notification: &Notification<'_>) -> bool {
 
 /// One-line title: failures are called out explicitly.
 pub fn title(notification: &Notification<'_>) -> &'static str {
-    if notification.exit_code == 0 {
-        "Command finished"
-    } else {
+    if matches!(notification.exit_code, Some(code) if code != 0) {
         "Command failed"
+    } else {
+        "Command finished"
     }
 }
 
@@ -55,10 +56,11 @@ pub fn body(notification: &Notification<'_>) -> String {
     } else {
         format!("\"{}\"", shorten(command, 90))
     };
-    let status = if notification.exit_code == 0 {
-        "finished".to_string()
-    } else {
-        format!("failed with exit {}", notification.exit_code)
+    let status = match notification.exit_code {
+        Some(0) => "finished".to_string(),
+        Some(code) => format!("failed with exit {code}"),
+        // Never report an unknown status as a success.
+        None => "finished without reporting a status".to_string(),
     };
     let mut text = format!("{command} {status}");
     if let Some(duration) = notification.duration_ms {
@@ -99,7 +101,7 @@ mod tests {
             enabled: true,
             focused: false,
             only_unfocused: true,
-            exit_code: 0,
+            exit_code: Some(0),
             duration_ms: Some(30_000),
             min_seconds: 10,
             notify_on_failure: true,
@@ -128,7 +130,7 @@ mod tests {
         let mut n = notification();
         n.duration_ms = Some(3_000);
         assert!(!should_notify(&n), "3s is below the 10s threshold");
-        n.exit_code = 1;
+        n.exit_code = Some(1);
         assert!(should_notify(&n), "failures bypass the duration threshold");
         n.notify_on_failure = false;
         assert!(!should_notify(&n));
@@ -145,12 +147,31 @@ mod tests {
         assert_eq!(title(&n), "Command finished");
         assert_eq!(body(&n), "\"make test\" finished after 30s\n/src/project");
         let mut failed = notification();
-        failed.exit_code = 2;
+        failed.exit_code = Some(2);
         failed.duration_ms = Some(72_000);
         assert_eq!(title(&failed), "Command failed");
         assert_eq!(
             body(&failed),
             "\"make test\" failed with exit 2 after 1m 12s\n/src/project"
+        );
+    }
+
+    #[test]
+    fn an_unknown_status_is_neither_success_nor_failure() {
+        let mut n = notification();
+        n.exit_code = None;
+        n.duration_ms = Some(3_000);
+        assert!(
+            !should_notify(&n),
+            "an unknown status must not bypass the duration rule"
+        );
+        n.duration_ms = Some(30_000);
+        assert!(should_notify(&n), "long commands still notify");
+        assert_eq!(title(&n), "Command finished");
+        assert!(
+            body(&n).contains("finished without reporting a status"),
+            "body: {}",
+            body(&n)
         );
     }
 

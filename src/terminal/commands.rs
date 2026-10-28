@@ -531,7 +531,11 @@ impl TerminalBox {
         self.vte().feed(help_text.as_bytes());
     }
 
-    pub(super) fn trigger_bell_notification(&self, exit_code: i64, duration_ms: Option<i64>) {
+    pub(super) fn trigger_bell_notification(
+        &self,
+        exit_code: Option<i64>,
+        duration_ms: Option<i64>,
+    ) {
         let s = settings();
         let command = self.last_command();
         let cwd = self.get_cwd();

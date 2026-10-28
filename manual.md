@@ -183,7 +183,9 @@ window that already has two panes. `send` types into the target pane and, with
 last `N` lines of history with `--scrollback`, or the whole buffer with `--all`.
 `wait` waits for the next command in the pane to finish and exits with that
 command's status (clamped to 0–255), which makes it possible to chain a build and
-read its result:
+read its result. If the shell integration finishes the command without reporting
+a status, `wait` fails with a message and exit status 1 rather than reporting a
+success it cannot confirm:
 
 ```sh
 pane=$(oxterm split --horizontal --cwd ~/src/app)
@@ -251,9 +253,11 @@ With shell integration enabled (**Preferences > Compatibility > OSC 133**),
 Oxterm records each command as a block: its command line, exit status, start
 time and duration. While you scroll back into a block, a pinned header at the
 top shows which command produced the visible output and how it ended (running,
-successful, or failed with its exit code). Click the header to jump back to the
-command. The scrollbar marks running commands in amber, failures in red, and
-bookmarks in blue.
+successful, or failed with its exit code). When the shell integration closes a
+command without reporting a status, the header says `status unknown` instead of
+claiming success, and the tab failure marker is left as it was. Click the header
+to jump back to the command. The scrollbar marks running commands in amber,
+failures in red, and bookmarks in blue.
 
 Press `Ctrl+Shift+G` (or use **Copy As > Open Last Output in Pager**) to open
 the last command's output in a new tab with `less -R`. Set `pager_command` in
@@ -721,7 +725,9 @@ finishes. Notifications are intentionally selective:
 - nothing while the terminal has keyboard focus;
 - successful commands shorter than the minimum duration (10 seconds by default)
   are ignored;
-- failures always notify, even when they finish immediately.
+- failures always notify, even when they finish immediately;
+- a command whose status the shell did not report is not treated as a failure,
+  and its notification says that no status was reported.
 
 The notification names the command, exit status, duration and working
 directory. Tune it with `bell_notification`, `notify_only_unfocused`,

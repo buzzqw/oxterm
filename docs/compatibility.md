@@ -59,8 +59,14 @@ The rules the parser implements, each covered by a unit test in
 - Blank lines and unknown leading letters are dropped. Unknown letters are
   reserved for future events, so adding one will not break older Oxterm builds.
 - `D` accepts both `D0` and `D;0`. A `D` with no number (or a non-numeric one)
-  means *no status reported*, which is not the same as success; the terminal
-  chrome still falls back to `0` today (see the checklist below).
+  means *no status reported*. That is not the same as success and is carried
+  through the whole UI as unknown: the sticky header says `status unknown`, the
+  prompt marker in the gutter turns grey instead of green or red, the tab keeps
+  its previous failure marker, the notification says that no status was
+  reported, the history database keeps `-1` for the row (the same sentinel used
+  for commands typed before the integration was active), and `oxterm wait`
+  fails with a message instead of reporting `0`. The control API reports the
+  status as JSON `null`, never as `0`.
 - The command text is everything after the `C`, trimmed, capped at the limit
   below, and kept verbatim otherwise: quotes, `;`, backslashes and wide or
   combining characters all survive, because a command line is also stored in
@@ -126,9 +132,12 @@ In the spirit of the upstream issue, open items are listed here with the reason
 they matter. A checked item has a test and prose; a ⚠️ item is a known
 divergence without one.
 
-- ⚠️ **A `D` with no status is shown as success.** `last_exit_code()` returns
-  `0` and the tab failure marker stays clear. The model should carry "unknown"
-  so a broken integration cannot hide a failure.
+- ✔ **A `D` with no status is no longer success.** `last_exit_code()` is an
+  `Option`, the sticky header shows `status unknown`, the tab mark is left
+  untouched and `oxterm wait` fails loudly. Covered by
+  `sticky_header_admits_an_unknown_status`,
+  `only_a_reported_status_moves_the_tab_failure_mark` and
+  `an_unknown_status_is_neither_success_nor_failure`.
 - ⚠️ **A repeated `A` adds a second prompt marker on the same row.** The
   integration sends `A` when it loads and again from the first `precmd`; the
   gutter draws two marks at one row.

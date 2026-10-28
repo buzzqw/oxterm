@@ -134,13 +134,13 @@ impl NoteContext {
     }
 
     /// Context for the output of a command (OSC 133).
-    pub fn from_command(cwd: &str, command: &str, exit_code: i64) -> NoteContext {
+    pub fn from_command(cwd: &str, command: &str, exit_code: Option<i64>) -> NoteContext {
         NoteContext {
             source: Some("command-output".to_string()),
             cwd: Some(cwd.to_string()),
             host: hostname(),
             command: Some(command.to_string()),
-            exit_code: Some(exit_code),
+            exit_code,
         }
     }
 }

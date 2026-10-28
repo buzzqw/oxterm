@@ -302,6 +302,23 @@ fn format_duration_ms(duration_ms: i64) -> String {
     }
 }
 
+/// What the tab's failure marker should do with a reported exit status.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FailureMark {
+    Set,
+    Clear,
+    /// The shell reported no status: neither claim success nor failure.
+    Leave,
+}
+
+fn failure_mark(status: Option<i64>) -> FailureMark {
+    match status {
+        Some(0) => FailureMark::Clear,
+        Some(_) => FailureMark::Set,
+        None => FailureMark::Leave,
+    }
+}
+
 fn child_status_message(status: i32) -> String {
     let signal = status & 0x7f;
     if signal != 0 && signal != 0x7f {
@@ -531,12 +548,14 @@ mod imp {
         pub remote_stats_running: RefCell<bool>,
         pub ssh_target_cache: RefCell<Option<(Instant, Option<Vec<String>>)>>,
 
-        pub osc133_markers: RefCell<Vec<(i64, String, i64)>>,
+        /// `(row, kind, exit status)`; the status is `None` when the shell
+        /// reported an event without one.
+        pub osc133_markers: RefCell<Vec<(i64, String, Option<i64>)>>,
         pub osc133_rfd: RefCell<i32>,
         pub osc133_fifo_path: RefCell<String>,
         pub osc133_source_id: RefCell<Option<glib::SourceId>>,
         pub osc133_lines: RefCell<osc133::LineBuffer>,
-        pub osc133_last_exit: RefCell<i64>,
+        pub osc133_last_exit: RefCell<Option<i64>>,
         pub osc133_cmd_start_row: RefCell<i64>,
         pub osc133_integration_active: RefCell<bool>,
         pub osc133_last_history_id: RefCell<Option<u64>>,
@@ -1860,7 +1879,10 @@ impl TerminalBox {
     }
 
     /// Exit status of the last command reported through OSC 133.
-    pub fn last_exit_code(&self) -> i64 {
+    ///
+    /// `None` means the shell reported a command end without a status, which
+    /// is not the same as success and must not be reported as zero.
+    pub fn last_exit_code(&self) -> Option<i64> {
         *self.imp().osc133_last_exit.borrow()
     }
 
@@ -2320,7 +2342,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 self.imp()
                     .osc133_markers
                     .borrow_mut()
-                    .push((row, "cmd_start".into(), 0));
+                    .push((row, "cmd_start".into(), None));
                 *self.imp().bell_notify_cmd_running.borrow_mut() = true;
                 let command_text = rest.to_string();
                 self.set_remote_command(&command_text, true);
@@ -2353,10 +2375,9 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                     *self.imp().input_shadow.borrow_mut() = String::new();
                 }
             }
-            osc133::Event::CommandEnd(exit_code) => {
-                let exit_code = exit_code.unwrap_or(0);
+            osc133::Event::CommandEnd(status) => {
                 self.imp().pending_command_row.set(-1);
-                *self.imp().osc133_last_exit.borrow_mut() = exit_code;
+                *self.imp().osc133_last_exit.borrow_mut() = status;
                 self.set_remote_command_state(false);
                 {
                     let (_, end_row) = self.vte().cursor_position();
@@ -2368,7 +2389,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                         .rev()
                         .find(|block| !block.finished)
                     {
-                        block.exit_code = Some(exit_code);
+                        block.exit_code = status;
                         block.end_row = end_row;
                         block.duration_ms = duration_ms;
                         block.finished = true;
@@ -2384,17 +2405,24 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 }
                 self.refresh_command_marks();
                 if let Some(id) = self.imp().osc133_last_history_id.borrow_mut().take() {
-                    history().set_command_result_async(id, exit_code, duration_ms);
+                    // `-1` is the history sentinel for "no status recorded",
+                    // the same value used for commands entered before the shell
+                    // integration was active.
+                    history().set_command_result_async(id, status.unwrap_or(-1), duration_ms);
                 }
                 if *self.imp().bell_notify_cmd_running.borrow() {
                     *self.imp().bell_notify_cmd_running.borrow_mut() = false;
-                    self.trigger_bell_notification(exit_code, duration_ms);
+                    self.trigger_bell_notification(status, duration_ms);
                 }
-                if exit_code != 0 {
-                    let term = self.clone();
-                    self.call_window(move |win| win.set_tab_failure_signal(&term, true));
-                } else {
-                    self.call_window(|win| win.clear_tab_failure_signal(self));
+                match failure_mark(status) {
+                    FailureMark::Clear => {
+                        self.call_window(|win| win.clear_tab_failure_signal(self));
+                    }
+                    FailureMark::Set => {
+                        let term = self.clone();
+                        self.call_window(move |win| win.set_tab_failure_signal(&term, true));
+                    }
+                    FailureMark::Leave => {}
                 }
             }
             osc133::Event::PromptStart => {
@@ -2471,10 +2499,11 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 continue;
             }
             let y = rel_row * char_height;
-            if *exit_code == 0 {
-                cr.set_source_rgba(0.2, 0.75, 0.2, 0.7);
-            } else {
-                cr.set_source_rgba(0.85, 0.25, 0.25, 0.7);
+            match exit_code {
+                Some(0) => cr.set_source_rgba(0.2, 0.75, 0.2, 0.7),
+                Some(_) => cr.set_source_rgba(0.85, 0.25, 0.25, 0.7),
+                // Unknown is neither green nor red.
+                None => cr.set_source_rgba(0.55, 0.6, 0.65, 0.7),
             }
             cr.rectangle(1.0, y, width - 2.0, char_height);
             let _ = cr.fill();
@@ -2534,14 +2563,12 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 .unwrap_or(0);
             return format!("● {}  —  running {}", command, format_duration_ms(elapsed));
         }
-        let exit = block.exit_code.unwrap_or(0);
-        if exit == 0 {
-            match block.duration_ms {
+        match block.exit_code {
+            Some(0) => match block.duration_ms {
                 Some(ms) => format!("✓ {}  —  {}", command, format_duration_ms(ms)),
                 None => format!("✓ {}", command),
-            }
-        } else {
-            match block.duration_ms {
+            },
+            Some(exit) => match block.duration_ms {
                 Some(ms) => format!(
                     "✗ {}  —  exit {} · {}",
                     command,
@@ -2549,7 +2576,17 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                     format_duration_ms(ms)
                 ),
                 None => format!("✗ {}  —  exit {}", command, exit),
-            }
+            },
+            // The shell closed the command without saying how it ended; say
+            // that instead of showing a tick.
+            None => match block.duration_ms {
+                Some(ms) => format!(
+                    "? {}  —  status unknown · {}",
+                    command,
+                    format_duration_ms(ms)
+                ),
+                None => format!("? {}  —  status unknown", command),
+            },
         }
     }
 
@@ -2610,21 +2647,24 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             header.hide();
             return;
         };
-        let ok = block.finished && block.exit_code.unwrap_or(0) == 0;
         for class in [
             "oxterm-sticky-ok",
             "oxterm-sticky-fail",
             "oxterm-sticky-run",
+            "oxterm-sticky-unknown",
         ] {
             label.style_context().remove_class(class);
         }
-        label.style_context().add_class(if !block.finished {
-            "oxterm-sticky-run"
-        } else if ok {
-            "oxterm-sticky-ok"
-        } else {
-            "oxterm-sticky-fail"
-        });
+        // A status the shell never reported is neither success nor failure;
+        // give it its own colour instead of painting it green.
+        label
+            .style_context()
+            .add_class(match (block.finished, block.exit_code) {
+                (false, _) => "oxterm-sticky-run",
+                (true, Some(0)) => "oxterm-sticky-ok",
+                (true, Some(_)) => "oxterm-sticky-fail",
+                (true, None) => "oxterm-sticky-unknown",
+            });
         label.set_text(&Self::sticky_header_text(&block));
         if !header.is_visible() {
             header.show();
@@ -2672,10 +2712,13 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             let _ = cr.fill();
         };
         for block in self.imp().command_blocks.borrow().iter() {
-            if !block.finished {
-                draw(block.prompt_row, (0.95, 0.78, 0.25, 0.95));
-            } else if block.exit_code.unwrap_or(0) != 0 {
-                draw(block.prompt_row, (0.90, 0.30, 0.30, 0.95));
+            match (block.finished, block.exit_code) {
+                (false, _) => draw(block.prompt_row, (0.95, 0.78, 0.25, 0.95)),
+                (true, Some(0)) => {}
+                (true, Some(_)) => draw(block.prompt_row, (0.90, 0.30, 0.30, 0.95)),
+                // Unknown status: no red mark, because failure was not
+                // reported, and no mark means success either.
+                (true, None) => {}
             }
         }
         for row in self.imp().vi_user_marks.borrow().iter() {
@@ -4211,6 +4254,18 @@ fn mono_us() -> i64 {
 mod command_block_tests {
     use super::*;
 
+    #[test]
+    fn only_a_reported_status_moves_the_tab_failure_mark() {
+        assert_eq!(failure_mark(Some(0)), FailureMark::Clear);
+        assert_eq!(failure_mark(Some(1)), FailureMark::Set);
+        assert_eq!(failure_mark(Some(130)), FailureMark::Set);
+        assert_eq!(
+            failure_mark(None),
+            FailureMark::Leave,
+            "an unknown status must not clear a failure left by an earlier command"
+        );
+    }
+
     fn block(command: &str, finished: bool, exit: i64, duration: i64) -> CommandBlock {
         CommandBlock {
             command: command.to_string(),
@@ -4242,6 +4297,21 @@ mod command_block_tests {
         assert_eq!(
             TerminalBox::sticky_header_text(&block("echo\u{1b}[31mred\nnow", true, 0, 10)),
             "✓ echo [31mred now  —  10ms"
+        );
+    }
+
+    #[test]
+    fn sticky_header_admits_an_unknown_status() {
+        let mut unknown = block("make -j8", true, 0, 1234);
+        unknown.exit_code = None;
+        assert_eq!(
+            TerminalBox::sticky_header_text(&unknown),
+            "? make -j8  —  status unknown · 1.2s"
+        );
+        assert_eq!(
+            TerminalBox::sticky_header_text(&block("make -j8", true, 0, 1234)),
+            "✓ make -j8  —  1.2s",
+            "a reported success still shows a tick"
         );
     }
 
