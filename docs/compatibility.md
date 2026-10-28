@@ -1,0 +1,163 @@
+# Compatibility and terminal conformance
+
+This document records what Oxterm promises about terminal behaviour, how each
+promise is verified, and what is deliberately out of scope. It is the Oxterm
+counterpart of the xterm behaviour audit the Ghostty project keeps in
+[ghostty-org/ghostty#632](https://github.com/ghostty-org/ghostty/issues/632):
+a claim about a terminal is only done when a test backs it up and the prose
+says why.
+
+## What Oxterm owns and what it delegates
+
+Oxterm is a GTK3 front end over **VTE** (`vte-2.91`, through `zoha-vte`). VTE
+parses the byte stream and implements CSI, DEC and OSC sequences, screen modes,
+mouse reporting, selection and the character encodings. Oxterm does **not**
+re-implement the parser and does not patch VTE's behaviour: re-auditing every
+xterm sequence here would document VTE, not Oxterm.
+
+That leaves a smaller layer that is genuinely Oxterm's, and that is what this
+document covers:
+
+| Layer | Owner | Evidence |
+| --- | --- | --- |
+| OSC 133 events over the private FIFO (prompt, command, exit status) | Oxterm | `src/headless/osc133.rs`, `tests/osc133_conformance.rs` |
+| Shell integration scripts and the `ssh`/`autossh` wrappers | Oxterm | `src/terminal/shell_scripts.rs`, [manual](../manual.md#shell-integration) |
+| Window and tab titles, and their precedence | Oxterm | [manual](../manual.md), `forced_title` and `tab_custom_titles` in `src/window.rs` |
+| OSC 8 hyperlinks: only `http`/`https` are opened | Oxterm | `security_tests` in `src/terminal.rs` |
+| URL detection and hint mode | Oxterm | `src/terminal.rs`, `src/terminal/hints.rs` |
+| Paste safety: multi-line and control-heavy pastes ask first | Oxterm | `paste_checked_text` in `src/terminal.rs` |
+| Control socket (`oxterm send`, `capture`, …) | Oxterm | `tests/control_api.rs` |
+| Everything else in the byte stream | VTE | CI builds against VTE 0.70 (Debian 12) and the current Ubuntu release |
+
+Because the parser is delegated, a sequence not mentioned here is neither
+promised nor forbidden: it follows the VTE version the system provides. When a
+user reports a sequence problem, first reproduce it in GNOME Terminal on the
+same machine. If it reproduces there, the cause is most likely VTE's rather
+than Oxterm's (both link the same library, though they configure it
+differently), and the fix is a VTE upgrade or an upstream report — not a patch
+in Oxterm.
+
+## The OSC 133 FIFO protocol
+
+`OXTERM_OSC133_FIFO` points at a `0600` FIFO in the config directory
+(`osc133_<pid>_<widget>.fifo`). The Bash, Zsh and Fish integration write one
+event per line to it; Oxterm reads, parses and records the events for the
+command gutter, the sticky header, the history database and the notifications.
+Nothing written there reaches the screen, so a broken integration cannot corrupt
+the display — it can only produce wrong chrome.
+
+| Line | Meaning |
+| --- | --- |
+| `A` | prompt start; any payload after the `A` is ignored |
+| `C<text>` | command start, `<text>` is the command line |
+| `D<n>` | command end, `<n>` is the exit status (signal deaths arrive as `128+n`) |
+
+The rules the parser implements, each covered by a unit test in
+`src/headless/osc133.rs`:
+
+- Lines are trimmed, so `A`, ` A ` and `A\r` are the same event.
+- Blank lines and unknown leading letters are dropped. Unknown letters are
+  reserved for future events, so adding one will not break older Oxterm builds.
+- `D` accepts both `D0` and `D;0`. A `D` with no number (or a non-numeric one)
+  means *no status reported*, which is not the same as success; the terminal
+  chrome still falls back to `0` today (see the checklist below).
+- The command text is everything after the `C`, trimmed, capped at the limit
+  below, and kept verbatim otherwise: quotes, `;`, backslashes and wide or
+  combining characters all survive, because a command line is also stored in
+  the history database.
+- A FIFO read may split a line or contain several; the line buffer reassembles
+  them and is what the test replays at every read size.
+- A line longer than the buffer is dropped, the caller logs
+  `osc133_buffer_limit_reached` once, and the reader recovers on the next
+  complete line.
+
+| Limit | Value |
+| --- | --- |
+| OSC 133 FIFO line buffer | 64 KiB |
+| OSC 133 command text | 8 KiB |
+
+`tests/osc133_conformance.rs` checks these numbers against the constants, so
+editing one without the other fails `cargo test`.
+
+### Behaviour that differs from a generic OSC 133 consumer
+
+- **No `B` event.** The integration reports no command-output start, so a block
+  ends where the cursor is when `D` arrives. Programs that position the cursor
+  after their last line (or clear the screen) can therefore make a block one
+  row too short or too long.
+- **Deferred handling.** `A` and `D` are handled 30 ms after they arrive, on
+  purpose: VTE may not have consumed the command's output yet, and handling
+  them immediately put prompts on the command's first row. `C` is handled
+  immediately because its row comes from the pending keystroke.
+- **The FIFO and the PTY can disagree.** The scripts also emit real
+  `OSC 133` escapes (`ESC ] 133 ; … BEL`) through the PTY, which VTE consumes;
+  the FIFO is the only channel Oxterm reads. A program that prints its own
+  escapes, or a full-screen application that clears the screen, can make the
+  terminal grid and the recorded blocks disagree. Oxterm prefers the FIFO.
+- **The current directory comes from `/proc`, not from OSC 7.** The scripts do
+  emit `OSC 7;file://<cwd>`, and VTE stores it, but `get_cwd()` reads
+  `/proc/<pid>/cwd`, which is the local shell. In an SSH tab this is the local
+  `ssh` client's directory. This is deliberate — a hostile program can set
+  OSC 7, while `/proc` cannot lie about the process — but it means OSC 7 is
+  currently written and never read.
+
+## Not supported, and why
+
+- **Desktop notifications from `OSC 9`, `OSC 777`, `OSC 99`.** Not implemented;
+  notifications come from OSC 133 (command finished, exit status, duration) so
+  that they cannot be triggered by arbitrary output. A program that wants a
+  notification can use `oxterm notify` on the control socket.
+- **Clipboard from `OSC 52`.** Oxterm never reads or writes the clipboard from
+  terminal output; copy and paste go through the GTK clipboard and a
+  confirmation prompt for multi-line pastes. Whether the linked VTE also acts on
+  OSC 52 depends on its version — do not rely on it in either direction.
+- **xterm rectangular editing (DECCRA, DECFRA, DECERA, DECSERA, DECCARA,
+  DECRARA) and the DEC locator reports.** Neither VTE nor Oxterm implements
+  them; Oxterm does not add them on top.
+- **Double-width and double-height lines (DECDHL, DECDWL), `DECSCPP`,
+  `DECSNLS`.** Rendering-level features VTE does not provide; Oxterm does not
+  emulate them.
+- **`OSC 133;P` (prompt kind) and the richer kitty/wezterm variants.** Ignored
+  by the scripts and by the parser.
+
+## Checklist for the next audit
+
+In the spirit of the upstream issue, open items are listed here with the reason
+they matter. A checked item has a test and prose; a ⚠️ item is a known
+divergence without one.
+
+- ⚠️ **A `D` with no status is shown as success.** `last_exit_code()` returns
+  `0` and the tab failure marker stays clear. The model should carry "unknown"
+  so a broken integration cannot hide a failure.
+- ⚠️ **A repeated `A` adds a second prompt marker on the same row.** The
+  integration sends `A` when it loads and again from the first `precmd`; the
+  gutter draws two marks at one row.
+- ⚠️ **OSC 7 is emitted but unused**, so remote tabs report the local `ssh`
+  client's directory in history entries and new tabs. A safe fix reads the URI
+  from VTE only for display, never as a spawn directory.
+- ☐ **Title precedence** (`--title` > user-renamed tab > OSC title) has no
+  automated test; the three sources race and only `manual.md` describes them.
+- ☐ **Paste safety** is covered by unit tests for the checked text, but not by
+  an end-to-end test through the widget for bracketed paste.
+- ☐ **A Fish session fixture.** The Fish scripts write through a different
+  quoting path than Bash; one recording per shell would catch divergence
+  between the two scripts.
+- ☐ **Wide-character blocks.** No test covers a command whose output contains
+  emoji or CJK text and that is then scrolled, cropped or popped into the
+  pager. This is the same class of bug the upstream audit flags for
+  insert/delete line: multi-cell characters must be split at every operation
+  that cuts text.
+
+## Adding a case
+
+1. Record the FIFO traffic of the situation (or write it by hand) and append it
+   to `tests/fixtures/osc133/session.fifo`, with a comment saying what it
+   reproduces.
+2. Add the expected events to `expected()` in `tests/osc133_conformance.rs`.
+   The test replays the file at several read sizes, so a newline in the wrong
+   place is caught.
+3. If the rule is new, state it in the protocol section above and add a unit
+   test in `src/headless/osc133.rs`.
+4. If the change touches the reader in `src/terminal.rs`, keep the parsing in
+   `src/headless/osc133.rs`: `tests/headless.rs` fails if the headless core
+   starts depending on GTK, VTE or the GUI modules.

@@ -1245,10 +1245,15 @@ pub fn settings_markdown() -> String {
          | --- | --- |\n\
          | Settings file / `-o` value | 4096 characters |\n\
          | Snippet map entries | 100 entries, 4096 characters each |\n\
-         | Custom palette entries | 16 |\n\
-         | OSC 133 FIFO line buffer | 64 KiB |\n\
-         | Control API request frame | ",
+         | Custom palette entries | 16 |\n",
     );
+    out.push_str(&format!(
+        "| OSC 133 FIFO line buffer | {} KiB |\n\
+         | OSC 133 command text | {} KiB |\n",
+        super::osc133::MAX_BUFFER / 1024,
+        super::osc133::MAX_COMMAND / 1024,
+    ));
+    out.push_str("| Control API request frame | ");
     out.push_str(&format!(
         "{} MiB |\n| Control API response frame | {} MiB |\n| PTY broker frame | {} KiB |\n| PTY broker pending output | {} MiB |\n| PTY broker clients | {} |\n",
         super::framing::MAX_REQUEST_FRAME / (1024 * 1024),

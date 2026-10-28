@@ -21,6 +21,7 @@ memory footprint and the memory-safety guarantees of Rust.
 > if you download a release binary.
 
 - **[English user manual](manual.md)**
+- **[Terminal compatibility](docs/compatibility.md)**
 - **[Report an issue](https://github.com/buzzqw/oxterm/issues)**
 
 ## Highlights

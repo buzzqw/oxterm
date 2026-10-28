@@ -6,7 +6,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use super::{framing, settings, spec};
+use super::{framing, osc133, settings, spec};
 
 pub struct Report<'a> {
     pub version: &'a str,
@@ -80,7 +80,11 @@ pub fn render(report: &Report<'_>) -> String {
         framing::MAX_BROKER_PENDING / (1024 * 1024),
         framing::MAX_BROKER_CLIENTS
     ));
-    out.push_str("  osc133 line buffer: 64 KiB\n");
+    out.push_str(&format!(
+        "  osc133 line buffer / command: {} KiB / {} KiB\n",
+        osc133::MAX_BUFFER / 1024,
+        osc133::MAX_COMMAND / 1024
+    ));
     out
 }
 

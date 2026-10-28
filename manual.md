@@ -229,7 +229,9 @@ paste. It can be shown or hidden from **View** or **Preferences**.
 
 Oxterm uses VTE, the same terminal widget family used by GNOME Terminal. Normal
 shell input, scrolling, selection, copy/paste, 256-color output, true color,
-and standard terminal escape sequences are supported.
+and standard terminal escape sequences are supported. What Oxterm itself
+promises — and what it leaves to VTE — is recorded in
+[docs/compatibility.md](docs/compatibility.md).
 
 URLs are detected in terminal output. Click an `http://` or `https://` URL to
 open it with the desktop browser. Explicit OSC 8 hyperlinks emitted by
@@ -582,6 +584,12 @@ creates temporary startup files and removes them when the session ends; `.bashrc
 
 The integration supports Bash, Zsh, and Fish. Use `Ctrl+Shift+Up` and
 `Ctrl+Shift+Down` to move between detected prompts.
+
+The scripts write one event per line (`A` prompt start, `C<command>` command
+start, `D<status>` command end) to a private FIFO; Oxterm never reads the
+markers back from the screen. The wire format, the size limits, the known
+divergences and how they are tested are documented in
+[docs/compatibility.md](docs/compatibility.md).
 
 ### SSH connections
 

@@ -27,6 +27,7 @@ use regex::Regex;
 use zoha_vte::traits::TerminalExt;
 use zoha_vte::{CursorBlinkMode, CursorShape, Format, PtyFlags, Regex as VteRegex};
 
+use crate::headless::osc133;
 use crate::history::history;
 use crate::logging::LOGGER;
 use crate::persistence::validate_name;
@@ -70,10 +71,6 @@ pub const OXTERM_COMMANDS: &[&str] = &[
 ];
 
 const HINT_CHARS: &str = "asdfghjklqwertyuiopzxcvbnm";
-const MAX_OSC133_BUFFER: usize = 64 * 1024;
-/// A single reported command is stored in the history database and shown in the
-/// UI; cap it so a hostile or broken shell integration cannot insert megabytes.
-const MAX_OSC133_COMMAND: usize = 8 * 1024;
 
 static HINT_URL_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
 static HINT_PATH_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
@@ -305,11 +302,6 @@ fn format_duration_ms(duration_ms: i64) -> String {
     }
 }
 
-fn osc133_event_parts(line: &str) -> Option<(char, &str)> {
-    let mut chars = line.chars();
-    Some((chars.next()?, chars.as_str()))
-}
-
 fn child_status_message(status: i32) -> String {
     let signal = status & 0x7f;
     if signal != 0 && signal != 0x7f {
@@ -348,12 +340,6 @@ mod security_tests {
             ),
             "git commit -m 'message' && git push origin message origin main"
         );
-    }
-
-    #[test]
-    fn osc133_event_parser_does_not_slice_utf8_boundaries() {
-        assert_eq!(osc133_event_parts("Cecho hello"), Some(('C', "echo hello")));
-        assert_eq!(osc133_event_parts("€stats"), Some(('€', "stats")));
     }
 
     #[test]
@@ -549,7 +535,7 @@ mod imp {
         pub osc133_rfd: RefCell<i32>,
         pub osc133_fifo_path: RefCell<String>,
         pub osc133_source_id: RefCell<Option<glib::SourceId>>,
-        pub osc133_buf: RefCell<Vec<u8>>,
+        pub osc133_lines: RefCell<osc133::LineBuffer>,
         pub osc133_last_exit: RefCell<i64>,
         pub osc133_cmd_start_row: RefCell<i64>,
         pub osc133_integration_active: RefCell<bool>,
@@ -2249,16 +2235,12 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         };
         if n > 0 {
             data.truncate(n as usize);
-            let mut buf = self.imp().osc133_buf.borrow_mut();
-            buf.extend_from_slice(&data);
-            while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
-                let line: Vec<u8> = buf.drain(..=pos).collect();
-                let line_str = String::from_utf8_lossy(&line);
-                self.process_osc133_line(line_str.trim());
-            }
-            if buf.len() > MAX_OSC133_BUFFER {
-                buf.clear();
+            let lines = self.imp().osc133_lines.borrow_mut().push(&data);
+            if self.imp().osc133_lines.borrow_mut().take_overflow() {
                 LOGGER.warning("osc133_buffer_limit_reached");
+            }
+            for line in lines {
+                self.process_osc133_line(&line);
             }
             true
         } else if n == 0 {
@@ -2272,167 +2254,166 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
     }
 
     fn process_osc133_line(&self, line: &str) {
-        if line.is_empty() {
-            return;
-        }
         // Handle each event as soon as it arrives. Batching these for even a
         // few milliseconds moved prompt/command rows to where the cursor had
         // already scrolled by the time the batch ran, which made fast commands
         // report the wrong block range.
+        // `LineBuffer` already dropped blank lines and unknown letters.
         self.osc133_handle_event(line);
     }
 
     fn osc133_handle_event(&self, line: &str) {
-        // Prompt boundaries and command ends are only meaningful once VTE has
-        // consumed the output that precedes them. Handle them after a short
-        // delay; the command start (`C`) itself must be handled immediately so
-        // its row comes from the pending keystroke, not from the output.
-        let command = line.chars().next();
-        if matches!(command, Some('A') | Some('D')) {
-            // Duration must be measured when the event arrives, not when the
-            // deferred handler runs, or every fast command gains the delay.
-            // `None` means the shell reported a prompt without having started
-            // a command first, such as the marker emitted when the integration
-            // script loads. Such an event must not complete an `oxterm wait`.
-            let duration = if command == Some('D') {
-                self.imp()
-                    .osc133_command_started_at
-                    .borrow_mut()
-                    .take()
-                    .map(|started| started.elapsed().as_millis().min(i64::MAX as u128) as i64)
-            } else {
-                None
-            };
-            let line = line.to_string();
-            let weak = crate::SendWeak::new(self);
-            // An idle callback can run before VTE has read the command's output
-            // from the PTY, which would put the prompt on the command's first
-            // row. A short timeout reliably covers the hand-off for local
-            // output while staying far below human perception.
-            glib::timeout_add_local_once(std::time::Duration::from_millis(30), move || {
-                if let Some(term) = weak.upgrade() {
-                    term.osc133_handle_event_now(&line, duration);
-                }
-            });
+        let Some(event) = osc133::Event::parse(line) else {
+            return;
+        };
+        if !event.is_deferred() {
+            self.osc133_handle_event_now(line, None);
             return;
         }
-        self.osc133_handle_event_now(line, None);
+        // Duration must be measured when the event arrives, not when the
+        // deferred handler runs, or every fast command gains the delay.
+        // `None` means the shell reported a prompt without having started
+        // a command first, such as the marker emitted when the integration
+        // script loads. Such an event must not complete an `oxterm wait`.
+        let duration = match event {
+            osc133::Event::CommandEnd(_) => self
+                .imp()
+                .osc133_command_started_at
+                .borrow_mut()
+                .take()
+                .map(|started| started.elapsed().as_millis().min(i64::MAX as u128) as i64),
+            _ => None,
+        };
+        let line = line.to_string();
+        let weak = crate::SendWeak::new(self);
+        // An idle callback can run before VTE has read the command's output
+        // from the PTY, which would put the prompt on the command's first
+        // row. A short timeout reliably covers the hand-off for local
+        // output while staying far below human perception.
+        glib::timeout_add_local_once(std::time::Duration::from_millis(30), move || {
+            if let Some(term) = weak.upgrade() {
+                term.osc133_handle_event_now(&line, duration);
+            }
+        });
     }
 
     fn osc133_handle_event_now(&self, line: &str, duration_ms: Option<i64>) {
         if *self.imp().pid.borrow() <= 0 {
             return;
         }
+        let Some(event) = osc133::Event::parse(line) else {
+            return;
+        };
         *self.imp().osc133_integration_active.borrow_mut() = true;
         let (col, cursor_row) = self.vte().cursor_position();
         let _ = col;
-        let Some((cmd, rest)) = osc133_event_parts(line) else {
-            return;
-        };
-        if cmd == 'C' {
-            let pending_row = self.imp().pending_command_row.replace(-1);
-            let row = if pending_row >= 0 {
-                pending_row
-            } else {
-                cursor_row
-            };
-            *self.imp().osc133_cmd_start_row.borrow_mut() = row;
-            *self.imp().osc133_command_started_at.borrow_mut() = Some(Instant::now());
-            self.imp()
-                .osc133_markers
-                .borrow_mut()
-                .push((row, "cmd_start".into(), 0));
-            *self.imp().bell_notify_cmd_running.borrow_mut() = true;
-            let command_text =
-                crate::headless::text::truncate_chars(rest.trim(), MAX_OSC133_COMMAND);
-            self.set_remote_command(&command_text, true);
-            *self.imp().osc133_last_history_id.borrow_mut() = None;
-            {
-                let prompt_row = self.imp().last_prompt_row.get();
-                let mut blocks = self.imp().command_blocks.borrow_mut();
-                blocks.push(CommandBlock {
-                    prompt_row: if prompt_row >= 0 { prompt_row } else { row },
-                    command_row: row,
-                    end_row: row,
-                    command: command_text.clone(),
-                    exit_code: None,
-                    duration_ms: None,
-                    started_at: Some(Instant::now()),
-                    finished: false,
-                });
-                if blocks.len() > 1000 {
-                    let drain = blocks.len() - 1000;
-                    blocks.drain(0..drain);
-                }
-            }
-            self.refresh_command_marks();
-            if !command_text.is_empty()
-                && !self.is_oxterm_command(&command_text)
-                && settings().get_bool("history_enabled")
-            {
-                let ticket = history().add_command_start_async(&command_text, &self.get_cwd());
-                *self.imp().osc133_last_history_id.borrow_mut() = ticket;
-                *self.imp().input_shadow.borrow_mut() = String::new();
-            }
-        } else if cmd == 'D' {
-            self.imp().pending_command_row.set(-1);
-            let exit_code = rest.trim().parse::<i64>().unwrap_or(0);
-            *self.imp().osc133_last_exit.borrow_mut() = exit_code;
-            self.set_remote_command_state(false);
-            {
-                let (_, end_row) = self.vte().cursor_position();
-                if let Some(block) = self
-                    .imp()
-                    .command_blocks
-                    .borrow_mut()
-                    .iter_mut()
-                    .rev()
-                    .find(|block| !block.finished)
-                {
-                    block.exit_code = Some(exit_code);
-                    block.end_row = end_row;
-                    block.duration_ms = duration_ms;
-                    block.finished = true;
-                }
-            }
-            // Only a command that actually started (an OSC 133 `C`) completes
-            // a `wait`. The prompt marker for the initial shell prompt has no
-            // preceding command and must stay invisible to it.
-            if duration_ms.is_some() {
+        match event {
+            osc133::Event::CommandStart(rest) => {
+                let pending_row = self.imp().pending_command_row.replace(-1);
+                let row = if pending_row >= 0 {
+                    pending_row
+                } else {
+                    cursor_row
+                };
+                *self.imp().osc133_cmd_start_row.borrow_mut() = row;
+                *self.imp().osc133_command_started_at.borrow_mut() = Some(Instant::now());
                 self.imp()
-                    .command_generation
-                    .set(self.imp().command_generation.get() + 1);
-            }
-            self.refresh_command_marks();
-            if let Some(id) = self.imp().osc133_last_history_id.borrow_mut().take() {
-                history().set_command_result_async(id, exit_code, duration_ms);
-            }
-            if *self.imp().bell_notify_cmd_running.borrow() {
-                *self.imp().bell_notify_cmd_running.borrow_mut() = false;
-                self.trigger_bell_notification(exit_code, duration_ms);
-            }
-            if exit_code != 0 {
-                let term = self.clone();
-                self.call_window(move |win| win.set_tab_failure_signal(&term, true));
-            } else {
-                self.call_window(|win| win.clear_tab_failure_signal(self));
-            }
-        } else if cmd == 'A' {
-            *self.imp().osc133_cmd_start_row.borrow_mut() = -1;
-            self.imp().pending_command_row.set(-1);
-            self.imp().last_prompt_row.set(cursor_row);
-            let last_exit = *self.imp().osc133_last_exit.borrow();
-            if cursor_row > 0 {
-                let mut markers = self.imp().osc133_markers.borrow_mut();
-                markers.push((cursor_row, "prompt".into(), last_exit));
-                if markers.len() > 1000 {
-                    let drain = markers.len() - 1000;
-                    markers.drain(0..drain);
+                    .osc133_markers
+                    .borrow_mut()
+                    .push((row, "cmd_start".into(), 0));
+                *self.imp().bell_notify_cmd_running.borrow_mut() = true;
+                let command_text = rest.to_string();
+                self.set_remote_command(&command_text, true);
+                *self.imp().osc133_last_history_id.borrow_mut() = None;
+                {
+                    let prompt_row = self.imp().last_prompt_row.get();
+                    let mut blocks = self.imp().command_blocks.borrow_mut();
+                    blocks.push(CommandBlock {
+                        prompt_row: if prompt_row >= 0 { prompt_row } else { row },
+                        command_row: row,
+                        end_row: row,
+                        command: command_text.clone(),
+                        exit_code: None,
+                        duration_ms: None,
+                        started_at: Some(Instant::now()),
+                        finished: false,
+                    });
+                    if blocks.len() > 1000 {
+                        let drain = blocks.len() - 1000;
+                        blocks.drain(0..drain);
+                    }
                 }
-                drop(markers);
-                self.update_margin_visibility();
+                self.refresh_command_marks();
+                if !command_text.is_empty()
+                    && !self.is_oxterm_command(&command_text)
+                    && settings().get_bool("history_enabled")
+                {
+                    let ticket = history().add_command_start_async(&command_text, &self.get_cwd());
+                    *self.imp().osc133_last_history_id.borrow_mut() = ticket;
+                    *self.imp().input_shadow.borrow_mut() = String::new();
+                }
             }
-            self.refresh_command_marks();
+            osc133::Event::CommandEnd(exit_code) => {
+                let exit_code = exit_code.unwrap_or(0);
+                self.imp().pending_command_row.set(-1);
+                *self.imp().osc133_last_exit.borrow_mut() = exit_code;
+                self.set_remote_command_state(false);
+                {
+                    let (_, end_row) = self.vte().cursor_position();
+                    if let Some(block) = self
+                        .imp()
+                        .command_blocks
+                        .borrow_mut()
+                        .iter_mut()
+                        .rev()
+                        .find(|block| !block.finished)
+                    {
+                        block.exit_code = Some(exit_code);
+                        block.end_row = end_row;
+                        block.duration_ms = duration_ms;
+                        block.finished = true;
+                    }
+                }
+                // Only a command that actually started (an OSC 133 `C`) completes
+                // a `wait`. The prompt marker for the initial shell prompt has no
+                // preceding command and must stay invisible to it.
+                if duration_ms.is_some() {
+                    self.imp()
+                        .command_generation
+                        .set(self.imp().command_generation.get() + 1);
+                }
+                self.refresh_command_marks();
+                if let Some(id) = self.imp().osc133_last_history_id.borrow_mut().take() {
+                    history().set_command_result_async(id, exit_code, duration_ms);
+                }
+                if *self.imp().bell_notify_cmd_running.borrow() {
+                    *self.imp().bell_notify_cmd_running.borrow_mut() = false;
+                    self.trigger_bell_notification(exit_code, duration_ms);
+                }
+                if exit_code != 0 {
+                    let term = self.clone();
+                    self.call_window(move |win| win.set_tab_failure_signal(&term, true));
+                } else {
+                    self.call_window(|win| win.clear_tab_failure_signal(self));
+                }
+            }
+            osc133::Event::PromptStart => {
+                *self.imp().osc133_cmd_start_row.borrow_mut() = -1;
+                self.imp().pending_command_row.set(-1);
+                self.imp().last_prompt_row.set(cursor_row);
+                let last_exit = *self.imp().osc133_last_exit.borrow();
+                if cursor_row > 0 {
+                    let mut markers = self.imp().osc133_markers.borrow_mut();
+                    markers.push((cursor_row, "prompt".into(), last_exit));
+                    if markers.len() > 1000 {
+                        let drain = markers.len() - 1000;
+                        markers.drain(0..drain);
+                    }
+                    drop(markers);
+                    self.update_margin_visibility();
+                }
+                self.refresh_command_marks();
+            }
         }
     }
 

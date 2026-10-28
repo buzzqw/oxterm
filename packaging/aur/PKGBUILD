@@ -34,6 +34,7 @@ package() {
   install -Dm0644 packaging/oxterm.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/oxterm.svg"
   install -Dm0644 manual.md "$pkgdir/usr/share/doc/$pkgname/manual.md"
   install -Dm0644 docs/settings.md "$pkgdir/usr/share/doc/$pkgname/settings.md"
+  install -Dm0644 docs/compatibility.md "$pkgdir/usr/share/doc/$pkgname/compatibility.md"
   install -Dm0644 themes/licenses.md "$pkgdir/usr/share/doc/$pkgname/themes-licenses.md"
   install -Dm0644 packaging/oxterm.1 "$pkgdir/usr/share/man/man1/oxterm.1"
   gzip -n "$pkgdir/usr/share/man/man1/oxterm.1"

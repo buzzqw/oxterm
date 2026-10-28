@@ -107,6 +107,7 @@ Limits are enforced before untrusted input reaches the UI:
 | Snippet map entries | 100 entries, 4096 characters each |
 | Custom palette entries | 16 |
 | OSC 133 FIFO line buffer | 64 KiB |
+| OSC 133 command text | 8 KiB |
 | Control API request frame | 8 MiB |
 | Control API response frame | 64 MiB |
 | PTY broker frame | 1024 KiB |

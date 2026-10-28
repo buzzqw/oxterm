@@ -38,6 +38,14 @@ cargo run --bin oxterm-docgen
 and commit the result. CI runs `cargo run --bin oxterm-docgen -- --check` and
 fails when a generated file is stale.
 
+## Terminal behaviour
+
+`docs/compatibility.md` records what Oxterm promises about terminal behaviour,
+what it delegates to VTE, and what is out of scope. A change that alters how a
+sequence or the OSC 133 protocol behaves needs an entry there and a test: unit
+tests live next to the code in `src/headless/`, and recorded sessions are
+replayed by `tests/osc133_conformance.rs` from `tests/fixtures/osc133/`.
+
 ## Themes
 
 `assets/themes.json` is generated from the MIT-licensed

@@ -1,0 +1,36 @@
+# Recorded OSC 133 FIFO traffic from a Bash session in Oxterm, plus the
+# malformed lines the reader has to tolerate.
+#
+# One event per line: A is a prompt start, C<text> a command start, D<n> the
+# exit status. The integration script writes these lines to a private FIFO and
+# Oxterm reads them; nothing here is ever shown on screen.
+#
+# Lines beginning with # are not events. The reader drops them like any other
+# unknown letter, which is also what happens when a future integration sends an
+# event this version does not know about.
+#
+# tests/osc133_conformance.rs replays this file byte by byte and in one go, so
+# an edit here that changes behaviour must be reflected in the expected events
+# in that test. See docs/compatibility.md.
+A
+Ctrue
+D0
+A
+Cgit status
+D0
+A
+Cgrep -R "città 🚀" src
+D1
+A
+# The shell failed to capture $?: the status is missing, not zero.
+Cfalse
+D
+A
+# Command text that looks like other events.
+Cprintf 'A\nD1\n'
+D0
+A
+# Padding a shell may leave around the command line.
+C   ls -l ~/oxterm
+D0
+A
