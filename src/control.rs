@@ -269,6 +269,15 @@ fn live_sockets() -> Vec<PathBuf> {
             return vec![path];
         }
     }
+    all_live_sockets()
+}
+
+/// Every running Oxterm on this machine, including this process.
+///
+/// `live_sockets` honours `OXTERM_CONTROL` because CLI verbs run inside a pane
+/// must address the window that owns them; a menu that offers to move a tab
+/// from another window wants the full list instead.
+fn all_live_sockets() -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(remote::remote_dir()) else {
         return Vec::new();
     };
@@ -520,6 +529,23 @@ fn dispatch(request: &Value) -> Value {
             window.present();
             json!({ "ok": true, "pane": term.remote_id() })
         }
+        "handover" => {
+            let Some((_, term)) = find_terminal(&app, request["pane"].as_str().unwrap_or(""))
+            else {
+                return error_reply("pane not found", 3);
+            };
+            // Release first: closing the tab must take the view away, not the
+            // shell. The destination already holds the OSC 133 FIFO open, so
+            // stopping the reader here is safe.
+            term.prepare_handover();
+            let closing = term.clone();
+            // Answer before the window disappears: closing the last tab ends
+            // this process, and the adopting window needs the reply.
+            glib::timeout_add_local_once(Duration::from_millis(150), move || {
+                closing.call_window(|win| win.close_tab_signal(Some(&closing)));
+            });
+            json!({ "ok": true })
+        }
         "send" => {
             let Some((_, term)) = find_terminal(&app, request["pane"].as_str().unwrap_or(""))
             else {
@@ -557,6 +583,73 @@ fn dispatch(request: &Value) -> Value {
         }
         other => error_reply(&format!("unknown operation: {}", other), 2),
     }
+}
+
+/// A pane owned by a different Oxterm process, for the "move tab here" menu.
+#[derive(Clone, Debug)]
+pub(crate) struct ForeignPane {
+    pub socket: PathBuf,
+    pub id: String,
+    pub title: String,
+    pub cwd: String,
+    pub command: String,
+    pub running: bool,
+    /// OSC 133 FIFO of the session, when the source window has integration on.
+    pub fifo: Option<String>,
+}
+
+/// Panes of every other running Oxterm, sorted for a stable menu.
+pub(crate) fn foreign_panes() -> Vec<ForeignPane> {
+    let ours = socket_path();
+    let mut panes = Vec::new();
+    for socket in all_live_sockets() {
+        if socket == ours {
+            continue;
+        }
+        let Ok(reply) = request_at(&socket, &json!({ "op": "list" })) else {
+            continue;
+        };
+        for pane in reply["panes"].as_array().into_iter().flatten() {
+            let Some(id) = pane["pane"].as_str().filter(|id| !id.is_empty()) else {
+                continue;
+            };
+            let text = |key: &str| pane[key].as_str().unwrap_or("").trim().to_string();
+            panes.push(ForeignPane {
+                socket: socket.clone(),
+                id: id.to_string(),
+                title: text("title"),
+                cwd: text("cwd"),
+                command: text("command"),
+                running: text("app_status") == "running",
+                fifo: pane["osc133_fifo"]
+                    .as_str()
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_string),
+            });
+        }
+    }
+    panes.sort_by(|a, b| {
+        a.title
+            .to_lowercase()
+            .cmp(&b.title.to_lowercase())
+            .then_with(|| a.cwd.cmp(&b.cwd))
+    });
+    panes
+}
+
+/// Whether a control socket still answers. Used to tell "the other window
+/// refused the move" from "the other window closed as part of the move".
+pub(crate) fn socket_alive(path: &Path) -> bool {
+    socket_is_alive(path)
+}
+
+/// Ask another Oxterm to release a pane and close its tab. The caller must
+/// already hold the session's OSC 133 FIFO open, or the shell dies of SIGPIPE on
+/// its next prompt (see `TerminalBox::open_osc133_fifo`).
+pub(crate) fn handover(socket: &Path, id: &str) -> Result<(), String> {
+    request_at(socket, &json!({ "op": "handover", "pane": id }))
+        .map(|_| ())
+        .map_err(|(_, error)| error)
 }
 
 fn request_command(request: &Value) -> Option<Vec<String>> {
@@ -622,5 +715,8 @@ fn pane_info(term: &TerminalBox) -> Value {
         "exit": term.last_exit_code(),
         "generation": term.command_generation(),
         "alive": term.is_alive(),
+        // The FIFO is the shell integration channel; another window opens it
+        // before the handover so a moved tab keeps its blocks and history.
+        "osc133_fifo": term.osc133_fifo().unwrap_or_default(),
     })
 }

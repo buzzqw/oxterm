@@ -3860,6 +3860,183 @@ impl MainWindow {
             menu.append(&item);
             item.show();
         }
+
+        let separator = gtk::SeparatorMenuItem::new();
+        menu.append(&separator);
+        separator.show();
+        let weak = crate::SendWeak::new(self);
+        let item = gtk::MenuItem::with_label("Move Tab from Another Oxterm…");
+        item.connect_activate(move |_| {
+            if let Some(w) = weak.upgrade() {
+                w.move_tab_from_another_oxterm();
+            }
+        });
+        menu.append(&item);
+        item.show();
+    }
+
+    /// Offer the tabs of the other running Oxterm windows and adopt one here.
+    fn move_tab_from_another_oxterm(&self) {
+        let weak = crate::SendWeak::new(self);
+        // Discovery talks to other processes: never block the GTK thread on a
+        // window that is busy or wedged.
+        std::thread::spawn(move || {
+            let panes = crate::control::foreign_panes();
+            crate::run_on_main(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.show_move_pane_dialog(panes);
+                }
+            });
+        });
+    }
+
+    fn show_move_pane_dialog(&self, panes: Vec<crate::control::ForeignPane>) {
+        if panes.is_empty() {
+            self.status_message("No other Oxterm window is running", false);
+            return;
+        }
+        let dialog = gtk::Dialog::with_buttons(
+            Some("Move a Tab from Another Oxterm"),
+            Some(self),
+            gtk::DialogFlags::MODAL,
+            &[
+                ("Move Here", gtk::ResponseType::Accept),
+                ("Cancel", gtk::ResponseType::Cancel),
+            ],
+        );
+        dialog.set_default_size(640, 380);
+        let list = gtk::ListBox::new();
+        list.set_selection_mode(gtk::SelectionMode::Single);
+        for pane in &panes {
+            let heading = if pane.title.is_empty() {
+                "(untitled)"
+            } else {
+                pane.title.as_str()
+            };
+            let detail = if pane.running {
+                format!("{}  ·  running: {}", pane.cwd, pane.command)
+            } else if pane.command.is_empty() {
+                pane.cwd.clone()
+            } else {
+                format!("{}  ·  last: {}", pane.cwd, pane.command)
+            };
+            let title = gtk::Label::new(None);
+            title.set_text(heading);
+            title.set_xalign(0.0);
+            title.set_ellipsize(pango::EllipsizeMode::End);
+            let subtitle = gtk::Label::new(None);
+            subtitle.set_text(&detail);
+            subtitle.set_xalign(0.0);
+            subtitle.set_ellipsize(pango::EllipsizeMode::Middle);
+            subtitle.style_context().add_class("oxterm-stats-label");
+            let column = gtk::Box::new(gtk::Orientation::Vertical, 2);
+            column.set_margin_start(10);
+            column.set_margin_end(10);
+            column.set_margin_top(6);
+            column.set_margin_bottom(6);
+            column.pack_start(&title, false, false, 0);
+            column.pack_start(&subtitle, false, false, 0);
+            let row = gtk::ListBoxRow::new();
+            row.add(&column);
+            // The whole session id is long; the tooltip carries it for bug
+            // reports without eating the row.
+            row.set_tooltip_text(Some(&format!("{}  ({})", heading, pane.id)));
+            list.add(&row);
+        }
+        // Double-click or Enter picks the row and accepts the dialog.
+        let weak_dialog = dialog.clone();
+        list.connect_row_activated(move |_, _| {
+            weak_dialog.response(gtk::ResponseType::Accept);
+        });
+        let scroll = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
+        scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        scroll.add(&list);
+        dialog.content_area().pack_start(&scroll, true, true, 0);
+        if let Some(first) = list.row_at_index(0) {
+            list.select_row(Some(&first));
+        }
+        dialog.show_all();
+
+        let response = dialog.run();
+        let selected = list
+            .selected_row()
+            .and_then(|row| usize::try_from(row.index()).ok());
+        dialog.close();
+        if response != gtk::ResponseType::Accept {
+            return;
+        }
+        let Some(pane) = selected.and_then(|index| panes.get(index)).cloned() else {
+            return;
+        };
+        self.move_pane_here(pane);
+    }
+
+    /// Attach this window to `pane`'s session, then ask the other Oxterm to let
+    /// go of it. The relay tab is created first so the session is never without
+    /// a view, and is dropped again if the other window refuses.
+    fn move_pane_here(&self, pane: crate::control::ForeignPane) {
+        let binary = std::env::current_exe()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "oxterm".to_string());
+        let command = vec![binary, "-a".to_string(), pane.id.clone()];
+        let title = if pane.title.is_empty() {
+            "Terminal".to_string()
+        } else {
+            pane.title.clone()
+        };
+        let cwd = (!pane.cwd.is_empty()).then_some(pane.cwd.as_str());
+        let term = self.add_new_tab(cwd, None, Some(&title), Some(&title), Some(&command));
+
+        let weak = crate::SendWeak::new(self);
+        let weak_term = crate::SendWeak::new(&term);
+        let source = pane.socket.clone();
+        let id = pane.id.clone();
+        let fifo = pane.fifo.clone();
+        std::thread::spawn(move || {
+            // Become a reader of the OSC 133 FIFO *before* the source lets go:
+            // a shell whose last reader disappears dies of SIGPIPE at the next
+            // prompt, and that would kill the session we are adopting.
+            let reader = fifo
+                .as_deref()
+                .map(|path| TerminalBox::open_osc133_fifo(path).map(|fd| (path.to_string(), fd)));
+            let mut result = if matches!(reader, Some(None)) {
+                Err("cannot open the session's shell integration FIFO".to_string())
+            } else {
+                crate::control::handover(&source, &id)
+            };
+            // The source closes its last window as part of a successful move,
+            // so it may never answer; a dead socket after a failure is still a
+            // success for us.
+            if result.is_err() && !crate::control::socket_alive(&source) {
+                result = Ok(());
+            }
+            crate::run_on_main(move || {
+                let Some(w) = weak.upgrade() else {
+                    if let Some(Some((_, fd))) = reader {
+                        unsafe { libc::close(fd) };
+                    }
+                    return;
+                };
+                match result {
+                    Ok(()) => {
+                        if let (Some(term), Some(Some((path, fd)))) = (weak_term.upgrade(), reader)
+                        {
+                            term.adopt_osc133_fifo(&path, fd);
+                        }
+                        w.status_message(&format!("Moved \"{title}\" from another Oxterm"), false);
+                    }
+                    Err(error) => {
+                        if let Some(Some((_, fd))) = reader {
+                            unsafe { libc::close(fd) };
+                        }
+                        if let Some(term) = weak_term.upgrade() {
+                            w.close_tab(Some(&term));
+                        }
+                        w.status_message(&format!("Could not move the tab: {}", error), true);
+                    }
+                }
+            });
+        });
     }
 
     fn populate_profiles_menu(&self, menu: &gtk::Menu) {

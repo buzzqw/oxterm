@@ -329,6 +329,17 @@ see the full title.
 `View > Always Show Tabs` controls whether the tab bar remains visible when only
 one tab is open.
 
+**Tabs > Move Tab from Another Oxterm…** lists the tabs of the other Oxterm
+windows running for the same user and adopts the one you pick: the tab opens
+here, showing the running session, and the tab (or the window, when it was the
+last one) closes in the other Oxterm. The shell, its process and the recent
+output move with it; nothing is restarted. The adopted tab is a relay to the
+session, so it is exactly as wide, as fast and as stateful as the terminal it
+came from, and it keeps the OSC 133 shell integration when the source window had
+it: command blocks, history and notifications continue here. Closing the adopted
+tab ends that session, as closing any other tab does; it does not go back to the
+window it came from.
+
 ### Windows
 
 Use **File > New Window** or `Ctrl+Shift+N`. Each launch is an independent

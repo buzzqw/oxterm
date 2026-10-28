@@ -390,7 +390,10 @@ pub fn spawn_broker(
             )
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            // Diagnostics (stall guard, exit reason) go to the GUI's stderr so
+            // `oxterm --diagnostics` and bug reports can show them, instead of
+            // disappearing into /dev/null.
+            .stderr(std::process::Stdio::inherit())
             .pre_exec(move || {
                 // Reserve the broker's well-known descriptors only in the child.
                 // Doing this in the GUI process can overwrite GLib's pidfds and
@@ -1139,6 +1142,8 @@ fn run_broker(path: &Path, id: &str) -> i32 {
     // pinning a CPU core forever.
     let mut stalled_wakeups = 0u32;
     let mut last_progress = Instant::now();
+    // Every exit path below records why before breaking.
+    let exit_reason: &str;
 
     loop {
         // Only the GUI drives the child size while no remote client is
@@ -1220,6 +1225,7 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         };
         let status = unsafe { libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as _, timeout) };
         if status < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+            exit_reason = "poll failed";
             break;
         }
         if status == 0 {
@@ -1388,6 +1394,7 @@ fn run_broker(path: &Path, id: &str) -> i32 {
                     last_progress.elapsed(),
                     stalled_wakeups
                 );
+                exit_reason = "no I/O progress";
                 break;
             }
         } else {
@@ -1395,18 +1402,21 @@ fn run_broker(path: &Path, id: &str) -> i32 {
             last_progress = Instant::now();
         }
         if state.kill_requested {
+            exit_reason = "kill requested";
             break;
         }
         if state.child_closed
             && gui_output.is_empty()
             && clients.iter().all(|client| client.output.is_empty())
         {
+            exit_reason = "child exited";
             break;
         }
     }
     close_fd(CHILD_FD);
     close_fd(GUI_FD);
     let _ = remove_existing_socket_file(path);
+    eprintln!("oxterm broker {}: exiting ({})", id, exit_reason);
     0
 }
 

@@ -353,3 +353,108 @@ fn control_api_drives_tabs_panes_and_commands() {
         Some(2)
     );
 }
+
+/// `Tabs > Move Tab from Another Oxterm` is a `handover`: the source window
+/// closes the tab but must leave the session (and its shell) alive for the
+/// window that adopts it. The VTE child watch used to signal the child when the
+/// widget was disposed, which killed the moved session.
+#[test]
+fn handover_keeps_the_moved_session_alive() {
+    if !gui_tests_enabled() {
+        return;
+    }
+    let home = TempHome::new();
+    let log = std::fs::File::create(home.path().join("gui.log")).expect("create gui log");
+    let log_err = log.try_clone().expect("clone gui log");
+    let child = Command::new(binary())
+        .args([
+            "--no-restore",
+            "-o",
+            "osc133=true",
+            "-o",
+            "login_shell=false",
+            "-o",
+            "shell_command=/bin/bash",
+        ])
+        .env("HOME", home.path())
+        .env("XDG_RUNTIME_DIR", home.path())
+        .env("NO_AT_BRIDGE", "1")
+        .env_remove("OXTERM_CONTROL")
+        .env_remove("OXTERM_PANE")
+        .stdin(Stdio::null())
+        .stdout(log)
+        .stderr(log_err)
+        .spawn()
+        .expect("start Oxterm");
+    let mut fixture = Fixture { child, home };
+    let socket = wait_for_control_socket(fixture.home.path(), &mut fixture.child);
+    thread::sleep(Duration::from_millis(800));
+
+    let first = first_pane(fixture.home.path());
+    let moved = cli_stdout(&run_cli(fixture.home.path(), &["new"]));
+    assert_ne!(moved, first, "the new tab must be a different pane");
+    thread::sleep(Duration::from_millis(500));
+
+    let listing = control_call(&socket, serde_json::json!({ "op": "list" }));
+    let panes = listing["panes"].as_array().expect("pane list").clone();
+    let moved_row = panes
+        .iter()
+        .find(|pane| pane["pane"].as_str() == Some(moved.as_str()))
+        .expect("the new tab is not listed");
+    let fifo = moved_row["osc133_fifo"]
+        .as_str()
+        .filter(|path| !path.is_empty())
+        .expect("the new tab has no shell integration FIFO")
+        .to_string();
+
+    // The adopter holds the FIFO open before the source lets go, or the shell
+    // dies of SIGPIPE at its next prompt.
+    let reader = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&fifo)
+        .expect("open the OSC 133 FIFO");
+
+    let reply = control_call(
+        &socket,
+        serde_json::json!({ "op": "handover", "pane": moved }),
+    );
+    assert_eq!(reply["ok"], true, "handover failed: {reply}");
+    // The source answers before it closes the tab (closing the last window ends
+    // the process), so give the deferred close a moment to run.
+    thread::sleep(Duration::from_millis(400));
+
+    let listing = control_call(&socket, serde_json::json!({ "op": "list" }));
+    let panes = listing["panes"].as_array().expect("pane list");
+    assert!(
+        panes
+            .iter()
+            .all(|pane| pane["pane"].as_str() != Some(moved.as_str())),
+        "the moved tab is still open: {listing}"
+    );
+    assert!(
+        panes
+            .iter()
+            .any(|pane| pane["pane"].as_str() == Some(first.as_str())),
+        "the source window lost its other tab: {listing}"
+    );
+
+    // The broker must still be running the shell: `--list` reads the brokers.
+    let sessions = cli_stdout(&run_cli(fixture.home.path(), &["--list"]));
+    let row = sessions
+        .lines()
+        .find(|line| line.starts_with(&format!("{moved}\t")));
+    let row = row.unwrap_or_else(|| panic!("the moved session is gone: {sessions}"));
+    assert!(
+        row.contains("\tlocal-off\t"),
+        "the moved session should no longer be attached to the source window: {row}"
+    );
+    drop(reader);
+}
+
+fn control_call(socket: &Path, request: serde_json::Value) -> serde_json::Value {
+    use std::os::unix::net::UnixStream;
+    let mut stream = UnixStream::connect(socket).expect("connect to the control socket");
+    oxterm::headless::framing::write_json(&mut stream, &request, 1 << 20).expect("write request");
+    oxterm::headless::framing::read_json(&mut stream, 1 << 20).expect("read reply")
+}

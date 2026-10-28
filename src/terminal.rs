@@ -615,6 +615,12 @@ mod imp {
         pub cmd_bar_visible: RefCell<bool>,
 
         pub interactive_shell: RefCell<bool>,
+        /// Set while this terminal is being moved to another Oxterm window:
+        /// the broker and the OSC 133 FIFO outlive this tab.
+        pub handed_over: Cell<bool>,
+        /// Set on the tab that adopted a session from another window: closing
+        /// it ends the session, as closing any other tab does.
+        pub adopted: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -664,7 +670,10 @@ impl TerminalBox {
             .and_then(|w| w.upgrade())
     }
 
-    fn call_window<R>(&self, f: impl FnOnce(&dyn crate::window::TerminalWindow) -> R) -> Option<R> {
+    pub(crate) fn call_window<R>(
+        &self,
+        f: impl FnOnce(&dyn crate::window::TerminalWindow) -> R,
+    ) -> Option<R> {
         let win = self.window()?;
         if let Ok(mw) = win.clone().downcast::<crate::window::MainWindow>() {
             return Some(f(&mw));
@@ -871,15 +880,10 @@ impl TerminalBox {
         // both exist. Doing this before the strip was created left it hidden.
         self.apply_scrollbar_position();
 
-        // VTE signals
-        {
-            let weak = crate::SendWeak::new(self);
-            vte.connect_child_exited(move |_t, status| {
-                if let Some(t) = weak.upgrade() {
-                    t.on_child_exited(status);
-                }
-            });
-        }
+        // VTE signals. `child-exited` is not among them: VTE signals the child
+        // it watched when its widget is disposed, which would kill a session
+        // that `Tabs > Move Tab from Another Oxterm` just adopted. The child is
+        // reaped by the watch installed in `launch`.
         {
             let weak = crate::SendWeak::new(self);
             vte.connect_selection_changed(move |t| {
@@ -1320,7 +1324,16 @@ impl TerminalBox {
                     *self.imp().pty_fd.borrow_mut() = pty.fd();
                 }
                 self.watch_osc133_fifo();
-                vte.watch_child(glib::Pid(pid));
+                // Reap the child ourselves instead of handing the pid to VTE.
+                // VTE signals the child it watched when its terminal widget is
+                // disposed, which would kill a session that a handover just
+                // moved to another window.
+                let weak = crate::SendWeak::new(self);
+                glib::child_watch_add_local(glib::Pid(pid), move |_pid, status| {
+                    if let Some(t) = weak.upgrade() {
+                        t.on_child_exited(status);
+                    }
+                });
             }
             Err(e) => {
                 self.cleanup_shell_integration();
@@ -1466,6 +1479,65 @@ impl TerminalBox {
         }
     }
 
+    /// Path of the FIFO the shell integration writes to, when this terminal
+    /// still owns one.
+    pub fn osc133_fifo(&self) -> Option<String> {
+        let fifo = self.imp().osc133_fifo_path.borrow().clone();
+        (!fifo.is_empty()).then_some(fifo)
+    }
+
+    /// Release this terminal so another Oxterm window can adopt its session.
+    ///
+    /// Turns off the local view so the broker keeps the shell alive, and stops
+    /// reading the OSC 133 FIFO without closing it. The destination already
+    /// holds the same FIFO open, so the shell never writes with no reader and
+    /// does not die of SIGPIPE at its next prompt.
+    pub fn prepare_handover(&self) {
+        if let Some(handle) = self.imp().remote_handle.borrow().as_ref() {
+            handle.local_off();
+        }
+        if let Some(source) = self.imp().osc133_source_id.borrow_mut().take() {
+            source.remove();
+        }
+        self.imp().handed_over.set(true);
+    }
+
+    /// Open the OSC 133 FIFO of another window's session for reading, before
+    /// asking it to hand over. Holding the fd on this side is what keeps the
+    /// shell alive while the source closes its own reader.
+    pub fn open_osc133_fifo(path: &str) -> Option<RawFd> {
+        let cpath = std::ffi::CString::new(path).ok()?;
+        let fd = unsafe {
+            // O_RDWR keeps a writer on the FIFO too, so writes that land
+            // between the handover steps do not see EPIPE.
+            libc::open(
+                cpath.as_ptr(),
+                libc::O_RDWR | libc::O_NONBLOCK | libc::O_CLOEXEC,
+            )
+        };
+        (fd >= 0).then_some(fd)
+    }
+
+    /// Take over an fd from [`open_osc133_fifo`] for a session that was just
+    /// moved from another Oxterm window.
+    pub fn adopt_osc133_fifo(&self, path: &str, fd: RawFd) {
+        if fd < 0 {
+            return;
+        }
+        *self.imp().osc133_rfd.borrow_mut() = fd;
+        *self.imp().osc133_fifo_path.borrow_mut() = path.to_string();
+        // The adopted tab is a relay, but from the chrome's point of view it is
+        // a shell with integration: keep the gutter and record history.
+        self.imp().adopted.set(true);
+        // The FIFO must be read even when the setting is off, or the shell
+        // blocks on a full pipe; only the chrome respects the setting.
+        let integrated = settings().get_bool("osc133");
+        *self.imp().interactive_shell.borrow_mut() = integrated;
+        *self.imp().osc133_integration_active.borrow_mut() = integrated;
+        self.set_osc133_gutter_visible(integrated);
+        self.watch_osc133_fifo();
+    }
+
     fn close_osc133_fifo(&self) {
         if let Some(source) = self.imp().osc133_source_id.borrow_mut().take() {
             source.remove();
@@ -1476,7 +1548,13 @@ impl TerminalBox {
         }
         let fifo = self.imp().osc133_fifo_path.borrow().clone();
         if !fifo.is_empty() {
-            let _ = std::fs::remove_file(&fifo);
+            if self.imp().handed_over.get() {
+                // Another window now reads this FIFO; deleting it would silent
+                // the shell integration of the moved tab.
+                LOGGER.warning("osc133_fifo_preserved_for_handover");
+            } else {
+                let _ = std::fs::remove_file(&fifo);
+            }
             *self.imp().osc133_fifo_path.borrow_mut() = String::new();
         }
     }
@@ -1638,10 +1716,17 @@ impl TerminalBox {
             // or taken over elsewhere with `oxterm -M`. Its broker owns the
             // shell now, so closing this window must leave it running instead
             // of killing a session that is still in use in another terminal.
-            if handle.local_is_on() {
-                handle.kill();
-            } else {
+            // A handover is the same thing without the broker round trip, so it
+            // does not depend on the query below succeeding. An adopted tab has
+            // no other viewer, so closing it ends the session like any tab;
+            // leaving it behind would strand it without a reader for its
+            // OSC 133 FIFO.
+            let preserve = self.imp().handed_over.get()
+                || (!self.imp().adopted.get() && !handle.local_is_on());
+            if preserve {
                 LOGGER.warning("terminal_close_preserves_detached_session");
+            } else {
+                handle.kill();
             }
         } else {
             let pid = *self.imp().pid.borrow();
@@ -2787,6 +2872,11 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
     }
 
     fn on_child_exited(&self, status: i32) {
+        LOGGER.info(&format!(
+            "terminal_child_exited status={} ({})",
+            status,
+            child_status_message(status)
+        ));
         *self.imp().pid.borrow_mut() = -1;
         self.close_osc133_fifo();
         self.cleanup_shell_integration();

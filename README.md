@@ -27,7 +27,9 @@ memory footprint and the memory-safety guarantees of Rust.
 ## Highlights
 
 - Native GTK3/VTE terminal with 256 colors and true-color support
-- Tabs with reorder, rename, move, detach, and independent windows
+- Tabs with reorder, rename, move, detach, independent windows, and a
+  **Tabs > Move Tab from Another Oxterm…** command that adopts a running tab
+  from another Oxterm window and closes it there
 - tmux-like single, vertical, and horizontal split layouts, with a configurable prefix key (`Ctrl+B` by default)
 - 247 built-in themes, optional drop-in Ghostty/iTerm2 theme files, automatic light/dark switching, configurable font, colors, 16-color palettes, cursor, opacity, padding, and encoding
 - Typography controls: antialiasing and hinting, cell height and width scaling, optional HarfBuzz shaping, and ligature-friendly fonts

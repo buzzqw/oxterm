@@ -86,6 +86,30 @@ The rules the parser implements, each covered by a unit test in
 `tests/osc133_conformance.rs` checks these numbers against the constants, so
 editing one without the other fails `cargo test`.
 
+### Handover between Oxterm windows
+
+**Tabs > Move Tab from Another Oxterm…** transfers a session, and its FIFO with
+it. The order matters and is easy to get wrong:
+
+1. the adopting window opens the source's FIFO (`pane_info` exposes the path),
+2. only then does it ask the source to let go,
+3. the source stops its watch, turns off the local view, closes its end and
+   closes the tab; the FIFO file is preserved,
+4. the adopting tab installs the fd it already holds and reads the events that
+   queued in between.
+
+A shell whose last reader disappears dies of SIGPIPE at its next prompt (exit
+status 141), so opening the FIFO after the handover would kill the session the
+move is supposed to save. For the milliseconds between steps 1 and 3 both ends
+are readers, so an event produced exactly then can be consumed by the window
+that is going away; at worst one command-block boundary is missed. The adopted
+tab runs `oxterm -a <session>` as a relay: it is a broker client, not a local
+shell, and closing it ends the session.
+
+Destroying the source tab must not signal the child either: VTE signals the
+child it watched when its widget is disposed, so Oxterm reaps children with its
+own child watch instead of `vte_terminal_watch_child`.
+
 ### Behaviour that differs from a generic OSC 133 consumer
 
 - **No `B` event.** The integration reports no command-output start, so a block
@@ -147,6 +171,10 @@ divergence without one.
   The integration sends `A` when it loads and again from the first `precmd`,
   which used to make prompt navigation stop twice on one line. Covered by
   `repeated_prompt_markers_on_one_row_are_collapsed`.
+- ✔ **Moving a tab keeps its shell integration.** The adopting window holds
+  the source FIFO across the handover and the moved shell keeps delivering
+  events. Covered by `handover_keeps_the_moved_session_alive` (GUI suite) and
+  the broker move/attach tests.
 - ✔ **OSC 7 is decoded and shown, but never trusted.** The tab tooltip and the
   status bar show the shell-reported directory; history, notes and spawn keep
   using `/proc`. Covered by the `file_uri` unit tests (host, scheme, escapes,
