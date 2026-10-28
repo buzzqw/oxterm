@@ -591,7 +591,8 @@ cargo run --bin oxterm-docgen -- --check   # what CI runs
 
 Two dependency-free benchmarks guard the "lightweight and fast" promise. The
 core benchmark measures the hot headless paths; the startup benchmark measures
-the real binary, including GUI readiness, tab creation and RSS.
+the real binary, including GUI readiness, tab creation and RSS. A third script
+compares Oxterm head to head with another terminal (Ghostty by default).
 
 ```bash
 cargo run --release --example bench-core
@@ -622,6 +623,38 @@ past a tolerance (`BENCH_TOLERANCE`, default 4x for startup and 5x for the
 core; CI uses 6x for startup). The limits are deliberately generous: they catch
 algorithmic and packaging regressions, not run-to-run noise. Regenerate a
 baseline only when a change is understood and intended.
+
+#### Head to head with Ghostty
+
+`scripts/bench-compare.sh` launches Oxterm and Ghostty on the same display with
+an isolated `HOME`, so both see their default configuration, and reports the
+minimum of several runs:
+
+```bash
+sudo pacman -S ghostty xdotool              # Ghostty is the default opponent
+./scripts/bench-compare.sh --table          # Markdown table
+./scripts/bench-compare.sh --check          # regression guard per terminal
+GHOSTTY_BIN=/path/to/other-terminal ./scripts/bench-compare.sh
+```
+
+| Measurement | Oxterm reference |
+| --- | --- |
+| Spawn to first visible window | ~330 ms |
+| Spawn to the command inside the terminal | ~250 ms |
+| Drain 40 000 ANSI-coloured lines (3.5 MB) | ~60-80 ms |
+| Total tree RSS when idle (terminal + broker + shell) | ~108 MB |
+| Peak tree RSS under the payload | ~111 MB |
+
+The window metrics need X11 and `xdotool`; Wayland-only sessions are not
+supported yet (run the script under `xvfb-run` in CI). `BENCH_GHOSTTY_ARGS`
+passes extra flags to the opponent.
+
+Read the numbers with one caveat in mind: Oxterm is a GTK3 frontend and
+delegates the parser, the grid and the drawing to VTE, while Ghostty ships its
+own Zig core with a GPU renderer. The comparison is therefore a fair
+end-to-end verdict on the product, but it measures VTE+GTK against Ghostty —
+not Oxterm's own code. Tree RSS also counts the PTY broker and the shell, which
+is why it is larger than the single-process figure reported above.
 
 The GitHub Actions workflows run the same checks, the documentation check, the
 GUI tests under Xvfb and both benchmarks, and build an x86_64 release artifact
