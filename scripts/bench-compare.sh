@@ -546,12 +546,16 @@ case "${MODE}" in
                     printf 'skip %s (no baseline or not measured)\n' "${key}"
                     continue
                 fi
+                # CPU values carry one decimal, so compare with awk instead of
+                # shell arithmetic (which only handles integers).
                 if [[ "${suffix}" == *rss* ]]; then
-                    limit=$(( base * 3 + 65536 ))
+                    limit="$(awk -v base="${base}" 'BEGIN { printf "%d", base * 3 + 65536 }')"
                 else
-                    limit=$(( base * TOLERANCE + 50 ))
+                    limit="$(awk -v base="${base}" -v tol="${TOLERANCE}" \
+                        'BEGIN { printf "%.1f", base * tol + 50 }')"
                 fi
-                if (( measured > limit )); then
+                if awk -v measured="${measured}" -v limit="${limit}" \
+                    'BEGIN { exit !(measured > limit) }'; then
                     printf 'REGRESSION %s: %s > %s (baseline %s)\n' \
                         "${key}" "${measured}" "${limit}" "${base}"
                     failed=1
