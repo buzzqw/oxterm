@@ -16,6 +16,13 @@ never written back to disk.
 | --- | --- | --- | --- |
 | `font_name` | string | `Monospace` | Font family used by new terminals. |
 | `font_size` | int (4..128) | `12` | Font size in points. |
+| `font_rendering` | string | `system` | Text antialiasing: system, grayscale, subpixel or none. |
+|  |  | Values: `system`, `grayscale`, `subpixel`, `none` |  |
+| `font_hinting` | string | `system` | Font hinting strength: system, none, slight, medium or full. |
+|  |  | Values: `system`, `none`, `slight`, `medium`, `full` |  |
+| `cell_height_scale` | float (0.8..2) | `1.0` | Vertical cell size multiplier; above 1.0 adds air between the lines. |
+| `cell_width_scale` | float (0.8..2) | `1.0` | Horizontal cell size multiplier; above 1.0 adds letter spacing. |
+| `text_shaping` | bool | `true` | Shape text with HarfBuzz; disabling it is faster for plain ASCII output. |
 | `color_scheme` | string | `Dark (Default)` | Built-in color scheme; see --list-themes. |
 | `auto_theme` | bool | `false` | Follow the desktop's light/dark preference, using theme_light or theme_dark. |
 | `theme_light` | string | `Light` | Theme used when the desktop prefers a light appearance. |
@@ -31,7 +38,7 @@ never written back to disk.
 | `scrollbar_position` | string | `right` | Where to show the scrollbar. |
 |  |  | Values: `right`, `left`, `disabled` |  |
 | `opacity` | float (0.1..1) | `1.0` | Window opacity when transparency is enabled. |
-| `shell_command` | string | `/bin/bash` | Shell started in new terminals. |
+| `shell_command` | string | `/usr/bin/bash` | Shell started in new terminals. |
 | `notes_file` | string | `""` | Markdown file used by the notes commands; empty uses notes_dir. |
 | `notes_dir` | string | `""` | Directory for Markdown notes; empty uses the data directory. |
 | `notes_record_context` | bool | `true` | Record the command context next to new notes. |

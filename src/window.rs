@@ -344,7 +344,7 @@ mod det_imp {
         pub encoding_actions: RefCell<Vec<(gtk::CheckMenuItem, String)>>,
         /// (columns, rows, font size) last used to size the window; settings
         /// changes only resize when one of these actually changes.
-        pub applied_size_key: Cell<Option<(i64, i64, i64)>>,
+        pub applied_size_key: Cell<Option<WindowSizeKey>>,
     }
 
     #[glib::object_subclass]
@@ -1547,7 +1547,7 @@ mod main_imp {
         pub last_saved_session: RefCell<Option<crate::session::SessionData>>,
         /// (columns, rows, font size) last used to size the window; settings
         /// changes only resize when one of these actually changes.
-        pub applied_size_key: Cell<Option<(i64, i64, i64)>>,
+        pub applied_size_key: Cell<Option<WindowSizeKey>>,
     }
 
     #[glib::object_subclass]
@@ -1677,7 +1677,11 @@ impl MainWindow {
             )
         });
         let font_size = s.get_i64("font_size");
-        let (w, h) = window_size_for((cols as i64, rows as i64, font_size));
+        let (w, h) = window_size_for(window_size_key_with(
+            cols as i64,
+            rows as i64,
+            font_size,
+        ));
         self.set_default_size(w, h);
         // The initial size (possibly from --geometry) is already applied;
         // don't snap back to the configured size on the next settings change.
@@ -5112,21 +5116,40 @@ fn escape_markup(text: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Settings that determine the default window size.
-fn window_size_key() -> (i64, i64, i64) {
+/// Everything that determines the default window size: columns, rows, font
+/// size and the two cell scale percentages.
+type WindowSizeKey = (i64, i64, i64, i64, i64);
+
+fn window_size_key_with(cols: i64, rows: i64, font_size: i64) -> WindowSizeKey {
     let s = settings();
     (
+        cols,
+        rows,
+        font_size,
+        (s.get_f64("cell_width_scale") * 100.0).round() as i64,
+        (s.get_f64("cell_height_scale") * 100.0).round() as i64,
+    )
+}
+
+/// Settings that determine the default window size.
+fn window_size_key() -> WindowSizeKey {
+    let s = settings();
+    window_size_key_with(
         s.get_i64("terminal_columns"),
         s.get_i64("terminal_rows"),
         s.get_i64("font_size"),
     )
 }
 
-/// Approximate window size in pixels for (columns, rows, font size).
-fn window_size_for((cols, rows, font_size): (i64, i64, i64)) -> (i32, i32) {
+/// Approximate window size in pixels for a [`WindowSizeKey`]. The cell scales
+/// grow the window instead of shrinking the grid, so a scaled terminal keeps
+/// the configured rows and columns fully visible.
+fn window_size_for((cols, rows, font_size, width_pct, height_pct): WindowSizeKey) -> (i32, i32) {
     let cw = (font_size as i32 * 6 / 10).max(5);
     let ch = (font_size as i32 * 145 / 100).max(10);
-    (cols as i32 * cw + 60, rows as i32 * ch + 120)
+    let width = cols as i32 * cw * width_pct as i32 / 100 + 60;
+    let height = rows as i32 * ch * height_pct as i32 / 100 + 120;
+    (width, height)
 }
 
 /// Open a new main window inside the current process.
@@ -5228,8 +5251,33 @@ pub mod test_scenario {
             "split-zoom" => split_zoom(win),
             "theme-switch" => theme_switch(win),
             "tab-failure" => tab_failure(win),
+            "preferences" => preferences(win),
             other => Err(format!("unknown test scenario: {other}")),
         }
+    }
+
+    /// Building the preferences dialog exercises every page, which is where a
+    /// settings widget with a bad type or a missing row would panic. Close it
+    /// from a timeout so the modal `run()` loop returns.
+    fn preferences(win: &MainWindow) -> Result<(), String> {
+        glib::timeout_add_local(Duration::from_millis(600), move || {
+            // The dialog is not in `app.windows()`: GtkDialog toplevels are
+            // only registered with the application when added explicitly.
+            for window in gtk::Window::list_toplevels() {
+                if let Ok(dialog) = window.downcast::<gtk::Dialog>() {
+                    if dialog
+                        .title()
+                        .map(|title| title.starts_with("Preferences"))
+                        .unwrap_or(false)
+                    {
+                        dialog.response(gtk::ResponseType::Close);
+                    }
+                }
+            }
+            glib::ControlFlow::Break
+        });
+        win.open_settings();
+        Ok(())
     }
 
     fn notebook(win: &MainWindow, right: bool) -> Result<gtk::Notebook, String> {

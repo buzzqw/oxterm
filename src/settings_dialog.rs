@@ -89,6 +89,21 @@ const CURSOR_SHAPE: Choices = &[
     ("ibeam", "I-beam"),
 ];
 
+const FONT_RENDERING: Choices = &[
+    ("system", "System default"),
+    ("grayscale", "Grayscale"),
+    ("subpixel", "Subpixel (LCD)"),
+    ("none", "None"),
+];
+
+const FONT_HINTING: Choices = &[
+    ("system", "System default"),
+    ("none", "None"),
+    ("slight", "Slight"),
+    ("medium", "Medium"),
+    ("full", "Full"),
+];
+
 const UNDERLINE_STYLE: Choices = &[
     ("single", "Single"),
     ("double", "Double"),
@@ -132,6 +147,13 @@ fn index_of(choices: Choices, value: &str) -> u32 {
         .iter()
         .position(|(stored, _)| *stored == value)
         .unwrap_or(0) as u32
+}
+
+fn scale_spin(value: f64) -> gtk::SpinButton {
+    let spin = gtk::SpinButton::with_range(0.8, 2.0, 0.05);
+    spin.set_digits(2);
+    spin.set_value(value);
+    spin
 }
 
 fn combo_for(choices: Choices, current: &str) -> gtk::ComboBoxText {
@@ -902,6 +924,11 @@ fn build_notifications(
 struct AppearancePage {
     font: gtk::FontButton,
     bold: gtk::CheckButton,
+    font_rendering: gtk::ComboBoxText,
+    font_hinting: gtk::ComboBoxText,
+    cell_height: gtk::SpinButton,
+    cell_width: gtk::SpinButton,
+    text_shaping: gtk::CheckButton,
     scheme: gtk::ComboBoxText,
     auto_theme: gtk::CheckButton,
     light_theme: gtk::ComboBoxText,
@@ -961,6 +988,41 @@ fn build_appearance(
         "Render bold text with a heavier weight. Disable for uniform text.",
     ));
     page.row_keyed("Allow bold text", &bold, Some("allow_bold_text"));
+
+    let font_rendering = combo_for(
+        FONT_RENDERING,
+        &s.get_str_default("font_rendering", "system"),
+    );
+    font_rendering.set_tooltip_text(Some(
+        "Antialiasing for glyphs. Subpixel is sharpest on an RGB-ordered LCD panel.",
+    ));
+    page.row_keyed("Antialiasing", &font_rendering, Some("font_rendering"));
+
+    let font_hinting = combo_for(FONT_HINTING, &s.get_str_default("font_hinting", "system"));
+    font_hinting.set_tooltip_text(Some(
+        "How strongly glyphs snap to the pixel grid. Slight or none looks smoother at large sizes.",
+    ));
+    page.row_keyed("Hinting", &font_hinting, Some("font_hinting"));
+
+    let cell_height = scale_spin(s.get_f64("cell_height_scale"));
+    cell_height.set_tooltip_text(Some(
+        "Vertical cell size multiplier; above 1.0 adds air between the lines.",
+    ));
+    page.row_keyed("Line spacing", &cell_height, Some("cell_height_scale"));
+
+    let cell_width = scale_spin(s.get_f64("cell_width_scale"));
+    cell_width.set_tooltip_text(Some(
+        "Horizontal cell size multiplier; above 1.0 adds letter spacing.",
+    ));
+    page.row_keyed("Letter spacing", &cell_width, Some("cell_width_scale"));
+
+    let text_shaping = gtk::CheckButton::new();
+    text_shaping.set_active(s.get_bool("text_shaping"));
+    text_shaping.set_tooltip_text(Some(
+        "Shape text with HarfBuzz and enable ligatures. Disable it for a faster grid \
+         when only ASCII output is used.",
+    ));
+    page.row_keyed("Text shaping", &text_shaping, Some("text_shaping"));
 
     page.section("Theme");
     let scheme = gtk::ComboBoxText::new();
@@ -1137,6 +1199,11 @@ fn build_appearance(
     let state = AppearancePage {
         font,
         bold,
+        font_rendering,
+        font_hinting,
+        cell_height,
+        cell_width,
+        text_shaping,
         scheme,
         auto_theme,
         light_theme,
@@ -1982,6 +2049,23 @@ impl DialogState {
             s.set_i64("font_size", size);
         }
         s.set_bool("allow_bold_text", self.appearance.bold.is_active());
+        s.set_str(
+            "font_rendering",
+            &combo_value(&self.appearance.font_rendering, FONT_RENDERING, "system"),
+        );
+        s.set_str(
+            "font_hinting",
+            &combo_value(&self.appearance.font_hinting, FONT_HINTING, "system"),
+        );
+        let _ = s.set(
+            "cell_height_scale",
+            serde_json::json!(self.appearance.cell_height.value()),
+        );
+        let _ = s.set(
+            "cell_width_scale",
+            serde_json::json!(self.appearance.cell_width.value()),
+        );
+        s.set_bool("text_shaping", self.appearance.text_shaping.is_active());
 
         if let Some(name) = self.appearance.scheme.active_text() {
             s.set_str("color_scheme", &name);
@@ -2214,6 +2298,23 @@ impl DialogState {
         self.appearance
             .bold
             .set_active(default_bool("allow_bold_text"));
+        self.appearance.font_rendering.set_active(Some(index_of(
+            FONT_RENDERING,
+            &default_str("font_rendering"),
+        )));
+        self.appearance.font_hinting.set_active(Some(index_of(
+            FONT_HINTING,
+            &default_str("font_hinting"),
+        )));
+        self.appearance
+            .cell_height
+            .set_value(default_f64("cell_height_scale"));
+        self.appearance
+            .cell_width
+            .set_value(default_f64("cell_width_scale"));
+        self.appearance
+            .text_shaping
+            .set_active(default_bool("text_shaping"));
         let default_scheme = default_str("color_scheme");
         let scheme_names: Vec<String> = settings::color_schemes().keys().cloned().collect();
         self.appearance.scheme.set_active(Some(

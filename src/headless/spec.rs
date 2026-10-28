@@ -521,6 +521,38 @@ pub const SETTINGS: &[Setting] = &[
         "Font size in points.",
     ),
     Setting {
+        key: "font_rendering",
+        kind: Kind::Text,
+        default: Default::Text("system"),
+        description: "Text antialiasing: system, grayscale, subpixel or none.",
+        choices: &["system", "grayscale", "subpixel", "none"],
+    },
+    Setting {
+        key: "font_hinting",
+        kind: Kind::Text,
+        default: Default::Text("system"),
+        description: "Font hinting strength: system, none, slight, medium or full.",
+        choices: &["system", "none", "slight", "medium", "full"],
+    },
+    setting(
+        "cell_height_scale",
+        Kind::UnitFloat { min: 0.8, max: 2.0 },
+        Default::Float(1.0),
+        "Vertical cell size multiplier; above 1.0 adds air between the lines.",
+    ),
+    setting(
+        "cell_width_scale",
+        Kind::UnitFloat { min: 0.8, max: 2.0 },
+        Default::Float(1.0),
+        "Horizontal cell size multiplier; above 1.0 adds letter spacing.",
+    ),
+    setting(
+        "text_shaping",
+        Kind::Bool,
+        Default::Bool(true),
+        "Shape text with HarfBuzz; disabling it is faster for plain ASCII output.",
+    ),
+    Setting {
         key: "color_scheme",
         kind: Kind::Text,
         default: Default::Text("Dark (Default)"),

@@ -244,6 +244,57 @@ fn set_gui_slave_raw(fd: RawFd) -> Result<(), String> {
     Ok(())
 }
 
+// Apply `font_rendering` and `font_hinting` to a terminal.
+//
+// VTE smooths text through `vte_terminal_set_font_options()`, which the safe
+// `zoha-vte` wrapper does not bind (its generated method is still a TODO) and
+// which `zoha-vte-sys` only declares behind a `v0_74` feature that does not
+// compile against cairo-rs 0.18. Declare the single symbol we need instead.
+// VTE copies the options, so the pointer only has to live for the call.
+extern "C" {
+    fn vte_terminal_set_font_options(
+        terminal: *mut std::ffi::c_void,
+        options: *const cairo::ffi::cairo_font_options_t,
+    );
+}
+
+fn apply_font_rendering(vte: &zoha_vte::Terminal, s: &settings::Settings) {
+    use glib::translate::ToGlibPtr;
+
+    let antialias = s.get_str("font_rendering");
+    let hinting = s.get_str("font_hinting");
+    let mut options: Option<cairo::FontOptions> = None;
+    if antialias != "system" || hinting != "system" {
+        let Ok(mut built) = cairo::FontOptions::new() else {
+            LOGGER.error("font_options_failed error=cairo");
+            return;
+        };
+        match antialias.as_str() {
+            "none" => built.set_antialias(cairo::Antialias::None),
+            "grayscale" => built.set_antialias(cairo::Antialias::Gray),
+            "subpixel" => built.set_antialias(cairo::Antialias::Subpixel),
+            _ => {}
+        }
+        match hinting.as_str() {
+            "none" => built.set_hint_style(cairo::HintStyle::None),
+            "slight" => built.set_hint_style(cairo::HintStyle::Slight),
+            "medium" => built.set_hint_style(cairo::HintStyle::Medium),
+            "full" => built.set_hint_style(cairo::HintStyle::Full),
+            _ => {}
+        }
+        options = Some(built);
+    }
+    let raw = options
+        .as_ref()
+        .map(|options| options.to_raw_none())
+        .unwrap_or(std::ptr::null_mut());
+    // A NULL pointer asks VTE to fall back to the toolkit defaults.
+    let terminal: *mut zoha_vte_sys::VteTerminal = vte.to_glib_none().0;
+    unsafe {
+        vte_terminal_set_font_options(terminal.cast(), raw);
+    }
+}
+
 fn format_duration_ms(duration_ms: i64) -> String {
     if duration_ms < 1_000 {
         format!("{}ms", duration_ms)
@@ -960,7 +1011,20 @@ impl TerminalBox {
         let mut fd = pango::FontDescription::new();
         fd.set_family(&family);
         fd.set_size(size as i32 * pango::SCALE);
-        self.vte().set_font(Some(&fd));
+        let vte = self.vte();
+        vte.set_font(Some(&fd));
+        apply_font_rendering(&vte, &s);
+        // VTE re-wraps the whole buffer when a cell metric changes, so only
+        // touch the scales when the value actually differs.
+        let height = s.get_f64("cell_height_scale");
+        if (vte.cell_height_scale() - height).abs() > f64::EPSILON {
+            vte.set_cell_height_scale(height);
+        }
+        let width = s.get_f64("cell_width_scale");
+        if (vte.cell_width_scale() - width).abs() > f64::EPSILON {
+            vte.set_cell_width_scale(width);
+        }
+        vte.set_enable_shaping(s.get_bool("text_shaping"));
     }
 
     fn apply_padding(&self) {
