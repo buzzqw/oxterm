@@ -166,6 +166,9 @@ pub trait TerminalWindow {
         let _ = term;
     }
     fn set_tab_title_from_terminal(&self, term: &TerminalBox, title: &str);
+    /// The shell changed the directory it reports through OSC 7. Display-only:
+    /// the tooltip and the status bar follow it, nothing else does.
+    fn refresh_cwd_display(&self, _term: &TerminalBox) {}
     fn broadcast_feed(&self, source: &TerminalBox, data: &[u8]);
 
     // ── Notes ────────────────────────────────────────────────
@@ -335,6 +338,7 @@ mod det_imp {
         pub stats_sys_label: RefCell<Option<gtk::Label>>,
         pub stats_self_label: RefCell<Option<gtk::Label>>,
         pub stats_box: RefCell<Option<gtk::Box>>,
+        pub cwd_label: RefCell<Option<gtk::Label>>,
         pub info_bar: RefCell<Option<gtk::InfoBar>>,
         pub info_label: RefCell<Option<gtk::Label>>,
         pub stats_source_id: RefCell<Option<glib::SourceId>>,
@@ -371,6 +375,25 @@ glib::wrapper! {
 }
 
 impl DetachedWindow {
+    fn update_cwd_badge(&self, term: &TerminalBox) {
+        let Some(label) = self.imp().cwd_label.borrow().clone() else {
+            return;
+        };
+        match term.cwd_badge() {
+            Some(path) => {
+                label.set_text(&path);
+                label.show();
+            }
+            None => label.hide(),
+        }
+    }
+
+    fn refresh_active_cwd_badge(&self) {
+        if let Some(term) = self.terminal_box() {
+            self.update_cwd_badge(&term);
+        }
+    }
+
     pub fn terminal_box(&self) -> Option<TerminalBox> {
         self.imp().terminal.borrow().clone()
     }
@@ -382,6 +405,19 @@ impl DetachedWindow {
         this.apply_window_visuals();
         this.apply_window_size();
 
+        // Directory the shell reports through OSC 7 when it differs from the
+        // process directory: an SSH tab, or a shell that moved itself. Hidden
+        // when both agree, so a local tab keeps the plain stats bar.
+        let cwd_label = gtk::Label::new(None);
+        cwd_label.set_halign(gtk::Align::Start);
+        cwd_label.set_ellipsize(pango::EllipsizeMode::Start);
+        cwd_label.set_max_width_chars(48);
+        cwd_label.set_single_line_mode(true);
+        cwd_label.set_margin_end(12);
+        cwd_label.style_context().add_class("oxterm-stats-label");
+        cwd_label.set_tooltip_text(Some("Directory reported by the shell (OSC 7)"));
+        cwd_label.set_no_show_all(true);
+        cwd_label.hide();
         let stats_sys_label = gtk::Label::new(Some(""));
         stats_sys_label.set_halign(gtk::Align::Start);
         stats_sys_label
@@ -393,12 +429,14 @@ impl DetachedWindow {
             .style_context()
             .add_class("oxterm-stats-label");
         let stats_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        stats_box.pack_start(&cwd_label, false, false, 0);
         stats_box.pack_start(&stats_sys_label, true, true, 0);
         stats_box.pack_end(&stats_self_label, false, false, 0);
         stats_box.set_no_show_all(true);
         *this.imp().stats_sys_label.borrow_mut() = Some(stats_sys_label);
         *this.imp().stats_self_label.borrow_mut() = Some(stats_self_label);
         *this.imp().stats_box.borrow_mut() = Some(stats_box.clone());
+        *this.imp().cwd_label.borrow_mut() = Some(cwd_label);
 
         let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let (info_bar, info_label) = build_info_bar();
@@ -1287,6 +1325,7 @@ impl DetachedWindow {
             l.set_visible(visible);
         }
         if visible {
+            self.refresh_active_cwd_badge();
             self.start_stats_timer();
         } else {
             self.stop_stats_timer();
@@ -1329,6 +1368,9 @@ impl DetachedWindow {
         let Some(term) = self.imp().terminal.borrow().clone() else {
             return;
         };
+        // Focus can move between split panes without a tab switch; the badge
+        // follows the active terminal on every stats tick as well.
+        self.update_cwd_badge(&term);
         if term.is_ssh_client() {
             if let Some(label) = self.imp().stats_sys_label.borrow().clone() {
                 label.set_text(&crate::system_stats::ssh_placeholder());
@@ -1443,6 +1485,9 @@ impl TerminalWindow for DetachedWindow {
     fn set_tab_title_from_terminal(&self, _term: &TerminalBox, title: &str) {
         self.update_title(&format!("{} - {}", APP_NAME, title));
     }
+    fn refresh_cwd_display(&self, _term: &TerminalBox) {
+        self.refresh_active_cwd_badge();
+    }
     fn broadcast_feed(&self, _source: &TerminalBox, _data: &[u8]) {}
 
     fn note_feedback(&self, message: &str, is_error: bool) {
@@ -1495,6 +1540,7 @@ mod main_imp {
         pub stats_sys_label: RefCell<Option<gtk::Label>>,
         pub stats_self_label: RefCell<Option<gtk::Label>>,
         pub stats_box: RefCell<Option<gtk::Box>>,
+        pub cwd_label: RefCell<Option<gtk::Label>>,
         pub info_bar: RefCell<Option<gtk::InfoBar>>,
         pub info_label: RefCell<Option<gtk::Label>>,
         pub notes_panel: RefCell<Option<crate::notes_panel::NotesPanel>>,
@@ -1748,6 +1794,19 @@ impl MainWindow {
 
         self.build_headerbar();
 
+        // Directory the shell reports through OSC 7 when it differs from the
+        // process directory: an SSH tab, or a shell that moved itself. Hidden
+        // when both agree, so a local tab keeps the plain stats bar.
+        let cwd_label = gtk::Label::new(None);
+        cwd_label.set_halign(gtk::Align::Start);
+        cwd_label.set_ellipsize(pango::EllipsizeMode::Start);
+        cwd_label.set_max_width_chars(48);
+        cwd_label.set_single_line_mode(true);
+        cwd_label.set_margin_end(12);
+        cwd_label.style_context().add_class("oxterm-stats-label");
+        cwd_label.set_tooltip_text(Some("Directory reported by the shell (OSC 7)"));
+        cwd_label.set_no_show_all(true);
+        cwd_label.hide();
         let stats_sys_label = gtk::Label::new(Some(""));
         stats_sys_label.set_halign(gtk::Align::Start);
         stats_sys_label
@@ -1759,12 +1818,14 @@ impl MainWindow {
             .style_context()
             .add_class("oxterm-stats-label");
         let stats_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        stats_box.pack_start(&cwd_label, false, false, 0);
         stats_box.pack_start(&stats_sys_label, true, true, 0);
         stats_box.pack_end(&stats_self_label, false, false, 0);
         stats_box.set_no_show_all(true);
         *self.imp().stats_sys_label.borrow_mut() = Some(stats_sys_label);
         *self.imp().stats_self_label.borrow_mut() = Some(stats_self_label);
         *self.imp().stats_box.borrow_mut() = Some(stats_box.clone());
+        *self.imp().cwd_label.borrow_mut() = Some(cwd_label);
 
         let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let (info_bar, info_label) = build_info_bar();
@@ -2074,6 +2135,34 @@ impl MainWindow {
         }
     }
 
+    fn tab_tooltip(&self, title: &str, term: &TerminalBox) -> String {
+        let cwd = term.display_cwd();
+        if cwd.is_empty() {
+            title.to_string()
+        } else {
+            format!("{title}\n{cwd}")
+        }
+    }
+
+    fn update_cwd_badge(&self, term: &TerminalBox) {
+        let Some(label) = self.imp().cwd_label.borrow().clone() else {
+            return;
+        };
+        match term.cwd_badge() {
+            Some(path) => {
+                label.set_text(&path);
+                label.show();
+            }
+            None => label.hide(),
+        }
+    }
+
+    fn refresh_active_cwd_badge(&self) {
+        if let Some(term) = self.current_terminal() {
+            self.update_cwd_badge(&term);
+        }
+    }
+
     fn get_tab_text(&self, term: &TerminalBox) -> String {
         if let Some(tab) = self.imp().tab_labels.borrow().get(term) {
             return tab.label.text().to_string();
@@ -2082,9 +2171,12 @@ impl MainWindow {
     }
 
     fn set_tab_text(&self, term: &TerminalBox, text: &str) {
+        // The tooltip shows the directory the shell reports, which in an SSH
+        // tab is the remote one; the label itself stays the title.
+        let tooltip = self.tab_tooltip(text, term);
         if let Some(tab) = self.imp().tab_labels.borrow().get(term) {
             let lbl = &tab.label;
-            lbl.set_tooltip_text(Some(text));
+            lbl.set_tooltip_text(Some(&tooltip));
             lbl.set_width_chars(Self::tab_label_width(text));
             let s = settings();
             let active_color = s.get_str("tab_active_title_color");
@@ -3953,6 +4045,7 @@ impl MainWindow {
         }
         if let Ok(term) = page.clone().downcast::<TerminalBox>() {
             self.clear_tab_failure(&term);
+            self.update_cwd_badge(&term);
             let weak = crate::SendWeak::new(&term);
             glib::idle_add_local(move || {
                 if let Some(t) = weak.upgrade() {
@@ -4703,6 +4796,7 @@ impl MainWindow {
             l.set_visible(visible);
         }
         if visible {
+            self.refresh_active_cwd_badge();
             self.start_stats_timer();
         } else {
             self.stop_stats_timer();
@@ -4745,6 +4839,9 @@ impl MainWindow {
         let Some(term) = self.current_terminal() else {
             return;
         };
+        // Focus can move between split panes without a tab switch; the badge
+        // follows the active terminal on every stats tick as well.
+        self.update_cwd_badge(&term);
         if term.is_ssh_client() {
             if let Some(label) = self.imp().stats_sys_label.borrow().clone() {
                 label.set_text(&crate::system_stats::ssh_placeholder());
@@ -5056,6 +5153,17 @@ impl TerminalWindow for MainWindow {
     fn set_tab_title_from_terminal(&self, term: &TerminalBox, title: &str) {
         MainWindow::set_tab_title_from_terminal(self, term, title);
     }
+    fn refresh_cwd_display(&self, term: &TerminalBox) {
+        let title = self.get_tab_text(term);
+        let tooltip = self.tab_tooltip(&title, term);
+        if let Some(tab) = self.imp().tab_labels.borrow().get(term) {
+            tab.label.set_tooltip_text(Some(&tooltip));
+        }
+        if self.current_terminal().as_ref() == Some(term) {
+            self.update_cwd_badge(term);
+        }
+    }
+
     fn broadcast_feed(&self, source: &TerminalBox, data: &[u8]) {
         MainWindow::broadcast_feed(self, source, data);
     }

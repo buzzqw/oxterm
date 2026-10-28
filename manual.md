@@ -595,6 +595,12 @@ markers back from the screen. The wire format, the size limits, the known
 divergences and how they are tested are documented in
 [docs/compatibility.md](docs/compatibility.md).
 
+The directory the shell reports through `OSC 7` appears in the tab tooltip and,
+when it differs from the directory of the shell process, at the left of the
+status bar. It is display-only: history entries, notes and the directory for new
+tabs keep reading `/proc`, because a program can print any `OSC 7` it likes
+while `/proc` cannot lie about the process.
+
 ### SSH connections
 
 With shell integration active, `ssh` typed at the prompt goes through a small
@@ -616,9 +622,11 @@ as they are). `mosh` is left untouched: in its default mode it disables ssh
 connection sharing itself, so Oxterm only recognises mosh sessions.
 
 The status bar shows the remote host's CPU, memory, and disk usage for `ssh`,
-`autossh`, and `mosh` sessions. Oxterm reads them through a shared connection to
-that host only (for mosh, one opened by another tab); it never opens extra
-logins, so hosts without a shared connection simply show no remote statistics.
+`autossh`, and `mosh` sessions, plus the directory a shell announces with
+`OSC 7` when it differs from the local process directory. Oxterm reads the
+statistics through a shared connection to that host only (for mosh, one opened
+by another tab); it never opens extra logins, so hosts without a shared
+connection simply show no remote statistics.
 `Ctrl+B`, then `d` is passed through to the remote side for all three, so a
 remote tmux detaches instead of the local terminal.
 

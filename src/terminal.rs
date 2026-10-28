@@ -926,6 +926,16 @@ impl TerminalBox {
                 }
             });
         }
+        {
+            // OSC 7: the shell's own idea of the current directory. Display
+            // only; `get_cwd()` stays authoritative for history and spawning.
+            let weak = crate::SendWeak::new(self);
+            vte.connect_current_directory_uri_changed(move |_t| {
+                if let Some(t2) = weak.upgrade() {
+                    t2.refresh_cwd_display();
+                }
+            });
+        }
         vte.add_events(gdk::EventMask::SCROLL_MASK);
 
         let url_regex = VteRegex::for_match(
@@ -1881,6 +1891,44 @@ impl TerminalBox {
         dirs::home_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default()
+    }
+
+    /// Directory the shell reports through OSC 7, for display only.
+    ///
+    /// A program can set this at any time, so it is never used to record
+    /// history, to name a note or to choose where a tab starts. Those use
+    /// `get_cwd()`, which reads `/proc` and cannot be steered through output.
+    pub fn reported_cwd(&self) -> Option<String> {
+        // Read the property directly: this is also called while a tab is being
+        // built, before `vte()` can be unwrapped.
+        self.imp()
+            .vte
+            .borrow()
+            .as_ref()?
+            .current_directory_uri()
+            .and_then(|uri| crate::headless::file_uri::display_path(&uri))
+    }
+
+    /// Directory to show for this terminal: what the shell reports, falling
+    /// back to the process working directory when it reports nothing.
+    pub fn display_cwd(&self) -> String {
+        self.reported_cwd().unwrap_or_else(|| self.get_cwd())
+    }
+
+    /// The reported directory when it disagrees with the process directory.
+    /// That is the interesting case: an SSH tab or a shell that moved itself,
+    /// where `/proc` shows the local `ssh` client instead of the remote path.
+    pub fn cwd_badge(&self) -> Option<String> {
+        let reported = self.reported_cwd()?;
+        if reported == self.get_cwd() {
+            None
+        } else {
+            Some(reported)
+        }
+    }
+
+    fn refresh_cwd_display(&self) {
+        self.call_window(|win| win.refresh_cwd_display(self));
     }
 
     /// Text of the last command reported through OSC 133, if any.

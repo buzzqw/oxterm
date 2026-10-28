@@ -24,6 +24,7 @@ document covers:
 | Shell integration scripts and the `ssh`/`autossh` wrappers | Oxterm | `src/terminal/shell_scripts.rs`, [manual](../manual.md#shell-integration) |
 | Window and tab titles, and their precedence | Oxterm | [manual](../manual.md), `forced_title` and `tab_custom_titles` in `src/window.rs` |
 | OSC 8 hyperlinks: only `http`/`https` are opened | Oxterm | `security_tests` in `src/terminal.rs` |
+| OSC 7 (shell-reported directory), display only | Oxterm | `src/headless/file_uri.rs` |
 | URL detection and hint mode | Oxterm | `src/terminal.rs`, `src/terminal/hints.rs` |
 | Paste safety: multi-line and control-heavy pastes ask first | Oxterm | `paste_checked_text` in `src/terminal.rs` |
 | Control socket (`oxterm send`, `capture`, …) | Oxterm | `tests/control_api.rs` |
@@ -100,12 +101,16 @@ editing one without the other fails `cargo test`.
   the FIFO is the only channel Oxterm reads. A program that prints its own
   escapes, or a full-screen application that clears the screen, can make the
   terminal grid and the recorded blocks disagree. Oxterm prefers the FIFO.
-- **The current directory comes from `/proc`, not from OSC 7.** The scripts do
-  emit `OSC 7;file://<cwd>`, and VTE stores it, but `get_cwd()` reads
-  `/proc/<pid>/cwd`, which is the local shell. In an SSH tab this is the local
-  `ssh` client's directory. This is deliberate — a hostile program can set
-  OSC 7, while `/proc` cannot lie about the process — but it means OSC 7 is
-  currently written and never read.
+- **`/proc` decides where commands run; OSC 7 only describes.** The scripts
+  emit `OSC 7;file://<cwd>` and VTE stores it. `get_cwd()` still reads
+  `/proc/<pid>/cwd` for history entries, notes and the directory of a new tab,
+  because any program can print an OSC 7 it likes while `/proc` cannot lie
+  about the process. The reported URI is decoded by `src/headless/file_uri.rs`
+  and shown in the tab tooltip (and at the left of the status bar when it
+  differs from `/proc`, which is what a remote shell reports). The decoder only
+  accepts a local `file://` URI, drops query and fragment, removes control
+  characters and caps the result, so a hostile OSC 7 can at worst produce an
+  ugly tooltip.
 
 ## Not supported, and why
 
@@ -142,9 +147,14 @@ divergence without one.
   The integration sends `A` when it loads and again from the first `precmd`,
   which used to make prompt navigation stop twice on one line. Covered by
   `repeated_prompt_markers_on_one_row_are_collapsed`.
-- ⚠️ **OSC 7 is emitted but unused**, so remote tabs report the local `ssh`
-  client's directory in history entries and new tabs. A safe fix reads the URI
-  from VTE only for display, never as a spawn directory.
+- ✔ **OSC 7 is decoded and shown, but never trusted.** The tab tooltip and the
+  status bar show the shell-reported directory; history, notes and spawn keep
+  using `/proc`. Covered by the `file_uri` unit tests (host, scheme, escapes,
+  control characters, length cap).
+- ⚠️ **A remote shell without its own OSC 7 still shows the local `ssh`
+  client's directory** in history entries, because only the local integration
+  script announces the cwd. Fixing that needs the remote side to speak OSC 7,
+  which Oxterm cannot install there.
 - ☐ **Title precedence** (`--title` > user-renamed tab > OSC title) has no
   automated test; the three sources race and only `manual.md` describes them.
 - ☐ **Paste safety** is covered by unit tests for the checked text, but not by

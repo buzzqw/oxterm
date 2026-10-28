@@ -9,6 +9,7 @@
 pub mod cli;
 pub mod control_cli;
 pub mod diagnostics;
+pub mod file_uri;
 pub mod framing;
 pub mod notify;
 pub mod osc133;
