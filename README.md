@@ -785,6 +785,15 @@ accounts for roughly half of the CPU Oxterm spends draining the 8.8 MB payload
 - Lowering the broker's idle wakeup from 100 ms to 10 ms left the input round
   trip at 16.3 ms, so the broker is not where the frame of latency comes from.
 
+Two later changes were measured the same way (old and new binary, five runs,
+alternated, twice). The broker no longer polls the GUI PTY size every 100 ms:
+the GUI sends it a `SIGWINCH` when the grid changes, with a 1 s safety-net poll,
+and idle CPU of the whole tree went from 9.0 ms to about 6.3 ms over five
+seconds. Recording the replay buffer in bulk, writing straight to the GUI PTY
+when nothing is queued and building the client frame only when a client is
+attached did not move the drain CPU (326-332 ms before and after): what the
+broker spends is the two PTY writes in the kernel, not user-space copying.
+
 A `splice`-based relay is the next step if per-byte CPU ever becomes a
 priority; it is deliberately not done yet, because it complicates the remote
 client fan-out for no measured gain in wall time.
