@@ -1566,6 +1566,10 @@ mod main_imp {
         /// is not replaced by OSC titles coming from the running program.
         pub tab_custom_titles: RefCell<std::collections::HashMap<TerminalBox, String>>,
         pub tab_labels: RefCell<std::collections::HashMap<TerminalBox, TabLabel>>,
+        /// Terminal whose shell was started before the window was built. It is
+        /// already addressable through the control API and becomes a tab in
+        /// the first idle callback.
+        pub pending_terminal: RefCell<Option<TerminalBox>>,
         pub next_tab_number: RefCell<i64>,
         pub current_pages: RefCell<std::collections::HashMap<gtk::Notebook, u32>>,
         pub encoding_actions: RefCell<Vec<(gtk::CheckMenuItem, String)>>,
@@ -1797,13 +1801,11 @@ impl MainWindow {
         // of milliseconds, and the shell boots meanwhile. The terminal is only
         // attached to the notebook once the window exists, so the first frame
         // still shows it.
-        let prepared = if restore_session {
-            None
-        } else {
+        if !restore_session {
             let term = TerminalBox::new(self);
             term.launch(start_dir.as_deref(), command.as_ref());
-            Some(term)
-        };
+            *self.imp().pending_terminal.borrow_mut() = Some(term);
+        }
 
         self.build_headerbar();
 
@@ -1915,13 +1917,10 @@ impl MainWindow {
         let weak = crate::SendWeak::new(self);
         let sd = start_dir.clone();
         let cmd = command.clone();
-        // The idle source is `FnMut`, so the already started terminal is taken
-        // out of the cell on the first (and only) run.
-        let prepared = std::cell::RefCell::new(prepared);
         glib::idle_add_local(move || {
             if let Some(w) = weak.upgrade() {
                 w.fix_paned_position();
-                w.initialize_terminal(sd.as_deref(), &cmd, restore_session, prepared.take());
+                w.initialize_terminal(sd.as_deref(), &cmd, restore_session);
             }
             glib::ControlFlow::Break
         });
@@ -1945,11 +1944,11 @@ impl MainWindow {
         start_dir: Option<&str>,
         command: &Option<Vec<String>>,
         restore: bool,
-        prepared: Option<TerminalBox>,
     ) {
         if restore && self.restore_session() {
             return;
         }
+        let prepared = self.imp().pending_terminal.borrow_mut().take();
         let term = match prepared {
             Some(term) => self.attach_tab(term, None, None, None),
             None => self.add_new_tab(start_dir, None, None, None, command.as_ref()),
@@ -2094,7 +2093,15 @@ impl MainWindow {
 
     /// Every pane of this window, in both halves of a split.
     pub fn all_terminals(&self) -> Vec<TerminalBox> {
-        let mut terminals = Vec::new();
+        // A terminal whose shell was started before the window was built is
+        // already a live pane even though its tab appears in the first idle.
+        let mut terminals: Vec<TerminalBox> = self
+            .imp()
+            .pending_terminal
+            .borrow()
+            .clone()
+            .into_iter()
+            .collect();
         for notebook in [
             self.imp().notebook.borrow().clone(),
             self.imp().notebook2.borrow().clone(),
