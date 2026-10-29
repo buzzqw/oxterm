@@ -2,10 +2,10 @@
 #
 # bench-compare.sh - head-to-head benchmark of Oxterm and other terminals.
 #
-# The default opponents are Ghostty and Alacritty, whichever are installed.
-# Every terminal is launched on the same display with an isolated HOME, the
-# same font size and the same payload, so the numbers describe the products
-# rather than the local configuration.
+# The default opponents are Ghostty, Alacritty and xfce4-terminal, whichever
+# are installed. Every terminal is launched on the same display with an
+# isolated HOME, the same font size and the same payload, so the numbers
+# describe the products rather than the local configuration.
 #
 # Usage:
 #   ./scripts/bench-compare.sh                  # print key=value measurements
@@ -29,10 +29,11 @@
 # the colour handling, and the chunked one keeps bytes and glyphs constant
 # while trading large writes for one write per line.
 #
-# Caveat: Oxterm delegates parsing, grid and rendering to VTE, while Ghostty
-# and Alacritty drive their own parsers and GPU renderers. The throughput
-# numbers therefore compare VTE+GTK with their cores; they are a fair
-# end-to-end product comparison, not a measurement of Oxterm's own code alone.
+# Caveat: Oxterm and xfce4-terminal both delegate parsing, grid and rendering to
+# VTE, while Ghostty and Alacritty drive their own parsers and GPU renderers.
+# The throughput numbers therefore compare VTE+GTK (plus Oxterm's broker)
+# against their cores; they are a fair end-to-end product comparison, not a
+# measurement of Oxterm's own code alone.
 #
 # Requirements: X11 (DISPLAY set) and xdotool for the window metrics. Without
 # a display the script aborts; the GUI numbers need a real or virtual X server
@@ -42,7 +43,9 @@
 #   OXTERM_BIN          binary to measure (default: target/release/oxterm)
 #   GHOSTTY_BIN         Ghostty binary (default: ghostty from PATH)
 #   ALACRITTY_BIN       Alacritty binary (default: alacritty from PATH)
-#   BENCH_OPPONENTS     opponents to measure (default: "ghostty alacritty")
+#   XFCE4_TERMINAL_BIN  xfce4-terminal binary (default: xfce4-terminal from PATH)
+#   BENCH_OPPONENTS     opponents to measure
+#                       (default: "ghostty alacritty xfce4-terminal")
 #   BENCH_RUNS          repetitions (default: 3)
 #   BENCH_TOLERANCE     allowed multiplier over the baseline (default: 4)
 #   BENCH_BASELINE      baseline file (default: bench/compare-baseline.txt)
@@ -51,6 +54,7 @@
 #   BENCH_RESIZE_STEPS  resizes in the resize storm (default: 20)
 #   BENCH_GHOSTTY_ARGS  extra arguments for Ghostty (word-split)
 #   BENCH_ALACRITTY_ARGS extra arguments for Alacritty (word-split)
+#   BENCH_XFCE4_TERMINAL_ARGS extra arguments for xfce4-terminal (word-split)
 #   BENCH_FONT_SIZE     font size used by all terminals (default: 12)
 
 set -euo pipefail
@@ -59,7 +63,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OXTERM_BIN="${OXTERM_BIN:-${ROOT_DIR}/target/release/oxterm}"
 GHOSTTY_BIN="${GHOSTTY_BIN:-$(command -v ghostty || true)}"
 ALACRITTY_BIN="${ALACRITTY_BIN:-$(command -v alacritty || true)}"
-OPPONENTS="${BENCH_OPPONENTS:-ghostty alacritty}"
+XFCE4_TERMINAL_BIN="${XFCE4_TERMINAL_BIN:-$(command -v xfce4-terminal || true)}"
+OPPONENTS="${BENCH_OPPONENTS:-ghostty alacritty xfce4-terminal}"
 BASELINE="${BENCH_BASELINE:-${ROOT_DIR}/bench/compare-baseline.txt}"
 RUNS="${BENCH_RUNS:-3}"
 TOLERANCE="${BENCH_TOLERANCE:-4}"
@@ -241,6 +246,12 @@ if [[ -n "${BENCH_ALACRITTY_ARGS:-}" ]]; then
     ALACRITTY_EXTRA=(${BENCH_ALACRITTY_ARGS})
 fi
 
+declare -a XFCE4_EXTRA=()
+if [[ -n "${BENCH_XFCE4_TERMINAL_ARGS:-}" ]]; then
+    # shellcheck disable=SC2206
+    XFCE4_EXTRA=(${BENCH_XFCE4_TERMINAL_ARGS})
+fi
+
 # launch_term TERM CLASS HOME RUNTIME [ARGS...]
 # Sets APP_PID. The class is still set for isolation and for future Wayland
 # support, but windows are matched by _NET_WM_PID (see wait_for_window).
@@ -270,6 +281,20 @@ launch_term() {
             # is matched by _NET_WM_PID (see wait_for_window).
             cmd=("${ALACRITTY_BIN}" --class "${class}" -o "font.size=${FONT_SIZE}")
             cmd+=("${ALACRITTY_EXTRA[@]}")
+            ;;
+        xfce4-terminal)
+            # --disable-server keeps every launch in its own process, which is
+            # required for the isolated HOME and for the CPU/RSS figures.
+            # --font takes a full Pango name, hence the generic family.
+            cmd=("${XFCE4_TERMINAL_BIN}" --disable-server --class "${class}"
+                "--font=Monospace ${FONT_SIZE}")
+            cmd+=("${XFCE4_EXTRA[@]}")
+            # xfce4-terminal's -e takes one command string; -x takes the rest
+            # of the argv and is what the callers' "-e sh -c SCRIPT" means.
+            if [[ "${1:-}" == -e ]]; then
+                shift
+                cmd+=(-x)
+            fi
             ;;
     esac
     env -u OXTERM_SESSION \
@@ -602,9 +627,17 @@ for opponent in ${OPPONENTS}; do
                 printf '%s\n' "               Install it with 'sudo pacman -S alacritty' or set ALACRITTY_BIN." >&2
             fi
             ;;
+        xfce4-terminal)
+            if [[ -n "${XFCE4_TERMINAL_BIN}" && -x "${XFCE4_TERMINAL_BIN}" ]]; then
+                TERMS+=(xfce4-terminal)
+            else
+                printf '%s\n' "bench-compare: xfce4-terminal not found; skipping it." >&2
+                printf '%s\n' "               Install it with 'sudo pacman -S xfce4-terminal' or set XFCE4_TERMINAL_BIN." >&2
+            fi
+            ;;
         *)
             printf '%s\n' "bench-compare: unknown opponent: ${opponent}" >&2
-            printf '%s\n' "               supported: ghostty, alacritty (see BENCH_OPPONENTS)" >&2
+            printf '%s\n' "               supported: ghostty, alacritty, xfce4-terminal (see BENCH_OPPONENTS)" >&2
             exit 2
             ;;
     esac
