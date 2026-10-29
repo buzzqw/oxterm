@@ -80,7 +80,9 @@ Source builds need:
 - Rust stable and Cargo
 - GTK3 development files
 - VTE 2.91 development files, version 0.70 or newer (Debian 12 ships 0.70;
-  Arch, Fedora and Ubuntu 24.04 ship newer releases)
+  Arch, Fedora and Ubuntu 24.04 ship newer releases). Two settings need 0.74
+  and are ignored, with a warning, on an older VTE; see
+  [docs/compatibility.md](docs/compatibility.md#the-oldest-supported-vte-is-070).
 - `pkg-config`
 
 On Debian or Ubuntu:

@@ -54,13 +54,15 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             build-essential ca-certificates curl pkg-config \
-            libgtk-3-dev libvte-2.91-dev
+            libgtk-3-dev libvte-2.91-dev xvfb
           apt-get clean
       - uses: dtolnay/rust-toolchain@stable
       - name: Check the VTE version
         run: pkg-config --modversion vte-2.91
       - name: Build
         run: cargo build --release --locked
+      - name: Run a GUI smoke test
+        run: xvfb-run -a ./scripts/smoke-gui.sh
       - name: Check the version output
         run: |
           version="$(./target/release/oxterm --version)"

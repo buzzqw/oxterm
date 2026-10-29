@@ -16,9 +16,9 @@ never written back to disk.
 | --- | --- | --- | --- |
 | `font_name` | string | `Monospace` | Font family used by new terminals. |
 | `font_size` | int (4..128) | `12` | Font size in points. |
-| `font_rendering` | string | `system` | Text antialiasing: system, grayscale, subpixel or none. |
+| `font_rendering` | string | `system` | Text antialiasing: system, grayscale, subpixel or none (needs VTE 0.74+). |
 |  |  | Values: `system`, `grayscale`, `subpixel`, `none` |  |
-| `font_hinting` | string | `system` | Font hinting strength: system, none, slight, medium or full. |
+| `font_hinting` | string | `system` | Font hinting strength: system, none, slight, medium or full (needs VTE 0.74+). |
 |  |  | Values: `system`, `none`, `slight`, `medium`, `full` |  |
 | `cell_height_scale` | float (0.8..2) | `1.0` | Vertical cell size multiplier; above 1.0 adds air between the lines. |
 | `cell_width_scale` | float (0.8..2) | `1.0` | Horizontal cell size multiplier; above 1.0 adds letter spacing. |

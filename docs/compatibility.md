@@ -28,7 +28,7 @@ document covers:
 | URL detection and hint mode | Oxterm | `src/terminal.rs`, `src/terminal/hints.rs` |
 | Paste safety: multi-line and control-heavy pastes ask first | Oxterm | `paste_checked_text` in `src/terminal.rs` |
 | Control socket (`oxterm send`, `capture`, …) | Oxterm | `tests/control_api.rs` |
-| Everything else in the byte stream | VTE | CI builds against VTE 0.70 (Debian 12) and the current Ubuntu release |
+| Everything else in the byte stream | VTE | CI builds and smoke-tests against VTE 0.70 (Debian 12) and the current Ubuntu release |
 
 Because the parser is delegated, a sequence not mentioned here is neither
 promised nor forbidden: it follows the VTE version the system provides. When a
@@ -37,6 +37,25 @@ same machine. If it reproduces there, the cause is most likely VTE's rather
 than Oxterm's (both link the same library, though they configure it
 differently), and the fix is a VTE upgrade or an upstream report — not a patch
 in Oxterm.
+
+## The oldest supported VTE is 0.70
+
+Oxterm builds and runs against VTE 0.70, the version in Debian 12 (bookworm),
+whose support runs to 2028. The `vte-0-70` CI job builds the release binary on
+Debian 12 and then runs `scripts/smoke-gui.sh` under Xvfb, so the promise
+covers the run time and not just the link step.
+
+A setting that needs a newer VTE degrades instead of failing:
+
+| Setting | Needs | Behaviour on an older VTE |
+| --- | --- | --- |
+| `font_rendering`, `font_hinting` | VTE 0.74 (`vte_terminal_set_font_options`) | resolved with `dlsym` at start-up; when missing the value is ignored, the toolkit defaults are used, and one `font_options_unavailable` warning is logged |
+
+Nothing else in Oxterm depends on an API newer than 0.70. Do not raise the floor
+without a feature that needs it: a build that only sees a newer VTE starts using
+newer calls by accident, and the release binary then stops working on the
+oldest distribution we support.
+
 
 ## The OSC 133 FIFO protocol
 

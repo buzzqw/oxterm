@@ -536,14 +536,15 @@ pub const SETTINGS: &[Setting] = &[
         key: "font_rendering",
         kind: Kind::Text,
         default: Default::Text("system"),
-        description: "Text antialiasing: system, grayscale, subpixel or none.",
+        description: "Text antialiasing: system, grayscale, subpixel or none (needs VTE 0.74+).",
         choices: &["system", "grayscale", "subpixel", "none"],
     },
     Setting {
         key: "font_hinting",
         kind: Kind::Text,
         default: Default::Text("system"),
-        description: "Font hinting strength: system, none, slight, medium or full.",
+        description:
+            "Font hinting strength: system, none, slight, medium or full (needs VTE 0.74+).",
         choices: &["system", "none", "slight", "medium", "full"],
     },
     setting(

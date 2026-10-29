@@ -19,6 +19,19 @@ Screenshots used by the README live in `docs/screenshots/`. After a change that
 affects the UI, refresh them with `scripts/capture-screenshots.sh` (it needs
 Xvnc, xdotool, ImageMagick and xfwm4) and commit the updated PNGs.
 
+`scripts/smoke-gui.sh` is the run-time check of a release build: it starts the
+window with a throwaway `HOME`, opens a tab through the control API, types a
+command, reads the output back and shuts the window down. Run it under
+`xvfb-run` when there is no display:
+
+```bash
+cargo build --release --locked
+xvfb-run -a ./scripts/smoke-gui.sh
+```
+
+The `vte-0-70` CI job runs it on Debian 12, so anything that breaks only on the
+oldest supported VTE fails the build instead of a release.
+
 ## Source layout
 
 `src/headless/` is the display-free core: command line parsing, control-command

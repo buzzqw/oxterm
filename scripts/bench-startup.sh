@@ -37,6 +37,20 @@ fi
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/oxb.XXXXXX")"
 APP_PID=""
 
+# Never measure (or drive) the window the script was started from: inside an
+# Oxterm pane the shell integration exports OXTERM_CONTROL, and the XDG
+# directories may still point at the real profile.
+unset OXTERM_CONTROL OXTERM_PANE OXTERM_SHELL_INTEGRATION OXTERM_SSH_SHARING
+unset OXTERM_OSC133_FIFO OXTERM_OSC133_SCRIPT
+export XDG_CONFIG_HOME="${TMP_DIR}/xdg/config"
+export XDG_DATA_HOME="${TMP_DIR}/xdg/data"
+export XDG_STATE_HOME="${TMP_DIR}/xdg/state"
+export XDG_CACHE_HOME="${TMP_DIR}/xdg/cache"
+export XDG_RUNTIME_DIR="${TMP_DIR}/xdg/run"
+mkdir -p "${XDG_CONFIG_HOME}" "${XDG_DATA_HOME}" "${XDG_STATE_HOME}" \
+    "${XDG_CACHE_HOME}" "${XDG_RUNTIME_DIR}"
+chmod 700 "${XDG_RUNTIME_DIR}"
+
 cleanup() {
     if [[ -n "${APP_PID}" ]]; then
         kill "${APP_PID}" 2>/dev/null || true
@@ -69,12 +83,13 @@ rss_kb() {
 }
 
 # Wait until the window is usable, not merely until it has a socket: `--list`
-# only reports a session once the first tab and its shell exist.
+# only reports a session once the first tab and its shell exist. The session id
+# starts with the GUI process id, so only the window this script started counts.
 wait_for_ready() {
     local home="$1" deadline=$((SECONDS + 20))
     while (( SECONDS < deadline )); do
         if HOME="${home}" "${BIN}" --list 2>/dev/null \
-            | awk 'NR > 1 && NF { found = 1 } END { exit !found }'; then
+            | awk -v prefix="${APP_PID}-" 'NR > 1 && index($1, prefix) == 1 { found = 1 } END { exit !found }'; then
             return 0
         fi
         sleep 0.02
