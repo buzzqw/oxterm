@@ -23,11 +23,11 @@ const MAX_CLIENTS: usize = crate::headless::framing::MAX_BROKER_CLIENTS;
 /// broker's memory bounded while staying far above one screen's worth of
 /// output, so an idle program's last full frame is always retained.
 const MAX_REPLAY: usize = 256 * 1024;
-/// How often the broker re-reads the GUI PTY size while the local window is
-/// the active endpoint. A PTY resize does not wake any of the descriptors the
-/// broker polls, so this is the only way to notice a window resize before the
-/// next keystroke or output burst.
-const GUI_SIZE_POLL_MS: i32 = 100;
+/// Safety-net interval at which the broker re-reads the GUI PTY size while the
+/// local window is the active endpoint. A PTY resize does not wake any of the
+/// descriptors the broker polls, so the GUI sends `SIGWINCH` after a resize
+/// (`BrokerHandle::notify_resize`); this slow poll only covers a missed signal.
+const GUI_SIZE_POLL_MS: i32 = 1000;
 /// A broker must always make progress or block in `poll`. If it keeps waking
 /// up without moving a single byte, something is signalling readiness forever
 /// (a closed descriptor reporting `POLLHUP`, a failed read/write loop) and the
@@ -134,6 +134,16 @@ impl BrokerHandle {
 
     pub fn signal(&self, signal: i32) {
         let _ = control_request(&self.path, &format!("SIGNAL {} {}", self.id, signal));
+    }
+
+    /// Wake the broker so it re-reads the GUI PTY size. The broker no longer
+    /// polls for it, so the GUI calls this after the terminal is resized.
+    pub fn notify_resize(&self) {
+        if !self.exited.load(Ordering::Acquire) {
+            unsafe {
+                libc::kill(self.pid, libc::SIGWINCH);
+            }
+        }
     }
 
     pub fn kill(&self) {
@@ -1130,6 +1140,15 @@ fn run_broker(path: &Path, id: &str) -> i32 {
     let mut gui_offset = 0usize;
     let mut gui_pending = 0usize;
     let mut poll_fds = Vec::with_capacity(3);
+    // The GUI sends SIGWINCH after a resize. The handler does nothing; it only
+    // has to interrupt `poll` (no SA_RESTART) so the size is re-read.
+    extern "C" fn on_winch(_: libc::c_int) {}
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = on_winch as extern "C" fn(libc::c_int) as usize;
+        libc::sigemptyset(&mut action.sa_mask);
+        libc::sigaction(libc::SIGWINCH, &action, std::ptr::null_mut());
+    }
     set_nonblocking(CHILD_FD);
     set_nonblocking(GUI_FD);
     // A burst of output makes the allocator keep large free blocks. Once the
@@ -1843,11 +1862,16 @@ fn sync_gui_size() {
 /// Keep the most recent child output for later repaints, discarding the
 /// oldest bytes once the cap is reached.
 fn record_replay(replay: &mut VecDeque<u8>, data: &[u8]) {
-    replay.extend(data.iter().copied());
-    let excess = replay.len().saturating_sub(MAX_REPLAY);
-    for _ in 0..excess {
-        replay.pop_front();
+    if data.len() >= MAX_REPLAY {
+        replay.clear();
+        replay.extend(&data[data.len() - MAX_REPLAY..]);
+        return;
     }
+    let excess = (replay.len() + data.len()).saturating_sub(MAX_REPLAY);
+    if excess > 0 {
+        replay.drain(..excess);
+    }
+    replay.extend(data);
 }
 
 /// Build a `FRAME_OUTPUT` that repaints a client from the recorded output, or
@@ -1874,8 +1898,20 @@ fn broadcast_output(
     data: &[u8],
 ) {
     if local_on {
-        *gui_pending = gui_pending.saturating_add(data.len());
-        gui_output.push_back(data.to_vec());
+        // With nothing queued ahead of it, write straight to the GUI PTY and
+        // only copy the part it did not accept.
+        let mut rest = data;
+        if gui_output.is_empty() {
+            let written =
+                unsafe { libc::write(GUI_FD, rest.as_ptr() as *const _, rest.len()) };
+            if written > 0 {
+                rest = &rest[written as usize..];
+            }
+        }
+        if !rest.is_empty() {
+            *gui_pending = gui_pending.saturating_add(rest.len());
+            gui_output.push_back(rest.to_vec());
+        }
         while *gui_pending > MAX_PENDING {
             if let Some(old) = gui_output.pop_front() {
                 let remaining = old.len().saturating_sub(*gui_offset);
@@ -1885,6 +1921,9 @@ fn broadcast_output(
                 break;
             }
         }
+    }
+    if !clients.iter().any(|client| client.attached) {
+        return;
     }
     let mut dropped = Vec::new();
     let mut frame = Vec::with_capacity(data.len() + 1);

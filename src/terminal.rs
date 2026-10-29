@@ -729,6 +729,22 @@ impl TerminalBox {
         vte.set_scroll_on_keystroke(s.get_bool("scroll_on_keystroke"));
 
         *self.imp().vte.borrow_mut() = Some(vte.clone());
+        // The PTY broker no longer polls the window size; wake it whenever
+        // the grid changes. VTE applies the new winsize in its own
+        // size-allocate handler, which runs before this one.
+        let last_grid = std::cell::Cell::new((0i64, 0i64));
+        let weak = crate::SendWeak::new(self);
+        vte.connect_size_allocate(move |term, _| {
+            let grid = (term.column_count(), term.row_count());
+            if last_grid.replace(grid) == grid {
+                return;
+            }
+            if let Some(this) = weak.upgrade() {
+                if let Some(handle) = this.imp().remote_handle.borrow().as_ref() {
+                    handle.notify_resize();
+                }
+            }
+        });
         self.imp()
             .window
             .borrow_mut()
