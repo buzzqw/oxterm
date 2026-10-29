@@ -1792,6 +1792,19 @@ impl MainWindow {
         self.add_accel_group(&accel_group);
         *self.imp().accel_group.borrow_mut() = Some(accel_group);
 
+        // Start the shell before the rest of the window is built: creating the
+        // headerbar, the toolbar icons and realizing the widget tree costs tens
+        // of milliseconds, and the shell boots meanwhile. The terminal is only
+        // attached to the notebook once the window exists, so the first frame
+        // still shows it.
+        let prepared = if restore_session {
+            None
+        } else {
+            let term = TerminalBox::new(self);
+            term.launch(start_dir.as_deref(), command.as_ref());
+            Some(term)
+        };
+
         self.build_headerbar();
 
         // Directory the shell reports through OSC 7 when it differs from the
@@ -1902,10 +1915,13 @@ impl MainWindow {
         let weak = crate::SendWeak::new(self);
         let sd = start_dir.clone();
         let cmd = command.clone();
+        // The idle source is `FnMut`, so the already started terminal is taken
+        // out of the cell on the first (and only) run.
+        let prepared = std::cell::RefCell::new(prepared);
         glib::idle_add_local(move || {
             if let Some(w) = weak.upgrade() {
                 w.fix_paned_position();
-                w.initialize_terminal(sd.as_deref(), &cmd, restore_session);
+                w.initialize_terminal(sd.as_deref(), &cmd, restore_session, prepared.take());
             }
             glib::ControlFlow::Break
         });
@@ -1929,11 +1945,15 @@ impl MainWindow {
         start_dir: Option<&str>,
         command: &Option<Vec<String>>,
         restore: bool,
+        prepared: Option<TerminalBox>,
     ) {
         if restore && self.restore_session() {
             return;
         }
-        let term = self.add_new_tab(start_dir, None, None, None, command.as_ref());
+        let term = match prepared {
+            Some(term) => self.attach_tab(term, None, None, None),
+            None => self.add_new_tab(start_dir, None, None, None, command.as_ref()),
+        };
         if *self.imp().hold.borrow() {
             term.set_hold(true);
         }
@@ -3476,6 +3496,25 @@ impl MainWindow {
         command: Option<&Vec<String>>,
     ) -> TerminalBox {
         let term = TerminalBox::new(self);
+        // Start the shell before the tab is wired into the notebook. The
+        // bookkeeping below (page, label, tab menu, realize) costs tens of
+        // milliseconds, and the shell can boot meanwhile.
+        term.launch(cwd, command);
+        self.attach_tab(term, target_notebook, base_title, display_title)
+    }
+
+    /// Wire an already started terminal into the notebook: title, tab label,
+    /// page, tab menu and the first draw.
+    ///
+    /// Split from spawning so a shell can be started before the window is
+    /// built; `add_new_tab` is the two steps in a row.
+    fn attach_tab(
+        &self,
+        term: TerminalBox,
+        target_notebook: Option<&gtk::Notebook>,
+        base_title: Option<&str>,
+        display_title: Option<&str>,
+    ) -> TerminalBox {
         let base = if let Some(bt) = base_title {
             bt.to_string()
         } else {
@@ -3512,7 +3551,6 @@ impl MainWindow {
         nb.set_current_page(Some(idx));
         self.update_tabs_menu();
 
-        term.launch(cwd, command);
         term.set_remote_info(&base, &term.get_cwd());
         term.show_all();
         let weak = crate::SendWeak::new(&term);

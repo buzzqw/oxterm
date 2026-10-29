@@ -726,6 +726,13 @@ smoothness, frame pacing and rendering quality of the two GPU terminals, which
 is their actual strength; the next section bounds Oxterm's own input path, but
 does not compare it with them.
 
+On the spawn path Oxterm starts the shell as soon as the terminal widget exists
+and builds the window chrome afterwards, then attaches the tab to the notebook
+in the first idle callback. The shell therefore boots while the toolbar icons
+and the widget tree are realized, and the prompt is normally ready before the
+first frame is drawn; the bookkeeping after the spawn (tab label, tab menu,
+first draw) no longer delays it.
+
 The window metrics need X11 and `xdotool`; Wayland-only sessions are not
 supported yet (run the script under `xvfb-run` in CI). Windows are matched by
 `_NET_WM_PID`, because Ghostty ignores `--class` on X11. `BENCH_OPPONENTS`
