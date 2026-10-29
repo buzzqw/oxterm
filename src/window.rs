@@ -3508,11 +3508,14 @@ impl MainWindow {
         let idx = nb.append_page(&term, Some(&lbl_box));
         nb.set_tab_reorderable(&term, true);
         nb.set_show_tabs(settings().get_bool("show_tabs"));
+        // The page exists, so the pane is addressable; start the shell before
+        // realizing the notebook and rebuilding the tab menu, which costs tens
+        // of milliseconds the shell can spend booting.
+        term.launch(cwd, command);
         nb.show_all();
         nb.set_current_page(Some(idx));
         self.update_tabs_menu();
 
-        term.launch(cwd, command);
         term.set_remote_info(&base, &term.get_cwd());
         term.show_all();
         let weak = crate::SendWeak::new(&term);
