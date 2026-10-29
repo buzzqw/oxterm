@@ -1566,10 +1566,6 @@ mod main_imp {
         /// is not replaced by OSC titles coming from the running program.
         pub tab_custom_titles: RefCell<std::collections::HashMap<TerminalBox, String>>,
         pub tab_labels: RefCell<std::collections::HashMap<TerminalBox, TabLabel>>,
-        /// Terminal whose shell was started before the window was built. It is
-        /// already addressable through the control API and becomes a tab in
-        /// the first idle callback.
-        pub pending_terminal: RefCell<Option<TerminalBox>>,
         pub next_tab_number: RefCell<i64>,
         pub current_pages: RefCell<std::collections::HashMap<gtk::Notebook, u32>>,
         pub encoding_actions: RefCell<Vec<(gtk::CheckMenuItem, String)>>,
@@ -1796,17 +1792,6 @@ impl MainWindow {
         self.add_accel_group(&accel_group);
         *self.imp().accel_group.borrow_mut() = Some(accel_group);
 
-        // Start the shell before the rest of the window is built: creating the
-        // headerbar, the toolbar icons and realizing the widget tree costs tens
-        // of milliseconds, and the shell boots meanwhile. The terminal is only
-        // attached to the notebook once the window exists, so the first frame
-        // still shows it.
-        if !restore_session {
-            let term = TerminalBox::new(self);
-            term.launch(start_dir.as_deref(), command.as_ref());
-            *self.imp().pending_terminal.borrow_mut() = Some(term);
-        }
-
         self.build_headerbar();
 
         // Directory the shell reports through OSC 7 when it differs from the
@@ -1948,11 +1933,7 @@ impl MainWindow {
         if restore && self.restore_session() {
             return;
         }
-        let prepared = self.imp().pending_terminal.borrow_mut().take();
-        let term = match prepared {
-            Some(term) => self.attach_tab(term, None, None, None),
-            None => self.add_new_tab(start_dir, None, None, None, command.as_ref()),
-        };
+        let term = self.add_new_tab(start_dir, None, None, None, command.as_ref());
         if *self.imp().hold.borrow() {
             term.set_hold(true);
         }
@@ -2093,15 +2074,7 @@ impl MainWindow {
 
     /// Every pane of this window, in both halves of a split.
     pub fn all_terminals(&self) -> Vec<TerminalBox> {
-        // A terminal whose shell was started before the window was built is
-        // already a live pane even though its tab appears in the first idle.
-        let mut terminals: Vec<TerminalBox> = self
-            .imp()
-            .pending_terminal
-            .borrow()
-            .clone()
-            .into_iter()
-            .collect();
+        let mut terminals = Vec::new();
         for notebook in [
             self.imp().notebook.borrow().clone(),
             self.imp().notebook2.borrow().clone(),
@@ -3503,25 +3476,6 @@ impl MainWindow {
         command: Option<&Vec<String>>,
     ) -> TerminalBox {
         let term = TerminalBox::new(self);
-        // Start the shell before the tab is wired into the notebook. The
-        // bookkeeping below (page, label, tab menu, realize) costs tens of
-        // milliseconds, and the shell can boot meanwhile.
-        term.launch(cwd, command);
-        self.attach_tab(term, target_notebook, base_title, display_title)
-    }
-
-    /// Wire an already started terminal into the notebook: title, tab label,
-    /// page, tab menu and the first draw.
-    ///
-    /// Split from spawning so a shell can be started before the window is
-    /// built; `add_new_tab` is the two steps in a row.
-    fn attach_tab(
-        &self,
-        term: TerminalBox,
-        target_notebook: Option<&gtk::Notebook>,
-        base_title: Option<&str>,
-        display_title: Option<&str>,
-    ) -> TerminalBox {
         let base = if let Some(bt) = base_title {
             bt.to_string()
         } else {
@@ -3554,6 +3508,10 @@ impl MainWindow {
         let idx = nb.append_page(&term, Some(&lbl_box));
         nb.set_tab_reorderable(&term, true);
         nb.set_show_tabs(settings().get_bool("show_tabs"));
+        // The page exists, so the pane is addressable; start the shell before
+        // realizing the notebook and rebuilding the tab menu, which costs tens
+        // of milliseconds the shell can spend booting.
+        term.launch(cwd, command);
         nb.show_all();
         nb.set_current_page(Some(idx));
         self.update_tabs_menu();
@@ -4876,12 +4834,6 @@ impl MainWindow {
         // Detached tab windows are not MainWindows and do not own a session.
         if self.main_window_count() <= 1 {
             self.save_session("last");
-        }
-        // A terminal started before the window was built may not have become
-        // a page yet: its shell and broker must be stopped with the window,
-        // or the broker outlives the GUI and keeps its inherited descriptors.
-        if let Some(term) = self.imp().pending_terminal.borrow_mut().take() {
-            term.terminate();
         }
         let nb = self.imp().notebook.borrow().clone().unwrap();
         let nb2 = self.imp().notebook2.borrow().clone().unwrap();
