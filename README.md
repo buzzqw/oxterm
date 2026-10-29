@@ -648,53 +648,54 @@ BENCH_OPPONENTS="ghostty" ./scripts/bench-compare.sh   # one opponent only
 ALACRITTY_BIN=/path/to/alacritty ./scripts/bench-compare.sh
 ```
 
-Measured on an HP ProBook 450 G10 laptop (Intel Core i7-1355U, 2 performance
-and 8 efficient cores, 32 GB of RAM, Intel RPL-U graphics with Mesa 26.2.4)
-running CachyOS with kernel 7.2.7 in an X11 session at 1920x1080, default
-configuration, font size 12, release build, median of three sets of five runs;
-absolute values depend on the machine and on its load:
+Measured on a desktop with an AMD Ryzen 7 5800H (8 cores, 16 threads, Radeon
+Vega integrated graphics) running CachyOS with kernel 7.2.11-1 in an X11
+session at 1920x1080, default configuration, font size 12, release build,
+minimum of three runs; absolute values depend on the machine and on its load.
+Ghostty was not installed in this session, so the table compares Oxterm with
+Alacritty:
 
-| Measurement | Oxterm | Ghostty 1.3.1 | Alacritty 0.17.0 |
-| --- | --- | --- | --- |
-| Spawn to first visible window | 314 ms | 343 ms | 275 ms |
-| Idle CPU over 5 s, no payload | 6.8 ms | 21.2 ms | 0.0 ms |
-| Spawn to the command inside the terminal | 232 ms | 381 ms | 151 ms |
-| Drain 100 000 ANSI-coloured lines (8.8 MB) | 117 ms | 218 ms | 189 ms |
-| Drain 100 000 plain lines (8.0 MB) | 85 ms | 167 ms | 192 ms |
-| Drain the plain payload in 80-byte writes (8.0 MB) | 215 ms | 195 ms | 220 ms |
-| CPU to drain ANSI, terminal only | 190 ms | 384 ms | 195 ms |
-| CPU to drain ANSI, GUI process | 71 ms | 331 ms | 157 ms |
-| CPU to drain plain, terminal only | 164 ms | 332 ms | 186 ms |
-| CPU to drain 80-byte writes, terminal only | 261 ms | 357 ms | 216 ms |
-| 20 window resizes | 92 ms | 79 ms | 174 ms |
-| CPU for the 20 resizes | 16.5 ms | 36.7 ms | 45.5 ms |
-| Close window to process exit | 16 ms | 45 ms | 20 ms |
-| Total tree RSS when idle | 108 MB | 192 MB | 138 MB |
-| Peak tree RSS under the ANSI payload | 111 MB | 201 MB | 154 MB |
+| Measurement | Oxterm | Alacritty 0.17.0 |
+| --- | --- | --- |
+| Spawn to first visible window | 517 ms | 496 ms |
+| Idle CPU over 5 s, no payload | 6.6 ms | 0.0 ms |
+| Spawn to the command inside the terminal | 114 ms | 216 ms |
+| Drain 100 000 ANSI-coloured lines (8.8 MB) | 119 ms | 191 ms |
+| Drain 100 000 plain lines (8.0 MB) | 112 ms | 175 ms |
+| Drain the plain payload in 80-byte writes (8.0 MB) | 300 ms | 285 ms |
+| CPU to drain ANSI, terminal only | 306 ms | 194 ms |
+| CPU to drain ANSI, GUI process | 221 ms | 161 ms |
+| CPU to drain plain, terminal only | 281 ms | 181 ms |
+| CPU to drain 80-byte writes, terminal only | 409 ms | 233 ms |
+| 20 window resizes | 193 ms | 328 ms |
+| CPU for the 20 resizes | 29.5 ms | 22.0 ms |
+| Close window to process exit | 21 ms | 22 ms |
+| Total tree RSS when idle | 118 MB | 115 MB |
+| Peak tree RSS under the ANSI payload | 121 MB | 130 MB |
 
 CPU time is the more informative row: wall time in the drain test is bounded by
 how each terminal acknowledges PTY output, while CPU time shows what the
 machine actually spends. It is sampled from the threads of the terminal's own
 processes (`schedstat`), excluding the shell and the payload command, so it
-covers Oxterm's PTY broker and the workers of Ghostty and Alacritty alike. The
+covers Oxterm's PTY broker and Alacritty's renderer and PTY threads alike. The
 "terminal only" row sums every thread and helper of the terminal, while the
 "GUI process" row is only the process the script launched: for Oxterm the
-difference is the broker, 119 ms of the 190 ms.
+difference is the broker, 85 ms of the 306 ms.
 
 Five of those rows are separate experiments, all on the same defaults:
 
 - **Idle CPU** is sampled over five seconds after a half-second settle on an
   empty window. It counts cursor blink, timers and helper wakeups. Alacritty's
   default cursor does not blink and it arms no periodic timer, so it measures
-  zero; Oxterm's blinking cursor and periodic timers cost 6.8 ms and Ghostty
-  21.2 ms.
+  zero; Oxterm's blinking cursor and periodic timers cost 6.6 ms.
 - **Plain lines** are the same workload without the SGR sequences, so comparing
   the two drain rows shows what the colour handling and the extra 0.8 MB cost:
-  32 ms for Oxterm, 51 ms for Ghostty and nothing measurable for Alacritty.
+  7 ms for Oxterm and 16 ms for Alacritty.
 - **80-byte writes** feed the plain payload through `dd bs=80`, one write per
   line, to measure per-write overhead rather than bulk throughput. Wall time
-  collapses to roughly the same 200 ms for all three because the writer now
-  paces them; the CPU row shows what the extra wakeups cost each terminal.
+  collapses to roughly the same 290 ms for both because the writer now paces
+  them; the CPU row shows what the extra wakeups cost each terminal, and this
+  is where Oxterm's broker hop hurts most (409 ms against 233 ms).
 - **20 resizes** alternate a window between two sizes with `xdotool` on an empty
   pane. The wall time includes xdotool, X11 and window-manager latency, the CPU
   count includes a 200 ms settle so the last resize is applied.
@@ -702,29 +703,29 @@ Five of those rows are separate experiments, all on the same defaults:
   process to leave the process table, which covers shutdown and cleanup rather
   than a signal.
 
-Against Ghostty, Oxterm keeps the advantage on command spawn, both drain
-payloads, total CPU, idle CPU, memory, close latency and resize CPU; Ghostty
-wins only the write-bound cases, the 80-byte chunk drain (195 ms vs 215 ms) and
-the resize storm's wall time (79 ms vs 92 ms), where its renderer applies the
-new size sooner. Against Alacritty the trade is different: Alacritty starts the
-shell inside the terminal sooner (151 ms vs 232 ms) and is the only one that
-spends no measurable CPU at idle, but Oxterm drains the ANSI payload in 117 ms
-instead of 189 ms and the plain one in 85 ms instead of 192 ms, needs 108 MB
-instead of 138 MB of RSS, applies the resizes with a third of the CPU (16.5 ms
-vs 45.5 ms) and closes a little faster. Total ANSI CPU is nearly a tie (190 ms
-vs 195 ms) because Oxterm splits the work: 71 ms in the GUI process and 119 ms
-in the broker, while Alacritty's 157 ms GUI process does it all with no relay.
-The chunked test is where that relay shows: Oxterm needs 261 ms of CPU for
-write-bound output against 216 ms for Alacritty, with the same wall time within
-noise, while Ghostty is fastest in wall time (195 ms) but spends the most CPU
-(357 ms). Startup is within noise for all three.
+Against Alacritty, Oxterm now starts the shell inside the terminal in half the
+time (114 ms vs 216 ms, after the shell was moved ahead of the very first
+toolbar icon) and drains both payloads in roughly two thirds of the wall time
+(119 ms vs 191 ms ANSI, 112 ms vs 175 ms plain). It also applies the resize
+storm sooner (193 ms vs 328 ms) and closes as fast, with the same RSS. Alacritty
+keeps the advantage on CPU: it is the only one that measures zero at idle, and
+it spends less for the same work — 194 ms against 306 ms for the ANSI payload
+(221 ms in Oxterm's GUI process plus 85 ms in the broker) and 233 ms against
+409 ms for the write-bound one, where the relay and the per-write wakeups show.
+Startup is within noise.
 
-Those margins move between sessions: Oxterm's ANSI drain ranged 102–143 ms
-across the three sets, Ghostty 212–226 ms and Alacritty 139–213 ms, so read the
-wall figures as order-of-magnitude results. What the script cannot see is the
-smoothness, frame pacing and rendering quality of the two GPU terminals, which
-is their actual strength; the next section bounds Oxterm's own input path, but
-does not compare it with them.
+An earlier session on an HP ProBook 450 G10 (Intel Core i7-1355U) also measured
+Ghostty 1.3.1: there Oxterm led on command spawn, both drain payloads, total
+CPU, idle CPU, memory, close latency and resize CPU, and Ghostty won only the
+write-bound cases and the resize storm's wall time, where its renderer applies
+the new size sooner. Those figures are not comparable with the table above and
+remain in the git history.
+
+Read the wall figures as order-of-magnitude results: they move between sessions
+with the machine's load. What the script cannot see is the smoothness, frame
+pacing and rendering quality of the GPU terminals, which is their actual
+strength; the next section bounds Oxterm's own input path, but does not compare
+it with them.
 
 The window metrics need X11 and `xdotool`; Wayland-only sessions are not
 supported yet (run the script under `xvfb-run` in CI). Windows are matched by
