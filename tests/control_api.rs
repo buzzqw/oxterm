@@ -108,6 +108,22 @@ fn run_cli(home: &Path, args: &[&str]) -> Output {
         .expect("run oxterm")
 }
 
+/// Run a control command and return its stdout, dumping the GUI log when it
+/// fails: "no running Oxterm window" on CI is otherwise impossible to explain.
+fn cli(home: &Path, args: &[&str]) -> String {
+    let output = run_cli(home, args);
+    if !output.status.success() {
+        eprintln!("command {args:?} failed: {:?}", output.status);
+        eprintln!("stdout:\n{}", String::from_utf8_lossy(&output.stdout));
+        eprintln!("stderr:\n{}", String::from_utf8_lossy(&output.stderr));
+        eprintln!(
+            "GUI log:\n{}",
+            std::fs::read_to_string(home.join("gui.log")).unwrap_or_default()
+        );
+    }
+    cli_stdout(&output)
+}
+
 fn cli_stdout(output: &Output) -> String {
     assert!(
         output.status.success(),
@@ -245,25 +261,25 @@ fn control_api_drives_tabs_panes_and_commands() {
     // send --enter + wait: the command's own status is the wait exit status.
     let waiting = spawn_wait(fixture.home.path(), &pane, "10");
     thread::sleep(Duration::from_millis(300));
-    cli_stdout(&run_cli(
+    cli(
         fixture.home.path(),
         &["send", "--pane", &pane, "--enter", "printf ctl-ok"],
-    ));
+    );
     assert_eq!(wait_status(waiting), 0, "successful command should exit 0");
 
-    let capture = cli_stdout(&run_cli(
+    let capture = cli(
         fixture.home.path(),
         &["capture", "--pane", &pane, "--scrollback", "50"],
-    ));
+    );
     assert!(capture.contains("ctl-ok"), "capture: {capture:?}");
 
     // A failing command makes wait exit with its status.
     let waiting = spawn_wait(fixture.home.path(), &pane, "10");
     thread::sleep(Duration::from_millis(300));
-    cli_stdout(&run_cli(
+    cli(
         fixture.home.path(),
         &["send", "--pane", &pane, "--enter", "false"],
-    ));
+    );
     assert_eq!(wait_status(waiting), 1, "failed command should exit 1");
 
     // stdin is a supported send source.
@@ -290,14 +306,14 @@ fn control_api_drives_tabs_panes_and_commands() {
         output.status
     );
     thread::sleep(Duration::from_millis(400));
-    let capture = cli_stdout(&run_cli(
+    let capture = cli(
         fixture.home.path(),
         &["capture", "--pane", &pane, "--scrollback", "50"],
-    ));
+    );
     assert!(capture.contains("from-stdin"), "capture: {capture:?}");
 
     // new runs a command in its own tab.
-    let new_pane = cli_stdout(&run_cli(
+    let new_pane = cli(
         fixture.home.path(),
         &[
             "new",
@@ -308,23 +324,20 @@ fn control_api_drives_tabs_panes_and_commands() {
             "-c",
             "printf new-tab-ok; sleep 10",
         ],
-    ));
+    );
     thread::sleep(Duration::from_millis(400));
-    let capture = cli_stdout(&run_cli(
-        fixture.home.path(),
-        &["capture", "--pane", &new_pane],
-    ));
+    let capture = cli(fixture.home.path(), &["capture", "--pane", &new_pane]);
     assert!(capture.contains("new-tab-ok"), "capture: {capture:?}");
 
     // split only works while the window still has a single pane.
-    let split_pane = cli_stdout(&run_cli(
+    let split_pane = cli(
         fixture.home.path(),
         &["split", "--pane", &pane, "--vertical", "--title", "monitor"],
-    ));
+    );
     assert_ne!(split_pane, pane);
     // The requested title must stick: the shell's OSC title updates and the
     // numbered default must not overwrite it.
-    let listing = cli_stdout(&run_cli(fixture.home.path(), &["--list"]));
+    let listing = cli(fixture.home.path(), &["--list"]);
     let row = listing
         .lines()
         .find(|line| line.starts_with(&format!("{split_pane}\t")));
@@ -391,7 +404,7 @@ fn handover_keeps_the_moved_session_alive() {
     thread::sleep(Duration::from_millis(800));
 
     let first = first_pane(fixture.home.path());
-    let moved = cli_stdout(&run_cli(fixture.home.path(), &["new"]));
+    let moved = cli(fixture.home.path(), &["new"]);
     assert_ne!(moved, first, "the new tab must be a different pane");
     thread::sleep(Duration::from_millis(500));
 
@@ -440,7 +453,7 @@ fn handover_keeps_the_moved_session_alive() {
     );
 
     // The broker must still be running the shell: `--list` reads the brokers.
-    let sessions = cli_stdout(&run_cli(fixture.home.path(), &["--list"]));
+    let sessions = cli(fixture.home.path(), &["--list"]);
     let row = sessions
         .lines()
         .find(|line| line.starts_with(&format!("{moved}\t")));
