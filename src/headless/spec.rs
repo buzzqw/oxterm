@@ -445,6 +445,18 @@ impl Default {
             Default::Map => Value::Object(Map::new()),
         }
     }
+
+    /// The value `settings_markdown` prints.
+    ///
+    /// Environment-derived defaults are rendered as their documented fallback
+    /// so the generated reference does not depend on the machine or the CI
+    /// runner that produced it.
+    pub fn documented_value(self) -> Value {
+        match self {
+            Default::Env(_, fallback) => Value::String(fallback.to_string()),
+            other => other.value(),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1212,7 +1224,7 @@ pub fn settings_markdown() -> String {
          | --- | --- | --- | --- |\n",
     );
     for setting in SETTINGS {
-        let default = setting.default_value();
+        let default = setting.default.documented_value();
         let default = match &default {
             Value::String(value) if value.is_empty() => "`\"\"`".to_string(),
             Value::String(value) => format!("`{value}`"),
@@ -1618,6 +1630,28 @@ mod tests {
             assert!(
                 validate(setting, &value).is_ok(),
                 "default of {} does not validate: {value}",
+                setting.key
+            );
+        }
+    }
+
+    #[test]
+    fn settings_markdown_documents_fallbacks_not_the_environment() {
+        // `docs/settings.md` is committed and checked in CI, so the generated
+        // reference must not depend on the shell that ran docgen.
+        let markdown = settings_markdown();
+        for setting in SETTINGS {
+            let Default::Env(key, fallback) = setting.default else {
+                continue;
+            };
+            let row = format!("| `{}` |", setting.key);
+            let line = markdown
+                .lines()
+                .find(|line| line.starts_with(&row))
+                .unwrap_or_else(|| panic!("{} is missing from the markdown", setting.key));
+            assert!(
+                line.contains(&format!("`{fallback}`")),
+                "{} should document ${key}'s fallback {fallback}: {line}",
                 setting.key
             );
         }

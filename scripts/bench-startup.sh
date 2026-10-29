@@ -14,6 +14,7 @@
 # Environment:
 #   OXTERM_BIN        binary to measure (default: target/release/oxterm)
 #   BENCH_RUNS        repetitions for the headless benchmarks (default: 5)
+#   BENCH_GUI_ATTEMPTS launches used for the GUI startup figure (default: 3)
 #   BENCH_TOLERANCE   allowed multiplier over the baseline (default: 4)
 
 set -euo pipefail
@@ -22,6 +23,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${OXTERM_BIN:-${ROOT_DIR}/target/release/oxterm}"
 BASELINE="${BENCH_BASELINE:-${ROOT_DIR}/bench/startup-baseline.txt}"
 RUNS="${BENCH_RUNS:-5}"
+GUI_ATTEMPTS="${BENCH_GUI_ATTEMPTS:-3}"
 TOLERANCE="${BENCH_TOLERANCE:-4}"
 MODE="${1:-run}"
 
@@ -81,30 +83,42 @@ wait_for_ready() {
 }
 
 measure_gui() {
-    local home start end
-    home="$(mktemp -d "${TMP_DIR}/h.XXXX")"
-    start="$(now_ns)"
-    HOME="${home}" "${BIN}" --no-restore >/dev/null 2>&1 &
-    APP_PID=$!
-    if ! wait_for_ready "${home}"; then
-        printf '%s\n' "bench-startup: the GUI did not become ready" >&2
-        return 1
-    fi
-    end="$(now_ns)"
-    GUI_READY_MS=$(( (end - start) / 1000000 ))
-    GUI_RSS_KB="$(rss_kb "${APP_PID}")"
+    local home start end attempt ready
+    GUI_READY_MS=""
+    # Startup is measured several times and the best run is kept: the first
+    # launch pays for cold caches and a loaded CI runner can stretch any single
+    # one, while a real regression slows every attempt.
+    for attempt in $(seq "${GUI_ATTEMPTS}"); do
+        home="$(mktemp -d "${TMP_DIR}/h.XXXX")"
+        start="$(now_ns)"
+        HOME="${home}" "${BIN}" --no-restore >/dev/null 2>&1 &
+        APP_PID=$!
+        if ! wait_for_ready "${home}"; then
+            printf '%s\n' "bench-startup: the GUI did not become ready" >&2
+            return 1
+        fi
+        end="$(now_ns)"
+        ready=$(( (end - start) / 1000000 ))
+        if [[ -z "${GUI_READY_MS}" || "${ready}" -lt "${GUI_READY_MS}" ]]; then
+            GUI_READY_MS="${ready}"
+        fi
+        GUI_RSS_KB="$(rss_kb "${APP_PID}")"
 
-    start="$(now_ns)"
-    for index in $(seq 5); do
-        HOME="${home}" "${BIN}" new --title "bench-${index}" >/dev/null 2>&1
+        # Tab creation is measured once, on the last (warm) launch.
+        if (( attempt == GUI_ATTEMPTS )); then
+            start="$(now_ns)"
+            for index in $(seq 5); do
+                HOME="${home}" "${BIN}" new --title "bench-${index}" >/dev/null 2>&1
+            done
+            end="$(now_ns)"
+            TABS_MS=$(( (end - start) / 1000000 ))
+            TABS_RSS_KB="$(rss_kb "${APP_PID}")"
+        fi
+
+        kill "${APP_PID}" 2>/dev/null || true
+        wait "${APP_PID}" 2>/dev/null || true
+        APP_PID=""
     done
-    end="$(now_ns)"
-    TABS_MS=$(( (end - start) / 1000000 ))
-    TABS_RSS_KB="$(rss_kb "${APP_PID}")"
-
-    kill "${APP_PID}" 2>/dev/null || true
-    wait "${APP_PID}" 2>/dev/null || true
-    APP_PID=""
 }
 
 VERSION_MS="$(min_ms "${BIN}" --version)"

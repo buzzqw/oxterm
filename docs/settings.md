@@ -38,7 +38,7 @@ never written back to disk.
 | `scrollbar_position` | string | `right` | Where to show the scrollbar. |
 |  |  | Values: `right`, `left`, `disabled` |  |
 | `opacity` | float (0.1..1) | `1.0` | Window opacity when transparency is enabled. |
-| `shell_command` | string | `/usr/bin/bash` | Shell started in new terminals. |
+| `shell_command` | string | `/bin/bash` | Shell started in new terminals. |
 | `notes_file` | string | `""` | Markdown file used by the notes commands; empty uses notes_dir. |
 | `notes_dir` | string | `""` | Directory for Markdown notes; empty uses the data directory. |
 | `notes_record_context` | bool | `true` | Record the command context next to new notes. |

@@ -246,13 +246,32 @@ fn set_gui_slave_raw(fd: RawFd) -> Result<(), String> {
 // VTE smooths text through `vte_terminal_set_font_options()`, which the safe
 // `zoha-vte` wrapper does not bind (its generated method is still a TODO) and
 // which `zoha-vte-sys` only declares behind a `v0_74` feature that does not
-// compile against cairo-rs 0.18. Declare the single symbol we need instead.
-// VTE copies the options, so the pointer only has to live for the call.
-extern "C" {
-    fn vte_terminal_set_font_options(
-        terminal: *mut std::ffi::c_void,
-        options: *const cairo::ffi::cairo_font_options_t,
-    );
+// compile against cairo-rs 0.18. The callable itself only exists since VTE
+// 0.74, while long-term distributions still ship 0.70 (Debian 12), so resolve
+// the symbol at run time instead of linking against it: a missing symbol must
+// disable the tweak, not break the build. VTE copies the options, so the
+// pointer only has to live for the call.
+type SetFontOptions =
+    unsafe extern "C" fn(*mut std::ffi::c_void, *const cairo::ffi::cairo_font_options_t);
+
+fn font_options_setter() -> Option<SetFontOptions> {
+    static SETTER: std::sync::OnceLock<Option<SetFontOptions>> = std::sync::OnceLock::new();
+    *SETTER.get_or_init(|| {
+        // SAFETY: `dlsym` may return NULL, which is handled below.
+        let symbol = unsafe {
+            libc::dlsym(
+                libc::RTLD_DEFAULT,
+                b"vte_terminal_set_font_options\0".as_ptr().cast(),
+            )
+        };
+        if symbol.is_null() {
+            LOGGER.warning("font_options_unavailable error=vte_before_0_74");
+            return None;
+        }
+        // SAFETY: the symbol is VTE's font options setter, declared in the
+        // VTE headers with exactly this signature.
+        Some(unsafe { std::mem::transmute::<*mut std::ffi::c_void, SetFontOptions>(symbol) })
+    })
 }
 
 fn apply_font_rendering(vte: &zoha_vte::Terminal, s: &settings::Settings) {
@@ -281,6 +300,9 @@ fn apply_font_rendering(vte: &zoha_vte::Terminal, s: &settings::Settings) {
         }
         options = Some(built);
     }
+    let Some(set_font_options) = font_options_setter() else {
+        return;
+    };
     let raw = options
         .as_ref()
         .map(|options| options.to_raw_none())
@@ -288,7 +310,7 @@ fn apply_font_rendering(vte: &zoha_vte::Terminal, s: &settings::Settings) {
     // A NULL pointer asks VTE to fall back to the toolkit defaults.
     let terminal: *mut zoha_vte_sys::VteTerminal = vte.to_glib_none().0;
     unsafe {
-        vte_terminal_set_font_options(terminal.cast(), raw);
+        set_font_options(terminal.cast(), raw);
     }
 }
 

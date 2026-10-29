@@ -626,9 +626,11 @@ values depend on the machine and are only meant to show the order of magnitude):
 
 Baselines live in `bench/`. `--check` compares against them and exits non-zero
 past a tolerance (`BENCH_TOLERANCE`, default 4x for startup and 5x for the
-core; CI uses 6x for startup). The limits are deliberately generous: they catch
-algorithmic and packaging regressions, not run-to-run noise. Regenerate a
-baseline only when a change is understood and intended.
+core; CI uses 6x for startup). The GUI startup figure is the best of
+`BENCH_GUI_ATTEMPTS` launches (default 3) so a single slow cold start does not
+fail the guard. The limits are deliberately generous: they catch algorithmic
+and packaging regressions, not run-to-run noise. Regenerate a baseline only
+when a change is understood and intended.
 
 #### Head to head with Ghostty and Alacritty
 
