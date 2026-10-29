@@ -461,6 +461,14 @@ fn handle_connection(mut stream: std::os::unix::net::UnixStream) {
     let _ = stream.set_write_timeout(Some(CLIENT_TIMEOUT));
     let reply = match read_json(&mut stream) {
         Ok(request) => {
+            // Liveness must not depend on the GUI thread. A window that is
+            // busy realising a terminal or drawing a frame is still running,
+            // but a ping that has to wait for the main loop reports it as gone
+            // once the client's short probe timeout expires.
+            if request["op"].as_str() == Some("ping") {
+                let _ = write_json(&mut stream, &json!({ "ok": true }));
+                return;
+            }
             let (sender, receiver) = mpsc::channel();
             crate::run_on_main(move || {
                 let reply = dispatch(&request);
@@ -486,6 +494,7 @@ fn dispatch(request: &Value) -> Value {
         return error_reply("no running Oxterm window", 4);
     };
     match request["op"].as_str().unwrap_or("") {
+        // Answered on the control thread, see `handle_connection`.
         "ping" => json!({ "ok": true }),
         "list" => {
             let panes: Vec<Value> = terminals(&app)
