@@ -1902,8 +1902,7 @@ fn broadcast_output(
         // only copy the part it did not accept.
         let mut rest = data;
         if gui_output.is_empty() {
-            let written =
-                unsafe { libc::write(GUI_FD, rest.as_ptr() as *const _, rest.len()) };
+            let written = unsafe { libc::write(GUI_FD, rest.as_ptr() as *const _, rest.len()) };
             if written > 0 {
                 rest = &rest[written as usize..];
             }
