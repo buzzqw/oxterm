@@ -298,7 +298,8 @@ Snippet** only appear when there is something to act on.
 
 - Top level: **Copy**, **Paste**, **Paste Selection**, and **Select All**,
   followed by **Copy Link** / **Open Link in Browser** when the cursor is over
-  a link.
+  a link, or **Open in File Manager** / **Copy Path** when the cursor is over
+  an existing path (or the current selection is one).
 - **Copy As**: **HTML**, **Whole Scrollback**, and, when available, **Last
   Command** and **Last Command Output**.
 - **Notes**: **Add Selection to Note...**, **Note Command Output...**,

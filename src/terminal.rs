@@ -156,6 +156,35 @@ fn safe_web_url(raw: &str) -> Option<String> {
     Some(url)
 }
 
+/// Whether `text` is a single filesystem path, as selected by the user.
+///
+/// The regex used for on-screen detection cannot express spaces, but a
+/// selection can legitimately be `/home/ana/My Files`, so this only checks the
+/// shape and leaves existence to the caller.
+fn path_token(raw: &str) -> Option<String> {
+    let text = raw
+        .trim()
+        .trim_matches(|c| matches!(c, '"' | '\'' | '`' | '“' | '”' | '‘' | '’'));
+    if text.is_empty() || text.chars().any(|c| c.is_control()) {
+        return None;
+    }
+    let looks_like_path = text == "~"
+        || text.starts_with("~/")
+        || text.starts_with('/')
+        || text.starts_with("./")
+        || text.starts_with("../");
+    looks_like_path.then(|| text.to_string())
+}
+
+/// Trailing characters a path can pick up from the surrounding sentence, such
+/// as the full stop in `see /tmp/notes.` or the closing bracket in `(/tmp/x)`.
+fn is_path_punctuation(c: char) -> bool {
+    matches!(
+        c,
+        '.' | ',' | ':' | ';' | '!' | '?' | ')' | ']' | '}' | '\'' | '"' | '`'
+    )
+}
+
 /// Append a menu item that runs `action` on this terminal. The item holds only
 /// a weak reference, so a menu that outlives its terminal is harmless.
 fn menu_action<F>(menu: &gtk::Menu, term: &TerminalBox, label: &str, action: F) -> gtk::MenuItem
@@ -389,6 +418,39 @@ mod security_tests {
             ),
             "git commit -m 'message' && git push origin message origin main"
         );
+    }
+
+    #[test]
+    fn recognizes_a_selected_path() {
+        assert_eq!(
+            path_token("/home/andres/temp").as_deref(),
+            Some("/home/andres/temp")
+        );
+        assert_eq!(
+            path_token("  ~/src/oxterm\n").as_deref(),
+            Some("~/src/oxterm")
+        );
+        assert_eq!(
+            path_token("./target/debug").as_deref(),
+            Some("./target/debug")
+        );
+        // A selection can contain spaces, which the on-screen regex cannot.
+        assert_eq!(
+            path_token("/home/andres/My Files").as_deref(),
+            Some("/home/andres/My Files")
+        );
+        // Not every selected word is a path.
+        assert_eq!(path_token("https://example.test/tmp"), None);
+        assert_eq!(path_token("ls /tmp"), None);
+        assert_eq!(path_token(""), None);
+    }
+
+    #[test]
+    fn path_punctuation_is_recognised() {
+        assert!(is_path_punctuation('.'));
+        assert!(is_path_punctuation(')'));
+        assert!(!is_path_punctuation('/'));
+        assert!(!is_path_punctuation('x'));
     }
 
     #[test]
@@ -2999,6 +3061,102 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         None
     }
 
+    fn path_from_text_at(&self, x: f64, y: f64) -> Option<String> {
+        let (col, row) = self.pixel_to_cell(x, y);
+        let scroll_top = self.vadjustment().value() as i64;
+        let row = row + scroll_top;
+        let vte = self.vte();
+        let text = text::range(&vte, row, 0, row, -1).unwrap_or_default();
+        if text.is_empty() {
+            return None;
+        }
+        let line = text.trim_end_matches('\n');
+        let col = col as usize;
+        for m in hint_path_re().find_iter(line) {
+            let start = char_column(line, m.start());
+            let end = start + m.as_str().chars().count();
+            if start <= col && col < end {
+                return Some(m.as_str().to_string());
+            }
+        }
+        None
+    }
+
+    /// The path the user selected, if the whole selection is a path.
+    fn selected_path(&self) -> Option<String> {
+        let vte = self.vte();
+        if !vte.has_selection() {
+            return None;
+        }
+        let text = vte.text_selected(Format::Text)?;
+        path_token(text.as_str())
+    }
+
+    /// Turn a path from the terminal into an existing filesystem path.
+    ///
+    /// Relative `./` and `../` paths are resolved against the shell's working
+    /// directory; `~` expands to the user's home. Trailing sentence
+    /// punctuation is dropped until an existing path is found, so a path at
+    /// the end of a sentence still works.
+    fn existing_path(&self, raw: &str) -> Option<std::path::PathBuf> {
+        let mut candidate = raw.trim().to_string();
+        loop {
+            let expanded = if candidate == "~" {
+                dirs::home_dir()
+            } else if let Some(rest) = candidate.strip_prefix("~/") {
+                dirs::home_dir().map(|home| home.join(rest))
+            } else if candidate.starts_with('/') {
+                Some(std::path::PathBuf::from(&candidate))
+            } else if candidate.starts_with("./") || candidate.starts_with("../") {
+                Some(std::path::Path::new(&self.get_cwd()).join(&candidate))
+            } else {
+                None
+            };
+            if let Some(path) = expanded {
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+            match candidate.chars().last() {
+                Some(last) if is_path_punctuation(last) => {
+                    candidate.pop();
+                    if candidate.is_empty() {
+                        return None;
+                    }
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    fn open_path_in_file_manager(&self, path: &std::path::Path) {
+        let Some(fm) = crate::window::detect_file_manager() else {
+            self.vte()
+                .feed(b"\r\n\x1b[31mCannot open path: no file manager found.\x1b[0m\r\n");
+            return;
+        };
+        // A file is shown through the directory that contains it; every file
+        // manager can open a directory, while selecting a file needs
+        // manager-specific arguments.
+        let target = if path.is_dir() {
+            path.to_path_buf()
+        } else {
+            path.parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_else(|| path.to_path_buf())
+        };
+        if !crate::notes::spawn_detached(&fm, &[&target.to_string_lossy()]) {
+            self.vte().feed(
+                format!(
+                    "\r\n\x1b[31mCannot open path: {} failed to start.\x1b[0m\r\n",
+                    fm
+                )
+                .as_bytes(),
+            );
+        }
+    }
+
     fn open_url(&self, url: &str) {
         let Some(url) = safe_web_url(url) else {
             self.vte().feed(
@@ -3032,6 +3190,10 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         let url = self
             .url_at_position(px, py)
             .or_else(|| self.url_from_text_at(px, py));
+        let path = self
+            .selected_path()
+            .or_else(|| self.path_from_text_at(px, py))
+            .and_then(|candidate| self.existing_path(&candidate));
 
         // ── Clipboard ────────────────────────────────────────
         // The few actions used all the time stay at the top level; the rest is
@@ -3097,6 +3259,25 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             menu_action(&menu, self, "Open Link in Browser", move |t| {
                 t.open_url(&url)
             });
+        }
+
+        // ── Paths (contextual) ───────────────────────────────
+        if let Some(path) = path {
+            menu.append(&gtk::SeparatorMenuItem::new());
+            let target = path.clone();
+            let open_item = menu_action(&menu, self, "Open in File Manager", move |t| {
+                t.open_path_in_file_manager(&target)
+            });
+            open_item.set_tooltip_text(Some(&format!(
+                "Open {} in the system file manager",
+                path.to_string_lossy()
+            )));
+
+            let copied = path.to_string_lossy().to_string();
+            menu_action(&menu, self, "Copy Path", move |_t| {
+                gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).set_text(&copied);
+            })
+            .set_tooltip_text(Some("Copy this path to the clipboard"));
         }
 
         // ── Notes ────────────────────────────────────────────

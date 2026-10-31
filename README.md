@@ -44,8 +44,8 @@ memory footprint and the memory-safety guarantees of Rust.
 - VI copy mode with motions, text objects, visual block selection, scrolloff, and bookmarks
 - Session restore, named sessions, profiles, command palette, quickmarks, and hints
 - Compact right-click menu with submenus for clipboard (text/HTML/all/last
-  command), links, tabs, splits, tools, zoom, read-only, quickmarks, snippets,
-  and notes actions
+  command), links and paths, tabs, splits, tools, zoom, read-only, quickmarks,
+  snippets, and notes actions
 - Persistent PTY broker with SSH-friendly remote attach/detach, session listing, and multi-client terminal sharing
 - Parameterized snippets and JSON export for saved sessions
 - System statistics for the local and remote host (CPU, memory, disk), SSH connection sharing with keepalives, `autossh` support, and `mosh` recognition
