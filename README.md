@@ -655,21 +655,23 @@ minimum of three runs; absolute values depend on the machine and on its load:
 
 | Measurement | Oxterm | Ghostty 1.3.1 | Alacritty 0.17.0 | xfce4-terminal 1.2.0 |
 | --- | --- | --- | --- | --- |
-| Spawn to first visible window | 572 ms | 667 ms | 424 ms | 666 ms |
-| Idle CPU over 5 s, no payload | 5.7 ms | 24.7 ms | 0.0 ms | 0.0 ms |
-| Spawn to the command inside the terminal | 135 ms | 422 ms | 271 ms | 269 ms |
-| Drain 100 000 ANSI-coloured lines (8.8 MB) | 123 ms | 325 ms | 247 ms | 257 ms |
-| Drain 100 000 plain lines (8.0 MB) | 105 ms | 194 ms | 233 ms | 183 ms |
-| Drain the plain payload in 80-byte writes (8.0 MB) | 303 ms | 296 ms | 305 ms | 378 ms |
-| CPU to drain ANSI, terminal only | 332.4 ms | 510.0 ms | 253.3 ms | 189.6 ms |
-| CPU to drain ANSI, GUI process | 251.4 ms | 461.0 ms | 212.3 ms | 179.2 ms |
-| CPU to drain plain, terminal only | 270.2 ms | 307.2 ms | 239.0 ms | 129.2 ms |
-| CPU to drain 80-byte writes, terminal only | 389.8 ms | 525.6 ms | 266.9 ms | 252.0 ms |
-| 20 window resizes | 219 ms | 115 ms | 282 ms | 455 ms |
-| CPU for the 20 resizes | 38.1 ms | 46.0 ms | 24.6 ms | 20.3 ms |
-| Close window to process exit | 17 ms | 58 ms | 24 ms | 21 ms |
-| Total tree RSS when idle | 118 MB | 170 MB | 116 MB | 80 MB |
-| Peak tree RSS under the ANSI payload | 122 MB | 177 MB | 131 MB | 78 MB |
+| Spawn to first visible window | 572 ms | 667 ms | **424 ms** | 666 ms |
+| Idle CPU over 5 s, no payload | 5.7 ms | 24.7 ms | **0.0 ms** | **0.0 ms** |
+| Spawn to the command inside the terminal | **135 ms** | 422 ms | 271 ms | 269 ms |
+| Drain 100 000 ANSI-coloured lines (8.8 MB) | **123 ms** | 325 ms | 247 ms | 257 ms |
+| Drain 100 000 plain lines (8.0 MB) | **105 ms** | 194 ms | 233 ms | 183 ms |
+| Drain the plain payload in 80-byte writes (8.0 MB) | 303 ms | **296 ms** | 305 ms | 378 ms |
+| CPU to drain ANSI, terminal only | 332.4 ms | 510.0 ms | 253.3 ms | **189.6 ms** |
+| CPU to drain ANSI, GUI process | 251.4 ms | 461.0 ms | 212.3 ms | **179.2 ms** |
+| CPU to drain plain, terminal only | 270.2 ms | 307.2 ms | 239.0 ms | **129.2 ms** |
+| CPU to drain 80-byte writes, terminal only | 389.8 ms | 525.6 ms | 266.9 ms | **252.0 ms** |
+| 20 window resizes | 219 ms | **115 ms** | 282 ms | 455 ms |
+| CPU for the 20 resizes | 38.1 ms | 46.0 ms | 24.6 ms | **20.3 ms** |
+| Close window to process exit | **17 ms** | 58 ms | 24 ms | 21 ms |
+| Total tree RSS when idle | 118 MB | 170 MB | 116 MB | **80 MB** |
+| Peak tree RSS under the ANSI payload | 122 MB | 177 MB | 131 MB | **78 MB** |
+
+Bold marks the best value in each row.
 
 CPU time is the more informative row: wall time in the drain test is bounded by
 how each terminal acknowledges PTY output, while CPU time shows what the
