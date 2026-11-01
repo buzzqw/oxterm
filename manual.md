@@ -640,15 +640,81 @@ status bar. It is display-only: history entries, notes and the directory for new
 tabs keep reading `/proc`, because a program can print any `OSC 7` it likes
 while `/proc` cannot lie about the process.
 
+### Saved connections
+
+`Ctrl+Shift+J` (or **Connections Panel** in the session menu) opens a side panel
+with every saved connection and every host in `~/.ssh/config`, grouped into
+Favorites, Recent, your own groups, Ungrouped and `~/.ssh/config`. Type to search
+names, hosts, users, groups, tags and notes.
+
+- `Enter` or a double click opens a tab, `Ctrl+Enter` a split. The context menu
+  also offers a new window, `sftp`, tunnels, copying the `ssh` command, favorites,
+  editing, and deleting. `F2` edits and `Delete` deletes.
+- **New** creates an entry with its own host, user, port, key and `ProxyJump`. For
+  a `~/.ssh/config` host, **Edit** only adds a group, tags, notes, tunnels and the
+  like. Oxterm never writes `~/.ssh/config`, so OpenSSH stays in charge of it.
+- The form always shows the exact `ssh` command the entry produces.
+- `●` counts the tabs open on an entry in this window. `⇄` counts active tunnels.
+- A connection's tab keeps its name even when the remote shell sets a title, and
+  the production highlight also looks at that name, since an address rarely says
+  `prod`.
+- **Ask before connecting** adds a confirmation. After a restart, tabs that held
+  a connection are never reopened silently: Oxterm asks first.
+
+Everything is an ordinary Oxterm terminal running your `ssh`, with the same
+connection sharing and keepalives as the shell wrapper.
+
+The book is `~/.config/oxterm/connections.json` (mode `0600`). It holds no
+secrets, so it can be copied or versioned; usage counts live in
+`connections-state.json`. A damaged file is reported and never overwritten, and a
+file from a newer Oxterm opens read-only.
+
+**Passwords.** Keys and an agent are the better choice. Where a server only takes
+passwords, set the entry's method to **Password in the system keyring**: it is
+stored with `secret-tool`, never in Oxterm's files. `oxterm-askpass`, installed
+next to `oxterm`, answers only the exact `user@host's password:` prompt of that
+entry, and only once per `ssh`, so a wrong password cannot lock the account. A
+jump host, a generic `Password:`, passphrases, one-time codes and host-key
+questions are always asked in the terminal. Without `secret-tool` or the helper,
+`ssh` simply prompts as usual.
+
+**Tunnels.** An entry can save local (`-L`), remote (`-R`) and SOCKS (`-D`)
+tunnels, started from the context menu, automatically with the connection, or
+with `oxterm tunnel`. Each runs its own background `ssh`, whose real state is
+shown: *listening* only once the local port answers, *running* for a remote
+forward, and *failed* with `ssh`'s own error. It cannot prompt, so it needs a key,
+an agent, or a stored password, and a host already in `known_hosts`. Tunnels stop
+with the application, even if it crashes.
+
+**From the command line** (no `DISPLAY` needed to list, export, or import):
+
+```bash
+oxterm connect db-prod-1            # new tab; prints the pane id
+oxterm connect db-prod-1 --split
+oxterm connections                  # or --json
+oxterm connections export > book.json
+oxterm connections import book.json # only ever adds entries
+oxterm tunnel list
+oxterm tunnel start db-prod-1 0
+oxterm tunnel stop db-prod-1
+```
+
+An import gives every entry a new id and never replaces an existing one. An entry
+whose extra arguments would run a local program, such as `ProxyCommand`, is
+skipped unless you pass `--allow-local-commands`.
+
 ### SSH connections
 
-**Host picker.** `Ctrl+Shift+K` lists concrete `Host` entries from
-`~/.ssh/config`, including files pulled in by `Include`; wildcard and negated
-patterns are skipped. Pick an alias (or type `user@host`) and **Connect** opens
-a new tab running `ssh`. **Copy Integration Command** copies an explicit
+**Host picker.** `Ctrl+Shift+K` lists your saved connections and the concrete
+`Host` entries from `~/.ssh/config`, including files pulled in by `Include`;
+wildcard and negated patterns are skipped. Pick one (or type `user@host`) and
+**Connect** opens a new tab running `ssh`. **Copy Integration Command** copies an explicit
 `ssh host '…'` command that installs the OSC 133 script on the remote bash/zsh
 account; run it yourself when you want it. Oxterm never injects shell
-integration into a session automatically.
+integration into a session automatically. Oxterm reads command events only from a
+private local FIFO, which a remote shell cannot reach, so this script gives you
+the remote prompt's `OSC 7` directory, not remote entries in the history, the
+command blocks, or failure notifications.
 
 Hosts matching `ssh_alert_patterns` (by default names containing `prod`,
 `production`, `prd` or `live`) are shown in `ssh_alert_color` with a bold tab
@@ -727,7 +793,8 @@ remote tmux detaches instead of the local terminal.
 | `Ctrl+Shift+Up / Ctrl+Shift+Down` | Previous / next prompt |
 | `Ctrl+Shift+P` | Command palette |
 | `Ctrl+Shift+O` | Searchable session switcher |
-| `Ctrl+Shift+K` | Connect to an SSH host from ~/.ssh/config |
+| `Ctrl+Shift+K` | Connect to a saved connection or a host from ~/.ssh/config |
+| `Ctrl+Shift+J` | Show or hide the connections panel |
 | `Ctrl+B, then c` | New tab (tmux-compatible) |
 | `Ctrl+B, then n / p` | Next / previous tab |
 | `Ctrl+B, then % / "` | Vertical / horizontal split |

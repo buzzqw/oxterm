@@ -1,5 +1,8 @@
 #![recursion_limit = "256"]
 
+mod connections_form;
+mod connections_panel;
+mod connections_ui;
 mod control;
 mod history;
 mod icons;
@@ -89,6 +92,9 @@ impl App {
 
         let _settings = settings();
         notes::migrate_legacy_notes_dir();
+
+        // A saved tunnel lives as long as the application that started it.
+        app.connect_shutdown(|_app| headless::tunnels::stop_all());
 
         app.connect_startup(|_app| {
             // Follow the desktop's light/dark preference. Emitting the settings

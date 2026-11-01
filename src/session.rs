@@ -35,6 +35,9 @@ pub struct TabEntry {
     /// True when the user renamed the tab explicitly; the custom title then
     /// takes precedence over titles set by the running program (OSC escapes).
     pub custom_title: bool,
+    /// The saved connection this tab had open. On restore it is offered for
+    /// reconnection rather than reopened as a local shell.
+    pub connection_id: Option<String>,
 }
 
 #[derive(Clone, Default, PartialEq)]
@@ -61,7 +64,8 @@ pub fn save_session(name: &str, data: &SessionData) -> bool {
                 "base_title": t.base_title,
                 "title": t.title,
                 "cwd": t.cwd,
-                "custom_title": t.custom_title
+                "custom_title": t.custom_title,
+                "connection_id": t.connection_id,
             })
         }).collect::<Vec<_>>(),
         "tabs_right": data.tabs_right.iter().map(|t| {
@@ -69,7 +73,8 @@ pub fn save_session(name: &str, data: &SessionData) -> bool {
                 "base_title": t.base_title,
                 "title": t.title,
                 "cwd": t.cwd,
-                "custom_title": t.custom_title
+                "custom_title": t.custom_title,
+                "connection_id": t.connection_id,
             })
         }).collect::<Vec<_>>(),
     });
@@ -138,6 +143,11 @@ fn validate_tab(v: &Value) -> Option<TabEntry> {
         base_title: base_title.chars().take(200).collect(),
         title: title.chars().take(200).collect(),
         custom_title,
+        connection_id: obj
+            .get("connection_id")
+            .and_then(|x| x.as_str())
+            .filter(|id| !id.is_empty() && id.chars().count() <= 256)
+            .map(str::to_string),
     })
 }
 

@@ -1,5 +1,5 @@
 //! Parsing and help text for the scriptable control commands
-//! (`oxterm new|split|send|capture|wait`).
+//! (`oxterm new|split|send|capture|wait|connect|connections|tunnel`).
 //!
 //! The execution side lives in `control.rs` and needs GTK; this half does not,
 //! so every verb, option and error message is unit tested without a window.
@@ -42,6 +42,32 @@ pub enum CliMode {
         pane: Option<String>,
         timeout: Option<Duration>,
     },
+    Connect {
+        name: String,
+        split: bool,
+        pane: Option<String>,
+        yes: bool,
+    },
+    Connections {
+        json: bool,
+    },
+    ConnectionsExport,
+    ConnectionsImport {
+        file: String,
+        allow_local: bool,
+    },
+    Tunnel {
+        action: TunnelAction,
+        name: Option<String>,
+        index: Option<usize>,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum TunnelAction {
+    Start,
+    Stop,
+    List,
 }
 
 pub struct Verb {
@@ -95,6 +121,39 @@ pub const VERBS: &[Verb] = &[
                status. Without a timeout it waits indefinitely. Exits 1 with an\n\
                error when the shell reports no status for the command.\n",
     },
+    Verb {
+        name: "connect",
+        synopsis: "connect NAME [--split [--pane ID]] [--yes]",
+        summary: "Open a saved SSH connection",
+        help: "Usage: oxterm connect NAME [--split [--pane ID]] [--yes]\n\n\
+               Open a saved connection, or a host from ~/.ssh/config, in the running\n\
+               Oxterm and print its pane id. --split opens it in a split of the target\n\
+               pane's window. An entry marked 'Ask before connecting' needs --yes here.\n",
+    },
+    Verb {
+        name: "connections",
+        synopsis: "connections [--json|export|import FILE]",
+        summary: "List, export or import saved connections",
+        help: "Usage: oxterm connections [--json]\n\
+               \x20      oxterm connections export\n\
+               \x20      oxterm connections import FILE [--allow-local-commands]\n\n\
+               List saved connections and the hosts from ~/.ssh/config, print the book\n\
+               as JSON, or add the entries of an exported file. None of these opens a\n\
+               window or needs a running Oxterm, and the book holds no secrets.\n\n\
+               An import never replaces an entry and always gets new ids. Entries whose\n\
+               extra arguments would run a local program (ProxyCommand and similar)\n\
+               are skipped unless --allow-local-commands is given.\n",
+    },
+    Verb {
+        name: "tunnel",
+        synopsis: "tunnel list|start|stop [NAME [INDEX]]",
+        summary: "Control a connection's saved tunnels",
+        help: "Usage: oxterm tunnel list [NAME]\n\
+               \x20      oxterm tunnel start|stop NAME [INDEX]\n\n\
+               Show or change the saved tunnels of a connection in the running Oxterm.\n\
+               INDEX is the number 'tunnel list' prints; without it the command\n\
+               applies to all of that connection's tunnels.\n",
+    },
 ];
 
 pub fn verb(name: &str) -> Option<&'static Verb> {
@@ -123,11 +182,123 @@ pub fn parse_cli_mode(args: &[String]) -> Option<Result<CliMode, String>> {
     Some(parse_verb(&args[1..]))
 }
 
+fn parse_connect(args: &[String], help: &'static str) -> Result<CliMode, String> {
+    let mut name = None;
+    let mut split = false;
+    let mut pane = None;
+    let mut yes = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-h" | "--help" => return Ok(CliMode::Help(help)),
+            "--split" => split = true,
+            "--yes" | "-y" => yes = true,
+            "--pane" => {
+                i += 1;
+                pane = Some(args.get(i).ok_or("--pane requires a session id")?.clone());
+            }
+            option if option.starts_with('-') => {
+                return Err(format!("unknown option: {}", option));
+            }
+            value if name.is_none() => name = Some(value.to_string()),
+            value => return Err(format!("unexpected argument: {}", value)),
+        }
+        i += 1;
+    }
+    if pane.is_some() && !split {
+        return Err("--pane only applies with --split".to_string());
+    }
+    Ok(CliMode::Connect {
+        name: name.ok_or("connect requires a connection name")?,
+        split,
+        pane,
+        yes,
+    })
+}
+
+fn parse_connections(args: &[String], help: &'static str) -> Result<CliMode, String> {
+    match args.first().map(String::as_str) {
+        Some("export") => {
+            if let Some(extra) = args.get(1) {
+                return Err(format!("unexpected argument: {}", extra));
+            }
+            return Ok(CliMode::ConnectionsExport);
+        }
+        Some("import") => {
+            let mut file = None;
+            let mut allow_local = false;
+            for arg in &args[1..] {
+                match arg.as_str() {
+                    "-h" | "--help" => return Ok(CliMode::Help(help)),
+                    "--allow-local-commands" => allow_local = true,
+                    option if option.starts_with('-') => {
+                        return Err(format!("unknown option: {}", option));
+                    }
+                    value if file.is_none() => file = Some(value.to_string()),
+                    value => return Err(format!("unexpected argument: {}", value)),
+                }
+            }
+            return Ok(CliMode::ConnectionsImport {
+                file: file.ok_or("connections import requires a file")?,
+                allow_local,
+            });
+        }
+        _ => {}
+    }
+    let mut json = false;
+    for arg in args {
+        match arg.as_str() {
+            "-h" | "--help" => return Ok(CliMode::Help(help)),
+            "--json" => json = true,
+            other => return Err(format!("unknown option: {}", other)),
+        }
+    }
+    Ok(CliMode::Connections { json })
+}
+
+fn parse_tunnel(args: &[String], help: &'static str) -> Result<CliMode, String> {
+    if args.iter().any(|arg| arg == "-h" || arg == "--help") {
+        return Ok(CliMode::Help(help));
+    }
+    let action = match args.first().map(String::as_str) {
+        Some("start") => TunnelAction::Start,
+        Some("stop") => TunnelAction::Stop,
+        Some("list") | None => TunnelAction::List,
+        Some(other) => return Err(format!("unknown tunnel action: {}", other)),
+    };
+    let name = args.get(1).cloned();
+    if action != TunnelAction::List && name.is_none() {
+        return Err("tunnel start and stop require a connection name".to_string());
+    }
+    let index = match args.get(2) {
+        Some(value) => Some(
+            value
+                .parse::<usize>()
+                .map_err(|_| format!("invalid tunnel index: {}", value))?,
+        ),
+        None => None,
+    };
+    if args.len() > 3 {
+        return Err(format!("unexpected argument: {}", args[3]));
+    }
+    Ok(CliMode::Tunnel {
+        action,
+        name,
+        index,
+    })
+}
+
 pub fn parse_verb(args: &[String]) -> Result<CliMode, String> {
     let name = args.first().map(String::as_str).unwrap_or("");
     let Some(entry) = verb(name) else {
         return Err(format!("unknown control command: {name}"));
     };
+    match name {
+        "connect" => return parse_connect(&args[1..], entry.help),
+        "connections" => return parse_connections(&args[1..], entry.help),
+        "tunnel" => return parse_tunnel(&args[1..], entry.help),
+        _ => {}
+    }
     let mut cwd: Option<String> = None;
     let mut title: Option<String> = None;
     let mut pane: Option<String> = None;
@@ -254,6 +425,73 @@ pub fn expand_dir(raw: &str) -> Result<String, String> {
     std::fs::canonicalize(&expanded)
         .map(|path| path.to_string_lossy().to_string())
         .map_err(|e| format!("cannot resolve {}: {}", raw, e))
+}
+
+#[cfg(test)]
+mod connection_verb_tests {
+    use super::*;
+
+    fn parse(words: &[&str]) -> Result<CliMode, String> {
+        let args: Vec<String> = words.iter().map(|word| word.to_string()).collect();
+        parse_verb(&args)
+    }
+
+    #[test]
+    fn connect_requires_a_name_and_keeps_pane_with_split() {
+        assert!(parse(&["connect"]).is_err());
+        assert!(parse(&["connect", "a", "b"]).is_err());
+        assert!(parse(&["connect", "a", "--pane", "1"]).is_err());
+        assert!(parse(&["connect", "--nope", "a"]).is_err());
+        assert_eq!(
+            parse(&["connect", "db", "--split", "--pane", "1", "-y"]).unwrap(),
+            CliMode::Connect {
+                name: "db".to_string(),
+                split: true,
+                pane: Some("1".to_string()),
+                yes: true,
+            }
+        );
+    }
+
+    #[test]
+    fn connections_and_tunnel_are_strict() {
+        assert_eq!(
+            parse(&["connections", "--json"]).unwrap(),
+            CliMode::Connections { json: true }
+        );
+        assert!(parse(&["connections", "x"]).is_err());
+        assert_eq!(
+            parse(&["connections", "export"]).unwrap(),
+            CliMode::ConnectionsExport
+        );
+        assert!(parse(&["connections", "import"]).is_err());
+        assert_eq!(
+            parse(&["connections", "import", "f", "--allow-local-commands"]).unwrap(),
+            CliMode::ConnectionsImport {
+                file: "f".to_string(),
+                allow_local: true,
+            }
+        );
+        assert_eq!(
+            parse(&["tunnel"]).unwrap(),
+            CliMode::Tunnel {
+                action: TunnelAction::List,
+                name: None,
+                index: None,
+            }
+        );
+        assert_eq!(
+            parse(&["tunnel", "start", "db", "1"]).unwrap(),
+            CliMode::Tunnel {
+                action: TunnelAction::Start,
+                name: Some("db".to_string()),
+                index: Some(1),
+            }
+        );
+        assert!(parse(&["tunnel", "start"]).is_err());
+        assert!(parse(&["tunnel", "stop", "db", "x"]).is_err());
+        assert!(parse(&["tunnel", "boom", "db"]).is_err());
+    }
 }
 
 #[cfg(test)]

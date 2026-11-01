@@ -124,29 +124,6 @@ fn move_selection(list: &gtk::ListBox, step: i32) {
 static SESSION_PALETTE_LOADING: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// `ssh` command for a host-picker connection, with the same connection
-/// sharing and keepalives the shell-integration wrapper applies.
-fn ssh_connect_command(host: &str) -> (Vec<String>, bool) {
-    let mut command = vec!["ssh".to_string()];
-    let mut forwards_agent = false;
-    if let Ok(output) = std::process::Command::new("ssh")
-        .arg("-G")
-        .arg(host)
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-    {
-        let config = String::from_utf8_lossy(&output.stdout);
-        command.extend(crate::headless::ssh_config::sharing_options(
-            &config,
-            &crate::settings::config_dir(),
-        ));
-        forwards_agent = crate::headless::ssh_config::agent_forwarding_enabled(&config);
-    }
-    command.push(host.to_string());
-    (command, forwards_agent)
-}
-
 /// Quote one argument for `/bin/sh`, including embedded single quotes.
 fn quote_shell_arg(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
@@ -214,6 +191,7 @@ pub trait TerminalWindow {
     fn session_palette_signal(&self) {}
     /// Pick a host from ~/.ssh/config and open an SSH tab.
     fn ssh_picker_signal(&self) {}
+    fn connections_panel_signal(&self) {}
     /// Rename the tab that owns `term`. Windows without tabs (a detached
     /// terminal) leave this as a no-op.
     fn rename_tab_signal(&self, term: &TerminalBox) {
@@ -1605,6 +1583,10 @@ mod main_imp {
         pub notes_panel: RefCell<Option<crate::notes_panel::NotesPanel>>,
         /// Container that receives the notes panel the first time it is shown.
         pub notes_slot: RefCell<Option<gtk::Box>>,
+        pub connections_panel:
+            RefCell<Option<std::rc::Rc<crate::connections_panel::ConnectionsPanel>>>,
+        pub connections_slot: RefCell<Option<gtk::Box>>,
+        pub tunnel_watch_active: std::cell::Cell<bool>,
         /// Menu popups are built once, after the first terminal is up.
         pub menus_built: Cell<bool>,
         pub stats_source_id: RefCell<Option<glib::SourceId>>,
@@ -1918,6 +1900,9 @@ impl MainWindow {
         // the first time it is shown. The empty slot keeps its place in the
         // layout so the paned terminal area keeps the same size.
         let content_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let connections_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        content_row.pack_start(&connections_slot, false, true, 0);
+        *self.imp().connections_slot.borrow_mut() = Some(connections_slot);
         content_row.pack_start(&paned, true, true, 0);
         let notes_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         content_row.pack_start(&notes_slot, false, true, 0);
@@ -2242,7 +2227,9 @@ impl MainWindow {
     fn ssh_alert_host(&self, term: &TerminalBox) -> Option<String> {
         let host = term.ssh_destination()?;
         let patterns = settings().get_str("ssh_alert_patterns");
-        crate::headless::ssh_config::alert_host(&patterns, &host).then_some(host)
+        let name = term.connection_name();
+        let matches = |text: &str| crate::headless::ssh_config::alert_host(&patterns, text);
+        (matches(&host) || name.as_deref().is_some_and(matches)).then_some(host)
     }
 
     /// Highlight a SSH tab whose destination matches `ssh_alert_patterns`.
@@ -3896,6 +3883,9 @@ impl MainWindow {
             self.imp().tab_custom_titles.borrow_mut().remove(&term);
             nb.remove_page(Some(idx));
             self.update_tabs_menu();
+            if term.connection_id().is_some() {
+                self.reload_connections_panel();
+            }
         }
     }
 
@@ -4275,6 +4265,14 @@ impl MainWindow {
             }
         });
         menu.append(&ssh);
+        let weak = crate::SendWeak::new(self);
+        let connections = gtk::MenuItem::with_label("Connections Panel");
+        connections.connect_activate(move |_| {
+            if let Some(w) = weak.upgrade() {
+                w.toggle_connections_panel();
+            }
+        });
+        menu.append(&connections);
         menu.append(&gtk::SeparatorMenuItem::new());
 
         let sessions = crate::session::list_sessions();
@@ -4686,7 +4684,20 @@ impl MainWindow {
     /// clipboard; Oxterm never injects shell integration into a session behind
     /// the user's back.
     fn show_ssh_host_picker(&self) {
-        let hosts = crate::headless::ssh_config::load_hosts();
+        // Saved connections and ~/.ssh/config hosts, by the name `connect_text`
+        // looks up. An unreadable book only costs the saved names here; the
+        // panel is where that error is explained.
+        let mut hosts: Vec<String> = crate::connections_ui::load_entries()
+            .unwrap_or_else(|_| {
+                crate::headless::connections::merge(
+                    &crate::headless::connections::Book::default(),
+                    &crate::headless::ssh_config::load_hosts(),
+                )
+            })
+            .into_iter()
+            .map(|entry| entry.connection.name)
+            .collect();
+        hosts.sort_by_key(|name| name.to_lowercase());
         let dialog = gtk::Dialog::with_buttons(
             Some("Connect to SSH Host"),
             Some(self),
@@ -4704,7 +4715,9 @@ impl MainWindow {
         content.set_margin_top(12);
         content.set_margin_bottom(12);
         let entry = gtk::Entry::new();
-        entry.set_placeholder_text(Some("Filter hosts from ~/.ssh/config, or type user@host"));
+        entry.set_placeholder_text(Some(
+            "Filter saved connections and ~/.ssh/config, or type user@host",
+        ));
         content.pack_start(&entry, false, false, 0);
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::Single);
@@ -4812,30 +4825,10 @@ impl MainWindow {
         let Some(host) = host else {
             return;
         };
-        if host.starts_with('-') || !host.chars().all(|c| !c.is_control() && !c.is_whitespace()) {
-            self.status_message("Invalid SSH host name", true);
-            return;
-        }
         match response {
-            gtk::ResponseType::Accept => self.connect_ssh_host(&host),
+            gtk::ResponseType::Accept => self.connect_text(&host),
             gtk::ResponseType::Apply => self.copy_ssh_integration(&host),
             _ => {}
-        }
-    }
-
-    fn connect_ssh_host(&self, host: &str) {
-        if crate::notes::which("ssh").is_none() {
-            self.status_message("Cannot connect: ssh is not installed", true);
-            return;
-        }
-        let (command, forwards_agent) = ssh_connect_command(host);
-        let title = host.to_string();
-        self.add_new_tab(None, None, Some(&title), Some(&title), Some(&command));
-        if forwards_agent {
-            self.status_message(
-                "Agent forwarding is enabled for this host; prefer ProxyJump instead",
-                true,
-            );
         }
     }
 
@@ -4846,11 +4839,17 @@ impl MainWindow {
             "mkdir -p \"$HOME/.config/oxterm\" && printf %s '{}' | base64 -d > \"$HOME/.config/oxterm/osc133.sh\" && chmod 600 \"$HOME/.config/oxterm/osc133.sh\" && rc=\"$HOME/.bashrc\"; case \"$SHELL\" in *zsh*) rc=\"$HOME/.zshrc\";; esac; grep -q 'oxterm/osc133.sh' \"$rc\" 2>/dev/null || printf '\\n[ -r \"$HOME/.config/oxterm/osc133.sh\" ] && . \"$HOME/.config/oxterm/osc133.sh\"\\n' >> \"$rc\"; echo 'Oxterm shell integration installed; open a new shell.'",
             encoded
         );
-        let command = format!(
-            "ssh {} {}",
-            quote_shell_arg(host),
-            quote_shell_arg(&install)
-        );
+        // A saved connection's name means nothing to ssh; use its real options.
+        let target = crate::connections_ui::load_entries()
+            .ok()
+            .and_then(|entries| {
+                crate::headless::connections::find_entry(&entries, host)
+                    .map(|entry| entry.connection.target_args())
+            })
+            .unwrap_or_else(|| vec![host.to_string()]);
+        let mut argv = vec!["ssh".to_string()];
+        argv.extend(target);
+        let command = format!("{} {}", shell_words::join(&argv), quote_shell_arg(&install));
         gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).set_text(&command);
         self.status_message(
             "Integration command copied (bash/zsh); run it in a local shell to install it on the remote host",
@@ -5769,6 +5768,7 @@ impl MainWindow {
                     title,
                     cwd,
                     custom_title,
+                    connection_id: term.connection_id(),
                 });
             }
         }
@@ -5820,8 +5820,54 @@ impl MainWindow {
     fn restore_window(&self, data: crate::session::SessionData) {
         self.prepare_session_restore();
         let split = data.split_mode.clone();
-        let tabs_left = data.tabs_left.clone();
-        let tabs_right = data.tabs_right.clone();
+        // A tab that held a saved connection is not reopened as a local shell:
+        // the person is asked once the window is up, so a session file cannot
+        // log in anywhere by itself. A connection that no longer exists falls
+        // back to the usual shell in the tab's directory.
+        // Most sessions have no such tab: they skip reading the book and
+        // ~/.ssh/config, which would otherwise slow down every start.
+        let has_connections = data
+            .tabs_left
+            .iter()
+            .chain(&data.tabs_right)
+            .any(|tab| tab.connection_id.is_some());
+        let known: Vec<String> = if has_connections {
+            crate::connections_ui::load_entries()
+                .map(|entries| {
+                    entries
+                        .into_iter()
+                        .map(|entry| entry.connection.id)
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let is_saved = |tab: &crate::session::TabEntry| {
+            tab.connection_id
+                .as_ref()
+                .is_some_and(|id| known.contains(id))
+        };
+        let reconnect: Vec<String> = data
+            .tabs_left
+            .iter()
+            .chain(&data.tabs_right)
+            .filter(|tab| is_saved(tab))
+            .filter_map(|tab| tab.connection_id.clone())
+            .collect();
+        let shells = |tabs: &[crate::session::TabEntry]| -> Vec<crate::session::TabEntry> {
+            tabs.iter().filter(|tab| !is_saved(tab)).cloned().collect()
+        };
+        let tabs_left = shells(&data.tabs_left);
+        let tabs_right = shells(&data.tabs_right);
+        if !reconnect.is_empty() {
+            let weak = crate::SendWeak::new(self);
+            glib::idle_add_local_once(move || {
+                if let Some(window) = weak.upgrade() {
+                    crate::connections_ui::offer_reconnect(&window, reconnect);
+                }
+            });
+        }
         if !tabs_left.is_empty() {
             let first = &tabs_left[0];
             let term = self.add_new_tab(
@@ -5842,6 +5888,10 @@ impl MainWindow {
                 );
                 self.remember_restored_custom_title(&term, tab);
             }
+        } else {
+            // Every left tab was a connection: the window still needs a terminal
+            // while the question is on screen, and if the answer is no.
+            self.add_new_tab(None, None, None, None, None);
         }
         if !tabs_right.is_empty() && split != "single" {
             let nb2 = self.imp().notebook2.borrow().clone().unwrap();
@@ -5859,6 +5909,17 @@ impl MainWindow {
         } else if split == "single" {
             self.set_split("single", false);
         }
+    }
+
+    /// Keep `title` on the tab even when the program sets its own, as a rename
+    /// does. A remote shell's `user@host:~` must not hide which saved connection
+    /// this is. The user can still rename the tab.
+    pub fn pin_tab_title(&self, term: &TerminalBox, title: &str) {
+        self.imp()
+            .tab_custom_titles
+            .borrow_mut()
+            .insert(term.clone(), title.to_string());
+        self.set_tab_text(term, title);
     }
 
     fn remember_restored_custom_title(&self, term: &TerminalBox, tab: &crate::session::TabEntry) {
@@ -5974,6 +6035,9 @@ impl TerminalWindow for MainWindow {
     }
     fn ssh_picker_signal(&self) {
         self.show_ssh_host_picker();
+    }
+    fn connections_panel_signal(&self) {
+        self.toggle_connections_panel();
     }
     fn open_command_tab(&self, cwd: &str, command: Vec<String>, title: &str) {
         let term = self.add_new_tab(Some(cwd), None, Some(title), Some(title), Some(&command));

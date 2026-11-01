@@ -43,7 +43,8 @@ memory footprint and the memory-safety guarantees of Rust.
   an editor jump in a new tab, with a configurable `editor_jump_command`
 - Searchable session switcher across local windows, foreign panes, and detached
   broker sessions, with attach/focus actions
-- SSH host picker from `~/.ssh/config`, plus an explicit copy-on-demand
+- Connection manager: a searchable panel with groups, tags, favorites and saved tunnels, a form that shows the exact `ssh` command, optional keyring passwords, and `oxterm connect`; it runs your OpenSSH and never edits `~/.ssh/config`
+- SSH host picker from saved connections and `~/.ssh/config`, plus an explicit copy-on-demand
   shell-integration installer for remote bash/zsh sessions
 - Production-host tab highlighting, tunnel inspection, and a ForwardAgent
   warning in the SSH host picker
@@ -166,7 +167,7 @@ Cargo version plus the total Git commit count as SemVer build metadata, for
 example `MAJOR.MINOR.PATCH+<commit-count>`. Builds without Git metadata show
 the plain release version.
 
-Install the executable, broker, desktop entry, manual page, shell completions,
+Install the executable, broker, keyring helper, desktop entry, manual page, shell completions,
 and documentation under `~/.local`:
 
 ```bash
@@ -188,7 +189,7 @@ To build and install the current source version system-wide as `/usr/bin/oxterm`
 
 The script always rebuilds the release binaries before installing them and asks
 for `sudo` only when it needs permission to write the system installation
-directories. It installs `oxterm` and `oxterm-broker`, desktop launcher, manual
+directories. It installs `oxterm`, `oxterm-broker`, `oxterm-askpass`, desktop launcher, manual
 page, shell completions, documentation, and Oxterm ox icon system-wide. Run it
 again after building a newer version so the system command and launcher point
 to the new binary.
@@ -270,6 +271,9 @@ Scriptable control (acts on a running Oxterm, opens no window):
   send [--pane ID] [--enter] TEXT...|-                                 Type into a pane
   capture [--pane ID] [--scrollback N|--all]                           Print a pane's text
   wait [--pane ID] [--timeout SECONDS]                                 Wait for the next command to finish
+  connect NAME [--split [--pane ID]] [--yes]                           Open a saved SSH connection
+  connections [--json|export|import FILE]                              List, export or import saved connections
+  tunnel list|start|stop [NAME [INDEX]]                                Control a connection's saved tunnels
 
   These headless commands act on a running Oxterm terminal on the same
   host and open no window, so they are safe to use over SSH. Without a

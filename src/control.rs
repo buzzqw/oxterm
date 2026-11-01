@@ -22,8 +22,11 @@ use serde_json::{json, Value};
 use gtk::prelude::*;
 use zoha_vte::traits::TerminalExt;
 
-use crate::headless::control_cli::{CaptureScope, CliMode};
+use crate::headless::connections::{self, Kind};
+use crate::headless::control_cli::{CaptureScope, CliMode, TunnelAction};
 use crate::headless::framing;
+use crate::headless::ssh_config;
+use crate::headless::tunnels;
 use crate::logging::LOGGER;
 use crate::remote;
 use crate::terminal::TerminalBox;
@@ -89,6 +92,22 @@ pub fn run_cli(mode: CliMode) -> i32 {
                 Err(error) => fail(error.0, "split", &error.1),
             }
         }
+        CliMode::Connect {
+            name,
+            split,
+            pane,
+            yes,
+        } => run_connect(&name, split, pane.as_deref(), yes),
+        CliMode::Connections { json } => run_connections(json),
+        CliMode::ConnectionsExport => run_connections_export(),
+        CliMode::ConnectionsImport { file, allow_local } => {
+            run_connections_import(&file, allow_local)
+        }
+        CliMode::Tunnel {
+            action,
+            name,
+            index,
+        } => run_tunnel(action, name.as_deref(), index),
         CliMode::Send { pane, enter, text } => {
             let text = match text {
                 Some(text) => text,
@@ -157,6 +176,234 @@ fn fail(code: i32, verb: &str, message: &str) -> i32 {
 struct Target {
     socket: PathBuf,
     id: String,
+}
+
+/// The book merged with `~/.ssh/config`, for the client side of the commands.
+fn client_entries() -> Result<Vec<connections::Entry>, (i32, String)> {
+    let book = connections::load_book(&connections::book_path()).map_err(|error| (1, error))?;
+    Ok(connections::merge(&book, &ssh_config::load_hosts()))
+}
+
+fn run_connect(name: &str, split: bool, pane: Option<&str>, yes: bool) -> i32 {
+    let entries = match client_entries() {
+        Ok(entries) => entries,
+        Err(error) => return fail(error.0, "connect", &error.1),
+    };
+    let Some(entry) = connections::find_entry(&entries, name) else {
+        return fail(3, "connect", &format!("no connection named {}", name));
+    };
+    let connection = &entry.connection;
+    if let Err(error) = connection.validate() {
+        return fail(1, "connect", &error);
+    }
+    if connection.confirm_connect && !yes {
+        return fail(
+            1,
+            "connect",
+            &format!("{} asks for confirmation; pass --yes", connection.name),
+        );
+    }
+    // Resolved here and not by the GUI: `ssh -G` can block, and a control request
+    // is answered on the GUI thread.
+    let prepared = connections::prepare_session(connection);
+    if let Some(note) = prepared.keyring_note {
+        eprintln!("oxterm connect: {}", note);
+    }
+    let result = if split {
+        let target = match resolve_pane(pane) {
+            Ok(target) => target,
+            Err(error) => return fail(error.0, "connect", &error.1),
+        };
+        request_at(
+            &target.socket,
+            &json!({
+                "op": "split",
+                "pane": target.id,
+                "vertical": true,
+                "title": connection.name,
+                "command": prepared.plan.argv,
+                "connection_id": connection.id,
+            }),
+        )
+        .map(|reply| reply["pane"].as_str().unwrap_or_default().to_string())
+    } else {
+        client_new(&json!({
+            "op": "new",
+            "title": connection.name,
+            "command": prepared.plan.argv,
+            "connection_id": connection.id,
+        }))
+    };
+    match result {
+        Ok(pane) => {
+            if let Err(error) =
+                connections::record_usage(&connections::usage_path(), &connection.id)
+            {
+                LOGGER.warning(&format!("connection_usage_failed error={}", error));
+            }
+            for (index, tunnel) in connection.tunnels.iter().enumerate() {
+                if tunnel.autostart {
+                    if let Some(socket) = live_sockets().into_iter().next() {
+                        let _ = request_at(
+                            &socket,
+                            &json!({
+                                "op": "tunnel",
+                                "action": "start",
+                                "id": connection.id,
+                                "index": index,
+                            }),
+                        );
+                    }
+                }
+            }
+            println!("{}", pane);
+            0
+        }
+        Err(error) => fail(error.0, "connect", &error.1),
+    }
+}
+
+fn run_connections(as_json: bool) -> i32 {
+    let entries = match client_entries() {
+        Ok(entries) => entries,
+        Err(error) => return fail(error.0, "connections", &error.1),
+    };
+    if as_json {
+        let rows: Vec<Value> = entries
+            .iter()
+            .map(|entry| {
+                let connection = &entry.connection;
+                json!({
+                    "id": connection.id,
+                    "name": connection.name,
+                    "kind": if connection.kind == Kind::Alias { "alias" } else { "manual" },
+                    "destination": connection.destination(),
+                    "group": connection.group,
+                    "tags": connection.tags,
+                    "favorite": connection.favorite,
+                    "command": connection.command_preview(),
+                    "tunnels": connection.tunnels.iter().map(|tunnel| tunnel.describe()).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        println!("{}", Value::Array(rows));
+        return 0;
+    }
+    let width = entries
+        .iter()
+        .map(|entry| entry.connection.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut sorted: Vec<&connections::Entry> = entries.iter().collect();
+    sorted.sort_by_key(|entry| entry.connection.name.to_lowercase());
+    for entry in sorted {
+        let connection = &entry.connection;
+        let mut line = format!("{:<width$}  {}", connection.name, connection.summary());
+        if !connection.group.is_empty() {
+            line.push_str(&format!("  [{}]", connection.group));
+        }
+        println!("{}", line.trim_end());
+    }
+    0
+}
+
+fn run_connections_export() -> i32 {
+    match connections::load_book(&connections::book_path()) {
+        Ok(book) => match serde_json::to_string_pretty(&book) {
+            Ok(text) => {
+                println!("{}", text);
+                0
+            }
+            Err(error) => fail(1, "connections", &error.to_string()),
+        },
+        Err(error) => fail(1, "connections", &error),
+    }
+}
+
+fn run_connections_import(file: &str, allow_local: bool) -> i32 {
+    let incoming = match connections::load_book(std::path::Path::new(file)) {
+        Ok(book) => book,
+        Err(error) => return fail(1, "connections", &error),
+    };
+    if !std::path::Path::new(file).exists() {
+        return fail(1, "connections", &format!("{} does not exist", file));
+    }
+    let report = connections::update_book(&connections::book_path(), |book| {
+        connections::import_into(book, incoming, allow_local)
+    });
+    match report {
+        Ok(report) => {
+            println!("imported {}", report.imported);
+            for reason in &report.skipped {
+                eprintln!("skipped {}", reason);
+            }
+            0
+        }
+        Err(error) => fail(1, "connections", &error),
+    }
+}
+
+fn run_tunnel(action: TunnelAction, name: Option<&str>, index: Option<usize>) -> i32 {
+    let entries = match client_entries() {
+        Ok(entries) => entries,
+        Err(error) => return fail(error.0, "tunnel", &error.1),
+    };
+    let selected = match name {
+        Some(name) => match connections::find_entry(&entries, name) {
+            Some(entry) => Some(entry),
+            None => return fail(3, "tunnel", &format!("no connection named {}", name)),
+        },
+        None => None,
+    };
+    let socket = live_sockets().into_iter().next();
+    if action == TunnelAction::List {
+        // Tunnels belong to a GUI process; without one, every tunnel is stopped.
+        let live = socket.as_ref().and_then(|socket| {
+            request_at(socket, &json!({ "op": "tunnel", "action": "list" })).ok()
+        });
+        for entry in &entries {
+            if selected.is_some_and(|selected| selected.connection.id != entry.connection.id) {
+                continue;
+            }
+            for (position, tunnel) in entry.connection.tunnels.iter().enumerate() {
+                let status = live
+                    .as_ref()
+                    .and_then(|reply| reply["tunnels"].as_array())
+                    .and_then(|rows| {
+                        rows.iter().find(|row| {
+                            row["name"].as_str() == Some(entry.connection.name.as_str())
+                                && row["index"].as_u64() == Some(position as u64)
+                        })
+                    })
+                    .and_then(|row| row["status"].as_str())
+                    .unwrap_or("stopped");
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    entry.connection.name,
+                    position,
+                    tunnel.describe(),
+                    status
+                );
+            }
+        }
+        return 0;
+    }
+    let Some(socket) = socket else {
+        return fail(4, "tunnel", "no running Oxterm window");
+    };
+    let Some(entry) = selected else {
+        return fail(2, "tunnel", "a connection name is required");
+    };
+    let request = json!({
+        "op": "tunnel",
+        "action": if action == TunnelAction::Start { "start" } else { "stop" },
+        "id": entry.connection.id,
+        "index": index,
+    });
+    match request_at(&socket, &request) {
+        Ok(_) => 0,
+        Err(error) => fail(error.0, "tunnel", &error.1),
+    }
 }
 
 fn client_new(request: &Value) -> Result<String, (i32, String)> {
@@ -533,6 +780,14 @@ fn dispatch(request: &Value) -> Value {
             let title = request["title"].as_str();
             let command = request_command(request);
             let term = window.add_new_tab(cwd, None, title, title, command.as_ref());
+            term.set_connection(
+                request["connection_id"].as_str().map(str::to_string),
+                request["title"].as_str().map(str::to_string),
+            );
+            if request["connection_id"].is_string() {
+                window.pin_tab_title(&term, title.unwrap_or_default());
+            }
+            window.reload_connections_panel();
             window.present();
             json!({ "ok": true, "pane": term.remote_id() })
         }
@@ -553,9 +808,18 @@ fn dispatch(request: &Value) -> Value {
             let Some(term) = window.split_terminal(mode, cwd, command.as_ref(), title) else {
                 return error_reply("this window already has two panes", 1);
             };
+            term.set_connection(
+                request["connection_id"].as_str().map(str::to_string),
+                request["title"].as_str().map(str::to_string),
+            );
+            if request["connection_id"].is_string() {
+                window.pin_tab_title(&term, title.unwrap_or_default());
+            }
+            window.reload_connections_panel();
             window.present();
             json!({ "ok": true, "pane": term.remote_id() })
         }
+        "tunnel" => handle_tunnel(&app, request),
         "handover" => {
             let Some((_, term)) = find_terminal(&app, request["pane"].as_str().unwrap_or(""))
             else {
@@ -684,6 +948,63 @@ pub(crate) fn focus_pane(socket: &Path, id: &str) -> Result<(), String> {
     request_at(socket, &json!({ "op": "focus", "pane": id }))
         .map(|_| ())
         .map_err(|(_, error)| error)
+}
+
+fn handle_tunnel(app: &gtk::Application, request: &Value) -> Value {
+    let action = request["action"].as_str().unwrap_or("");
+    let states = |entries: &[connections::Entry]| -> Value {
+        let mut rows = Vec::new();
+        let snapshot = tunnels::snapshot();
+        for entry in entries {
+            for (index, tunnel) in entry.connection.tunnels.iter().enumerate() {
+                let key = connections::tunnel_key(&entry.connection, tunnel);
+                let status = snapshot
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or(tunnels::Status::Stopped);
+                rows.push(json!({
+                    "name": entry.connection.name,
+                    "index": index,
+                    "tunnel": tunnel.describe(),
+                    "status": status.label(),
+                }));
+            }
+        }
+        json!({ "ok": true, "tunnels": rows })
+    };
+    let entries = match crate::connections_ui::load_entries() {
+        Ok(entries) => entries,
+        Err(error) => return error_reply(&error, 1),
+    };
+    if action == "list" {
+        return states(&entries);
+    }
+    let Some(window) = target_window(app) else {
+        return error_reply("no running Oxterm window", 4);
+    };
+    let id = request["id"].as_str().unwrap_or("");
+    let Some(entry) = connections::find_entry_by_id(&entries, id) else {
+        return error_reply("connection not found", 3);
+    };
+    let index = request["index"].as_u64().map(|index| index as usize);
+    if index.is_some_and(|index| index >= entry.connection.tunnels.len()) {
+        return error_reply("no tunnel with that index", 3);
+    }
+    if entry.connection.tunnels.is_empty() {
+        return error_reply("this connection has no saved tunnels", 3);
+    }
+    for (position, tunnel) in entry.connection.tunnels.iter().enumerate() {
+        if index.is_some_and(|index| index != position) {
+            continue;
+        }
+        if action == "start" {
+            window.start_tunnel(&entry.connection, tunnel);
+        } else {
+            tunnels::stop(&connections::tunnel_key(&entry.connection, tunnel));
+        }
+    }
+    window.watch_tunnels();
+    json!({ "ok": true })
 }
 
 fn request_command(request: &Value) -> Option<Vec<String>> {
