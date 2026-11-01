@@ -45,6 +45,8 @@ memory footprint and the memory-safety guarantees of Rust.
   broker sessions, with attach/focus actions
 - SSH host picker from `~/.ssh/config`, plus an explicit copy-on-demand
   shell-integration installer for remote bash/zsh sessions
+- Production-host tab highlighting, tunnel inspection, and a ForwardAgent
+  warning in the SSH host picker
 - Smart command-finished notifications: only when the terminal is unfocused or a command runs long, with failures always reported, plus a red dot on tabs whose last command failed
 - Scriptable control API: `new`, `split`, `send`, `capture`, and `wait` against a running window
 - VI copy mode with motions, text objects, visual block selection, scrolloff, and bookmarks
@@ -517,6 +519,17 @@ inside Oxterm and need `Ctrl+B` to reach them.
   clipboard that installs the OSC 133 script on the remote bash/zsh account
   when you run it. Oxterm never injects shell integration into an SSH session
   automatically.
+- **Production badge.** `ssh_alert_patterns` (default matches `prod`,
+  `production`, `prd` and `live` host names) colours matching SSH tabs with
+  `ssh_alert_color` and adds a *Production host* tooltip. Set the pattern to an
+  empty string to disable it. This is a visual warning, not a command blocker.
+- **SSH tunnels.** The tab tooltip lists the `-L`, `-R` and `-D` forwards of
+  the active session, and **SSH Tunnels...** in the terminal context menu shows
+  the same list in a dialog. It reports what was configured, not the live
+  health of each port.
+- **Agent forwarding warning.** The host picker reads the effective `ssh -G`
+  configuration and warns when `ForwardAgent yes` is active, suggesting
+  `ProxyJump` instead.
 
 ## Configuration and Data
 

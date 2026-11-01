@@ -91,6 +91,7 @@ fn parse_file(
 fn is_concrete_host(pattern: &str) -> bool {
     !pattern.is_empty()
         && !pattern.starts_with('!')
+        && !pattern.starts_with('-')
         && !pattern.chars().any(|c| matches!(c, '*' | '?' | '[' | ']'))
 }
 
@@ -150,6 +151,114 @@ fn expand_glob(pattern: &Path) -> Vec<PathBuf> {
         current = next;
     }
     current.into_iter().filter(|path| path.exists()).collect()
+}
+
+/// `ssh` options that consume the following argument.
+fn option_takes_value(option: &str) -> bool {
+    matches!(
+        option,
+        "-B" | "-b"
+            | "-c"
+            | "-D"
+            | "-E"
+            | "-e"
+            | "-F"
+            | "-I"
+            | "-i"
+            | "-J"
+            | "-L"
+            | "-l"
+            | "-m"
+            | "-O"
+            | "-o"
+            | "-P"
+            | "-p"
+            | "-Q"
+            | "-R"
+            | "-S"
+            | "-W"
+            | "-w"
+    )
+}
+
+/// First non-option argument, i.e. the `[user@]host` destination.
+pub fn ssh_destination(args: &[String]) -> Option<String> {
+    let mut index = 0;
+    while index < args.len() {
+        let argument = &args[index];
+        if argument == "--" {
+            return args.get(index + 1).cloned();
+        }
+        if argument.starts_with('-') {
+            let flag = argument.get(..2).unwrap_or(argument);
+            if option_takes_value(flag) && argument.len() == 2 {
+                index += 1;
+            }
+            index += 1;
+            continue;
+        }
+        return Some(argument.clone());
+    }
+    None
+}
+
+/// Strip a `user@` prefix from a destination.
+pub fn ssh_host_name(destination: &str) -> &str {
+    destination.rsplit('@').next().unwrap_or(destination)
+}
+
+/// Whether `host` matches the configured production-host regex.
+///
+/// An invalid or empty pattern simply disables the badge.
+pub fn alert_host(patterns: &str, host: &str) -> bool {
+    if patterns.trim().is_empty() {
+        return false;
+    }
+    regex::Regex::new(patterns)
+        .map(|pattern| pattern.is_match(ssh_host_name(host)))
+        .unwrap_or(false)
+}
+
+/// Command-line `-L`, `-R` and `-D` forwards, formatted for display.
+///
+/// This deliberately reports what was passed to ssh, not the live health of
+/// each tunnel: `ssh -O check` validates the master connection, not the
+/// individual ports.
+pub fn ssh_forwardings(args: &[String]) -> Vec<String> {
+    let mut forwards = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let argument = &args[index];
+        if argument == "--" {
+            break;
+        }
+        let flag = argument.get(..2).unwrap_or(argument);
+        if matches!(flag, "-L" | "-R" | "-D") {
+            let attached = (argument.len() > 2).then(|| argument[2..].to_string());
+            let value = attached.or_else(|| args.get(index + 1).cloned());
+            if let Some(value) = value {
+                forwards.push(format!("{} {}", flag, value));
+                if argument.len() == 2 {
+                    index += 1;
+                }
+            }
+        } else if argument.starts_with('-') {
+            if option_takes_value(flag) && argument.len() == 2 {
+                index += 1;
+            }
+        } else {
+            break;
+        }
+        index += 1;
+    }
+    forwards
+}
+
+/// Whether the effective configuration enables agent forwarding.
+pub fn agent_forwarding_enabled(effective_config: &str) -> bool {
+    effective_config
+        .lines()
+        .any(|line| line.trim() == "forwardagent yes")
 }
 
 /// Extra `ssh` options that mirror the shell-integration wrapper.
@@ -292,6 +401,64 @@ mod tests {
         assert!(wildcard_match("host?", "host1"));
         assert!(wildcard_match("*", "anything"));
         assert!(!wildcard_match("a*b", "abx"));
+    }
+
+    #[test]
+    fn finds_the_destination_past_ssh_options() {
+        let args = |values: &[&str]| values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            ssh_destination(&args(&["-p", "2222", "bob@example.test", "uptime"])),
+            Some("bob@example.test".to_string())
+        );
+        assert_eq!(
+            ssh_destination(&args(&["-L", "8080:localhost:80", "-J", "bastion", "db"])),
+            Some("db".to_string())
+        );
+        assert_eq!(
+            ssh_destination(&args(&["-v", "-oControlPath=/tmp/x", "host"])),
+            Some("host".to_string())
+        );
+        assert_eq!(
+            ssh_destination(&args(&["--", "-odd-host"])),
+            Some("-odd-host".to_string())
+        );
+        assert_eq!(ssh_destination(&args(&[])), None);
+    }
+
+    #[test]
+    fn detects_production_hosts_and_tunnels() {
+        let pattern = r"(?i)(^|[-_.])(prod|production|prd|live)([-_.]|$)";
+        assert!(alert_host(pattern, "prod-db-02"));
+        assert!(alert_host(pattern, "user@production"));
+        assert!(alert_host(pattern, "live-eu"));
+        assert!(!alert_host(pattern, "productivity"));
+        assert!(!alert_host(pattern, "dev-01"));
+        assert!(!alert_host("", "prod-01"));
+        assert!(!alert_host("(", "prod-01"));
+
+        let args = |values: &[&str]| values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            ssh_forwardings(&args(&[
+                "-L",
+                "8080:localhost:80",
+                "-R9000:localhost:90",
+                "-D",
+                "1080",
+                "host",
+            ])),
+            vec![
+                "-L 8080:localhost:80".to_string(),
+                "-R 9000:localhost:90".to_string(),
+                "-D 1080".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn detects_agent_forwarding() {
+        assert!(agent_forwarding_enabled("forwardagent yes\n"));
+        assert!(!agent_forwarding_enabled("forwardagent no\n"));
+        assert!(!agent_forwarding_enabled(""));
     }
 
     #[test]

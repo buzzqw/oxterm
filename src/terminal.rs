@@ -2427,6 +2427,52 @@ impl TerminalBox {
         self.get_ssh_target().is_some()
     }
 
+    /// The `[user@]host` destination of the active ssh/mosh session.
+    pub fn ssh_destination(&self) -> Option<String> {
+        crate::headless::ssh_config::ssh_destination(&self.get_ssh_target()?)
+    }
+
+    /// Command-line `-L`, `-R` and `-D` forwards for the active session.
+    pub fn ssh_forwardings(&self) -> Vec<String> {
+        self.get_ssh_target()
+            .map(|args| crate::headless::ssh_config::ssh_forwardings(&args))
+            .unwrap_or_default()
+    }
+
+    /// Show the forwards of the active SSH session in a small dialog.
+    fn show_ssh_tunnels(&self) {
+        let forwards = self.ssh_forwardings();
+        if forwards.is_empty() {
+            return;
+        }
+        let parent = self
+            .toplevel()
+            .and_then(|widget| widget.downcast::<gtk::Window>().ok());
+        let dialog = gtk::Dialog::with_buttons(
+            Some("SSH Tunnels"),
+            parent.as_ref(),
+            gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+            &[("Close", gtk::ResponseType::Close)],
+        );
+        let mut text = String::new();
+        if let Some(host) = self.ssh_destination() {
+            text.push_str(&format!("Host: {}\n\n", host));
+        }
+        text.push_str(&forwards.join("\n"));
+        let label = gtk::Label::new(Some(&text));
+        label.set_xalign(0.0);
+        label.set_selectable(true);
+        label.set_margin_start(16);
+        label.set_margin_end(16);
+        label.set_margin_top(12);
+        label.set_margin_bottom(12);
+        dialog.content_area().pack_start(&label, true, true, 0);
+        dialog.set_default_size(440, 180);
+        dialog.show_all();
+        dialog.run();
+        dialog.close();
+    }
+
     /// ssh arguments (without the program name) describing the remote
     /// session running as a direct child of this terminal's shell: a plain
     /// `ssh`, the `ssh` supervised by `autossh`, or the host of a `mosh`
@@ -3776,6 +3822,11 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             }
         }
 
+        if !self.ssh_forwardings().is_empty() {
+            menu_action(&tools_menu, self, "SSH Tunnels...", |t| {
+                t.show_ssh_tunnels()
+            });
+        }
         tools_menu.append(&gtk::SeparatorMenuItem::new());
         menu_action(&tools_menu, self, "Open File Manager Here", |t| t.open_fm())
             .set_tooltip_text(Some("Open the working directory in the file manager"));

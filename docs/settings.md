@@ -97,6 +97,8 @@ never written back to disk.
 | `tmux_prefix_enabled` | bool | `true` | Enable the tmux-style Ctrl+B prefix in panes. |
 | `tmux_prefix_key` | letter | `b` | Letter used with Ctrl as the tmux-style prefix. |
 | `ssh_connection_sharing` | bool | `true` | Share SSH connections and enable keepalives through the bundled wrapper. |
+| `ssh_alert_patterns` | string | `(?i)(^|[-_.])(prod|production|prd|live)([-_.]|$)` | Regex for production SSH hosts; matching tabs are highlighted. Empty disables the badge. |
+| `ssh_alert_color` | color (#rrggbb) | `#cc0000` | Colour used for the production SSH tab badge. |
 
 ## Limits
 

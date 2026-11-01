@@ -640,6 +640,14 @@ a new tab running `ssh`. **Copy Integration Command** copies an explicit
 account; run it yourself when you want it. Oxterm never injects shell
 integration into a session automatically.
 
+Hosts matching `ssh_alert_patterns` (by default names containing `prod`,
+`production`, `prd` or `live`) are shown in `ssh_alert_color` with a bold tab
+title and a *Production host* tooltip; set the pattern to an empty string to
+disable the badge. The tab tooltip also lists the session's `-L`, `-R` and `-D`
+forwards, and **SSH Tunnels...** in the terminal context menu opens the same
+list in a dialog. It shows what was configured, not the live health of each
+port.
+
 With shell integration active, `ssh` typed at the prompt goes through a small
 wrapper that:
 
@@ -657,6 +665,13 @@ Your own `~/.ssh/config` always wins: if it sets `ControlPath` or
 `autossh` gets the same treatment (its own `-M`, `-f`, and `-V` options are kept
 as they are). `mosh` is left untouched: in its default mode it disables ssh
 connection sharing itself, so Oxterm only recognises mosh sessions.
+
+Prefer `ProxyJump` over agent forwarding: the bastion never receives your SSH
+agent socket. The host picker warns when the effective configuration enables
+`ForwardAgent yes` for the selected host. For hardware-backed keys, generate a
+FIDO2 resident key with
+`ssh-keygen -t ed25519-sk -O resident -O verify-required`; Oxterm simply runs
+`ssh`, so any key the agent offers works.
 
 The status bar shows the remote host's CPU, memory, and disk usage for `ssh`,
 `autossh`, and `mosh` sessions, plus the directory a shell announces with

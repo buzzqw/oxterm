@@ -126,8 +126,9 @@ static SESSION_PALETTE_LOADING: std::sync::atomic::AtomicBool =
 
 /// `ssh` command for a host-picker connection, with the same connection
 /// sharing and keepalives the shell-integration wrapper applies.
-fn ssh_connect_command(host: &str) -> Vec<String> {
+fn ssh_connect_command(host: &str) -> (Vec<String>, bool) {
     let mut command = vec!["ssh".to_string()];
+    let mut forwards_agent = false;
     if let Ok(output) = std::process::Command::new("ssh")
         .arg("-G")
         .arg(host)
@@ -140,9 +141,10 @@ fn ssh_connect_command(host: &str) -> Vec<String> {
             &config,
             &crate::settings::config_dir(),
         ));
+        forwards_agent = crate::headless::ssh_config::agent_forwarding_enabled(&config);
     }
     command.push(host.to_string());
-    command
+    (command, forwards_agent)
 }
 
 /// Quote one argument for `/bin/sh`, including embedded single quotes.
@@ -2218,11 +2220,32 @@ impl MainWindow {
 
     fn tab_tooltip(&self, title: &str, term: &TerminalBox) -> String {
         let cwd = term.display_cwd();
-        if cwd.is_empty() {
+        let mut tooltip = if cwd.is_empty() {
             title.to_string()
         } else {
             format!("{title}\n{cwd}")
+        };
+        let forwards = term.ssh_forwardings();
+        if !forwards.is_empty() {
+            tooltip.push_str("\nTunnels: ");
+            tooltip.push_str(&forwards.join(", "));
         }
+        if let Some(host) = self.ssh_alert_host(term) {
+            tooltip.push_str(&format!("\nProduction host: {host}"));
+        }
+        tooltip
+    }
+
+    fn ssh_alert_host(&self, term: &TerminalBox) -> Option<String> {
+        let host = term.ssh_destination()?;
+        let patterns = settings().get_str("ssh_alert_patterns");
+        crate::headless::ssh_config::alert_host(&patterns, &host).then_some(host)
+    }
+
+    /// Highlight a SSH tab whose destination matches `ssh_alert_patterns`.
+    fn apply_ssh_alert(&self, term: &TerminalBox) {
+        let title = self.get_tab_text(term);
+        self.set_tab_text(term, &title);
     }
 
     fn update_cwd_badge(&self, term: &TerminalBox) {
@@ -2259,20 +2282,22 @@ impl MainWindow {
             let lbl = &tab.label;
             lbl.set_tooltip_text(Some(&tooltip));
             lbl.set_width_chars(Self::tab_label_width(text));
+            let alert = self.ssh_alert_host(term).is_some();
             let s = settings();
-            let active_color = s.get_str("tab_active_title_color");
-            let title_color = s.get_str("tab_title_color");
-            let color = if self.is_active_tab(term) {
-                active_color
+            let color = if alert {
+                s.get_str("ssh_alert_color")
+            } else if self.is_active_tab(term) {
+                s.get_str("tab_active_title_color")
             } else {
-                title_color
+                s.get_str("tab_title_color")
             };
-            if color.is_empty() {
+            if color.is_empty() && !alert {
                 lbl.set_text(text);
             } else {
                 lbl.set_markup(&format!(
-                    "<span foreground='{}'>{}</span>",
+                    "<span foreground='{}'{}>{}</span>",
                     color,
+                    if alert { " weight='bold'" } else { "" },
                     escape_markup(text)
                 ));
             }
@@ -3613,6 +3638,19 @@ impl MainWindow {
         self.update_tabs_menu();
 
         term.set_remote_info(&base, &term.get_cwd());
+        self.apply_ssh_alert(&term);
+        // ssh is usually started by the shell a moment after the tab exists;
+        // one delayed check catches that without a permanent polling timer.
+        {
+            let weak = crate::SendWeak::new(self);
+            let term = term.clone();
+            glib::timeout_add_seconds_local(2, move || {
+                if let Some(window) = weak.upgrade() {
+                    window.apply_ssh_alert(&term);
+                }
+                glib::ControlFlow::Break
+            });
+        }
         term.show_all();
         let weak = crate::SendWeak::new(&term);
         glib::idle_add_local(move || {
@@ -4739,7 +4777,7 @@ impl MainWindow {
         let Some(host) = host else {
             return;
         };
-        if !host.chars().all(|c| !c.is_control() && !c.is_whitespace()) {
+        if host.starts_with('-') || !host.chars().all(|c| !c.is_control() && !c.is_whitespace()) {
             self.status_message("Invalid SSH host name", true);
             return;
         }
@@ -4755,9 +4793,15 @@ impl MainWindow {
             self.status_message("Cannot connect: ssh is not installed", true);
             return;
         }
-        let command = ssh_connect_command(host);
+        let (command, forwards_agent) = ssh_connect_command(host);
         let title = host.to_string();
         self.add_new_tab(None, None, Some(&title), Some(&title), Some(&command));
+        if forwards_agent {
+            self.status_message(
+                "Agent forwarding is enabled for this host; prefer ProxyJump instead",
+                true,
+            );
+        }
     }
 
     fn copy_ssh_integration(&self, host: &str) {
@@ -4789,6 +4833,7 @@ impl MainWindow {
         if let Ok(term) = page.clone().downcast::<TerminalBox>() {
             self.clear_tab_failure(&term);
             self.update_cwd_badge(&term);
+            self.apply_ssh_alert(&term);
             let weak = crate::SendWeak::new(&term);
             glib::idle_add_local(move || {
                 if let Some(t) = weak.upgrade() {
@@ -5591,6 +5636,7 @@ impl MainWindow {
         // Focus can move between split panes without a tab switch; the badge
         // follows the active terminal on every stats tick as well.
         self.update_cwd_badge(&term);
+        self.apply_ssh_alert(&term);
         if term.is_ssh_client() {
             if let Some(label) = self.imp().stats_sys_label.borrow().clone() {
                 label.set_text(&crate::system_stats::ssh_placeholder());
@@ -5909,11 +5955,7 @@ impl TerminalWindow for MainWindow {
         MainWindow::set_tab_title_from_terminal(self, term, title);
     }
     fn refresh_cwd_display(&self, term: &TerminalBox) {
-        let title = self.get_tab_text(term);
-        let tooltip = self.tab_tooltip(&title, term);
-        if let Some(tab) = self.imp().tab_labels.borrow().get(term) {
-            tab.label.set_tooltip_text(Some(&tooltip));
-        }
+        self.apply_ssh_alert(term);
         if self.current_terminal().as_ref() == Some(term) {
             self.update_cwd_badge(term);
         }

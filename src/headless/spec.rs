@@ -995,6 +995,18 @@ pub const SETTINGS: &[Setting] = &[
         Default::Bool(true),
         "Share SSH connections and enable keepalives through the bundled wrapper.",
     ),
+    setting(
+        "ssh_alert_patterns",
+        Kind::Text,
+        Default::Text("(?i)(^|[-_.])(prod|production|prd|live)([-_.]|$)"),
+        "Regex for production SSH hosts; matching tabs are highlighted. Empty disables the badge.",
+    ),
+    setting(
+        "ssh_alert_color",
+        Kind::HexColor,
+        Default::Text("#cc0000"),
+        "Colour used for the production SSH tab badge.",
+    ),
 ];
 
 pub fn find(key: &str) -> Option<&'static Setting> {
