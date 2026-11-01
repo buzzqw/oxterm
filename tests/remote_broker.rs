@@ -242,6 +242,23 @@ impl Drop for Fixture {
     }
 }
 
+fn set_canonical(fd: RawFd, enabled: bool) -> io::Result<()> {
+    let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
+    if unsafe { libc::tcgetattr(fd, termios.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut termios = unsafe { termios.assume_init() };
+    if enabled {
+        termios.c_lflag |= libc::ICANON;
+    } else {
+        termios.c_lflag &= !libc::ICANON;
+    }
+    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &termios) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 fn start_broker() -> io::Result<Fixture> {
     start_broker_with(binary_path())
 }
@@ -441,11 +458,20 @@ fn broker_round_trips_control_and_terminal_traffic() -> io::Result<()> {
         control_request(&fixture.socket, "ECHO test-session")?,
         b"OK\n1"
     );
+    // A line editor at the shell prompt: no echo, raw mode, and it draws what is
+    // typed. This is what readline looks like, and /commands depend on seeing it.
     set_echo(fixture.child_slave, false)?;
+    assert_eq!(
+        control_request(&fixture.socket, "ECHO test-session")?,
+        b"OK\n1"
+    );
+    // A password prompt: no echo in canonical mode. Never mirrored.
+    set_canonical(fixture.child_slave, true)?;
     assert_eq!(
         control_request(&fixture.socket, "ECHO test-session")?,
         b"OK\n0"
     );
+    set_canonical(fixture.child_slave, false)?;
 
     let mode = std::fs::metadata(&fixture.socket)?.permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
