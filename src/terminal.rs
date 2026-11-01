@@ -2535,7 +2535,10 @@ impl TerminalBox {
         if rules.is_empty() {
             return;
         }
+        /// Half-second looks: one minute.
+        const EXPECT_RECHECKS: u32 = 120;
         let watcher = std::rc::Rc::new(RefCell::new(Watcher::new(rules)));
+        let recheck = watcher.clone();
         let pending = std::rc::Rc::new(Cell::new(false));
         let weak = crate::SendWeak::new(self);
         let handler = self.vte().connect_contents_changed(move |_| {
@@ -2555,6 +2558,22 @@ impl TerminalBox {
             });
         });
         *self.imp().expect_handler.borrow_mut() = Some(handler);
+        // Output can arrive before the signal is connected, and a signal can be
+        // coalesced away with nothing following it: a prompt then waits forever.
+        // Look a few more times while a login is likely to be in progress.
+        let weak = crate::SendWeak::new(self);
+        let mut ticks = 0;
+        glib::timeout_add_local(Duration::from_millis(500), move || {
+            ticks += 1;
+            let Some(term) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if ticks > EXPECT_RECHECKS || term.imp().expect_handler.borrow().is_none() {
+                return glib::ControlFlow::Break;
+            }
+            term.check_expect(&recheck);
+            glib::ControlFlow::Continue
+        });
     }
 
     fn check_expect(&self, watcher: &RefCell<crate::headless::expect::Watcher>) {

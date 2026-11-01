@@ -329,6 +329,18 @@ impl Gui {
 
 impl Drop for Gui {
     fn drop(&mut self) {
+        // SIGTERM goes through Oxterm's shutdown path, which ends the terminals
+        // and their brokers. SIGKILL would leave those running after the test.
+        unsafe {
+            libc::kill(self.0.id() as i32, libc::SIGTERM);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if matches!(self.0.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
@@ -431,9 +443,28 @@ exec sleep 60"#,
     assert!(output.status.success(), "{:?}", output);
     assert!(marker.exists(), "the pre-connect command ran first");
 
-    wait_until("the rule's answer after reconnecting", || {
-        fs::read_to_string(&answered).is_ok_and(|text| text.contains('\n'))
-    });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !fs::read_to_string(&answered).is_ok_and(|text| text.contains('\n')) {
+        if Instant::now() >= deadline {
+            let listing = text(&home.oxterm(&["--list"]));
+            let mut screens = String::new();
+            for line in listing.lines().skip(1) {
+                let pane = line.split('\t').next().unwrap_or_default();
+                screens.push_str(&format!(
+                    "--- {}\n{}\n",
+                    pane,
+                    text(&home.oxterm(&["capture", "--pane", pane]))
+                ));
+            }
+            panic!(
+                "no answer from the rule\nssh runs:\n{}\nsessions:\n{}\nscreens:\n{}",
+                fs::read_to_string(&seen).unwrap_or_default(),
+                listing,
+                screens
+            );
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
     assert_eq!(
         fs::read_to_string(&answered).unwrap().trim(),
         "yes-from-rule"
