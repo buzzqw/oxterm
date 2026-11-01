@@ -181,6 +181,9 @@ pub struct TabLabel {
     pub event_box: gtk::EventBox,
     pub label: gtk::Label,
     pub indicator: gtk::Label,
+    /// Last production-badge state, so the stats tick does not restyle the
+    /// tab label unless the status actually changed.
+    pub alert: Cell<Option<bool>>,
 }
 
 /// Interface implemented by both window types so a terminal can drive its
@@ -2243,9 +2246,31 @@ impl MainWindow {
     }
 
     /// Highlight a SSH tab whose destination matches `ssh_alert_patterns`.
+    ///
+    /// The stats timer calls this every few seconds. Restyling the label is
+    /// only needed when the production state changes; otherwise refreshing
+    /// the tooltip is enough and avoids a text relayout on every tick.
     fn apply_ssh_alert(&self, term: &TerminalBox) {
+        let alert = self.ssh_alert_host(term).is_some();
+        let Some((label, previous)) = self
+            .imp()
+            .tab_labels
+            .borrow()
+            .get(term)
+            .map(|tab| (tab.label.clone(), tab.alert.get()))
+        else {
+            return;
+        };
+        if previous != Some(alert) {
+            let title = self.get_tab_text(term);
+            self.set_tab_text(term, &title);
+            return;
+        }
         let title = self.get_tab_text(term);
-        self.set_tab_text(term, &title);
+        let tooltip = self.tab_tooltip(&title, term);
+        if label.tooltip_text().as_deref() != Some(tooltip.as_str()) {
+            label.set_tooltip_text(Some(&tooltip));
+        }
     }
 
     fn update_cwd_badge(&self, term: &TerminalBox) {
@@ -2283,6 +2308,7 @@ impl MainWindow {
             lbl.set_tooltip_text(Some(&tooltip));
             lbl.set_width_chars(Self::tab_label_width(text));
             let alert = self.ssh_alert_host(term).is_some();
+            tab.alert.set(Some(alert));
             let s = settings();
             let color = if alert {
                 s.get_str("ssh_alert_color")
@@ -3536,6 +3562,7 @@ impl MainWindow {
                 event_box: lbl_box.clone(),
                 label: lbl,
                 indicator,
+                alert: Cell::new(None),
             },
         );
         dst.append_page(&term, Some(&lbl_box));
@@ -3628,6 +3655,7 @@ impl MainWindow {
                 event_box: lbl_box.clone(),
                 label: lbl,
                 indicator,
+                alert: Cell::new(None),
             },
         );
         let idx = nb.append_page(&term, Some(&lbl_box));

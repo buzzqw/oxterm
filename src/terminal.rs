@@ -1060,6 +1060,9 @@ mod imp {
         pub hover_label: RefCell<Option<gtk::Label>>,
         pub vi_overlay_area: RefCell<Option<gtk::DrawingArea>>,
         pub hover_cell: Cell<Option<(i64, i64)>>,
+        /// Last row and text used by the hover decoder. Mouse motion usually
+        /// stays on one line, so the expensive VTE text extraction is reused.
+        pub hover_line: RefCell<Option<(i64, String)>>,
         pub undercurl_provider: RefCell<Option<gtk::CssProvider>>,
 
         pub pid: RefCell<i32>,
@@ -1393,22 +1396,6 @@ impl TerminalBox {
         hints_fixed.hide();
         overlay.add_overlay(&hints_fixed);
         *self.imp().hints_fixed.borrow_mut() = Some(hints_fixed);
-
-        let hover_label = gtk::Label::new(None);
-        hover_label
-            .style_context()
-            .add_class("oxterm-hover-tooltip");
-        hover_label.set_no_show_all(true);
-        hover_label.set_halign(gtk::Align::Start);
-        hover_label.set_valign(gtk::Align::Start);
-        hover_label.set_xalign(0.0);
-        hover_label.set_line_wrap(false);
-        hover_label.set_can_focus(false);
-        hover_label.set_hexpand(false);
-        hover_label.set_vexpand(false);
-        hover_label.hide();
-        overlay.add_overlay(&hover_label);
-        *self.imp().hover_label.borrow_mut() = Some(hover_label);
 
         let vi_overlay_area = gtk::DrawingArea::new();
         vi_overlay_area.set_no_show_all(true);
@@ -3586,41 +3573,87 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
     /// decides whether the value and its line context are unambiguous.
     fn hover_tooltip_at(&self, x: f64, y: f64) -> Option<String> {
         let (col, row) = self.pixel_to_cell(x, y);
-        let scroll_top = self.vadjustment().value() as i64;
-        let text = text::range(&self.vte(), row + scroll_top, 0, row + scroll_top, -1)?;
-        let line = text.trim_end_matches(['\n', '\r']);
-        let chars: Vec<char> = line.chars().collect();
-        let col = col as usize;
-        if col >= chars.len() || !chars[col].is_ascii_digit() {
+        let absolute_row = row + self.vadjustment().value() as i64;
+        let mut cache = self.imp().hover_line.borrow_mut();
+        if cache.as_ref().map(|(cached, _)| *cached) != Some(absolute_row) {
+            let text = text::range(&self.vte(), absolute_row, 0, absolute_row, -1)?;
+            *cache = Some((
+                absolute_row,
+                text.trim_end_matches(['\n', '\r']).to_string(),
+            ));
+        }
+        let line = cache.as_ref()?.1.as_str();
+        let mut char_index = 0usize;
+        let mut start = None;
+        for (byte, character) in line.char_indices() {
+            if char_index == col as usize {
+                start = Some((byte, character));
+                break;
+            }
+            char_index += 1;
+        }
+        let (start_byte, character) = start?;
+        if !character.is_ascii_digit() {
             return None;
         }
-        let mut start = col;
-        while start > 0 && chars[start - 1].is_ascii_digit() {
-            start -= 1;
+        let mut begin = start_byte;
+        while begin > 0 {
+            let previous = line[..begin].chars().next_back()?;
+            if !previous.is_ascii_digit() {
+                break;
+            }
+            begin -= previous.len_utf8();
         }
-        let mut end = col;
-        while end < chars.len() && chars[end].is_ascii_digit() {
-            end += 1;
+        let mut end = start_byte;
+        while end < line.len() {
+            let next = line[end..].chars().next()?;
+            if !next.is_ascii_digit() {
+                break;
+            }
+            end += next.len_utf8();
         }
-        let token: String = chars[start..end].iter().collect();
-        crate::headless::decode::hover_tooltip(&token, line)
+        crate::headless::decode::hover_tooltip(&line[begin..end], line)
+    }
+
+    fn ensure_hover_label(&self) -> Option<gtk::Label> {
+        if let Some(label) = self.imp().hover_label.borrow().clone() {
+            return Some(label);
+        }
+        let overlay = self.imp().overlay.borrow().clone()?;
+        let label = gtk::Label::new(None);
+        label.style_context().add_class("oxterm-hover-tooltip");
+        label.set_no_show_all(true);
+        label.set_halign(gtk::Align::Start);
+        label.set_valign(gtk::Align::Start);
+        label.set_xalign(0.0);
+        label.set_line_wrap(false);
+        label.set_can_focus(false);
+        label.set_hexpand(false);
+        label.set_vexpand(false);
+        label.hide();
+        overlay.add_overlay(&label);
+        *self.imp().hover_label.borrow_mut() = Some(label.clone());
+        Some(label)
     }
 
     fn update_hover_label(&self, x: f64, y: f64) {
-        let Some(label) = self.imp().hover_label.borrow().clone() else {
+        let Some(text) = self.hover_tooltip_at(x, y) else {
+            if let Some(label) = self.imp().hover_label.borrow().clone() {
+                label.hide();
+            }
             return;
         };
-        match self.hover_tooltip_at(x, y) {
-            Some(text) => {
-                label.set_text(&text);
-                let max_x = (self.vte().allocated_width() - 280).max(0) as f64;
-                let max_y = (self.vte().allocated_height() - 30).max(0) as f64;
-                label.set_margin_start((x + 12.0).clamp(0.0, max_x) as i32);
-                label.set_margin_top((y + 18.0).clamp(0.0, max_y) as i32);
-                label.show();
-            }
-            None => label.hide(),
+        let Some(label) = self.ensure_hover_label() else {
+            return;
+        };
+        if label.text().as_str() != text {
+            label.set_text(&text);
         }
+        let max_x = (self.vte().allocated_width() - 280).max(0) as f64;
+        let max_y = (self.vte().allocated_height() - 30).max(0) as f64;
+        label.set_margin_start((x + 12.0).clamp(0.0, max_x) as i32);
+        label.set_margin_top((y + 18.0).clamp(0.0, max_y) as i32);
+        label.show();
     }
 
     fn hide_hover_label(&self) {
@@ -3628,6 +3661,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             label.hide();
         }
         self.imp().hover_cell.set(None);
+        *self.imp().hover_line.borrow_mut() = None;
     }
 
     fn url_at_position(&self, x: f64, y: f64) -> Option<String> {
@@ -4932,6 +4966,24 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         }
         *self.imp().input_shadow.borrow_mut() = String::new();
         self.vte().grab_focus();
+        // Rows are rebuilt on every open; release the widget tree after the
+        // activation handler has returned. Reopening before the idle runs is
+        // harmless because the visible check skips the clear.
+        let weak = crate::SendWeak::new(self);
+        glib::idle_add_local_once(move || {
+            let Some(term) = weak.upgrade() else {
+                return;
+            };
+            if *term.imp().cmd_bar_visible.borrow() {
+                return;
+            }
+            if let Some(list) = term.imp().cmd_list.borrow().clone() {
+                for child in list.children() {
+                    list.remove(&child);
+                }
+            }
+            term.imp().cmd_row_map.borrow_mut().clear();
+        });
     }
 
     fn on_cmd_bar_changed(&self) {
