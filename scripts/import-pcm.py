@@ -2,26 +2,33 @@
 """Import the saved connections of Python Connection Manager (PCM) into Oxterm.
 
 PCM keeps ``connections.json`` and ``pcm_settings.json`` beside its code. When
-PCM's credential encryption is on, the usernames in that file are ``ENC:...``
+PCM's credential encryption is on, usernames and passwords are ``ENC:...``
 tokens: the script asks for the master password (through zenity when there is a
-display, otherwise on the terminal) and decrypts only what it needs. Passwords
-are deliberately not imported. Oxterm keeps secrets in the Secret Service and
-its import gives every entry a new id, so nothing in a book file could reach a
-keyring item anyway: type a password once in the session and, if the entry asks
-for it, Oxterm stores it from there.
+display, otherwise on the terminal) and decrypts what it needs.
 
 The output is an ordinary Oxterm book, written to a temporary file unless
-``--output`` says otherwise. With ``--import`` the script then runs
+``--output`` says otherwise. With ``--import`` the script runs
 ``oxterm connections import`` on it. Entries that act on this computer (a
 pre-connect command, session logs, expect rules) are skipped by Oxterm unless
 ``--allow-local-commands`` is given; it is your own file, so that consent is
 yours to give.
 
+Passwords need ``--with-passwords``. Oxterm never writes a secret into the book:
+its import gives every entry a new id and clears the keyring flag, so after the
+import this script reads the ids back, stores each PCM password in the Secret
+Service with ``secret-tool`` under Oxterm's own attribute, and only then marks
+the entry as using the keyring. Nothing secret ever touches a file. With
+``--with-passwords`` an entry whose password lives in a PCM credential profile
+takes that password too. A Secret Service provider must be running
+(gnome-keyring, or KeePassXC with its Secret Service integration): ``secret-tool``
+alone is only the client.
+
 Usage:
     scripts/import-pcm.py                       # convert only
     scripts/import-pcm.py --import              # convert and add to Oxterm
-    scripts/import-pcm.py --pcm-dir ~/pcm/gtk3 --import
-    PCM_MASTER_PASSWORD=... scripts/import-pcm.py --import
+    scripts/import-pcm.py --import --with-passwords
+    scripts/import-pcm.py --pcm-dir ~/pcm/gtk3 --import --with-passwords
+    PCM_MASTER_PASSWORD=... scripts/import-pcm.py --import --with-passwords
 
 Requires python3 and, when PCM encryption is enabled, the ``cryptography``
 package (``pip install cryptography`` or run PCM's own virtualenv).
@@ -31,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import getpass
 import hashlib
 import json
@@ -41,6 +49,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -184,11 +193,16 @@ class Decryptor:
             except InvalidToken:
                 raise SystemExit("the PCM master password is wrong") from None
 
-    def field(self, value: Any, label: str) -> str:
-        """Plain text of a PCM field; an encrypted value must decrypt."""
-        plain = text(value)
+    def field(self, value: Any, label: str, strip: bool = True) -> str:
+        """Plain text of a PCM field; an encrypted value must decrypt.
+
+        ``strip`` is on for names and off for secrets, where a space is data.
+        """
+        if value is None or isinstance(value, bool):
+            return ""
+        plain = value if isinstance(value, str) else str(value)
         if not plain.startswith(ENC_PREFIX):
-            return plain
+            return plain.strip() if strip else plain
         if self.fernet is None:
             print(
                 f"warning: {label} is encrypted but PCM encryption is off; leaving it empty",
@@ -198,8 +212,11 @@ class Decryptor:
         try:
             raw = self.fernet.decrypt(plain[len(ENC_PREFIX) :].encode("ascii"))
         except self.invalid_token:
-            raise SystemExit(f"cannot decrypt {label}; the master password does not match") from None
-        return raw.decode("utf-8", "replace").strip()
+            raise SystemExit(
+                f"cannot decrypt {label}; the master password does not match"
+            ) from None
+        decoded = raw.decode("utf-8", "replace")
+        return decoded.strip() if strip else decoded
 
 
 # ── Mapping one PCM entry to one Oxterm connection ────────────
@@ -225,7 +242,8 @@ class Context:
             and text(tunnel.get("nome") or tunnel.get("name"))
         }
         self.warnings: list[str] = []
-        self.passwords = 0
+        # Kept only in memory: a secret never goes into the book file.
+        self.secrets: dict[str, str] = {}
         self.decrypted_users = 0
 
     def warn(self, message: str) -> None:
@@ -241,6 +259,20 @@ class Context:
             if profile:
                 user = text(profile.get("user"))
         return user
+
+    def password(self, name: str, entry: dict[str, Any]) -> str:
+        password = self.decryptor.field(
+            entry.get("password"), f"{name}: password", strip=False
+        )
+        if not password:
+            profile = self.profiles.get(text(entry.get("credential_profile")))
+            if profile:
+                password = self.decryptor.field(
+                    profile.get("password"),
+                    f"{name}: credential profile password",
+                    strip=False,
+                )
+        return password
 
     def theme(self, name: str, value: Any) -> str:
         requested = text(value)
@@ -393,8 +425,9 @@ def convert_entry(
     if not host:
         return None, f"{name}: no host"
 
-    if text(entry.get("password")):
-        ctx.passwords += 1
+    password = ctx.password(name, entry)
+    if password:
+        ctx.secrets[name] = password
 
     connection: dict[str, Any] = {
         "id": f"pcm-{index:03d}",
@@ -514,6 +547,156 @@ def import_into_oxterm(binary: str, book: Path, allow_local: bool) -> int:
     return subprocess.run(command).returncode
 
 
+# ── Passwords in the Secret Service ──────────────────────────
+
+# The attribute Oxterm's askpass helper and desktop launchers look up. The
+# value is the connection's id, which the import above has just chosen.
+SECRET_ATTRIBUTE = "oxterm-connection"
+
+
+def oxterm_book_path() -> Path:
+    # Oxterm's paths::config_dir() is HOME/.config/oxterm, independent of
+    # XDG_CONFIG_HOME, so the script must look there too.
+    return Path.home() / ".config" / "oxterm" / "connections.json"
+
+
+def store_password(tool: str, connection_id: str, name: str, secret: str) -> str | None:
+    """Put one password in the keyring; return an error message or None."""
+    try:
+        result = subprocess.run(
+            [
+                tool,
+                "store",
+                f"--label=Oxterm SSH: {name}",
+                SECRET_ATTRIBUTE,
+                connection_id,
+            ],
+            input=secret,
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return str(error)
+    if result.returncode == 0:
+        return None
+    detail = result.stderr.strip()
+    return detail or "secret-tool refused the password"
+
+
+def write_book_atomically(path: Path, book: dict[str, Any]) -> None:
+    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=".connections-", suffix=".json")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as file:
+            json.dump(book, file, indent=2, ensure_ascii=False)
+            file.write("\n")
+            file.flush()
+            os.fsync(file.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def same_connection(live: dict[str, Any], wanted: dict[str, Any]) -> bool:
+    """Only touch a live entry that still is the PCM profile we converted."""
+    return (
+        (text(live.get("protocol")) or "ssh") == (text(wanted.get("protocol")) or "ssh")
+        and text(live.get("host")).casefold() == text(wanted.get("host")).casefold()
+        and text(live.get("user")) == text(wanted.get("user"))
+        and whole(live.get("port")) == whole(wanted.get("port"))
+    )
+
+
+def import_passwords(
+    converted: list[dict[str, Any]], secrets: dict[str, str], tool: str
+) -> int:
+    path = oxterm_book_path()
+    if not path.is_file():
+        print(f"error: {path} does not exist; run the import first", file=sys.stderr)
+        return 1
+    try:
+        book = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        print(f"error: cannot read {path}: {error}", file=sys.stderr)
+        return 1
+    by_name = {
+        text(entry.get("name")): entry
+        for entry in book.get("connections", [])
+        if isinstance(entry, dict)
+    }
+    # The keyring may wait on an unlock prompt, so do the slow part before
+    # taking the book lock and keep the locked section to a quick rewrite.
+    stored: list[tuple[str, str]] = []
+    failures: list[str] = []
+    for wanted in converted:
+        name = wanted["name"]
+        secret = secrets.get(name)
+        if not secret:
+            continue
+        live = by_name.get(name)
+        if live is None or not same_connection(live, wanted):
+            failures.append(f"{name}: no matching entry in the book")
+            continue
+        connection_id = text(live.get("id"))
+        if not connection_id:
+            failures.append(f"{name}: the book entry has no id")
+            continue
+        error = store_password(tool, connection_id, name, secret)
+        if error:
+            failures.append(f"{name}: {error}")
+            continue
+        stored.append((name, connection_id))
+
+    if stored:
+        lock_path = path.with_suffix(".lock")
+        lock = open(lock_path, "a")
+        os.chmod(lock_path, 0o600)
+        try:
+            deadline = time.monotonic() + 2
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        print(
+                            "error: the connection book is locked by another process",
+                            file=sys.stderr,
+                        )
+                        return 1
+                    time.sleep(0.02)
+            try:
+                book = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as error:
+                print(f"error: cannot read {path}: {error}", file=sys.stderr)
+                return 1
+            live_by_name = {
+                text(entry.get("name")): entry
+                for entry in book.get("connections", [])
+                if isinstance(entry, dict)
+            }
+            changed = False
+            for name, connection_id in stored:
+                live = live_by_name.get(name)
+                if live is None or text(live.get("id")) != connection_id:
+                    failures.append(f"{name}: the book changed while storing the password")
+                    continue
+                live["auth"] = "secret_service"
+                changed = True
+            if changed:
+                write_book_atomically(path, book)
+        finally:
+            lock.close()
+
+    print(f"passwords stored: {len(stored)}")
+    for failure in failures:
+        print(f"warning: {failure}", file=sys.stderr)
+    return 0 if not failures else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Convert PCM's connections.json into an Oxterm book.",
@@ -545,7 +728,22 @@ def main() -> int:
         action="store_true",
         help="let --import accept entries with a pre-connect command, logs or expect rules",
     )
+    parser.add_argument(
+        "--with-passwords",
+        action="store_true",
+        help=(
+            "store PCM passwords in the Secret Service and mark the entries "
+            "to use it (needs --import)"
+        ),
+    )
     args = parser.parse_args()
+
+    if args.with_passwords and not args.do_import:
+        parser.error("--with-passwords needs --import")
+    secret_tool = shutil.which("secret-tool") if args.with_passwords else None
+    if args.with_passwords and secret_tool is None:
+        print("error: --with-passwords needs secret-tool (gnome-keyring)", file=sys.stderr)
+        return 1
 
     connections_path = args.pcm_dir / "connections.json"
     settings_path = args.pcm_dir / "pcm_settings.json"
@@ -598,11 +796,14 @@ def main() -> int:
     print(f"converted: {len(converted)} ({summary})")
     if ctx.decrypted_users:
         print(f"usernames decrypted: {ctx.decrypted_users}")
-    if ctx.passwords:
-        print(
-            f"passwords left behind: {ctx.passwords} (Oxterm keeps secrets in the "
-            "Secret Service; type each one once in the session)"
-        )
+    if ctx.secrets:
+        if args.with_passwords:
+            print(f"passwords found: {len(ctx.secrets)} (stored after the import)")
+        else:
+            print(
+                f"passwords left behind: {len(ctx.secrets)} (rerun with "
+                "--with-passwords to put them in the Secret Service)"
+            )
     for warning in ctx.warnings:
         print(f"warning: {warning}", file=sys.stderr)
     for reason in skipped:
@@ -617,7 +818,13 @@ def main() -> int:
     if binary is None:
         print("error: no oxterm executable found; use --binary", file=sys.stderr)
         return 1
-    return import_into_oxterm(binary, output, args.allow_local_commands)
+    code = import_into_oxterm(binary, output, args.allow_local_commands)
+    if code != 0:
+        return code
+    if args.with_passwords:
+        assert secret_tool is not None
+        return import_passwords(converted, ctx.secrets, secret_tool)
+    return 0
 
 
 if __name__ == "__main__":

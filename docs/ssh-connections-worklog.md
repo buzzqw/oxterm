@@ -267,6 +267,6 @@ il `post-merge` installa la nuova versione, compreso `oxterm-askpass` accanto a
 
 | Data | Lavoro |
 | --- | --- |
-| 2026-11-01 | Aggiunto `scripts/import-pcm.py`: converte le voci di PCM in una rubrica Oxterm, chiede la password master per decifrare i nomi utente e importa con `oxterm connections import`. Migrate 40 voci (16 SSH, 12 VNC, 11 RDP, 1 SFTP). |
+| 2026-11-01 | Aggiunto `scripts/import-pcm.py`: converte le voci di PCM in una rubrica Oxterm, chiede la password master per decifrare nomi utente e password, importa con `oxterm connections import` e, con `--with-passwords`, salva i segreti nel Secret Service. Migrate 40 voci (16 SSH, 12 VNC, 11 RDP, 1 SFTP) e 23 password. |
 | 2026-11-01 | Completati colori, palette, `/ssh`, conteggi, spostamento tra processi e ripristino. Corretti i comandi `/...` al prompt. Aggiunti `smoke-connections.sh` e `e2e/password-login.sh`. Unione in `master`. |
 | 2026-11-01 | Fasi 0-5, tranne i colori per connessione. Correzione dei test `remote_attach` e del controllo AUR. Prova su `debminis`. [PR #2](https://github.com/buzzqw/oxterm/pull/2). |
