@@ -45,6 +45,7 @@ struct Fields {
     remote_command: gtk::Entry,
     extra_args: gtk::Entry,
     confirm: gtk::CheckButton,
+    color_scheme: gtk::ComboBoxText,
     tunnels: RefCell<Vec<TunnelRow>>,
 }
 
@@ -105,6 +106,11 @@ impl Fields {
         connection.remote_command = self.remote_command.text().trim().to_string();
         connection.extra_args = extra_args;
         connection.confirm_connect = self.confirm.is_active();
+        connection.color_scheme = self
+            .color_scheme
+            .active_id()
+            .map(|id| id.to_string())
+            .unwrap_or_default();
         connection.tunnels = self.tunnel_values();
         if connection.kind == Kind::Manual {
             connection.host = self.host.text().trim().to_string();
@@ -133,7 +139,8 @@ fn grid() -> gtk::Grid {
 }
 
 fn add_row(grid: &gtk::Grid, row: i32, label: &str, widget: &impl IsA<gtk::Widget>) {
-    let caption = gtk::Label::new(Some(label));
+    let caption = gtk::Label::with_mnemonic(label);
+    caption.set_mnemonic_widget(Some(widget));
     caption.set_xalign(1.0);
     grid.attach(&caption, 0, row, 1, 1);
     widget.set_hexpand(true);
@@ -258,6 +265,21 @@ pub fn edit(
     favorite.set_active(initial.favorite);
     let confirm = gtk::CheckButton::with_label("Ask before connecting");
     confirm.set_active(initial.confirm_connect);
+    let color_scheme = gtk::ComboBoxText::new();
+    color_scheme.append(Some(""), "Same as the other tabs");
+    for name in crate::settings::color_schemes().keys() {
+        color_scheme.append(Some(name), name);
+    }
+    if !initial.color_scheme.is_empty()
+        && !crate::settings::color_schemes().contains_key(&initial.color_scheme)
+    {
+        // A theme file that is gone: keep the choice rather than erase it.
+        color_scheme.append(Some(&initial.color_scheme), &initial.color_scheme);
+    }
+    color_scheme.set_active_id(Some(&initial.color_scheme));
+    color_scheme.set_tooltip_text(Some(
+        "Recognize this server at a glance: only its tabs use this scheme",
+    ));
     let fields = Rc::new(Fields {
         base: initial.clone(),
         name: entry(&initial.name, "db-prod-1"),
@@ -284,13 +306,14 @@ pub fn edit(
             "-C -o Compression=yes",
         ),
         confirm,
+        color_scheme,
         tunnels: RefCell::new(Vec::new()),
     });
 
     // ── Connection ──
     let connection_page = grid();
     let mut row = 0;
-    add_row(&connection_page, row, "Name", &fields.name);
+    add_row(&connection_page, row, "_Name", &fields.name);
     row += 1;
     if is_alias {
         // The name of an alias *is* the Host entry; renaming it here would
@@ -306,18 +329,18 @@ pub fn edit(
         connection_page.attach(&note, 0, row, 2, 1);
         row += 1;
     } else {
-        add_row(&connection_page, row, "Host", &fields.host);
+        add_row(&connection_page, row, "_Host", &fields.host);
         row += 1;
-        add_row(&connection_page, row, "User", &fields.user);
+        add_row(&connection_page, row, "_User", &fields.user);
         row += 1;
-        add_row(&connection_page, row, "Port", &fields.port);
+        add_row(&connection_page, row, "Po_rt", &fields.port);
         row += 1;
-        add_row(&connection_page, row, "ProxyJump", &fields.jump);
+        add_row(&connection_page, row, "Proxy_Jump", &fields.jump);
         row += 1;
     }
-    add_row(&connection_page, row, "Group", &fields.group);
+    add_row(&connection_page, row, "_Group", &fields.group);
     row += 1;
-    add_row(&connection_page, row, "Tags", &fields.tags);
+    add_row(&connection_page, row, "_Tags", &fields.tags);
     row += 1;
     connection_page.attach(&fields.favorite, 1, row, 1, 1);
     row += 1;
@@ -326,18 +349,18 @@ pub fn edit(
     notes_scroll.set_vexpand(true);
     notes_scroll.set_min_content_height(64);
     notes_scroll.add(&fields.notes);
-    add_row(&connection_page, row, "Notes", &notes_scroll);
+    add_row(&connection_page, row, "N_otes", &notes_scroll);
 
     // ── Authentication ──
     let auth_page = grid();
     let mut row = 0;
     if !is_alias {
-        add_row(&auth_page, row, "Identity file", &fields.identity);
+        add_row(&auth_page, row, "_Identity file", &fields.identity);
         row += 1;
     }
-    add_row(&auth_page, row, "Method", &fields.auth);
+    add_row(&auth_page, row, "_Method", &fields.auth);
     row += 1;
-    add_row(&auth_page, row, "Password", &fields.password);
+    add_row(&auth_page, row, "_Password", &fields.password);
     row += 1;
     let auth_text = if keyring_available {
         "Keys and an agent are the better choice when the server allows them. A stored \
@@ -376,9 +399,15 @@ pub fn edit(
 
     // ── Advanced ──
     let advanced_page = grid();
-    add_row(&advanced_page, 0, "Remote command", &fields.remote_command);
-    add_row(&advanced_page, 1, "Extra ssh arguments", &fields.extra_args);
-    advanced_page.attach(&fields.confirm, 1, 2, 1, 1);
+    add_row(&advanced_page, 0, "Remote _command", &fields.remote_command);
+    add_row(
+        &advanced_page,
+        1,
+        "_Extra ssh arguments",
+        &fields.extra_args,
+    );
+    add_row(&advanced_page, 2, "Color _scheme", &fields.color_scheme);
+    advanced_page.attach(&fields.confirm, 1, 3, 1, 1);
 
     let notebook = gtk::Notebook::new();
     notebook.append_page(&connection_page, Some(&gtk::Label::new(Some("Connection"))));

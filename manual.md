@@ -649,17 +649,25 @@ names, hosts, users, groups, tags and notes.
 
 - `Enter` or a double click opens a tab, `Ctrl+Enter` a split. The context menu
   also offers a new window, `sftp`, tunnels, copying the `ssh` command, favorites,
-  editing, and deleting. `F2` edits and `Delete` deletes.
+  editing, and deleting. `Ctrl+N` creates an entry, `F2` edits, `Delete` deletes,
+  and `Esc` or `Ctrl+Shift+J` closes the panel.
+- The command palette (`Ctrl+Shift+P`) finds connections as you type, and
+  `/ssh NAME` at a local prompt opens one. `/ssh` alone opens the host picker.
+- **Color scheme** (Advanced page) gives an entry's tabs their own colors, so a
+  server is recognized at a glance. Only those tabs change.
 - **New** creates an entry with its own host, user, port, key and `ProxyJump`. For
   a `~/.ssh/config` host, **Edit** only adds a group, tags, notes, tunnels and the
   like. Oxterm never writes `~/.ssh/config`, so OpenSSH stays in charge of it.
 - The form always shows the exact `ssh` command the entry produces.
-- `●` counts the tabs open on an entry in this window. `⇄` counts active tunnels.
+- `●` counts the tabs open on an entry in all of this Oxterm's windows. `⇄` counts
+  active tunnels.
 - A connection's tab keeps its name even when the remote shell sets a title, and
   the production highlight also looks at that name, since an address rarely says
   `prod`.
+- A tab moved to a separate window, or to another Oxterm, stays that connection.
 - **Ask before connecting** adds a confirmation. After a restart, tabs that held
-  a connection are never reopened silently: Oxterm asks first.
+  a connection are never reopened silently: Oxterm asks first, then reopens them in
+  their old order and on their old side of a split.
 
 Everything is an ordinary Oxterm terminal running your `ssh`, with the same
 connection sharing and keepalives as the shell wrapper.
@@ -673,7 +681,8 @@ file from a newer Oxterm opens read-only.
 passwords, set the entry's method to **Password in the system keyring**: it is
 stored with `secret-tool`, never in Oxterm's files. `oxterm-askpass`, installed
 next to `oxterm`, answers only the exact `user@host's password:` prompt of that
-entry, and only once per `ssh`, so a wrong password cannot lock the account. A
+entry, or OpenSSH's `(user@host) Password:` for keyboard-interactive servers, and
+only once per `ssh`, so a wrong password cannot lock the account. A
 jump host, a generic `Password:`, passphrases, one-time codes and host-key
 questions are always asked in the terminal. Without `secret-tool` or the helper,
 `ssh` simply prompts as usual.

@@ -223,6 +223,7 @@ fn run_connect(name: &str, split: bool, pane: Option<&str>, yes: bool) -> i32 {
                 "title": connection.name,
                 "command": prepared.plan.argv,
                 "connection_id": connection.id,
+                "color_scheme": connection.color_scheme,
             }),
         )
         .map(|reply| reply["pane"].as_str().unwrap_or_default().to_string())
@@ -232,6 +233,7 @@ fn run_connect(name: &str, split: bool, pane: Option<&str>, yes: bool) -> i32 {
             "title": connection.name,
             "command": prepared.plan.argv,
             "connection_id": connection.id,
+            "color_scheme": connection.color_scheme,
         }))
     };
     match result {
@@ -786,6 +788,7 @@ fn dispatch(request: &Value) -> Value {
             );
             if request["connection_id"].is_string() {
                 window.pin_tab_title(&term, title.unwrap_or_default());
+                term.set_color_override(request["color_scheme"].as_str().map(str::to_string));
             }
             window.reload_connections_panel();
             window.present();
@@ -814,6 +817,7 @@ fn dispatch(request: &Value) -> Value {
             );
             if request["connection_id"].is_string() {
                 window.pin_tab_title(&term, title.unwrap_or_default());
+                term.set_color_override(request["color_scheme"].as_str().map(str::to_string));
             }
             window.reload_connections_panel();
             window.present();
@@ -887,6 +891,9 @@ pub(crate) struct ForeignPane {
     pub running: bool,
     /// OSC 133 FIFO of the session, when the source window has integration on.
     pub fifo: Option<String>,
+    pub connection_id: Option<String>,
+    pub connection_name: Option<String>,
+    pub color_override: Option<String>,
 }
 
 /// Panes of every other running Oxterm, sorted for a stable menu.
@@ -916,6 +923,9 @@ pub(crate) fn foreign_panes() -> Vec<ForeignPane> {
                     .as_str()
                     .filter(|path| !path.is_empty())
                     .map(str::to_string),
+                connection_id: pane["connection_id"].as_str().map(str::to_string),
+                connection_name: pane["connection_name"].as_str().map(str::to_string),
+                color_override: pane["color_override"].as_str().map(str::to_string),
             });
         }
     }
@@ -1030,7 +1040,7 @@ fn target_window(app: &gtk::Application) -> Option<MainWindow> {
         })
 }
 
-fn terminals(app: &gtk::Application) -> Vec<(Option<MainWindow>, TerminalBox)> {
+pub(crate) fn terminals(app: &gtk::Application) -> Vec<(Option<MainWindow>, TerminalBox)> {
     let mut terminals = Vec::new();
     for window in app.windows() {
         if let Some(main) = window.downcast_ref::<MainWindow>() {
@@ -1065,6 +1075,9 @@ fn pane_info(term: &TerminalBox) -> Value {
         "title": term.vte().window_title().map(|title| title.to_string()).unwrap_or_default(),
         "cwd": term.get_cwd(),
         "command": term.last_command(),
+        "connection_id": term.connection_id(),
+        "connection_name": term.connection_name(),
+        "color_override": term.color_override(),
         "status": term.remote_status(),
         "app_status": term.remote_command_status(),
         "exit": term.last_exit_code(),
