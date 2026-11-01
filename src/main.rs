@@ -8,7 +8,6 @@ mod notes;
 mod notes_index;
 mod notes_panel;
 mod notes_ui;
-mod persistence;
 mod profiles;
 mod remote;
 mod session;
@@ -22,6 +21,7 @@ mod window;
 // and the GUI share one implementation. Re-export it at the crate root so the
 // GUI modules can keep using `crate::headless::...`.
 pub use oxterm::headless;
+pub use oxterm::headless::persistence;
 
 use glib::prelude::*;
 use gtk::gdk;

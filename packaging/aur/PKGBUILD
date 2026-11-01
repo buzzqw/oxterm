@@ -31,6 +31,7 @@ package() {
 
   install -Dm0755 "$srcdir/target/release/oxterm" "$pkgdir/usr/bin/oxterm"
   install -Dm0755 "$srcdir/target/release/oxterm-broker" "$pkgdir/usr/bin/oxterm-broker"
+  install -Dm0755 "$srcdir/target/release/oxterm-askpass" "$pkgdir/usr/bin/oxterm-askpass"
   install -Dm0644 packaging/oxterm.desktop "$pkgdir/usr/share/applications/oxterm.desktop"
   install -Dm0644 packaging/oxterm.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/oxterm.svg"
   install -Dm0644 manual.md "$pkgdir/usr/share/doc/$pkgname/manual.md"

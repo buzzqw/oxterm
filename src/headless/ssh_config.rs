@@ -6,7 +6,11 @@
 //! `Host` patterns are skipped because they are defaults, not destinations.
 
 use std::collections::BTreeSet;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 /// Path to the user's OpenSSH client configuration.
 pub fn default_config_path() -> PathBuf {
@@ -295,6 +299,46 @@ pub fn sharing_options(effective_config: &str, socket_dir: &Path) -> Vec<String>
         ]);
     }
     options
+}
+
+/// Effective OpenSSH configuration for `args` (`ssh -G ...`).
+///
+/// `Match exec` rules and `Include` files on a slow disk can make this take
+/// arbitrarily long, so it never blocks past `timeout`: callers run it off the
+/// GUI thread and treat `None` as "no information", not as an error.
+pub fn effective_config(args: &[String], timeout: Duration) -> Option<String> {
+    let mut child = Command::new("ssh")
+        .arg("-G")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    // Drain on a thread: a child blocked on a full pipe would never exit and
+    // always hit the timeout.
+    let mut stdout = child.stdout.take()?;
+    let reader = thread::spawn(move || {
+        let mut output = String::new();
+        stdout.read_to_string(&mut output).map(|_| output).ok()
+    });
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let output = reader.join().ok().flatten();
+                return output.filter(|_| status.success());
+            }
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(5));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
 }
 
 /// Standard base64, used to paste the shell-integration script through a

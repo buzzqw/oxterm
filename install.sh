@@ -17,6 +17,8 @@ SOURCE_BIN="${ROOT_DIR}/target/release/oxterm"
 SOURCE_BROKER="${ROOT_DIR}/target/release/oxterm-broker"
 INSTALL_BIN="/usr/bin/oxterm"
 INSTALL_BROKER="/usr/bin/oxterm-broker"
+SOURCE_ASKPASS="${ROOT_DIR}/target/release/oxterm-askpass"
+INSTALL_ASKPASS="/usr/bin/oxterm-askpass"
 INSTALL_ICON="/usr/share/icons/hicolor/scalable/apps/oxterm.svg"
 INSTALL_DESKTOP="/usr/share/applications/oxterm.desktop"
 
@@ -53,11 +55,11 @@ if [[ "$BUILD" == true ]]; then
     cargo build --release --locked --bins --manifest-path "${ROOT_DIR}/Cargo.toml"
 fi
 
-if [[ ! -x "${SOURCE_BIN}" || ! -x "${SOURCE_BROKER}" ]]; then
+if [[ ! -x "${SOURCE_BIN}" || ! -x "${SOURCE_BROKER}" || ! -x "${SOURCE_ASKPASS}" ]]; then
     if [[ "$BUILD" == true ]]; then
         printf '%s\n' "Oxterm: release binaries were not produced" >&2
     else
-        printf '%s\n' "Oxterm: ${SOURCE_BIN} or ${SOURCE_BROKER} is missing; run ./install.sh without --no-build" >&2
+        printf '%s\n' "Oxterm: ${SOURCE_BIN}, ${SOURCE_BROKER} or ${SOURCE_ASKPASS} is missing; run ./install.sh without --no-build" >&2
     fi
     exit 1
 fi
@@ -76,6 +78,7 @@ install_file() {
 
 install_file 0755 "${SOURCE_BIN}" "${INSTALL_BIN}"
 install_file 0755 "${SOURCE_BROKER}" "${INSTALL_BROKER}"
+install_file 0755 "${SOURCE_ASKPASS}" "${INSTALL_ASKPASS}"
 install_file 0644 "${ROOT_DIR}/packaging/oxterm.svg" "${INSTALL_ICON}"
 install_file 0644 "${ROOT_DIR}/packaging/oxterm.desktop" "${INSTALL_DESKTOP}"
 install_file 0644 "${ROOT_DIR}/manual.md" "/usr/share/doc/oxterm/manual.md"

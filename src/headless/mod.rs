@@ -6,7 +6,9 @@
 //! `gtk`, `gdk`, `glib` or `zoha_vte` imports are allowed under `headless/`.
 //! `tests/headless.rs` enforces the boundary.
 
+pub mod askpass;
 pub mod cli;
+pub mod connections;
 pub mod control_cli;
 pub mod decode;
 pub mod diagnostics;
@@ -15,9 +17,11 @@ pub mod framing;
 pub mod notify;
 pub mod osc133;
 pub mod paths;
+pub mod persistence;
 pub mod settings;
 pub mod spec;
 pub mod ssh_config;
 pub mod text;
 pub mod themes;
+pub mod tunnels;
 pub mod vi;
