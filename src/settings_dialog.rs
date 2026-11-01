@@ -1822,6 +1822,7 @@ Terminal workflow\n\
   /session list      List saved sessions\n\
   /session export    Export a saved session as private JSON\n\
   /snippet list      List saved command snippets\n\
+  /ssh [NAME]        Open a saved connection or an SSH host\n\
   /clear             Clear the terminal screen\n\
 \nRemote sessions\n\
   oxterm --list      List live terminal sessions\n\

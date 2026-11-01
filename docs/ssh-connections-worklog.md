@@ -4,8 +4,7 @@ Documento di passaggio per chi prosegue, persona o agente AI. Aggiornalo a ogni
 sessione: in fondo c'è un registro. Ultimo aggiornamento: 2026-11-01.
 
 - **Branch:** `feat/ssh-connections`, partito da `master` a `fd0cc01`.
-- **Worktree di sviluppo:** `/home/andres/oxterm-connections`. Si può eliminare
-  dopo il merge con `git worktree remove`.
+- **Worktree di sviluppo:** `/home/andres/oxterm-connections`, eliminato dopo il merge.
 - **Proposta iniziale:** <https://claude.ai/artifact/LQG2ZPbuyUYrmMkxrPTZE4>
 - **Regole del repository:** `AGENTS.md` e `CONTRIBUTING.md`. In particolare, la
   logica senza display sta in `src/headless/` e dopo aver cambiato
@@ -65,49 +64,33 @@ sul thread GUI, che non deve aspettare `ssh -G`.
 
 ## Stato delle fasi
 
+Tutte completate.
+
 | Fase | Contenuto | Stato |
 | --- | --- | --- |
-| 0 | `ssh -G` fuori dal thread GUI | Fatto |
-| 0 | Verifica dell'integrazione remota | Fatto: limite documentato nel manuale |
+| 0 | `ssh -G` fuori dal thread GUI, verifica dell'integrazione remota | Fatto |
 | 1 | Nucleo, `connections.json`, pannello, ricerca, connessione | Fatto |
 | 2 | Form, anteprima comando, CLI, import ed export | Fatto |
 | 3 | Tunnel salvati con stato reale | Fatto |
-| 4 | Helper askpass e Secret Service | Fatto, tranne la prova con password reale |
-| 5 | Riapertura dei tab SSH con conferma | Fatto |
-| 5 | Colori per singola connessione | **Da fare** |
+| 4 | Helper askpass e Secret Service, verificati con login reale | Fatto |
+| 5 | Riapertura con conferma, posizione e ordine; colori per connessione | Fatto |
+| Extra | Palette, `/ssh`, conteggi su tutte le finestre, spostamento tra processi | Fatto |
 
 ## Da fare
 
-In ordine di priorità.
+Niente del piano resta aperto. Restano due punti che richiedono una scelta.
 
-- [ ] **Provare un login completo con password.** Il prompt reale combacia (vedi la
-      prova su `debminis`), ma nessuna password è mai stata inviata a un server: serve
-      un account di prova. Controllare anche il caso di `HostKeyAlias` e
-      `CanonicalizeHostname`: se il prompt non combacia, `ssh` chiede nel terminale,
-      senza rischi.
-- [ ] **Provare il Secret Service reale.** I test usano un finto `secret-tool`.
-      Verificare salvataggio, lettura e cancellazione dal form.
-- [ ] **Colori per connessione.** `apply_profile` è globale, quindi serve un override
-      di palette sul singolo `TerminalBox`, senza toccare `apply_profile`.
-- [ ] **Test automatici del pannello e del form.** Oggi sono stati verificati a mano
-      con screenshot su Xvnc, mentre `tests/connections.rs` copre CLI e API di
-      controllo. Il piano è pilotarli con `xdotool` o esporre un'operazione di prova.
-- [ ] **Screenshot del README** con `scripts/capture-screenshots.sh`.
-- [ ] **Voci «Connetti a…» nella palette e comando `/ssh nome`.** `Ctrl+Shift+K` e
-      `oxterm connect` coprono già il bisogno. `PaletteAction` è una lista statica,
-      quindi servono righe dinamiche.
-- [ ] **Conteggi più precisi.** `●` conta solo i tab della finestra corrente. Un tab
-      spostato in una finestra separata o in un altro processo perde l'associazione:
-      `connection_id` non passa da `handover` né da `DetachedWindow`.
-- [ ] **Posizione nel ripristino.** Le connessioni riaperte diventano tab nel pannello
-      sinistro, anche se erano a destra.
-- [ ] **Pannello nelle finestre separate.** Esiste solo in `MainWindow`.
-- [ ] **Scorciatoie con il focus nel pannello.** `Ctrl+Shift+J` è gestita dal terminale
-      e non chiude il pannello quando il focus è dentro: lì funzionano `Esc` e **Close**.
-- [ ] **Decisione aperta: cronologia e notifiche per i comandi remoti.** Oggi Oxterm
+- [ ] **Decisione dell'autore: cronologia e notifiche per i comandi remoti.** Oggi Oxterm
       legge gli eventi solo dalla FIFO locale, apposta per non fidarsi dell'output.
       Un canale remoto richiede un progetto separato, e l'host remoto potrebbe
       falsificare gli eventi.
+- [ ] **Facoltativo: voce spuria nella cronologia.** Dopo `reset` si è vista una riga
+      con il testo del prompt, perché `get_real_command_text` legge dallo schermo con
+      un'ancora ormai superata. È innocua e riguarda solo i tab senza OSC 133.
+
+**Scelta volutamente non fatta:** il pannello nelle finestre separate. Non hanno tab
+in cui aprire una connessione, come già vale per il picker SSH. La palette non vi
+mostra le connessioni (`supports_connections`).
 
 ## Problemi trovati nel codice esistente
 
@@ -119,6 +102,7 @@ In ordine di priorità.
 | L'avviso di produzione guarda solo l'indirizzo | Corretto: per le connessioni salvate guarda anche il nome |
 | Il titolo remoto sostituisce il nome della connessione | Corretto con `pin_tab_title` |
 | Il controllo AUR compila il tag `v1.1.19`, che non contiene `oxterm-broker`, e fallisce anche su `master` dal commit `5f49453` | Corretto: la CI costruisce il commit corrente con la stessa ricetta |
+| I comandi `/...` digitati al prompt finivano alla shell dal 2026-09-12 (`6317cea`): readline spegne `ECHO` e il controllo lo scambiava per un prompt di password. Senza OSC 133 si perdeva anche la cronologia | Corretto con `input_is_visible`: conta come visibile `ECHO`, oppure la modalità raw con la shell in primo piano. `ssh` è raw ma è un processo in primo piano, quindi una password remota resta fuori. Verificato: `read -s` e un programma raw non finiscono su disco |
 | Lo script di integrazione remota non attiva cronologia e notifiche | Non corretto: serve una decisione, comportamento documentato nel manuale |
 | Avvisi `clippy` su `terminal.rs`, `vi.rs`, `history.rs` e altri | Non toccati: sono di stile, e l'autore sta cambiando quei file per le prestazioni |
 | `OpenSSH` usa la home di `passwd`, `dirs::home_dir` usa `$HOME` | Solo nota: con `HOME` diversa i due vedono `~/.ssh/config` diversi. Nei test usare `-F` |
@@ -129,12 +113,14 @@ In ordine di priorità.
 cargo test --locked --all-targets
 cargo clippy --locked --all-targets
 cargo fmt --check
-cargo run --locked --bin oxterm-docgen   # non deve cambiare nulla
+cargo run --locked --bin oxterm-docgen -- --check
 
 # Test con finestre reali, su un display virtuale:
 Xvnc :77 -geometry 1400x900 -depth 24 -SecurityTypes None -rfbport 5977 -localhost &
 DISPLAY=:77 OXTERM_GUI_TESTS=1 cargo test --locked \
   --test connections --test control_api --test gui_lifecycle -- --test-threads=1
+DISPLAY=:77 ./scripts/smoke-connections.sh
+scripts/e2e/password-login.sh
 ```
 
 Non usare `pkill -f` con un percorso del progetto: colpisce anche la shell che lo
@@ -178,6 +164,30 @@ prima di rispondere, quindi non è stata inviata nessuna password. Con
 `keyboard-interactive` il server non ha mostrato prompt. Il formato
 `(user@host) Password:` resta quindi non provato dal vivo.
 
+### Login reale con password
+
+`scripts/e2e/password-login.sh` usa `ssh` reale, `oxterm-askpass` reale e un portachiavi
+gnome-keyring reale in una sessione D-Bus privata. Finto è solo il server
+(`paramiko`), perché un `sshd` senza root non verifica le password. Richiede
+`python-paramiko`, `gnome-keyring` e `secret-tool`, quindi si lancia a mano e non in CI.
+
+| Scenario | Esito |
+| --- | --- |
+| Password giusta, metodo `password` | Login, un solo tentativo |
+| Password giusta, `keyboard-interactive` con `(user@host) Password:` | Login, un solo tentativo |
+| Password sbagliata, entrambi i metodi | Inviata una sola volta, poi chiede alla persona |
+| Nessuna password salvata | Chiede alla persona, nulla inviato |
+
+### Pannello e form
+
+`scripts/smoke-connections.sh` li guida con `xdotool`, con `ssh` e `secret-tool` finti.
+Gira in CI nel job `rust`. Copre creazione, rifiuto di un host con `-`, ricerca e
+connessione, password solo nel portachiavi, palette, `/help` e `/ssh` al prompt,
+cancellazione con pulizia del portachiavi, ripristino con conferma e ordine.
+
+Controllati a mano con screenshot: colori per connessione, lato destro dello split dopo
+il ripristino, spostamento di un tab tra due processi.
+
 ## Hook e installazione
 
 Il `post-commit` del repository reinstalla il binario in `PATH`. Durante questo
@@ -190,4 +200,5 @@ il `post-merge` installa la nuova versione, compreso `oxterm-askpass` accanto a
 
 | Data | Lavoro |
 | --- | --- |
+| 2026-11-01 | Completati colori, palette, `/ssh`, conteggi, spostamento tra processi e ripristino. Corretti i comandi `/...` al prompt. Aggiunti `smoke-connections.sh` e `e2e/password-login.sh`. Unione in `master`. |
 | 2026-11-01 | Fasi 0-5, tranne i colori per connessione. Correzione dei test `remote_attach` e del controllo AUR. Prova su `debminis`. [PR #2](https://github.com/buzzqw/oxterm/pull/2). |

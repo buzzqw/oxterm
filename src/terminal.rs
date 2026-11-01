@@ -66,8 +66,8 @@ pub struct CommandBlock {
 }
 
 pub const OXTERM_COMMANDS: &[&str] = &[
-    "history", "wnotes", "onotes", "learn", "optimize", "session", "snippet", "help", "clear",
-    "cls",
+    "history", "wnotes", "onotes", "learn", "optimize", "session", "snippet", "ssh", "help",
+    "clear", "cls",
 ];
 
 /// A row in the command palette: a slash command or a direct action.
@@ -75,6 +75,8 @@ pub const OXTERM_COMMANDS: &[&str] = &[
 pub enum PaletteRow {
     Command(String),
     Action(String),
+    /// A saved connection, by id.
+    Connection(String),
 }
 
 struct PaletteAction {
@@ -1121,6 +1123,10 @@ mod imp {
         /// The saved connection this terminal was opened from.
         pub connection_id: RefCell<Option<String>>,
         pub connection_name: RefCell<Option<String>>,
+        /// Color scheme for this terminal alone, overriding the settings.
+        pub color_override: RefCell<Option<String>>,
+        /// Saved connections offered by the palette, read once per opening.
+        pub palette_connections: RefCell<Option<Vec<(String, String, String)>>>,
 
         /// `(row, kind, exit status)`; the status is `None` when the shell
         /// reported an event without one.
@@ -1705,7 +1711,10 @@ impl TerminalBox {
 
     fn bg_rgba(&self) -> gdk::RGBA {
         let s = settings();
-        let mut bg = hex_to_rgba(&s.get_bg_color());
+        let mut bg = match self.override_theme() {
+            Some(theme) => hex_to_rgba(&theme.background),
+            None => hex_to_rgba(&s.get_bg_color()),
+        };
         if s.get_bool("enable_transparency") {
             bg.set_alpha(s.get_f64("opacity"));
         }
@@ -1714,10 +1723,17 @@ impl TerminalBox {
 
     fn apply_colors(&self) {
         let s = settings();
-        let fg = hex_to_rgba(&s.get_fg_color());
+        let theme = self.override_theme();
+        let fg = match theme {
+            Some(theme) => hex_to_rgba(&theme.foreground),
+            None => hex_to_rgba(&s.get_fg_color()),
+        };
         let bg = self.bg_rgba();
         self.vte().set_colors(Some(&fg), Some(&bg), &[]);
-        let cursor = hex_to_rgba(&s.get_str("cursor_color"));
+        let cursor = match theme {
+            Some(theme) => hex_to_rgba(&theme.cursor),
+            None => hex_to_rgba(&s.get_str("cursor_color")),
+        };
         self.vte().set_color_cursor(Some(&cursor));
     }
 
@@ -1735,8 +1751,14 @@ impl TerminalBox {
 
     fn apply_palette(&self) {
         let s = settings();
-        let fg = hex_to_rgba(&s.get_fg_color());
         let bg = self.bg_rgba();
+        if let Some(theme) = self.override_theme() {
+            let fg = hex_to_rgba(&theme.foreground);
+            let colors: Vec<_> = theme.ansi().iter().map(|hex| hex_to_rgba(hex)).collect();
+            self.vte().set_colors(Some(&fg), Some(&bg), &colors);
+            return;
+        }
+        let fg = hex_to_rgba(&s.get_fg_color());
         let palette = s.get_palette();
         let keys = [
             "black",
@@ -2387,6 +2409,27 @@ impl TerminalBox {
         *self.imp().connection_name.borrow_mut() = name;
     }
 
+    pub fn color_override(&self) -> Option<String> {
+        self.imp().color_override.borrow().clone()
+    }
+
+    /// Use `scheme` for this terminal only. The override survives a change of the
+    /// global theme because `apply_settings` goes through the same lookups.
+    pub fn set_color_override(&self, scheme: Option<String>) {
+        let scheme = scheme.filter(|name| !name.is_empty());
+        let changed = *self.imp().color_override.borrow() != scheme;
+        *self.imp().color_override.borrow_mut() = scheme;
+        if changed {
+            self.apply_colors();
+            self.apply_palette();
+        }
+    }
+
+    fn override_theme(&self) -> Option<&'static crate::headless::themes::Theme> {
+        let name = self.imp().color_override.borrow();
+        crate::settings::color_schemes().get(name.as_ref()?.as_str())
+    }
+
     pub fn remote_id(&self) -> String {
         self.imp().remote_id.borrow().clone()
     }
@@ -2927,7 +2970,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             let mut attr = std::mem::MaybeUninit::<libc::termios>::uninit();
             if libc::tcgetattr(fd, attr.as_mut_ptr()) == 0 {
                 let attr = attr.assume_init();
-                return attr.c_lflag & libc::ECHO != 0;
+                return crate::remote::input_is_visible(attr.c_lflag, !self.has_active_process());
             }
         }
         false
@@ -4977,6 +5020,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
     // ── Command bar ──────────────────────────────────────────
 
     pub fn show_command_bar(&self) {
+        *self.imp().palette_connections.borrow_mut() = None;
         if *self.imp().cmd_bar_visible.borrow() {
             return;
         }
@@ -5052,6 +5096,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             ),
             ("/wnotes [-file.md] <text>", "Save timestamped note"),
             ("/onotes [-file.md]", "Open notes in editor"),
+            ("/ssh NAME", "Open a saved connection or an SSH host"),
             ("/help", "Show all commands and shortcuts"),
             ("/clear", "Clear the terminal screen"),
             ("/cls", "Clear the terminal screen"),
@@ -5094,6 +5139,24 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                     PaletteRow::Action(action.id.to_string()),
                 ));
                 order += 1;
+            }
+        }
+        // Only once something is typed: an empty palette lists actions, and most
+        // openings should not read the book and ~/.ssh/config at all.
+        if !slash_only && !q.is_empty() {
+            for (id, name, summary) in self.palette_connection_rows() {
+                let haystack = format!("connect {} {}", name, summary);
+                if let Some(score) = crate::headless::text::fuzzy_score(&q, &haystack) {
+                    entries.push((
+                        score,
+                        0,
+                        order,
+                        format!("Connect to {}", name),
+                        summary,
+                        PaletteRow::Connection(id),
+                    ));
+                    order += 1;
+                }
             }
         }
         entries.sort_by(|a, b| {
@@ -5144,6 +5207,10 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 self.hide_command_bar();
                 self.run_palette_action(&id);
             }
+            Some(PaletteRow::Connection(id)) => {
+                self.hide_command_bar();
+                self.call_window(|window| window.connect_saved_signal(&id));
+            }
             Some(PaletteRow::Command(command)) => {
                 let entry = self.imp().cmd_entry.borrow().clone().unwrap();
                 entry.set_text(&format!("{} ", command));
@@ -5152,6 +5219,30 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             }
             None => {}
         }
+    }
+
+    /// Saved connections for the palette, read at most once per opening.
+    fn palette_connection_rows(&self) -> Vec<(String, String, String)> {
+        let mut supported = false;
+        self.call_window(|window| supported = window.supports_connections());
+        if !supported {
+            return Vec::new();
+        }
+        self.imp()
+            .palette_connections
+            .borrow_mut()
+            .get_or_insert_with(|| {
+                crate::connections_ui::load_entries()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|entry| {
+                        let connection = entry.connection;
+                        let summary = connection.summary();
+                        (connection.id, connection.name, summary)
+                    })
+                    .collect()
+            })
+            .clone()
     }
 
     fn execute_from_bar(&self) {
@@ -5173,6 +5264,11 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 Some(PaletteRow::Action(id)) => {
                     self.hide_command_bar();
                     self.run_palette_action(&id);
+                    return;
+                }
+                Some(PaletteRow::Connection(id)) => {
+                    self.hide_command_bar();
+                    self.call_window(|window| window.connect_saved_signal(&id));
                     return;
                 }
                 Some(PaletteRow::Command(command)) => {
@@ -5340,6 +5436,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                         entry.set_text(&format!("{} ", command));
                         entry.set_position(-1);
                     }
+                    Some(PaletteRow::Connection(_)) => {}
                     Some(PaletteRow::Action(id)) => {
                         if let Some(action) = PALETTE_ACTIONS.iter().find(|action| action.id == id)
                         {
@@ -5406,6 +5503,15 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             true
         } else if shadow.starts_with("/snippet") {
             self.cmd_snippet(&args());
+            true
+        } else if shadow.starts_with("/ssh") {
+            let target = args();
+            let target = target.trim();
+            if target.is_empty() {
+                self.call_window(|window| window.ssh_picker_signal());
+            } else {
+                self.call_window(|window| window.connect_text_signal(target));
+            }
             true
         } else if shadow == "/help" {
             self.cmd_help();

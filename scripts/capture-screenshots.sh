@@ -43,6 +43,17 @@ mkdir -p "$OUT_DIR"
 TMP_DIR="$(mktemp -d /tmp/oxterm-shots.XXXXXX)"
 export HOME="$TMP_DIR/home"
 mkdir -p "$HOME"
+# Invented hosts for the connections panel: nothing real reaches a screenshot.
+mkdir -p "$HOME/.config/oxterm" "$HOME/.ssh"
+cat >"$HOME/.config/oxterm/connections.json" <<'BOOK'
+{"version":1,"connections":[
+  {"id":"s1","name":"db-prod-1","host":"db1.example.com","user":"admin","group":"Customers/ACME","favorite":true,"tunnels":[{"type":"local","listen":"127.0.0.1:5433","target":"127.0.0.1:5432"}]},
+  {"id":"s2","name":"web-prod-1","host":"web1.example.com","user":"deploy","group":"Customers/ACME"},
+  {"id":"s3","name":"build-box","host":"build.example.org","user":"ci","port":2222,"group":"Customers/Beta"},
+  {"id":"s4","name":"lab","host":"10.0.0.9"}
+]}
+BOOK
+printf 'Host staging\n  HostName staging.example.net\nHost backup\n  HostName backup.example.net\n' >"$HOME/.ssh/config"
 
 GUI_PID=""
 XVNC_PID=""
@@ -173,6 +184,13 @@ xdotool key --clearmodifiers ctrl+shift+p
 sleep 0.7
 import -window "$WINDOW" "$OUT_DIR/command-bar.png"
 xdotool key --clearmodifiers Escape
+sleep 0.5
+
+# The connections panel.
+xdotool key --clearmodifiers ctrl+shift+j
+sleep 1.5
+import -window "$WINDOW" "$OUT_DIR/connections.png"
+xdotool key --clearmodifiers Escape
 sleep 0.3
 
 # A wider window and a vertical split, both panes showing real command output.
@@ -191,4 +209,5 @@ fi
 sleep 2
 import -window "$WINDOW" "$OUT_DIR/splits.png"
 
-printf 'wrote %s\n' "$OUT_DIR/main.png" "$OUT_DIR/command-bar.png" "$OUT_DIR/splits.png"
+printf 'wrote %s\n' "$OUT_DIR/main.png" "$OUT_DIR/command-bar.png" "$OUT_DIR/splits.png" \
+    "$OUT_DIR/connections.png"

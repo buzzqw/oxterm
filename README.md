@@ -70,6 +70,8 @@ memory footprint and the memory-safety guarantees of Rust.
 | :---: | :---: |
 | ![Vertical split with two shells](docs/screenshots/splits.png) | ![Command bar with slash commands](docs/screenshots/command-bar.png) |
 
+![Connections panel with groups, favorites and saved hosts](docs/screenshots/connections.png)
+
 The images come from an isolated profile running the release build, so they
 never contain real settings or shell history. Regenerate them after a UI change
 with `scripts/capture-screenshots.sh`; the script header lists the tools it

@@ -179,6 +179,10 @@ pub struct Connection {
     pub confirm_connect: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tunnels: Vec<Tunnel>,
+    /// A color scheme for this entry's tabs only, so that a server is recognized
+    /// at a glance. Empty follows the global settings; an unknown name is ignored.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub color_scheme: String,
     #[serde(flatten)]
     pub unknown: BTreeMap<String, Value>,
 }
@@ -312,6 +316,7 @@ impl Connection {
             return Err("The notes are too long".to_string());
         }
         check_text("Remote command", &self.remote_command)?;
+        check_text("Color scheme", &self.color_scheme)?;
         match self.kind {
             Kind::Alias => check_argument("Host alias", &self.name)?,
             Kind::Manual => {

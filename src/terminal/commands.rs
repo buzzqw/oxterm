@@ -513,6 +513,7 @@ impl TerminalBox {
   \x1b[33m/session export NAME\x1b[0m  Export a saved session as private JSON\r\n\
   \x1b[33m/snippet add NAME CMD\x1b[0m  Save a parameterized command snippet\r\n\
   \x1b[33m/snippet NAME [ARGS]\x1b[0m   Expand a saved snippet into the prompt\r\n\
+  \x1b[33m/ssh [NAME]\x1b[0m           Open a saved connection or an SSH host\r\n\
   \x1b[33m/help\x1b[0m / \x1b[33m/clear\x1b[0m      Show this help / clear the screen\r\n\r\n\
   \x1b[90mTab\x1b[0m                    Complete /commands; press twice for history\r\n\
   \x1b[90mCtrl+R\x1b[0m                 History search; repeat to select next match\r\n\

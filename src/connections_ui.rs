@@ -26,6 +26,11 @@ pub enum Placement {
     Tab,
     Split,
     Window,
+    /// The right or lower side, as in a restored session: splits the window if
+    /// it is not split yet, or adds a tab to that side.
+    OtherSide {
+        vertical: bool,
+    },
 }
 
 /// The book merged with `~/.ssh/config`, or why the book could not be read.
@@ -85,7 +90,12 @@ impl MainWindow {
                     }
                     glib::Propagation::Stop
                 }
-                _ => glib::Propagation::Proceed,
+                key => match weak.upgrade() {
+                    Some(window) if window.panel_shortcut(key, event.state()) => {
+                        glib::Propagation::Stop
+                    }
+                    _ => glib::Propagation::Proceed,
+                },
             });
         let weak = crate::SendWeak::new(self);
         panel.tree.connect_row_activated(move |tree, path, _| {
@@ -114,6 +124,9 @@ impl MainWindow {
             };
             let key = event.keyval();
             let control = event.state().contains(gdk::ModifierType::CONTROL_MASK);
+            if window.panel_shortcut(key, event.state()) {
+                return glib::Propagation::Stop;
+            }
             let selected = window
                 .imp()
                 .connections_panel
@@ -169,6 +182,25 @@ impl MainWindow {
         slot.pack_start(&panel.root, false, true, 0);
         *self.imp().connections_panel.borrow_mut() = Some(panel);
         true
+    }
+
+    /// Shortcuts that work from anywhere in the panel. `Ctrl+Shift+J` is normally
+    /// handled by the terminal, which does not see keys while the panel has focus.
+    fn panel_shortcut(&self, key: gdk::keys::Key, state: gdk::ModifierType) -> bool {
+        use gdk::keys::constants as K;
+        if !state.contains(gdk::ModifierType::CONTROL_MASK) {
+            return false;
+        }
+        let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+        if shift && (key == K::j || key == K::J) {
+            self.set_connections_panel_visible(false);
+            return true;
+        }
+        if !shift && key == K::n {
+            self.new_connection();
+            return true;
+        }
+        false
     }
 
     pub fn connections_panel_visible(&self) -> bool {
@@ -267,7 +299,15 @@ impl MainWindow {
 
     fn open_connection_counts(&self) -> std::collections::HashMap<String, usize> {
         let mut counts = std::collections::HashMap::new();
-        for term in self.all_terminals() {
+        // Every window of this process: a detached tab still counts.
+        let terminals = match self.application() {
+            Some(app) => crate::control::terminals(&app)
+                .into_iter()
+                .map(|(_, term)| term)
+                .collect(),
+            None => self.all_terminals(),
+        };
+        for term in terminals {
             if let Some(id) = term.connection_id() {
                 *counts.entry(id).or_insert(0) += 1;
             }
@@ -595,7 +635,7 @@ impl MainWindow {
         });
     }
 
-    fn confirm_connection(&self, connection: &Connection) -> bool {
+    pub(crate) fn confirm_connection(&self, connection: &Connection) -> bool {
         let dialog = gtk::MessageDialog::new(
             Some(self),
             gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
@@ -615,13 +655,19 @@ impl MainWindow {
         answer == gtk::ResponseType::Yes
     }
 
-    fn finish_connect(&self, connection: Connection, prepared: Prepared, placement: Placement) {
+    pub(crate) fn finish_connect(
+        &self,
+        connection: Connection,
+        prepared: Prepared,
+        placement: Placement,
+    ) {
         let title = connection.name.clone();
         let term = self.open_connection_terminal(&prepared.plan.argv, &title, placement);
         let Some(term) = term else {
             return;
         };
         term.set_connection(Some(connection.id.clone()), Some(connection.name.clone()));
+        term.set_color_override(Some(connection.color_scheme.clone()));
         if placement != Placement::Window {
             self.pin_tab_title(&term, &title);
         }
@@ -678,6 +724,14 @@ impl MainWindow {
                 }
                 split
             }
+            Placement::OtherSide { vertical } => {
+                if *self.imp().split_mode.borrow() == "single" {
+                    let mode = if vertical { "vertical" } else { "horizontal" };
+                    return self.split_terminal(mode, None, Some(argv), Some(title));
+                }
+                let other = self.imp().notebook2.borrow().clone();
+                Some(self.add_new_tab(None, other.as_ref(), Some(title), Some(title), Some(argv)))
+            }
             Placement::Window => {
                 let term = self.add_new_tab(None, None, Some(title), Some(title), Some(argv));
                 self.detach_tab_signal(&term);
@@ -704,6 +758,7 @@ impl MainWindow {
             Some(entry.connection.id.clone()),
             Some(entry.connection.name.clone()),
         );
+        term.set_color_override(Some(entry.connection.color_scheme.clone()));
         self.pin_tab_title(&term, &title);
     }
 
@@ -760,23 +815,26 @@ impl MainWindow {
 }
 
 /// Ask whether to reopen the SSH connections of a restored session, and open
-/// them. Nothing connects by itself after a restart: a session file must not be
-/// able to log in to a production host without someone saying yes.
-pub fn offer_reconnect(window: &MainWindow, ids: Vec<String>) {
+/// them where they were, in their old order. Nothing connects by itself after a
+/// restart: a session file must not be able to log in to a production host
+/// without someone saying yes.
+pub fn offer_reconnect(window: &MainWindow, tabs: Vec<(String, bool)>, vertical: bool) {
     let Ok(entries) = load_entries() else {
         return;
     };
-    let connections_to_open: Vec<Connection> = ids
+    let wanted: Vec<(Connection, bool)> = tabs
         .iter()
-        .filter_map(|id| connections::find_entry_by_id(&entries, id))
-        .map(|entry| entry.connection.clone())
+        .filter_map(|(id, right)| {
+            connections::find_entry_by_id(&entries, id)
+                .map(|entry| (entry.connection.clone(), *right))
+        })
         .collect();
-    if connections_to_open.is_empty() {
+    if wanted.is_empty() {
         return;
     }
-    let names: Vec<&str> = connections_to_open
+    let names: Vec<&str> = wanted
         .iter()
-        .map(|connection| connection.name.as_str())
+        .map(|(connection, _)| connection.name.as_str())
         .collect();
     let dialog = gtk::MessageDialog::new(
         Some(window),
@@ -793,9 +851,38 @@ pub fn offer_reconnect(window: &MainWindow, ids: Vec<String>) {
     unsafe {
         dialog.destroy();
     }
-    if answer == gtk::ResponseType::Yes {
-        for connection in connections_to_open {
-            window.connect(connection, Placement::Tab);
-        }
+    if answer != gtk::ResponseType::Yes {
+        return;
     }
+    // An entry that asks before connecting still asks: "reconnect all" was said
+    // to a list, not to that host in particular.
+    let wanted: Vec<(Connection, bool)> = wanted
+        .into_iter()
+        .filter(|(connection, _)| {
+            !connection.confirm_connect || window.confirm_connection(connection)
+        })
+        .collect();
+    let weak = crate::SendWeak::new(window);
+    std::thread::spawn(move || {
+        let prepared: Vec<_> = wanted
+            .into_iter()
+            .map(|(connection, right)| {
+                let plan = connections::prepare_session(&connection);
+                (connection, plan, right)
+            })
+            .collect();
+        crate::run_on_main(move || {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            for (connection, plan, right) in prepared {
+                let placement = if right {
+                    Placement::OtherSide { vertical }
+                } else {
+                    Placement::Tab
+                };
+                window.finish_connect(connection, plan, placement);
+            }
+        });
+    });
 }

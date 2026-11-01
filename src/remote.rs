@@ -110,8 +110,8 @@ impl BrokerHandle {
         )
     }
 
-    /// Whether the child PTY currently echoes typed characters. Password
-    /// prompts clear ECHO, so callers must not retain input while it is false.
+    /// Whether typed characters are visible (see `input_is_visible`). Password
+    /// prompts hide them, so callers must not retain input while it is false.
     /// This is queried on keystrokes, so a slow broker reads as "echo off"
     /// (the safe answer) instead of freezing the UI.
     pub fn child_echo_on(&self) -> bool {
@@ -1756,7 +1756,11 @@ fn handle_command(
         } else {
             b"OK\n0"
         }),
-        "ECHO" => clients[index].queue(if child_echo_on() { b"OK\n1" } else { b"OK\n0" }),
+        "ECHO" => clients[index].queue(if child_echo_on(state) {
+            b"OK\n1"
+        } else {
+            b"OK\n0"
+        }),
         "ATTACH" => {
             clients[index].attached = true;
             // A new client starts from an empty screen. First acknowledge the
@@ -1903,14 +1907,20 @@ fn child_foreground_is_active(state: &BrokerState) -> bool {
     foreground != shell_group
 }
 
-fn child_echo_on() -> bool {
+fn child_echo_on(state: &BrokerState) -> bool {
     let mut attrs = std::mem::MaybeUninit::<libc::termios>::uninit();
-    if unsafe { libc::tcgetattr(CHILD_FD, attrs.as_mut_ptr()) } == 0 {
-        return termios_echo_on(unsafe { attrs.assume_init() });
+    // The fallback keeps the conservative failure behavior below.
+    if unsafe { libc::tcgetattr(CHILD_FD, attrs.as_mut_ptr()) } != 0
+        && !read_slave_attrs(attrs.as_mut_ptr())
+    {
+        return false;
     }
+    let attrs = unsafe { attrs.assume_init() };
+    input_is_visible(attrs.c_lflag, !child_foreground_is_active(state))
+}
 
-    // Some platforms expose terminal attributes only through the slave side.
-    // Open it as a fallback while keeping the conservative failure behavior.
+/// Some platforms expose terminal attributes only through the slave side.
+fn read_slave_attrs(attrs: *mut libc::termios) -> bool {
     let name = unsafe { libc::ptsname(CHILD_FD) };
     if name.is_null() {
         return false;
@@ -1919,14 +1929,20 @@ fn child_echo_on() -> bool {
     if slave < 0 {
         return false;
     }
-    let result = unsafe { libc::tcgetattr(slave, attrs.as_mut_ptr()) } == 0
-        && termios_echo_on(unsafe { attrs.assume_init() });
+    let result = unsafe { libc::tcgetattr(slave, attrs) } == 0;
     unsafe { libc::close(slave) };
     result
 }
 
-fn termios_echo_on(attrs: libc::termios) -> bool {
-    attrs.c_lflag & libc::ECHO != 0
+/// Whether typed text is on screen, and may therefore be mirrored for history.
+///
+/// A password prompt clears `ECHO` and stays in canonical mode. A line editor
+/// (readline, zle, fish) also clears `ECHO`, but in raw mode, and draws the text
+/// itself; treating it as a password prompt would hide every command typed at a
+/// prompt. Raw mode only means this at the shell's own prompt: `ssh` runs raw
+/// too, and a remote password prompt looks exactly the same from here.
+pub fn input_is_visible(local_flags: libc::tcflag_t, at_shell_prompt: bool) -> bool {
+    local_flags & libc::ECHO != 0 || (local_flags & libc::ICANON == 0 && at_shell_prompt)
 }
 
 fn queue_child_input(state: &mut BrokerState, data: &[u8]) -> bool {
@@ -2199,15 +2215,6 @@ mod tests {
     }
 
     #[test]
-    fn termios_echo_flag_is_detected() {
-        let mut attrs = unsafe { std::mem::zeroed::<libc::termios>() };
-        attrs.c_lflag = libc::ECHO;
-        assert!(termios_echo_on(attrs));
-        attrs.c_lflag = 0;
-        assert!(!termios_echo_on(attrs));
-    }
-
-    #[test]
     fn only_removes_existing_socket_files() {
         let path = std::env::temp_dir().join(format!(
             "oxterm-remote-test-{}-{}",
@@ -2472,5 +2479,34 @@ mod tests {
             relay_input(b"ls\x02w", &mut prefix, 0x01),
             RelayAction::Forward(ref v) if v == b"ls\x02w"
         ));
+    }
+}
+
+#[cfg(test)]
+mod input_visibility_tests {
+    use super::input_is_visible;
+
+    #[test]
+    fn a_line_editor_at_the_prompt_is_visible() {
+        // readline: no ECHO, no ICANON, the shell in the foreground.
+        assert!(input_is_visible(0, true));
+    }
+
+    #[test]
+    fn a_password_prompt_is_never_mirrored() {
+        // sudo, ssh's own prompt, `read -s`: no ECHO, canonical mode.
+        assert!(!input_is_visible(libc::ICANON, true));
+        assert!(!input_is_visible(libc::ICANON, false));
+    }
+
+    #[test]
+    fn raw_mode_under_a_foreground_program_is_not_visible() {
+        // An ssh session: a remote password prompt looks just like this.
+        assert!(!input_is_visible(0, false));
+    }
+
+    #[test]
+    fn plain_echo_is_visible() {
+        assert!(input_is_visible(libc::ECHO | libc::ICANON, false));
     }
 }

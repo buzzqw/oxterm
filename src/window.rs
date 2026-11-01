@@ -192,6 +192,13 @@ pub trait TerminalWindow {
     /// Pick a host from ~/.ssh/config and open an SSH tab.
     fn ssh_picker_signal(&self) {}
     fn connections_panel_signal(&self) {}
+    /// Whether this window can open saved connections: a detached window has no
+    /// tab bar to put them in.
+    fn supports_connections(&self) -> bool {
+        false
+    }
+    fn connect_saved_signal(&self, _id: &str) {}
+    fn connect_text_signal(&self, _text: &str) {}
     /// Rename the tab that owns `term`. Windows without tabs (a detached
     /// terminal) leave this as a no-op.
     fn rename_tab_signal(&self, term: &TerminalBox) {
@@ -4148,6 +4155,14 @@ impl MainWindow {
         };
         let cwd = (!pane.cwd.is_empty()).then_some(pane.cwd.as_str());
         let term = self.add_new_tab(cwd, None, Some(&title), Some(&title), Some(&command));
+        // The tab stays the same saved connection in its new home.
+        if pane.connection_id.is_some() {
+            term.set_connection(pane.connection_id.clone(), pane.connection_name.clone());
+            term.set_color_override(pane.color_override.clone());
+            if let Some(name) = &pane.connection_name {
+                self.pin_tab_title(&term, name);
+            }
+        }
 
         let weak = crate::SendWeak::new(self);
         let weak_term = crate::SendWeak::new(&term);
@@ -5848,13 +5863,16 @@ impl MainWindow {
                 .as_ref()
                 .is_some_and(|id| known.contains(id))
         };
-        let reconnect: Vec<String> = data
-            .tabs_left
-            .iter()
-            .chain(&data.tabs_right)
-            .filter(|tab| is_saved(tab))
-            .filter_map(|tab| tab.connection_id.clone())
-            .collect();
+        let saved_ids = |tabs: &[crate::session::TabEntry], right: bool| {
+            tabs.iter()
+                .filter(|tab| is_saved(tab))
+                .filter_map(|tab| tab.connection_id.clone().map(|id| (id, right)))
+                .collect::<Vec<_>>()
+        };
+        let mut reconnect = saved_ids(&data.tabs_left, false);
+        // A window restored as single has no right side to go back to.
+        reconnect.extend(saved_ids(&data.tabs_right, split != "single"));
+        let vertical = split != "horizontal";
         let shells = |tabs: &[crate::session::TabEntry]| -> Vec<crate::session::TabEntry> {
             tabs.iter().filter(|tab| !is_saved(tab)).cloned().collect()
         };
@@ -5864,7 +5882,7 @@ impl MainWindow {
             let weak = crate::SendWeak::new(self);
             glib::idle_add_local_once(move || {
                 if let Some(window) = weak.upgrade() {
-                    crate::connections_ui::offer_reconnect(&window, reconnect);
+                    crate::connections_ui::offer_reconnect(&window, reconnect, vertical);
                 }
             });
         }
@@ -6038,6 +6056,15 @@ impl TerminalWindow for MainWindow {
     }
     fn connections_panel_signal(&self) {
         self.toggle_connections_panel();
+    }
+    fn supports_connections(&self) -> bool {
+        true
+    }
+    fn connect_saved_signal(&self, id: &str) {
+        self.connect_id(id, crate::connections_ui::Placement::Tab);
+    }
+    fn connect_text_signal(&self, text: &str) {
+        self.connect_text(text);
     }
     fn open_command_tab(&self, cwd: &str, command: Vec<String>, title: &str) {
         let term = self.add_new_tab(Some(cwd), None, Some(title), Some(title), Some(&command));
