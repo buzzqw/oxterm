@@ -70,6 +70,197 @@ pub const OXTERM_COMMANDS: &[&str] = &[
     "cls",
 ];
 
+/// A row in the command palette: a slash command or a direct action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PaletteRow {
+    Command(String),
+    Action(String),
+}
+
+struct PaletteAction {
+    id: &'static str,
+    title: &'static str,
+    detail: &'static str,
+    keys: &'static str,
+}
+
+const PALETTE_ACTIONS: &[PaletteAction] = &[
+    PaletteAction {
+        id: "new-tab",
+        title: "New tab",
+        detail: "Open a new terminal tab",
+        keys: "Ctrl+Shift+T",
+    },
+    PaletteAction {
+        id: "new-window",
+        title: "New window",
+        detail: "Open a new Oxterm window",
+        keys: "Ctrl+Shift+N",
+    },
+    PaletteAction {
+        id: "close-tab",
+        title: "Close tab",
+        detail: "Close the active terminal tab",
+        keys: "Ctrl+Shift+W",
+    },
+    PaletteAction {
+        id: "close-window",
+        title: "Close window",
+        detail: "Close this Oxterm window",
+        keys: "Ctrl+Shift+Q",
+    },
+    PaletteAction {
+        id: "split-vertical",
+        title: "Split vertical",
+        detail: "Arrange two panes left and right",
+        keys: "Ctrl+Shift+E",
+    },
+    PaletteAction {
+        id: "split-horizontal",
+        title: "Split horizontal",
+        detail: "Arrange two panes top and bottom",
+        keys: "Ctrl+Shift+D",
+    },
+    PaletteAction {
+        id: "toggle-split-zoom",
+        title: "Toggle split zoom",
+        detail: "Zoom the active pane or restore both",
+        keys: "Ctrl+B, z",
+    },
+    PaletteAction {
+        id: "equalize-splits",
+        title: "Equalize splits",
+        detail: "Give both panes the same size",
+        keys: "Ctrl+B, =",
+    },
+    PaletteAction {
+        id: "focus-other-pane",
+        title: "Switch split pane",
+        detail: "Move focus to the other pane",
+        keys: "Ctrl+B, o",
+    },
+    PaletteAction {
+        id: "next-tab",
+        title: "Next tab",
+        detail: "Switch to the next terminal tab",
+        keys: "Ctrl+PageDown",
+    },
+    PaletteAction {
+        id: "prev-tab",
+        title: "Previous tab",
+        detail: "Switch to the previous terminal tab",
+        keys: "Ctrl+PageUp",
+    },
+    PaletteAction {
+        id: "rename-tab",
+        title: "Rename tab",
+        detail: "Give the active tab a custom name",
+        keys: "Ctrl+Shift+S",
+    },
+    PaletteAction {
+        id: "detach-tab",
+        title: "Detach tab",
+        detail: "Move the active tab into its own window",
+        keys: "",
+    },
+    PaletteAction {
+        id: "search-scrollback",
+        title: "Search scrollback",
+        detail: "Find text in the terminal buffer",
+        keys: "Ctrl+Shift+F",
+    },
+    PaletteAction {
+        id: "history-search",
+        title: "Search command history",
+        detail: "Open the interactive history picker",
+        keys: "Ctrl+R",
+    },
+    PaletteAction {
+        id: "hints",
+        title: "Hint mode",
+        detail: "Select URLs, paths, file:line locations and Git SHAs",
+        keys: "Ctrl+Shift+H",
+    },
+    PaletteAction {
+        id: "vi-copy",
+        title: "VI copy mode",
+        detail: "Navigate and yank text with VI motions",
+        keys: "Ctrl+Shift+Y",
+    },
+    PaletteAction {
+        id: "open-pager",
+        title: "Open last output in pager",
+        detail: "Show the last command's output in a new tab",
+        keys: "Ctrl+Shift+G",
+    },
+    PaletteAction {
+        id: "copy-output",
+        title: "Copy last command output",
+        detail: "Put the last command's output on the clipboard",
+        keys: "",
+    },
+    PaletteAction {
+        id: "ssh-tunnels",
+        title: "SSH tunnels",
+        detail: "Inspect the active session's -L, -R and -D forwards",
+        keys: "",
+    },
+    PaletteAction {
+        id: "toggle-broadcast",
+        title: "Toggle broadcast input",
+        detail: "Send keystrokes to every pane in this window",
+        keys: "Ctrl+Shift+B",
+    },
+    PaletteAction {
+        id: "zoom-in",
+        title: "Zoom font in",
+        detail: "Increase the terminal font size",
+        keys: "Ctrl++",
+    },
+    PaletteAction {
+        id: "zoom-out",
+        title: "Zoom font out",
+        detail: "Decrease the terminal font size",
+        keys: "Ctrl+-",
+    },
+    PaletteAction {
+        id: "zoom-reset",
+        title: "Reset font zoom",
+        detail: "Return to the configured font size",
+        keys: "Ctrl+0",
+    },
+    PaletteAction {
+        id: "reset-terminal",
+        title: "Reset terminal",
+        detail: "Reset the terminal state",
+        keys: "Ctrl+Shift+R",
+    },
+    PaletteAction {
+        id: "reset-clear",
+        title: "Reset and clear",
+        detail: "Reset the terminal and clear the scrollback",
+        keys: "Ctrl+Shift+X",
+    },
+    PaletteAction {
+        id: "open-file-manager",
+        title: "Open file manager here",
+        detail: "Open the current directory in the file manager",
+        keys: "",
+    },
+    PaletteAction {
+        id: "session-switcher",
+        title: "Session switcher",
+        detail: "Search local, foreign and detached sessions",
+        keys: "Ctrl+Shift+O",
+    },
+    PaletteAction {
+        id: "ssh-picker",
+        title: "Connect to SSH host",
+        detail: "Choose a host from ~/.ssh/config",
+        keys: "Ctrl+Shift+K",
+    },
+];
+
 const HINT_CHARS: &str = "asdfghjklqwertyuiopzxcvbnm";
 
 static HINT_URL_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
@@ -859,14 +1050,16 @@ mod imp {
         pub cmd_bar: RefCell<Option<gtk::Box>>,
         pub cmd_entry: RefCell<Option<gtk::Entry>>,
         pub cmd_list: RefCell<Option<gtk::ListBox>>,
-        pub cmd_row_map: RefCell<std::collections::HashMap<usize, String>>,
+        pub cmd_row_map: RefCell<std::collections::HashMap<usize, PaletteRow>>,
         pub search_revealer: RefCell<Option<gtk::Revealer>>,
         pub search_entry: RefCell<Option<gtk::SearchEntry>>,
         pub search_label: RefCell<Option<gtk::Label>>,
         pub search_case_btn: RefCell<Option<gtk::ToggleButton>>,
         pub search_regex_btn: RefCell<Option<gtk::ToggleButton>>,
         pub hints_fixed: RefCell<Option<gtk::Fixed>>,
+        pub hover_label: RefCell<Option<gtk::Label>>,
         pub vi_overlay_area: RefCell<Option<gtk::DrawingArea>>,
+        pub hover_cell: Cell<Option<(i64, i64)>>,
         pub undercurl_provider: RefCell<Option<gtk::CssProvider>>,
 
         pub pid: RefCell<i32>,
@@ -1064,6 +1257,28 @@ impl TerminalBox {
         vte.set_mouse_autohide(true);
         vte.set_scroll_on_output(false);
         vte.set_scroll_on_keystroke(s.get_bool("scroll_on_keystroke"));
+        vte.add_events(gdk::EventMask::POINTER_MOTION_MASK);
+        let weak = crate::SendWeak::new(self);
+        vte.connect_motion_notify_event(move |_, event| {
+            let Some(term) = weak.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            let (x, y) = event.position();
+            let cell = term.pixel_to_cell(x, y);
+            if term.imp().hover_cell.get() == Some(cell) {
+                return glib::Propagation::Proceed;
+            }
+            term.imp().hover_cell.set(Some(cell));
+            term.update_hover_label(x, y);
+            glib::Propagation::Proceed
+        });
+        let weak = crate::SendWeak::new(self);
+        vte.connect_leave_notify_event(move |_, _| {
+            if let Some(term) = weak.upgrade() {
+                term.hide_hover_label();
+            }
+            glib::Propagation::Proceed
+        });
 
         *self.imp().vte.borrow_mut() = Some(vte.clone());
         // The PTY broker no longer polls the window size; wake it whenever
@@ -1178,6 +1393,22 @@ impl TerminalBox {
         hints_fixed.hide();
         overlay.add_overlay(&hints_fixed);
         *self.imp().hints_fixed.borrow_mut() = Some(hints_fixed);
+
+        let hover_label = gtk::Label::new(None);
+        hover_label
+            .style_context()
+            .add_class("oxterm-hover-tooltip");
+        hover_label.set_no_show_all(true);
+        hover_label.set_halign(gtk::Align::Start);
+        hover_label.set_valign(gtk::Align::Start);
+        hover_label.set_xalign(0.0);
+        hover_label.set_line_wrap(false);
+        hover_label.set_can_focus(false);
+        hover_label.set_hexpand(false);
+        hover_label.set_vexpand(false);
+        hover_label.hide();
+        overlay.add_overlay(&hover_label);
+        *self.imp().hover_label.borrow_mut() = Some(hover_label);
 
         let vi_overlay_area = gtk::DrawingArea::new();
         vi_overlay_area.set_no_show_all(true);
@@ -3350,6 +3581,55 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         (col, row)
     }
 
+    /// Decode an epoch/HTTP/errno token under the pointer for the hover
+    /// tooltip. Only digit tokens are considered; the headless decoder
+    /// decides whether the value and its line context are unambiguous.
+    fn hover_tooltip_at(&self, x: f64, y: f64) -> Option<String> {
+        let (col, row) = self.pixel_to_cell(x, y);
+        let scroll_top = self.vadjustment().value() as i64;
+        let text = text::range(&self.vte(), row + scroll_top, 0, row + scroll_top, -1)?;
+        let line = text.trim_end_matches(['\n', '\r']);
+        let chars: Vec<char> = line.chars().collect();
+        let col = col as usize;
+        if col >= chars.len() || !chars[col].is_ascii_digit() {
+            return None;
+        }
+        let mut start = col;
+        while start > 0 && chars[start - 1].is_ascii_digit() {
+            start -= 1;
+        }
+        let mut end = col;
+        while end < chars.len() && chars[end].is_ascii_digit() {
+            end += 1;
+        }
+        let token: String = chars[start..end].iter().collect();
+        crate::headless::decode::hover_tooltip(&token, line)
+    }
+
+    fn update_hover_label(&self, x: f64, y: f64) {
+        let Some(label) = self.imp().hover_label.borrow().clone() else {
+            return;
+        };
+        match self.hover_tooltip_at(x, y) {
+            Some(text) => {
+                label.set_text(&text);
+                let max_x = (self.vte().allocated_width() - 280).max(0) as f64;
+                let max_y = (self.vte().allocated_height() - 30).max(0) as f64;
+                label.set_margin_start((x + 12.0).clamp(0.0, max_x) as i32);
+                label.set_margin_top((y + 18.0).clamp(0.0, max_y) as i32);
+                label.show();
+            }
+            None => label.hide(),
+        }
+    }
+
+    fn hide_hover_label(&self) {
+        if let Some(label) = self.imp().hover_label.borrow().clone() {
+            label.hide();
+        }
+        self.imp().hover_cell.set(None);
+    }
+
     fn url_at_position(&self, x: f64, y: f64) -> Option<String> {
         let (col, row) = self.pixel_to_cell(x, y);
         let (matched, _tag) = self.vte().match_check(col, row);
@@ -4138,13 +4418,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 return glib::Propagation::Stop;
             }
             if key == K::b || key == K::B {
-                let current = settings().get_bool("broadcast_input");
-                let s = settings();
-                let _ = s.set("broadcast_input", serde_json::Value::Bool(!current));
-                s.notify_changed();
-                let status = if !current { "ON" } else { "OFF" };
-                self.vte()
-                    .feed(format!("\r\n\x1b[33mBroadcast input: {}\x1b[0m\r\n", status).as_bytes());
+                self.toggle_broadcast_setting();
                 return glib::Propagation::Stop;
             }
             if key == K::p || key == K::P {
@@ -4506,7 +4780,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         cmd_entry.set_has_frame(false);
         cmd_entry.set_hexpand(true);
         cmd_entry.set_size_request(-1, 36);
-        cmd_entry.set_placeholder_text(Some("/command [args]…"));
+        cmd_entry.set_placeholder_text(Some("Type a command or search actions…"));
         let weak = crate::SendWeak::new(self);
         cmd_entry.connect_changed(move |_e| {
             if let Some(t) = weak.upgrade() {
@@ -4645,7 +4919,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         let revealer = self.imp().cmd_bar_revealer.borrow().clone().unwrap();
         revealer.set_reveal_child(true);
         let entry = self.imp().cmd_entry.borrow().clone().unwrap();
-        entry.set_text("/");
+        entry.set_text("");
         self.build_cmd_list("");
         entry.grab_focus();
         entry.select_region(-1, -1);
@@ -4677,7 +4951,8 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             list.remove(&child);
         }
         self.imp().cmd_row_map.borrow_mut().clear();
-        let q = query.to_lowercase().trim_start_matches('/').to_string();
+        let slash_only = query.trim_start().starts_with('/');
+        let q = query.trim().trim_start_matches('/').to_string();
         let commands: &[(&str, &str)] = &[
             ("/history [terms | :sql SQL]", "Search command history"),
             (
@@ -4695,18 +4970,61 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             ("/clear", "Clear the terminal screen"),
             ("/cls", "Clear the terminal screen"),
         ];
-        let mut first: Option<gtk::ListBoxRow> = None;
-        for (cmd, desc) in commands {
-            if !q.is_empty() && !cmd.to_lowercase().contains(&q) {
+        let mut entries: Vec<(i32, u8, usize, String, String, PaletteRow)> = Vec::new();
+        let mut order = 0usize;
+        for (command, description) in commands {
+            let haystack = format!("{} {}", command, description);
+            if let Some(score) = crate::headless::text::fuzzy_score(&q, &haystack) {
+                entries.push((
+                    score,
+                    1,
+                    order,
+                    command.to_string(),
+                    description.to_string(),
+                    PaletteRow::Command(
+                        command.split_whitespace().next().unwrap_or("").to_string(),
+                    ),
+                ));
+                order += 1;
+            }
+        }
+        for action in PALETTE_ACTIONS {
+            if slash_only {
                 continue;
             }
+            let haystack = format!("{} {} {}", action.title, action.detail, action.keys);
+            if let Some(score) = crate::headless::text::fuzzy_score(&q, &haystack) {
+                let detail = if action.keys.is_empty() {
+                    action.detail.to_string()
+                } else {
+                    format!("{}  ·  {}", action.detail, action.keys)
+                };
+                entries.push((
+                    score,
+                    0,
+                    order,
+                    action.title.to_string(),
+                    detail,
+                    PaletteRow::Action(action.id.to_string()),
+                ));
+                order += 1;
+            }
+        }
+        entries.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+        let mut first: Option<gtk::ListBoxRow> = None;
+        for (_, _, _, label_text, detail_text, row_target) in entries {
             let row = gtk::ListBoxRow::new();
             let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-            let lbl = gtk::Label::new(Some(&format!("{}  ", cmd)));
+            let lbl = gtk::Label::new(None);
             lbl.set_xalign(0.0);
             lbl.set_halign(gtk::Align::Start);
-            lbl.set_markup(&format!("<b>{}</b>", cmd));
-            let desc_lbl = gtk::Label::new(Some(desc));
+            lbl.set_markup(&format!("<b>{}</b>", glib::markup_escape_text(&label_text)));
+            let desc_lbl = gtk::Label::new(None);
+            desc_lbl.set_text(&detail_text);
             desc_lbl.set_xalign(0.0);
             desc_lbl.set_halign(gtk::Align::Start);
             desc_lbl.style_context().add_class("dim-label");
@@ -4714,10 +5032,10 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             hbox.pack_start(&desc_lbl, true, true, 0);
             row.add(&hbox);
             row.show_all();
-            self.imp().cmd_row_map.borrow_mut().insert(
-                row.as_ptr() as usize,
-                cmd.split_whitespace().next().unwrap_or("").to_string(),
-            );
+            self.imp()
+                .cmd_row_map
+                .borrow_mut()
+                .insert(row.as_ptr() as usize, row_target);
             list.add(&row);
             if first.is_none() {
                 first = Some(row);
@@ -4729,22 +5047,58 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
     }
 
     fn on_cmd_bar_row_activated(&self, row: &gtk::ListBoxRow) {
-        let cmd_label = self
+        let target = self
             .imp()
             .cmd_row_map
             .borrow()
             .get(&(row.as_ptr() as usize))
-            .cloned()
-            .unwrap_or_default();
-        let entry = self.imp().cmd_entry.borrow().clone().unwrap();
-        entry.set_text(&format!("{} ", cmd_label));
-        entry.set_position(-1);
-        entry.grab_focus();
+            .cloned();
+        match target {
+            Some(PaletteRow::Action(id)) => {
+                self.hide_command_bar();
+                self.run_palette_action(&id);
+            }
+            Some(PaletteRow::Command(command)) => {
+                let entry = self.imp().cmd_entry.borrow().clone().unwrap();
+                entry.set_text(&format!("{} ", command));
+                entry.set_position(-1);
+                entry.grab_focus();
+            }
+            None => {}
+        }
     }
 
     fn execute_from_bar(&self) {
         let entry = self.imp().cmd_entry.borrow().clone().unwrap();
-        let shadow = entry.text().trim().to_string();
+        let mut shadow = entry.text().trim().to_string();
+        let selected = {
+            let list = self.imp().cmd_list.borrow().clone();
+            list.and_then(|list| {
+                let row = list.selected_row()?;
+                self.imp()
+                    .cmd_row_map
+                    .borrow()
+                    .get(&(row.as_ptr() as usize))
+                    .cloned()
+            })
+        };
+        if !shadow.starts_with('/') {
+            match selected {
+                Some(PaletteRow::Action(id)) => {
+                    self.hide_command_bar();
+                    self.run_palette_action(&id);
+                    return;
+                }
+                Some(PaletteRow::Command(command)) => {
+                    shadow = if shadow.is_empty() {
+                        command
+                    } else {
+                        format!("{} {}", command, shadow)
+                    };
+                }
+                None => {}
+            }
+        }
         if shadow.is_empty() {
             self.hide_command_bar();
             return;
@@ -4753,6 +5107,93 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         *self.imp().input_shadow.borrow_mut() = shadow.clone();
         self.execute_oxterm_command(&shadow);
         *self.imp().input_shadow.borrow_mut() = String::new();
+    }
+
+    fn run_palette_action(&self, id: &str) {
+        match id {
+            "new-tab" => {
+                self.call_window(|window| window.new_tab_signal());
+            }
+            "new-window" => {
+                self.call_window(|window| window.new_window_signal());
+            }
+            "close-tab" => {
+                self.call_window(|window| window.close_tab_signal(None));
+            }
+            "close-window" => {
+                self.call_window(|window| window.close_window_signal());
+            }
+            "split-vertical" => {
+                self.call_window(|window| window.split_signal("vertical"));
+            }
+            "split-horizontal" => {
+                self.call_window(|window| window.split_signal("horizontal"));
+            }
+            "toggle-split-zoom" => {
+                self.call_window(|window| window.toggle_split_zoom_signal());
+            }
+            "equalize-splits" => {
+                self.call_window(|window| window.equalize_splits_signal());
+            }
+            "focus-other-pane" => {
+                self.call_window(|window| window.focus_other_pane_signal());
+            }
+            "next-tab" => {
+                self.call_window(|window| window.next_tab_signal());
+            }
+            "prev-tab" => {
+                self.call_window(|window| window.prev_tab_signal());
+            }
+            "rename-tab" => {
+                self.call_window(|window| window.rename_tab_signal(self));
+            }
+            "detach-tab" => {
+                self.call_window(|window| window.detach_tab_signal(self));
+            }
+            "search-scrollback" => self.show_search(),
+            "history-search" => self.start_history_search(),
+            "hints" => {
+                if settings().get_bool("hint_mode_enabled") {
+                    self.activate_hints();
+                }
+            }
+            "vi-copy" => {
+                if settings().get_bool("vi_copy_mode_enabled") {
+                    self.activate_vi_copy();
+                }
+            }
+            "open-pager" => self.open_command_output_in_pager(),
+            "copy-output" => self.copy_command_output(),
+            "ssh-tunnels" => self.show_ssh_tunnels(),
+            "toggle-broadcast" => self.toggle_broadcast_setting(),
+            "zoom-in" => self.zoom_in(),
+            "zoom-out" => self.zoom_out(),
+            "zoom-reset" => self.zoom_reset(),
+            "reset-terminal" => {
+                self.call_window(|window| window.reset_terminal());
+            }
+            "reset-clear" => {
+                self.call_window(|window| window.reset_and_clear());
+            }
+            "open-file-manager" => self.open_fm(),
+            "session-switcher" => {
+                self.call_window(|window| window.session_palette_signal());
+            }
+            "ssh-picker" => {
+                self.call_window(|window| window.ssh_picker_signal());
+            }
+            _ => {}
+        }
+    }
+
+    fn toggle_broadcast_setting(&self) {
+        let current = settings().get_bool("broadcast_input");
+        let s = settings();
+        let _ = s.set("broadcast_input", serde_json::Value::Bool(!current));
+        s.notify_changed();
+        let status = if !current { "ON" } else { "OFF" };
+        self.vte()
+            .feed(format!("\r\n\x1b[33mBroadcast input: {}\x1b[0m\r\n", status).as_bytes());
     }
 
     fn on_cmd_bar_key(&self, event: &gdk::EventKey) -> glib::Propagation {
@@ -4798,15 +5239,27 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 .collect();
             if !children.is_empty() {
                 let sel = list.selected_row().unwrap_or_else(|| children[0].clone());
-                if let Some(cmd) = self
+                let target = self
                     .imp()
                     .cmd_row_map
                     .borrow()
                     .get(&(sel.as_ptr() as usize))
-                {
-                    let entry = self.imp().cmd_entry.borrow().clone().unwrap();
-                    entry.set_text(&format!("{} ", cmd));
-                    entry.set_position(-1);
+                    .cloned();
+                match target {
+                    Some(PaletteRow::Command(command)) => {
+                        let entry = self.imp().cmd_entry.borrow().clone().unwrap();
+                        entry.set_text(&format!("{} ", command));
+                        entry.set_position(-1);
+                    }
+                    Some(PaletteRow::Action(id)) => {
+                        if let Some(action) = PALETTE_ACTIONS.iter().find(|action| action.id == id)
+                        {
+                            let entry = self.imp().cmd_entry.borrow().clone().unwrap();
+                            entry.set_text(action.title);
+                            entry.set_position(-1);
+                        }
+                    }
+                    None => {}
                 }
             }
             return glib::Propagation::Stop;

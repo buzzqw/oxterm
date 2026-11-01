@@ -249,6 +249,12 @@ and opened in a new tab with `editor_jump_command` (default
 `${EDITOR:-vi} +{line} {file}`). The template supports `{file}`, `{line}`, and
 `{col}`; for example, `code --goto {file}:{line}:{col}`.
 
+Hovering over a 10- or 13-digit Unix epoch between 2000 and 2100 shows the
+local time in a small bubble. On a line that mentions an error, status or
+errno, hovering a known 3-digit code also explains it, for example
+`HTTP 504 Gateway Timeout` or `ECONNREFUSED (errno 111): Connection refused`.
+Ordinary numbers stay untouched.
+
 Press `Ctrl+Shift+F` to search the scrollback: type a query and use `Enter` /
 `Shift+Enter` to jump to the next / previous match, with optional case-sensitive
 and regular-expression modes. This searches the on-screen text and scrollback,
@@ -376,7 +382,11 @@ Use `Ctrl+Alt+PageUp` or the Terminal menu to switch the active pane.
 ## Built-in Commands
 
 Built-in commands start with `/` and are processed by Oxterm instead of the
-shell. Press `Ctrl+Shift+P` to search them in the command palette.
+shell. Press `Ctrl+Shift+P` for the global command palette: it fuzzy-searches
+these `/commands` alongside direct actions (new tab, splits, zoom, hints, VI
+copy, pager, tunnels, broadcast, session switcher, SSH picker and more). Use
+`Tab` to complete the highlighted row and `Enter` to run it; typing `/`
+narrows the list to built-in commands.
 
 ### `/help`
 

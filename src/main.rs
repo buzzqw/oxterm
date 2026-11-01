@@ -115,6 +115,7 @@ impl App {
                 .oxterm-tab-menu menuitem { padding: 6px 12px; min-height: 24px; }
                 .oxterm-stats-label { font-size: 0.85em; font-family: Monospace; color: alpha(@theme_fg_color, 0.6); background: alpha(@theme_bg_color, 0.5); padding: 2px 12px; }
                 .oxterm-hint-label { background: #fce94f; color: #000000; font-family: Monospace; font-weight: bold; font-size: 0.85em; padding: 1px 3px; border-radius: 2px; }
+                .oxterm-hover-tooltip { background: #1f1f1f; color: #f0f0f0; border: 1px solid #666666; border-radius: 4px; padding: 3px 8px; font-family: Monospace; font-size: 0.85em; }
                 .oxterm-sticky-header { background: alpha(@theme_bg_color, 0.94); border-bottom: 1px solid alpha(currentColor, 0.25); padding: 2px 8px; font-family: Monospace; font-size: 0.88em; }
                 .oxterm-sticky-ok { color: #4faa5a; }
                 .oxterm-sticky-fail { color: #cc4b4b; }

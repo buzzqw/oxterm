@@ -47,6 +47,8 @@ memory footprint and the memory-safety guarantees of Rust.
   shell-integration installer for remote bash/zsh sessions
 - Production-host tab highlighting, tunnel inspection, and a ForwardAgent
   warning in the SSH host picker
+- Global fuzzy command palette for actions and `/commands`, plus a hover
+  decoder for Unix epochs, HTTP status codes and errno values
 - Smart command-finished notifications: only when the terminal is unfocused or a command runs long, with failures always reported, plus a red dot on tabs whose last command failed
 - Scriptable control API: `new`, `split`, `send`, `capture`, and `wait` against a running window
 - VI copy mode with motions, text objects, visual block selection, scrolloff, and bookmarks
@@ -450,8 +452,11 @@ The **Notes** menu also provides the integrated Notes panel (full-text search,
 tags, preview, append) plus New Note, Add Selection to Note, Copy All to Note,
 Note Command Output, Open Note, and Open Notes Folder actions (see the manual).
 
-Press `Ctrl+Shift+P` for the command palette and `Tab` after `/` for command
-completion.
+Press `Ctrl+Shift+P` for the global command palette: it fuzzy-searches both the
+`/commands` below and direct actions (tabs, splits, zoom, hints, VI copy,
+pager, tunnels, broadcast, sessions, SSH and more). `Tab` completes the
+selected row, and `Enter` runs it. Typing `/` still filters the built-in
+commands.
 
 ## Keyboard Shortcuts
 
@@ -530,6 +535,19 @@ inside Oxterm and need `Ctrl+B` to reach them.
 - **Agent forwarding warning.** The host picker reads the effective `ssh -G`
   configuration and warns when `ForwardAgent yes` is active, suggesting
   `ProxyJump` instead.
+
+### Command palette and hover decoding
+
+`Ctrl+Shift+P` opens a fuzzy command palette over direct actions (new tab,
+splits, zoom, search, history, hints, VI copy, pager, tunnels, broadcast,
+session switcher, SSH picker, and more) and the built-in `/commands`. Type a
+few letters, use `Tab` to complete a row, and `Enter` to run the highlighted
+action; typing `/` narrows the list to slash commands.
+
+Hovering over a 10- or 13-digit Unix epoch between 2000 and 2100 shows the
+local time in a small bubble. On a line with error/status/errno context, a
+known 3-digit HTTP or errno code is explained too. Ordinary numbers do not
+produce tooltips.
 
 ## Configuration and Data
 

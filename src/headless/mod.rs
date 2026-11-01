@@ -8,6 +8,7 @@
 
 pub mod cli;
 pub mod control_cli;
+pub mod decode;
 pub mod diagnostics;
 pub mod file_uri;
 pub mod framing;
