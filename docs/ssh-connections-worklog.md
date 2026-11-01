@@ -80,11 +80,11 @@ sul thread GUI, che non deve aspettare `ssh -G`.
 
 In ordine di priorità.
 
-- [ ] **Provare il login con password su un server vero.** Mai eseguito: `sshd` senza
-      root non verifica le password di sistema. Serve un host con password o un
-      `sshd` da root. Controllare anche che il prompt combaci con la destinazione
-      calcolata da `ssh -G`, ad esempio con `HostKeyAlias` o `CanonicalizeHostname`:
-      se non combacia, `ssh` chiede nel terminale, senza rischi.
+- [ ] **Provare un login completo con password.** Il prompt reale combacia (vedi la
+      prova su `debminis`), ma nessuna password è mai stata inviata a un server: serve
+      un account di prova. Controllare anche il caso di `HostKeyAlias` e
+      `CanonicalizeHostname`: se il prompt non combacia, `ssh` chiede nel terminale,
+      senza rischi.
 - [ ] **Provare il Secret Service reale.** I test usano un finto `secret-tool`.
       Verificare salvataggio, lettura e cancellazione dal form.
 - [ ] **Colori per connessione.** `apply_profile` è globale, quindi serve un override
@@ -118,6 +118,7 @@ In ordine di priorità.
 | `remote_attach` lascia socket in `~/.config/oxterm/remote` se interrotto | Corretto per il futuro; restano 16 socket `oxterm-{attach,move}-*` di vecchie esecuzioni, innocui e cancellabili a mano |
 | L'avviso di produzione guarda solo l'indirizzo | Corretto: per le connessioni salvate guarda anche il nome |
 | Il titolo remoto sostituisce il nome della connessione | Corretto con `pin_tab_title` |
+| Il controllo AUR compila il tag `v1.1.19`, che non contiene `oxterm-broker`, e fallisce anche su `master` dal commit `5f49453` | Corretto: la CI costruisce il commit corrente con la stessa ricetta |
 | Lo script di integrazione remota non attiva cronologia e notifiche | Non corretto: serve una decisione, comportamento documentato nel manuale |
 | Avvisi `clippy` su `terminal.rs`, `vi.rs`, `history.rs` e altri | Non toccati: sono di stile, e l'autore sta cambiando quei file per le prestazioni |
 | `OpenSSH` usa la home di `passwd`, `dirs::home_dir` usa `$HOME` | Solo nota: con `HOME` diversa i due vedono `~/.ssh/config` diversi. Nei test usare `-F` |
@@ -157,6 +158,26 @@ autenticazione a chiave, `HOME` temporanea e `extra_args: ["-F", cfg]`.
 | Ripristino dopo `kill -9`: chiede prima di riconnettere | Ok |
 | Pannello, ricerca e form su Xvnc | Ok, controllati con screenshot |
 
+### Prova sul server reale `debminis`
+
+Eseguita il 2026-11-01 con `ssh -p 2223 andres@debminis`, su richiesta dell'autore,
+senza modificare nulla sul server. Autenticazione a chiave, OpenSSH 10.3 sul server.
+
+| Verifica | Esito |
+| --- | --- |
+| `oxterm connect`: tab con nome fisso, comando eseguito sul server | Ok |
+| Secondo tab sulla connessione condivisa | Ok |
+| Tunnel `-L` verso la porta SSH remota: `listening`, banner `SSH-2.0-OpenSSH_10.3p1` letto attraverso il tunnel | Ok |
+| Stop del tunnel | Ok |
+| Pannello: conteggio di 2 tab e avviso sul nome `debminis-live` | Ok |
+| `sftp -P 2223`: comando `pwd` | Ok |
+| Prompt reale con `PreferredAuthentications=password`: `andres@debminis's password: ` | Combacia con `decide` per la destinazione di `ssh -G` |
+
+Per catturare il prompt, un finto askpass ha registrato il testo e terminato `ssh`
+prima di rispondere, quindi non è stata inviata nessuna password. Con
+`keyboard-interactive` il server non ha mostrato prompt. Il formato
+`(user@host) Password:` resta quindi non provato dal vivo.
+
 ## Hook e installazione
 
 Il `post-commit` del repository reinstalla il binario in `PATH`. Durante questo
@@ -169,4 +190,4 @@ il `post-merge` installa la nuova versione, compreso `oxterm-askpass` accanto a
 
 | Data | Lavoro |
 | --- | --- |
-| 2026-11-01 | Fasi 0-5, tranne i colori per connessione. Correzione dei test `remote_attach`. Apertura della PR. |
+| 2026-11-01 | Fasi 0-5, tranne i colori per connessione. Correzione dei test `remote_attach` e del controllo AUR. Prova su `debminis`. [PR #2](https://github.com/buzzqw/oxterm/pull/2). |
