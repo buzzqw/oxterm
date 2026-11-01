@@ -55,6 +55,18 @@ fn write_fd(fd: RawFd, data: &[u8]) -> io::Result<()> {
     }
 }
 
+/// A private HOME for one test. The child reads its settings from there: with
+/// the developer's own settings a custom `tmux_prefix_key` would never see the
+/// `Ctrl+B` these tests send, and the test would wait forever. It also keeps the
+/// fake sockets out of the real configuration when a test is interrupted.
+fn temp_home(unique: u128) -> PathBuf {
+    // Short: broker sockets live under it and Unix socket paths are limited.
+    let home =
+        std::env::temp_dir().join(format!("oa{}{:06}", std::process::id(), unique % 1_000_000));
+    std::fs::create_dir_all(&home).expect("create test home");
+    home
+}
+
 fn binary_path() -> PathBuf {
     let variable = format!("CARGO_BIN_EXE_{}", env!("CARGO_PKG_NAME"));
     if let Some(path) = std::env::var_os(variable) {
@@ -88,7 +100,7 @@ fn attach_forwards_input_and_detaches_cleanly() -> io::Result<()> {
         .duration_since(UNIX_EPOCH)
         .expect("system clock")
         .as_nanos();
-    let home = dirs::home_dir().expect("home directory");
+    let home = temp_home(unique);
     let remote_dir = home.join(".config/oxterm/remote");
     std::fs::create_dir_all(&remote_dir)?;
     let session_id = format!("attach-test-{}-{}", std::process::id(), unique);
@@ -133,6 +145,7 @@ fn attach_forwards_input_and_detaches_cleanly() -> io::Result<()> {
     let mut child = unsafe {
         let mut command = Command::new(binary_path());
         command
+            .env("HOME", &home)
             .args(["--attach", &session_id])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -164,6 +177,7 @@ fn attach_forwards_input_and_detaches_cleanly() -> io::Result<()> {
 
     unsafe { libc::close(master) };
     let _ = std::fs::remove_file(socket);
+    let _ = std::fs::remove_dir_all(&home);
     Ok(())
 }
 
@@ -173,7 +187,7 @@ fn attach_prints_the_replayed_screen() -> io::Result<()> {
         .duration_since(UNIX_EPOCH)
         .expect("system clock")
         .as_nanos();
-    let home = dirs::home_dir().expect("home directory");
+    let home = temp_home(unique);
     let remote_dir = home.join(".config/oxterm/remote");
     std::fs::create_dir_all(&remote_dir)?;
     let session_id = format!("attach-replay-{}-{}", std::process::id(), unique);
@@ -217,6 +231,7 @@ fn attach_prints_the_replayed_screen() -> io::Result<()> {
     let mut child = unsafe {
         let mut command = Command::new(binary_path());
         command
+            .env("HOME", &home)
             .args(["--attach", &session_id])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -270,6 +285,7 @@ fn attach_prints_the_replayed_screen() -> io::Result<()> {
     let _ = child.wait();
     unsafe { libc::close(master) };
     let _ = std::fs::remove_file(socket);
+    let _ = std::fs::remove_dir_all(&home);
     Ok(())
 }
 
@@ -279,7 +295,7 @@ fn attach_passes_ctrl_b_d_through_to_ssh() -> io::Result<()> {
         .duration_since(UNIX_EPOCH)
         .expect("system clock")
         .as_nanos();
-    let home = dirs::home_dir().expect("home directory");
+    let home = temp_home(unique);
     let remote_dir = home.join(".config/oxterm/remote");
     std::fs::create_dir_all(&remote_dir)?;
     let session_id = format!("attach-ssh-{}-{}", std::process::id(), unique);
@@ -327,6 +343,7 @@ fn attach_passes_ctrl_b_d_through_to_ssh() -> io::Result<()> {
     let mut child = unsafe {
         let mut command = Command::new(binary_path());
         command
+            .env("HOME", &home)
             .args(["--attach", &session_id])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -359,6 +376,7 @@ fn attach_passes_ctrl_b_d_through_to_ssh() -> io::Result<()> {
     let _ = child.wait();
     unsafe { libc::close(master) };
     let _ = std::fs::remove_file(socket);
+    let _ = std::fs::remove_dir_all(&home);
     Ok(())
 }
 
@@ -368,7 +386,7 @@ fn move_sends_move_then_attach_and_relays() -> io::Result<()> {
         .duration_since(UNIX_EPOCH)
         .expect("system clock")
         .as_nanos();
-    let home = dirs::home_dir().expect("home directory");
+    let home = temp_home(unique);
     let remote_dir = home.join(".config/oxterm/remote");
     std::fs::create_dir_all(&remote_dir)?;
     let session_id = format!("move-test-{}-{}", std::process::id(), unique);
@@ -417,6 +435,7 @@ fn move_sends_move_then_attach_and_relays() -> io::Result<()> {
     let mut child = unsafe {
         let mut command = Command::new(binary_path());
         command
+            .env("HOME", &home)
             .args(["--move", &session_id])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -448,5 +467,6 @@ fn move_sends_move_then_attach_and_relays() -> io::Result<()> {
 
     unsafe { libc::close(master) };
     let _ = std::fs::remove_file(socket);
+    let _ = std::fs::remove_dir_all(&home);
     Ok(())
 }
