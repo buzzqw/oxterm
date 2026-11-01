@@ -20,6 +20,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(100);
+/// Once settled a tunnel or viewer can run for days: a stop request or an exit
+/// noticed half a second later costs nothing, ten wakeups a second would.
+const SETTLED_POLL: Duration = Duration::from_millis(500);
 const PROBE_EVERY: Duration = Duration::from_millis(250);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(200);
 const STOP_GRACE: Duration = Duration::from_secs(2);
@@ -296,7 +299,7 @@ fn supervise(spec: Spec, status: &Mutex<Status>, stop: &AtomicBool) {
                 set(status, Status::Up);
             }
         }
-        thread::sleep(POLL);
+        thread::sleep(if up { SETTLED_POLL } else { POLL });
     };
     set(status, outcome);
 }

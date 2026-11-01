@@ -9,11 +9,19 @@ use std::collections::HashSet;
 
 use gtk::prelude::*;
 
-use crate::headless::connections::{Entry, Node};
+use crate::headless::connections::{Entry, Node, UsageMap};
 
 const COLUMN_MARKUP: u32 = 0;
 const COLUMN_ID: u32 = 1;
 const COLUMN_TOOLTIP: u32 = 2;
+
+/// What the rows are drawn from, read once when the panel is reloaded. Searching
+/// filters this, so a key press reads no files.
+pub struct PanelData {
+    pub entries: Vec<Entry>,
+    pub usage: UsageMap,
+    pub status: Option<String>,
+}
 
 /// What a row shows besides the entry itself.
 #[derive(Clone, Debug, Default)]
@@ -31,6 +39,7 @@ pub struct ConnectionsPanel {
     pub add: gtk::Button,
     pub close: gtk::Button,
     pub status: gtk::Label,
+    pub data: RefCell<Option<PanelData>>,
     store: gtk::TreeStore,
     collapsed: RefCell<HashSet<String>>,
     /// True while `populate` runs: the expand signals it causes are not choices
@@ -105,6 +114,7 @@ impl ConnectionsPanel {
             add,
             close,
             status,
+            data: RefCell::new(None),
             store,
             collapsed: RefCell::new(HashSet::new()),
             rebuilding: Cell::new(false),
@@ -369,7 +379,13 @@ fn row_markup(entry: &Entry, decoration: &RowDecoration) -> String {
 
 fn row_tooltip(entry: &Entry) -> String {
     let connection = &entry.connection;
-    let mut lines = vec![connection.command_preview()];
+    // A desktop's preview looks for its viewer on the PATH: too much for every row
+    // of a list redrawn on each key press.
+    let mut lines = vec![if connection.protocol.is_desktop() {
+        format!("{}: {}", connection.protocol.label(), connection.summary())
+    } else {
+        connection.command_preview()
+    }];
     if !connection.group.is_empty() {
         lines.push(format!("Group: {}", connection.group));
     }

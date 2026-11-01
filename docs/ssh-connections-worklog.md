@@ -98,6 +98,27 @@ come in CI. Le prove reali richiedono `OXTERM_E2E=1` (`tests/remote_files.rs`, c
 e `python-pyftpdlib`). Provato dal vivo: x11vnc su `debminis`, x0vncserver locale, SFTP e FTP.
 Non provati dal vivo: wayvnc, desktop virtuali, TurboVNC, TightVNC, RDP, SPICE, mosh, kubectl, AWS.
 
+## Giro di ottimizzazione
+
+Confronto a build alternate, mediana di 3 corse, sullo stesso display (`/proc`, PSS). Nel
+percorso comune cambia poco: PSS GUI 19,5 -> 18,7 MB, CPU a riposo e sotto output invariate
+(non misurabili con più precisione di 10 ms). Il profilo dello stack non è disponibile senza
+privilegi (`ptrace_scope`), quindi gli interventi vengono dalla lettura del codice:
+
+| Dove | Prima | Dopo |
+| --- | --- | --- |
+| `alert_host`, per ogni riga del pannello e cambio titolo | Regex compilata a ogni chiamata: 191 µs | Cache: 0,3 µs |
+| Ricerca nel pannello | Rilettura di rubrica, `~/.ssh/config` e stato a ogni tasto | Filtra i dati già letti |
+| Avvio | Il menu SSH leggeva quei file a ogni avvio | Solo quando il menu si apre |
+| Browser file aperto a riposo | Timer a 10 Hz | Nessun risveglio senza lavori in corso |
+| Tunnel e viewer attivi | 10 risvegli al secondo per ciascuno | 2 dopo l'avvio |
+| Browser, cancellazione di cartelle | Un `ssh -G` per ogni operazione | Riusato per 30 s |
+| Tab con colori propri | Caricava tutto il catalogo temi | Solo se il tema non è tra quelli base |
+
+**Non cambiato, da valutare:** ogni tasto interroga il broker su un socket (`is_echo_on`), per
+non registrare password. Una connessione persistente ridurrebbe il lavoro, ma a velocità di
+battitura umana il guadagno non si misura.
+
 ## Stato delle fasi
 
 Tutte completate.
@@ -142,7 +163,7 @@ mostra le connessioni (`supports_connections`).
 | Chiudere un tab senza integrazione shell chiudeva il descrittore 0 del processo (`osc133_rfd` valeva 0 di default, dal commit `f6ad633`): il terminale successivo poteva nascere senza `stdin` | Corretto: valore iniziale -1, e `main` garantisce che i descrittori 0-2 esistano. Trovato dal test di riconnessione |
 | **Detach Tab** era a senso unico | Corretto: **Return to Main Window**, **Bring Back** nel menu Tabs, voce in palette |
 | Un programma che termina subito poteva chiudere il broker prima che oxterm vedesse il socket: avvio segnalato come fallito e riconnessione persa | Corretto in `spawn_broker`: un broker terminato con successo conta come sessione conclusa |
-| `control_api_drives_tabs_panes_and_commands` fallisce a intermittenza su questa macchina (VTE 0.84), anche prima di questo lavoro (5 su 8 su `fd0cc01`, 6 su 8 dopo): `capture` mostra solo il prompt dopo `printf ctl-ok`. In CI (VTE 0.76) passa | **Aperto.** Attendere il prompt invece degli 800 ms fissi non basta: la causa è altrove, forse in `capture` |
+| `oxterm capture` usava solo l'adjustment di VTE, che resta indietro rispetto all'output: mancava il testo finale, e `control_api` falliva 6 volte su 8 su questa macchina, anche prima di questo lavoro | Corretto: la fine del testo tiene conto del cursore. 0 fallimenti su 8 |
 | Lo script di integrazione remota non attiva cronologia e notifiche | Non corretto: serve una decisione, comportamento documentato nel manuale |
 | Avvisi `clippy` su `terminal.rs`, `vi.rs`, `history.rs` e altri | Non toccati: sono di stile, e l'autore sta cambiando quei file per le prestazioni |
 | `OpenSSH` usa la home di `passwd`, `dirs::home_dir` usa `$HOME` | Solo nota: con `HOME` diversa i due vedono `~/.ssh/config` diversi. Nei test usare `-F` |

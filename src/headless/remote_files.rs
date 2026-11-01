@@ -7,6 +7,8 @@
 use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use super::connections::{Auth, Connection, Protocol, PROBE_TIMEOUT};
 use super::{askpass, paths, ssh_config};
@@ -210,8 +212,30 @@ pub fn supports_browsing(connection: &Connection) -> bool {
     )
 }
 
+/// `ssh -G` starts a process, and a browser runs one `sftp` per operation, down
+/// to one per file when deleting a folder. The answer changes when someone edits
+/// a config file, so it is kept briefly rather than asked for every time.
+fn effective_config_cached(connection: &Connection) -> Option<String> {
+    const FRESH_FOR: Duration = Duration::from_secs(30);
+    type Entry = (Vec<String>, Instant, Option<String>);
+    static CACHE: Mutex<Option<Entry>> = Mutex::new(None);
+    let args = connection.target_args();
+    if let Ok(cache) = CACHE.lock() {
+        if let Some((key, when, value)) = cache.as_ref() {
+            if *key == args && when.elapsed() < FRESH_FOR {
+                return value.clone();
+            }
+        }
+    }
+    let value = ssh_config::effective_config(&args, PROBE_TIMEOUT);
+    if let Ok(mut cache) = CACHE.lock() {
+        *cache = Some((args, Instant::now(), value.clone()));
+    }
+    value
+}
+
 fn sftp_command(connection: &Connection) -> Command {
-    let effective = ssh_config::effective_config(&connection.target_args(), PROBE_TIMEOUT);
+    let effective = effective_config_cached(connection);
     let mut command = Command::new("sftp");
     // `-b -` stops at the first error. ssh takes the first value of an option, so
     // this keeps a stored password possible where `-b` would imply BatchMode.

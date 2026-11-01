@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -218,9 +219,19 @@ pub fn alert_host(patterns: &str, host: &str) -> bool {
     if patterns.trim().is_empty() {
         return false;
     }
-    regex::Regex::new(patterns)
-        .map(|pattern| pattern.is_match(ssh_host_name(host)))
-        .unwrap_or(false)
+    // Asked for every list row and on every title change, and the pattern is a
+    // setting that rarely changes: compile it once, not on each call.
+    static CACHE: Mutex<Option<(String, Option<regex::Regex>)>> = Mutex::new(None);
+    let Ok(mut cache) = CACHE.lock() else {
+        return false;
+    };
+    if cache.as_ref().is_none_or(|(source, _)| source != patterns) {
+        *cache = Some((patterns.to_string(), regex::Regex::new(patterns).ok()));
+    }
+    cache
+        .as_ref()
+        .and_then(|(_, compiled)| compiled.as_ref())
+        .is_some_and(|pattern| pattern.is_match(ssh_host_name(host)))
 }
 
 /// Command-line `-L`, `-R` and `-D` forwards, formatted for display.

@@ -12,7 +12,7 @@ use gtk::gdk;
 use gtk::prelude::*;
 use zoha_vte::traits::TerminalExt;
 
-use crate::connections_panel::{ConnectionsPanel, RowDecoration};
+use crate::connections_panel::{ConnectionsPanel, PanelData, RowDecoration};
 use crate::headless::askpass;
 use crate::headless::connections::{
     self, tunnel_key, Auth, Connection, Entry, ExpectRule, Kind, Origin, Prepared, Protocol,
@@ -80,7 +80,8 @@ impl MainWindow {
         let weak = crate::SendWeak::new(self);
         panel.search.connect_search_changed(move |_| {
             if let Some(window) = weak.upgrade() {
-                window.reload_connections_panel();
+                // Each key press only filters: no files to read again.
+                window.refilter_connections_panel();
             }
         });
         let weak = crate::SendWeak::new(self);
@@ -264,8 +265,7 @@ impl MainWindow {
         if !panel.root.is_visible() {
             return;
         }
-        let book_path = connections::book_path();
-        let (book, status) = match connections::load_book(&book_path) {
+        let (book, status) = match connections::load_book(&connections::book_path()) {
             Ok(book) => {
                 let status = book.read_only().then(|| {
                     "connections.json comes from a newer Oxterm and is read-only.".to_string()
@@ -283,13 +283,36 @@ impl MainWindow {
         };
         let entries = connections::merge(&book, &ssh_config::load_hosts());
         let usage: UsageMap = connections::load_usage(&connections::usage_path());
+        *panel.data.borrow_mut() = Some(PanelData {
+            entries,
+            usage,
+            status,
+        });
+        self.refilter_connections_panel();
+    }
+
+    /// Redraw the rows from what `reload_connections_panel` last read.
+    fn refilter_connections_panel(&self) {
+        let panel = self.imp().connections_panel.borrow().clone();
+        let Some(panel) = panel else {
+            return;
+        };
+        let data = panel.data.borrow();
+        let Some(PanelData {
+            entries,
+            usage,
+            status,
+        }) = data.as_ref()
+        else {
+            return;
+        };
         let query = panel.search.text().to_string();
-        let tree = connections::build_tree(&entries, &usage, &query);
+        let tree = connections::build_tree(entries, usage, &query);
         let open = self.open_connection_counts();
         let patterns = settings().get_str("ssh_alert_patterns");
         let alert = settings().get_str("ssh_alert_color");
         let states = tunnels::snapshot();
-        panel.populate(&tree, &entries, &|entry| {
+        panel.populate(&tree, entries, &|entry| {
             let connection = &entry.connection;
             let mut decoration = RowDecoration {
                 open_tabs: open.get(&connection.id).copied().unwrap_or(0),
@@ -1153,7 +1176,7 @@ impl MainWindow {
 
     /// The SSH menu, rebuilt each time it opens so favorites, recent connections
     /// and the current tab's macros are up to date.
-    pub fn populate_ssh_menu(&self, menu: &gtk::Menu) {
+    pub fn populate_ssh_menu(&self, menu: &gtk::Menu, with_saved: bool) {
         for child in menu.children() {
             menu.remove(&child);
         }
@@ -1226,8 +1249,16 @@ impl MainWindow {
                 }
             }
         }
-        let entries = load_entries().unwrap_or_default();
-        let usage = connections::load_usage(&connections::usage_path());
+        // Files are read only when the menu really opens. The menus are built at every
+        // start, when nothing may read ~/.ssh/config, which can sit on a slow disk.
+        let (entries, usage) = if with_saved {
+            (
+                load_entries().unwrap_or_default(),
+                connections::load_usage(&connections::usage_path()),
+            )
+        } else {
+            (Vec::new(), UsageMap::new())
+        };
         let shortcuts = connections::menu_shortcuts(&entries, &usage, MENU_SHORTCUTS);
         if !shortcuts.is_empty() {
             menu.append(&gtk::SeparatorMenuItem::new());

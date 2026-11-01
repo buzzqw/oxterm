@@ -255,8 +255,12 @@ struct Browser {
     status: gtk::Label,
     spinner: gtk::Spinner,
     jobs: mpsc::Sender<Job>,
+    results: mpsc::Receiver<Outcome>,
     pending: Cell<usize>,
+    polling: Cell<bool>,
     queued: RefCell<VecDeque<String>>,
+    /// For the polling timer. Weak: the timer must not keep a closed browser alive.
+    me: RefCell<std::rc::Weak<Browser>>,
 }
 
 fn local_entries(path: &Path) -> Result<Vec<RemoteEntry>, String> {
@@ -314,6 +318,29 @@ impl Browser {
         self.pending.set(self.pending.get() + 1);
         self.spinner.start();
         let _ = self.jobs.send(job);
+        self.start_polling();
+    }
+
+    /// Collect results only while work is out. A browser left open on a folder for
+    /// hours then costs no wakeups at all.
+    fn start_polling(&self) {
+        if self.polling.replace(true) {
+            return;
+        }
+        let Some(browser) = self.me.borrow().upgrade() else {
+            self.polling.set(false);
+            return;
+        };
+        glib::timeout_add_local(Duration::from_millis(100), move || {
+            while let Ok(outcome) = browser.results.try_recv() {
+                browser.apply(outcome);
+            }
+            if browser.pending.get() > 0 {
+                return glib::ControlFlow::Continue;
+            }
+            browser.polling.set(false);
+            glib::ControlFlow::Break
+        });
     }
 
     fn finished(&self) {
@@ -807,9 +834,13 @@ pub fn open(parent: &gtk::Window, connection: Connection) {
         status,
         spinner,
         jobs: job_sender,
+        results: result_receiver,
         pending: Cell::new(0),
+        polling: Cell::new(false),
         queued: RefCell::new(VecDeque::new()),
+        me: RefCell::new(std::rc::Weak::new()),
     });
+    *browser.me.borrow_mut() = Rc::downgrade(&browser);
     connect_pane(&browser, false);
     connect_pane(&browser, true);
     {
@@ -830,22 +861,15 @@ pub fn open(parent: &gtk::Window, connection: Connection) {
     browser.load_local(&home.to_string_lossy());
     browser.submit(Job::Home);
 
-    // This timer holds the browser alive: it ends with the window, and dropping
-    // the job sender then ends the worker when its current job is done.
-    let closed = Rc::new(Cell::new(false));
+    // The window's destroy handler keeps the browser alive until it closes. Dropping
+    // the browser drops the job sender, which ends the worker after its current job.
     {
-        let closed = closed.clone();
-        window.connect_destroy(move |_| closed.set(true));
+        let keep_alive = RefCell::new(Some(browser.clone()));
+        window.connect_destroy(move |_| {
+            keep_alive.borrow_mut().take();
+        });
     }
-    glib::timeout_add_local(Duration::from_millis(100), move || {
-        if closed.get() {
-            return glib::ControlFlow::Break;
-        }
-        while let Ok(outcome) = result_receiver.try_recv() {
-            browser.apply(outcome);
-        }
-        glib::ControlFlow::Continue
-    });
+    browser.start_polling();
     window.show_all();
     window.present();
 }

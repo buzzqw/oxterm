@@ -3,6 +3,7 @@
 use std::cell::{Cell, RefCell};
 use std::os::fd::RawFd;
 use std::os::unix::fs::PermissionsExt;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use glib::prelude::*;
@@ -2540,7 +2541,7 @@ impl TerminalBox {
         let watcher = std::rc::Rc::new(RefCell::new(Watcher::new(rules)));
         let recheck = watcher.clone();
         let pending = std::rc::Rc::new(Cell::new(false));
-        let weak = crate::SendWeak::new(self);
+        let weak = Rc::new(crate::SendWeak::new(self));
         let handler = self.vte().connect_contents_changed(move |_| {
             // Output arrives in bursts: look once it settles, not on every chunk.
             if pending.replace(true) {
@@ -2548,13 +2549,12 @@ impl TerminalBox {
             }
             let pending = pending.clone();
             let watcher = watcher.clone();
-            let weak = crate::SendWeak::new(&weak.upgrade().unwrap());
+            let weak = weak.clone();
             glib::timeout_add_local_once(Duration::from_millis(80), move || {
                 pending.set(false);
-                let Some(term) = weak.upgrade() else {
-                    return;
-                };
-                term.check_expect(&watcher);
+                if let Some(term) = weak.upgrade() {
+                    term.check_expect(&watcher);
+                }
             });
         });
         *self.imp().expect_handler.borrow_mut() = Some(handler);
@@ -2601,7 +2601,7 @@ impl TerminalBox {
 
     fn override_theme(&self) -> Option<&'static crate::headless::themes::Theme> {
         let name = self.imp().color_override.borrow();
-        crate::settings::color_schemes().get(name.as_ref()?.as_str())
+        crate::headless::themes::get(name.as_ref()?)
     }
 
     pub fn remote_id(&self) -> String {
@@ -3205,16 +3205,22 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
 
     /// Text for `oxterm capture`: visible screen, N lines of history, or all.
     pub fn capture_text(&self, scope: &str, lines: usize) -> String {
+        let vte = self.vte();
         let vadj = self.vadjustment();
-        let lower = vadj.lower();
-        let upper = vadj.upper();
-        let page = vadj.page_size();
+        let lower = vadj.lower() as i64;
+        let rows = vte.row_count();
+        // VTE updates the adjustment when it next draws, which can lag behind the
+        // output or never happen for a window that is not being painted. The cursor
+        // is always current, so the end of the text is at least there.
+        let (_, cursor_row) = vte.cursor_position();
+        let end = (vadj.upper() as i64).max(cursor_row + 1);
+        let bottom_page = (end - rows).max(cursor_row + 1 - rows);
         let start = match scope {
             "all" => lower,
-            "lines" => (upper - page - lines as f64).max(lower),
-            _ => (upper - page).max(lower),
+            "lines" => (bottom_page - lines as i64).max(lower),
+            _ => bottom_page.max(lower),
         };
-        text::range(&self.vte(), start as i64, 0, upper as i64, 0).unwrap_or_default()
+        text::range(&vte, start, 0, end, 0).unwrap_or_default()
     }
 
     pub fn command_generation(&self) -> u64 {

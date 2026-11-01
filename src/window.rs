@@ -3446,11 +3446,11 @@ impl MainWindow {
         let weak = crate::SendWeak::new(self);
         ssh_menu.connect_show(move |menu| {
             if let Some(w) = weak.upgrade() {
-                w.populate_ssh_menu(menu);
+                w.populate_ssh_menu(menu, true);
             }
         });
-        // A menu with no items never opens, so it needs one before the first show.
-        self.populate_ssh_menu(&ssh_menu);
+        // A menu with no items never opens, so it needs its fixed items now.
+        self.populate_ssh_menu(&ssh_menu, false);
         menus.push(("SSH".into(), ssh_menu));
 
         // Help
