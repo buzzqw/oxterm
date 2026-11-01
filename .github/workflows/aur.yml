@@ -26,14 +26,18 @@ jobs:
         shell: bash
 
     steps:
-      - name: Check out source
-        uses: actions/checkout@v5
-
+      # Git comes first: without it, checkout downloads a plain archive with no
+      # repository for makepkg to clone.
       - name: Install dependencies and a build user
         run: |
           pacman -Syu --noconfirm --needed git rust gtk3 vte3 pkgconf
           useradd -m builder
-          chown -R builder "$GITHUB_WORKSPACE"
+
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Hand the checkout to the build user
+        run: chown -R builder "$GITHUB_WORKSPACE"
 
       - name: Check pkgver matches Cargo.toml
         run: |
