@@ -10,20 +10,20 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 struct TempHome(PathBuf);
 
 impl TempHome {
     fn new() -> TempHome {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock")
-            .as_nanos();
+        // A counter, not the clock: tests start together, and two sharing a HOME
+        // read each other's book.
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let unique = NEXT.fetch_add(1, Ordering::Relaxed);
         // Short: the broker and control sockets live under it.
-        let path =
-            std::env::temp_dir().join(format!("ox{}{:06}", std::process::id(), unique % 1_000_000));
+        let path = std::env::temp_dir().join(format!("ox{}{:02}", std::process::id(), unique));
         fs::create_dir_all(path.join("bin")).unwrap();
         fs::create_dir_all(path.join(".config/oxterm")).unwrap();
         fs::create_dir_all(path.join(".ssh")).unwrap();
@@ -312,7 +312,7 @@ impl Gui {
             .command(env!("CARGO_BIN_EXE_oxterm"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(fs::File::create(home.path().join("gui.log")).expect("create the GUI log"))
             .spawn()
             .expect("start oxterm");
         let gui = Gui(child);
@@ -457,10 +457,11 @@ exec sleep 60"#,
                 ));
             }
             panic!(
-                "no answer from the rule\nssh runs:\n{}\nsessions:\n{}\nscreens:\n{}",
+                "no answer from the rule\nssh runs:\n{}\nsessions:\n{}\nscreens:\n{}\nGUI log:\n{}",
                 fs::read_to_string(&seen).unwrap_or_default(),
                 listing,
-                screens
+                screens,
+                fs::read_to_string(home.path().join("gui.log")).unwrap_or_default()
             );
         }
         thread::sleep(Duration::from_millis(100));
@@ -522,6 +523,197 @@ exit 1"#,
     wait_until("ssh to run", || seen.exists());
     thread::sleep(Duration::from_secs(3));
     assert_eq!(fs::read_to_string(&seen).unwrap().lines().count(), 1);
+}
+
+/// A fake program: records its arguments and what it reads, then stays alive.
+fn fake(home: &TempHome, name: &str) -> PathBuf {
+    let log = home.path().join(format!("{}.log", name));
+    home.write_script(
+        name,
+        &format!(
+            "printf '%s\\n' \"$*\" >> '{log}'\nif [ ! -t 0 ]; then cat >> '{log}'; fi\nexec sleep 60",
+            log = log.display()
+        ),
+    );
+    log
+}
+
+#[test]
+fn every_terminal_protocol_runs_its_program_in_a_tab() {
+    if !gui_tests_enabled() {
+        return;
+    }
+    let home = TempHome::new();
+    let cases = [
+        ("mosh", r#""protocol":"mosh","host":"h","user":"u""#, "u@h"),
+        (
+            "telnet",
+            r#""protocol":"telnet","host":"h","port":2323"#,
+            "h 2323",
+        ),
+        (
+            "picocom",
+            r#""protocol":"serial","device":"/dev/ttyS9","baud":9600"#,
+            "-b 9600 /dev/ttyS9",
+        ),
+        (
+            "docker",
+            r#""protocol":"docker","container":"web","shell":"bash""#,
+            "exec -it web bash",
+        ),
+        (
+            "kubectl",
+            r#""protocol":"kubectl","pod":"p0","namespace":"ns""#,
+            "-n ns exec -it p0 -- sh",
+        ),
+        (
+            "aws",
+            r#""protocol":"aws_ssm","instance_id":"i-1""#,
+            "ssm start-session --target i-1",
+        ),
+        (
+            "mytool",
+            r#""protocol":"command","command":"mytool --flag 'two words'""#,
+            "--flag two words",
+        ),
+    ];
+    let mut logs = Vec::new();
+    let mut entries = Vec::new();
+    for (program, fields, _) in &cases {
+        logs.push(fake(&home, program));
+        entries.push(format!(
+            r#"{{"id":"id-{p}","name":"via-{p}",{f}}}"#,
+            p = program,
+            f = fields
+        ));
+    }
+    home.write_book(&format!(
+        r#"{{"version":1,"connections":[{}]}}"#,
+        entries.join(",")
+    ));
+    let _gui = Gui::start(&home);
+    for ((program, _, expected), log) in cases.iter().zip(&logs) {
+        let name = format!("via-{}", program);
+        let output = home.oxterm(&["connect", &name]);
+        assert!(output.status.success(), "{}: {:?}", program, output);
+        wait_until(program, || log.exists());
+        let line = fs::read_to_string(log).unwrap();
+        assert!(line.contains(expected), "{}: {}", program, line);
+    }
+}
+
+#[test]
+fn a_direct_desktop_gets_its_password_on_stdin_only() {
+    if !gui_tests_enabled() {
+        return;
+    }
+    let home = TempHome::new();
+    let log = fake(&home, "xfreerdp3");
+    home.write_script("secret-tool", "printf 'rdp-s3cret\\n'");
+    home.write_book(
+        r#"{"version":1,"connections":[{"id":"r1","name":"win","protocol":"rdp","host":"h",
+           "user":"admin","rdp_domain":"CORP","auth":"secret_service","rdp_clipboard":true}]}"#,
+    );
+    let _gui = Gui::start(&home);
+    assert!(home.oxterm(&["connect", "win"]).status.success());
+    wait_until("the viewer", || {
+        fs::read_to_string(&log).is_ok_and(|text| text.contains("rdp-s3cret"))
+    });
+    let text = fs::read_to_string(&log).unwrap();
+    let arguments = text.lines().next().unwrap();
+    for flag in [
+        "/v:h:3389",
+        "/u:admin",
+        "/d:CORP",
+        "+clipboard",
+        "/from-stdin",
+    ] {
+        assert!(
+            arguments.contains(flag),
+            "{} missing from {}",
+            flag,
+            arguments
+        );
+    }
+    assert!(
+        !arguments.contains("rdp-s3cret"),
+        "the password reached the arguments"
+    );
+}
+
+#[test]
+fn a_shared_screen_gets_a_tunnel_a_one_time_password_and_a_viewer() {
+    if !gui_tests_enabled() {
+        return;
+    }
+    let home = TempHome::new();
+    let seen = home.path().join("ssh.args");
+    let typed = home.path().join("typed");
+    // Stands in for ssh and the server: asks like the real script, then greets on
+    // the forwarded port the way a VNC server does.
+    home.write_script(
+        "ssh",
+        &format!(
+            r#"printf '%s\n' "$*" > '{seen}'
+port=$(printf '%s\n' "$*" | sed -n 's/.*-L 127.0.0.1:\([0-9]*\):.*/\1/p')
+stty -echo
+printf 'OXTERM-VNC-PASSWORD: '
+read pw
+stty echo
+printf '%s' "$pw" > '{typed}'
+exec python3 -I -c "
+import socket,sys
+s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);s.bind(('127.0.0.1',int(sys.argv[1])));s.listen(5)
+while True:
+    c,_=s.accept();c.send(b'RFB 003.008\n')
+" "$port""#,
+            seen = seen.display(),
+            typed = typed.display()
+        ),
+    );
+    let viewer = home.path().join("vncviewer.log");
+    home.write_script(
+        "vncviewer",
+        &format!(
+            r#"if [ "$1" = "-help" ]; then echo TigerVNC; exit 0; fi
+printf '%s\n' "$*" >> '{v}'
+printf '%s\n' "$VNC_PASSWORD" >> '{v}'
+exec sleep 60"#,
+            v = viewer.display()
+        ),
+    );
+    home.write_book(
+        r#"{"version":1,"connections":[{"id":"v1","name":"screen","protocol":"vnc","host":"h",
+           "user":"u","vnc_server":"x11vnc","vnc_display":":0","view_only":true}]}"#,
+    );
+    let _gui = Gui::start(&home);
+    assert!(home.oxterm(&["connect", "screen"]).status.success());
+    wait_until("the viewer", || {
+        fs::read_to_string(&viewer).is_ok_and(|text| text.lines().count() >= 2)
+    });
+    let arguments = fs::read_to_string(&seen).unwrap();
+    assert!(arguments.contains("-L 127.0.0.1:"), "{}", arguments);
+    assert!(arguments.contains("x11vnc"), "{}", arguments);
+    let text = fs::read_to_string(&viewer).unwrap();
+    let mut lines = text.lines();
+    let viewer_args = lines.next().unwrap();
+    assert!(viewer_args.contains("-ViewOnly"), "{}", viewer_args);
+    assert!(viewer_args.contains("127.0.0.1::"), "{}", viewer_args);
+    let one_time = fs::read_to_string(&typed).unwrap();
+    assert_eq!(one_time.len(), 8);
+    assert_eq!(
+        lines.next().unwrap(),
+        one_time,
+        "server and viewer share it"
+    );
+    assert!(
+        !arguments.contains(&one_time),
+        "the password reached a command line"
+    );
+    assert!(
+        !viewer_args.contains(&one_time),
+        "the password reached a command line"
+    );
 }
 
 #[test]

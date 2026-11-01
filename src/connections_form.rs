@@ -10,8 +10,9 @@ use std::rc::Rc;
 use gtk::prelude::*;
 
 use crate::headless::connections::{
-    Auth, Connection, ExpectRule, HostKeyCheck, Kind, Macro, Tunnel, TunnelKind,
+    Auth, Connection, ExpectRule, HostKeyCheck, Kind, Macro, Protocol, Tunnel, TunnelKind,
 };
+use crate::headless::desktop::VncServer;
 use crate::headless::totp;
 
 /// The result of a confirmed form.
@@ -68,6 +69,36 @@ struct Fields {
     tunnels: RefCell<Vec<TunnelRow>>,
     macros: RefCell<Vec<MacroRow>>,
     expect: RefCell<Vec<ExpectRow>>,
+    protocol: gtk::ComboBoxText,
+    device: gtk::Entry,
+    baud: gtk::Entry,
+    command: gtk::Entry,
+    docker_container: gtk::Entry,
+    docker_shell: gtk::Entry,
+    pod: gtk::Entry,
+    namespace: gtk::Entry,
+    kube_context: gtk::Entry,
+    kube_container: gtk::Entry,
+    kube_shell: gtk::Entry,
+    instance_id: gtk::Entry,
+    aws_region: gtk::Entry,
+    aws_profile: gtk::Entry,
+    ftp_tls: gtk::CheckButton,
+    rdp_domain: gtk::Entry,
+    rdp_size: gtk::Entry,
+    rdp_fullscreen: gtk::CheckButton,
+    rdp_clipboard: gtk::CheckButton,
+    rdp_multimon: gtk::CheckButton,
+    rdp_drive: gtk::Entry,
+    vnc_server: gtk::ComboBoxText,
+    vnc_display: gtk::Entry,
+    vnc_size: gtk::Entry,
+    vnc_command: gtk::Entry,
+    vnc_port: gtk::Entry,
+    vnc_fullscreen: gtk::CheckButton,
+    view_only: gtk::CheckButton,
+    spice_tls: gtk::CheckButton,
+    spice_fullscreen: gtk::CheckButton,
     x11: gtk::CheckButton,
     compression: gtk::CheckButton,
     agent_forward: gtk::CheckButton,
@@ -140,6 +171,73 @@ impl Fields {
             .collect()
     }
 
+    fn selected_protocol(&self) -> Protocol {
+        let id = self.protocol.active_id();
+        Protocol::ALL
+            .iter()
+            .find(|(_, name, _)| id.as_deref() == Some(*name))
+            .map_or(Protocol::Ssh, |(protocol, _, _)| *protocol)
+    }
+
+    /// Only the selected protocol's fields count: the others keep what they held,
+    /// so changing the protocol back and forth loses nothing typed.
+    fn read_protocol(&self, connection: &mut Connection) -> Result<(), String> {
+        let text = |field: &gtk::Entry| field.text().trim().to_string();
+        let protocol = self.selected_protocol();
+        connection.protocol = protocol;
+        match protocol {
+            Protocol::Serial => {
+                connection.device = text(&self.device);
+                connection.baud = optional_number(&self.baud, "Speed")?;
+            }
+            Protocol::Command => connection.command = text(&self.command),
+            Protocol::Docker => {
+                connection.container = text(&self.docker_container);
+                connection.shell = text(&self.docker_shell);
+            }
+            Protocol::Kubectl => {
+                connection.pod = text(&self.pod);
+                connection.namespace = text(&self.namespace);
+                connection.kube_context = text(&self.kube_context);
+                connection.container = text(&self.kube_container);
+                connection.shell = text(&self.kube_shell);
+            }
+            Protocol::AwsSsm => {
+                connection.instance_id = text(&self.instance_id);
+                connection.aws_region = text(&self.aws_region);
+                connection.aws_profile = text(&self.aws_profile);
+            }
+            Protocol::Ftp => connection.ftp_tls = self.ftp_tls.is_active(),
+            Protocol::Rdp => {
+                connection.rdp_domain = text(&self.rdp_domain);
+                connection.vnc_geometry = text(&self.rdp_size);
+                connection.desktop_fullscreen = self.rdp_fullscreen.is_active();
+                connection.rdp_clipboard = self.rdp_clipboard.is_active();
+                connection.rdp_multimon = self.rdp_multimon.is_active();
+                connection.rdp_drive = text(&self.rdp_drive);
+            }
+            Protocol::Vnc => {
+                let id = self.vnc_server.active_id();
+                connection.vnc_server = VncServer::ALL
+                    .iter()
+                    .find(|(_, name, _)| id.as_deref() == Some(*name))
+                    .map_or(VncServer::Direct, |(server, _, _)| *server);
+                connection.vnc_display = text(&self.vnc_display);
+                connection.vnc_geometry = text(&self.vnc_size);
+                connection.vnc_command = text(&self.vnc_command);
+                connection.service_port = optional_number(&self.vnc_port, "VNC port")?;
+                connection.desktop_fullscreen = self.vnc_fullscreen.is_active();
+                connection.view_only = self.view_only.is_active();
+            }
+            Protocol::Spice => {
+                connection.spice_tls = self.spice_tls.is_active();
+                connection.desktop_fullscreen = self.spice_fullscreen.is_active();
+            }
+            Protocol::Ssh | Protocol::Mosh | Protocol::Telnet | Protocol::Sftp => {}
+        }
+        Ok(())
+    }
+
     fn read(&self) -> Result<Connection, String> {
         let port_text = self.port.text();
         let port_text = port_text.trim();
@@ -183,6 +281,9 @@ impl Fields {
             .active_id()
             .map(|id| id.to_string())
             .unwrap_or_default();
+        if connection.kind == Kind::Manual {
+            self.read_protocol(&mut connection)?;
+        }
         connection.tunnels = self.tunnel_values();
         connection.macros = self.macro_values();
         connection.expect = self.expect_values();
@@ -402,13 +503,14 @@ fn grid() -> gtk::Grid {
     grid
 }
 
-fn add_row(grid: &gtk::Grid, row: i32, label: &str, widget: &impl IsA<gtk::Widget>) {
+fn add_row(grid: &gtk::Grid, row: i32, label: &str, widget: &impl IsA<gtk::Widget>) -> gtk::Label {
     let caption = gtk::Label::with_mnemonic(label);
     caption.set_mnemonic_widget(Some(widget));
     caption.set_xalign(1.0);
     grid.attach(&caption, 0, row, 1, 1);
     widget.set_hexpand(true);
     grid.attach(widget, 1, row, 1, 1);
+    caption
 }
 
 fn entry(value: &str, placeholder: &str) -> gtk::Entry {
@@ -556,6 +658,27 @@ pub fn edit(
     identity.set_text(&initial.identity_file);
     identity.set_placeholder_text(Some("~/.ssh/id_ed25519"));
     identity.set_activates_default(true);
+    let protocol = gtk::ComboBoxText::new();
+    for (_, id, label) in Protocol::ALL {
+        protocol.append(Some(id), label);
+    }
+    protocol.set_active_id(
+        Protocol::ALL
+            .iter()
+            .find(|(value, _, _)| *value == initial.protocol)
+            .map(|(_, id, _)| *id),
+    );
+    protocol.set_sensitive(!is_alias);
+    let vnc_server = gtk::ComboBoxText::new();
+    for (_, id, label) in VncServer::ALL {
+        vnc_server.append(Some(id), label);
+    }
+    vnc_server.set_active_id(
+        VncServer::ALL
+            .iter()
+            .find(|(value, _, _)| *value == initial.vnc_server)
+            .map(|(_, id, _)| *id),
+    );
     let host_key = gtk::ComboBoxText::new();
     host_key.append(Some("default"), "As in my ssh config");
     host_key.append(Some("ask"), "Ask about new hosts");
@@ -603,6 +726,50 @@ pub fn edit(
         tunnels: RefCell::new(Vec::new()),
         macros: RefCell::new(Vec::new()),
         expect: RefCell::new(Vec::new()),
+        protocol,
+        device: entry(&initial.device, "/dev/ttyUSB0"),
+        baud: entry(&number_text(initial.baud), "115200"),
+        command: entry(&initial.command, "htop"),
+        docker_container: entry(&initial.container, "web"),
+        docker_shell: entry(&initial.shell, "sh"),
+        pod: entry(&initial.pod, "api-0"),
+        namespace: entry(&initial.namespace, "default"),
+        kube_context: entry(&initial.kube_context, "Current context"),
+        kube_container: entry(&initial.container, "First container"),
+        kube_shell: entry(&initial.shell, "sh"),
+        instance_id: entry(&initial.instance_id, "i-0123456789abcdef0"),
+        aws_region: entry(&initial.aws_region, "Default from your AWS config"),
+        aws_profile: entry(&initial.aws_profile, "default"),
+        ftp_tls: option_check(
+            "Use TLS (FTPS)",
+            initial.ftp_tls,
+            "Refuse to connect without encryption",
+        ),
+        rdp_domain: entry(&initial.rdp_domain, "CORP"),
+        rdp_size: entry(
+            &initial.vnc_geometry,
+            "1920x1080 (default: fits the window)",
+        ),
+        rdp_fullscreen: option_check("Full screen", initial.desktop_fullscreen, ""),
+        rdp_clipboard: option_check("Share the clipboard", initial.rdp_clipboard, ""),
+        rdp_multimon: option_check("Use all monitors", initial.rdp_multimon, ""),
+        rdp_drive: entry(&initial.rdp_drive, "/home/me/shared"),
+        vnc_server,
+        vnc_display: entry(
+            &initial.vnc_display,
+            ":0 to share a screen, :1 for a virtual desktop",
+        ),
+        vnc_size: entry(&initial.vnc_geometry, "1920x1080, for a virtual desktop"),
+        vnc_command: entry(&initial.vnc_command, "myvnc --localhost --port {port}"),
+        vnc_port: entry(&number_text(initial.service_port), "5900"),
+        vnc_fullscreen: option_check("Full screen", initial.desktop_fullscreen, ""),
+        view_only: option_check(
+            "View only",
+            initial.view_only,
+            "Watch without sending keys or clicks",
+        ),
+        spice_tls: option_check("Use TLS", initial.spice_tls, ""),
+        spice_fullscreen: option_check("Full screen", initial.desktop_fullscreen, ""),
         x11: option_check(
             "X11 forwarding (-X)",
             initial.x11,
@@ -699,6 +866,7 @@ pub fn edit(
 
     // ── Connection ──
     let connection_page = grid();
+    let mut address_rows: Vec<(gtk::Label, gtk::Widget)> = Vec::new();
     let mut row = 0;
     add_row(&connection_page, row, "_Name", &fields.name);
     row += 1;
@@ -716,13 +884,27 @@ pub fn edit(
         connection_page.attach(&note, 0, row, 2, 1);
         row += 1;
     } else {
-        add_row(&connection_page, row, "_Host", &fields.host);
+        add_row(&connection_page, row, "Protocol", &fields.protocol);
         row += 1;
-        add_row(&connection_page, row, "_User", &fields.user);
+        address_rows.push((
+            add_row(&connection_page, row, "_Host", &fields.host),
+            fields.host.clone().upcast(),
+        ));
         row += 1;
-        add_row(&connection_page, row, "Po_rt", &fields.port);
+        address_rows.push((
+            add_row(&connection_page, row, "_User", &fields.user),
+            fields.user.clone().upcast(),
+        ));
         row += 1;
-        add_row(&connection_page, row, "Proxy_Jump", &fields.jump);
+        address_rows.push((
+            add_row(&connection_page, row, "Po_rt", &fields.port),
+            fields.port.clone().upcast(),
+        ));
+        row += 1;
+        address_rows.push((
+            add_row(&connection_page, row, "Proxy_Jump", &fields.jump),
+            fields.jump.clone().upcast(),
+        ));
         row += 1;
     }
     add_row(&connection_page, row, "_Group", &fields.group);
@@ -917,11 +1099,146 @@ pub fn edit(
     add_row(&appearance_page, 2, "Scroll_back lines", &fields.scrollback);
     add_row(&appearance_page, 3, "E_ncoding", &fields.encoding);
 
+    // ── Service: what only the selected protocol needs ──
+    let service = gtk::Stack::new();
+    let page = |rows: &[(&str, gtk::Widget)], notes: &str| {
+        let grid = grid();
+        let mut row = 0;
+        if !notes.is_empty() {
+            grid.attach(&note(notes), 0, row, 2, 1);
+            row += 1;
+        }
+        for (label, widget) in rows {
+            if label.is_empty() {
+                grid.attach(widget, 1, row, 1, 1);
+            } else {
+                add_row(&grid, row, label, widget);
+            }
+            row += 1;
+        }
+        grid
+    };
+    service.add_named(
+        &page(
+            &[
+                ("Device", fields.device.clone().upcast()),
+                ("Speed (baud)", fields.baud.clone().upcast()),
+            ],
+            "Opens the port with picocom. Press Ctrl+A, then Ctrl+X, to leave.",
+        ),
+        "serial",
+    );
+    service.add_named(
+        &page(
+            &[("Command", fields.command.clone().upcast())],
+            "Runs in a tab, without a shell: quotes work, ; and $() do not. Use it for any \
+             other command-line tool.",
+        ),
+        "command",
+    );
+    service.add_named(
+        &page(
+            &[
+                ("Container", fields.docker_container.clone().upcast()),
+                ("Shell", fields.docker_shell.clone().upcast()),
+            ],
+            "Runs docker exec -it on this computer.",
+        ),
+        "docker",
+    );
+    service.add_named(
+        &page(
+            &[
+                ("Pod", fields.pod.clone().upcast()),
+                ("Namespace", fields.namespace.clone().upcast()),
+                ("Context", fields.kube_context.clone().upcast()),
+                ("Container", fields.kube_container.clone().upcast()),
+                ("Shell", fields.kube_shell.clone().upcast()),
+            ],
+            "",
+        ),
+        "kubectl",
+    );
+    service.add_named(
+        &page(
+            &[
+                ("Instance", fields.instance_id.clone().upcast()),
+                ("Region", fields.aws_region.clone().upcast()),
+                ("Profile", fields.aws_profile.clone().upcast()),
+            ],
+            "Needs the AWS CLI and its Session Manager plugin.",
+        ),
+        "aws_ssm",
+    );
+    service.add_named(
+        &page(
+            &[("", fields.ftp_tls.clone().upcast())],
+            "Opens the file browser. Plain FTP sends the password unencrypted, so prefer \
+             TLS or SFTP.",
+        ),
+        "ftp",
+    );
+    service.add_named(
+        &page(
+            &[],
+            "Opens the file browser. The right-click menu also offers a prompt.",
+        ),
+        "sftp",
+    );
+    service.add_named(
+        &page(
+            &[
+                ("Domain", fields.rdp_domain.clone().upcast()),
+                ("Window size", fields.rdp_size.clone().upcast()),
+                ("Shared folder", fields.rdp_drive.clone().upcast()),
+                ("", fields.rdp_fullscreen.clone().upcast()),
+                ("", fields.rdp_clipboard.clone().upcast()),
+                ("", fields.rdp_multimon.clone().upcast()),
+            ],
+            "Opens FreeRDP or rdesktop in their own window. With ProxyJump, the connection \
+             goes through that host in an ssh tunnel.",
+        ),
+        "rdp",
+    );
+    service.add_named(
+        &page(
+            &[
+                ("VNC server", fields.vnc_server.clone().upcast()),
+                ("Display", fields.vnc_display.clone().upcast()),
+                ("Desktop size", fields.vnc_size.clone().upcast()),
+                ("VNC port on the server", fields.vnc_port.clone().upcast()),
+                ("Server command", fields.vnc_command.clone().upcast()),
+                ("", fields.vnc_fullscreen.clone().upcast()),
+                ("", fields.view_only.clone().upcast()),
+            ],
+            "With a server chosen, the Host, User and Port above are for ssh: Oxterm starts the \
+             server on its loopback only, reaches it through an ssh tunnel in a tab, and stops \
+             it when the viewer closes. Sharing a screen uses a password made up for that \
+             session. A virtual desktop keeps running, with the password set by vncpasswd.",
+        ),
+        "vnc",
+    );
+    service.add_named(
+        &page(
+            &[
+                ("", fields.spice_tls.clone().upcast()),
+                ("", fields.spice_fullscreen.clone().upcast()),
+            ],
+            "Opens remote-viewer. With ProxyJump, the connection goes through that host in an \
+             ssh tunnel.",
+        ),
+        "spice",
+    );
+    service.add_named(&page(&[], "This protocol has no further options."), "none");
+
     let notebook = gtk::Notebook::new();
     notebook.set_scrollable(true);
+    let service_page = scrolled(&service);
+    let ssh_tab = scrolled(&ssh_page);
     notebook.append_page(&connection_page, Some(&gtk::Label::new(Some("Connection"))));
+    notebook.append_page(&service_page, Some(&gtk::Label::new(Some("Service"))));
     notebook.append_page(&auth_page, Some(&gtk::Label::new(Some("Authentication"))));
-    notebook.append_page(&scrolled(&ssh_page), Some(&gtk::Label::new(Some("SSH"))));
+    notebook.append_page(&ssh_tab, Some(&gtk::Label::new(Some("SSH"))));
     notebook.append_page(
         &scrolled(&session_page),
         Some(&gtk::Label::new(Some("Session"))),
@@ -1061,6 +1378,93 @@ pub fn edit(
     }
     refresh();
     dialog.show_all();
+    // Show only what the selected protocol can use. A page's visibility decides
+    // whether its tab appears, so this has to follow `show_all`.
+    let apply_protocol: Rc<dyn Fn()> = {
+        let fields = Rc::downgrade(&fields);
+        let service = service.clone();
+        let service_page = service_page.clone();
+        let auth_page = auth_page.clone();
+        let ssh_tab = ssh_tab.clone();
+        let tunnel_page = tunnel_page.clone();
+        let refresh = refresh.clone();
+        Rc::new(move || {
+            let Some(fields) = fields.upgrade() else {
+                return;
+            };
+            let protocol = fields.selected_protocol();
+            let name = match protocol {
+                Protocol::Serial => "serial",
+                Protocol::Command => "command",
+                Protocol::Docker => "docker",
+                Protocol::Kubectl => "kubectl",
+                Protocol::AwsSsm => "aws_ssm",
+                Protocol::Ftp => "ftp",
+                Protocol::Sftp => "sftp",
+                Protocol::Rdp => "rdp",
+                Protocol::Vnc => "vnc",
+                Protocol::Spice => "spice",
+                _ => "none",
+            };
+            service.set_visible_child_name(name);
+            service_page.set_visible(name != "none");
+            let networked = !matches!(
+                protocol,
+                Protocol::Serial
+                    | Protocol::Command
+                    | Protocol::Docker
+                    | Protocol::Kubectl
+                    | Protocol::AwsSsm
+            );
+            for (caption, field) in &address_rows {
+                caption.set_visible(networked);
+                field.set_visible(networked);
+            }
+            let keyring_helps = matches!(
+                protocol,
+                Protocol::Ssh | Protocol::Sftp | Protocol::Ftp | Protocol::Rdp | Protocol::Vnc
+            );
+            auth_page.set_visible(keyring_helps);
+            let over_ssh = matches!(protocol, Protocol::Ssh | Protocol::Sftp | Protocol::Vnc);
+            ssh_tab.set_visible(over_ssh);
+            tunnel_page.set_visible(protocol == Protocol::Ssh);
+            refresh();
+        })
+    };
+    apply_protocol();
+    {
+        let apply_protocol = apply_protocol.clone();
+        fields.protocol.connect_changed(move |_| apply_protocol());
+    }
+    for field in [
+        &fields.device,
+        &fields.baud,
+        &fields.command,
+        &fields.docker_container,
+        &fields.docker_shell,
+        &fields.pod,
+        &fields.namespace,
+        &fields.kube_context,
+        &fields.kube_container,
+        &fields.kube_shell,
+        &fields.instance_id,
+        &fields.aws_region,
+        &fields.aws_profile,
+        &fields.rdp_domain,
+        &fields.rdp_size,
+        &fields.rdp_drive,
+        &fields.vnc_display,
+        &fields.vnc_size,
+        &fields.vnc_command,
+        &fields.vnc_port,
+    ] {
+        let refresh = refresh.clone();
+        field.connect_changed(move |_| refresh());
+    }
+    {
+        let refresh = refresh.clone();
+        fields.vnc_server.connect_changed(move |_| refresh());
+    }
     if fields.name.is_sensitive() {
         fields.name.grab_focus();
     } else {

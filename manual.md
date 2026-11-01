@@ -688,11 +688,71 @@ secrets, so it can be copied or versioned; usage counts live in
 `connections-state.json`. A damaged file is reported and never overwritten, and a
 file from a newer Oxterm opens read-only.
 
+**Other connections.** The **Protocol** field of a new entry offers more than SSH:
+
+| Protocol | Runs | Where |
+| --- | --- | --- |
+| Mosh, Telnet | `mosh`, `telnet` | Tab |
+| Serial port | `picocom` | Tab |
+| Docker, Kubernetes, AWS Session Manager | `docker exec`, `kubectl exec`, `aws ssm start-session` | Tab |
+| Any command | The command you enter, without a shell | Tab |
+| SFTP, FTP | `sftp`, `lftp` | File browser |
+| RDP | FreeRDP or `rdesktop` | Its own window |
+| VNC | TigerVNC's `vncviewer`, or `remote-viewer` | Its own window |
+| SPICE | `remote-viewer` | Its own window |
+
+Tab connections keep macros, automation, logs and colors. A missing program is
+reported by name. A desktop entry with **ProxyJump** goes through that host in an
+ssh tunnel.
+
+**VNC with a server on the far side.** The **VNC server** field can start one for
+you, so you only need ssh access:
+
+| Choice | Server | What you get |
+| --- | --- | --- |
+| Share the screen: detect | wayvnc if a Wayland session exists, then x11vnc, then x0vncserver | The remote screen |
+| Share the screen: x11vnc, x0vncserver, wayvnc | That server | The remote screen |
+| Virtual desktop: TigerVNC, TurboVNC, TightVNC | `vncserver`, and so on | A separate desktop that keeps running |
+| Already running | None started | A tunnel to the port you give |
+| My own command | Your command, with `{port}` | Whatever it starts |
+| None | None started | A direct connection to `host:port`, without ssh |
+
+The server listens on the remote loopback only and is reached through an ssh tunnel,
+so nothing is exposed on the network. The ssh runs in a tab, where you can answer a
+password or host-key question and read the server's messages. Closing the viewer
+stops a shared screen and closes the tab, and closing the tab closes the viewer.
+
+- **Sharing a screen** uses a password made up for that session. It is typed into the
+  tab with echo off and given to the viewer in its private environment, so it never
+  appears on a command line. With a viewer other than TigerVNC's, the tab shows it for you to
+  type.
+- **wayvnc** has no password in this mode: it relies on the loopback and the tunnel,
+  so other accounts on that server could reach it while it runs.
+- **A virtual desktop** outlives the connection and uses the password you set with
+  `vncpasswd` on the server. The tab says how to stop it.
+
+**File browser.** An SFTP or FTP entry opens a two-pane window, with this computer on
+the left and the server on the right. **Browse Files...** in the panel's context menu
+or the **SSH** menu does the same for any SSH entry, reusing an open connection so no
+new login is needed.
+
+- Double-click a folder to enter it, or a file to copy it to the other side.
+- Use **Upload** and **Download**, or drag between the panes. You can also drop files
+  from a file manager onto the server's pane.
+- Copies run one at a time in the background, folders included. Oxterm asks before
+  replacing an existing name.
+- **New Folder**, **Rename** (`F2`), **Delete** (`Delete`), **Refresh** (`F5`) and
+  **Up** (`Backspace`) work on both sides.
+- Browsing cannot ask questions: SFTP needs a key, an agent, a password in the keyring
+  or an open tab to that host. Plain FTP sends the password unencrypted, so prefer
+  **Use TLS** or SFTP.
+
 **What an entry can do.** The form has these pages:
 
 | Page | Options |
 | --- | --- |
-| Connection | Name, host, user, port, `ProxyJump`, group, tags, favorite, notes |
+| Connection | Name, protocol, host, user, port, `ProxyJump`, group, tags, favorite, notes |
+| Service | What only the selected protocol needs; hidden when there is nothing |
 | Authentication | Key (those in `~/.ssh` are listed), stored password, one-time codes |
 | SSH | X11 (`-X`), compression (`-C`), agent forwarding (`-A`), keepalive, connect timeout, unknown-host policy, `TERM`, no connection sharing, extra arguments, old algorithms for aged servers |
 | Session | Remote command (and staying in a shell after it), a local command to run first such as bringing up a VPN, Wake-on-LAN, automatic reconnection, recording the output to a file, asking before connecting |
@@ -749,8 +809,8 @@ oxterm tunnel stop db-prod-1
 
 An import gives every entry a new id and never replaces an existing one. An entry
 that would act by itself is skipped unless you pass `--allow-local-commands`:
-extra arguments such as `ProxyCommand`, a pre-connect command, automation rules, or
-a log folder.
+extra arguments such as `ProxyCommand`, a pre-connect command, automation rules, a
+log folder, a command entry, a custom VNC server command, or a shared folder.
 
 ### SSH connections
 

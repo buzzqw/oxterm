@@ -442,14 +442,26 @@ pub fn spawn_broker(
     // persistent broker is reaped even after its terminal handle is dropped.
     let exited = Arc::new(AtomicBool::new(false));
     let exited_for_waiter = Arc::clone(&exited);
+    let finished_cleanly = Arc::new(AtomicBool::new(false));
+    let finished_for_waiter = Arc::clone(&finished_cleanly);
     std::thread::spawn(move || {
         let mut child = child;
-        let _ = child.wait();
+        if child.wait().is_ok_and(|status| status.success()) {
+            finished_for_waiter.store(true, Ordering::Release);
+        }
         exited_for_waiter.store(true, Ordering::Release);
     });
     let mut ready = false;
     for attempt in 0..200 {
         if UnixStream::connect(&path).is_ok() {
+            ready = true;
+            break;
+        }
+        // A program that ends at once, such as an ssh that cannot connect, can
+        // take its broker with it before this loop ever sees the socket. That is
+        // a session that ran and ended, and its exit status still has to reach the
+        // terminal: reporting a failed start would lose it.
+        if finished_cleanly.load(Ordering::Acquire) {
             ready = true;
             break;
         }

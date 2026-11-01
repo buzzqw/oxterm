@@ -203,6 +203,19 @@ fn run_connect(name: &str, split: bool, pane: Option<&str>, yes: bool) -> i32 {
             &format!("{} asks for confirmation; pass --yes", connection.name),
         );
     }
+    // A desktop or a file browser is a window of its own, opened by the GUI.
+    if connection.protocol.is_desktop() || connection.protocol.is_file_transfer() {
+        let Some(socket) = live_sockets().into_iter().next() else {
+            return fail(4, "connect", "no running Oxterm window");
+        };
+        return match request_at(
+            &socket,
+            &json!({ "op": "open_connection", "id": connection.id }),
+        ) {
+            Ok(_) => 0,
+            Err(error) => fail(error.0, "connect", &error.1),
+        };
+    }
     // Resolved here and not by the GUI: `ssh -G` can block, and a control request
     // is answered on the GUI thread.
     for problem in crate::headless::preconnect::run(connection) {
@@ -815,6 +828,17 @@ fn dispatch(request: &Value) -> Value {
             json!({ "ok": true, "pane": term.remote_id() })
         }
         "tunnel" => handle_tunnel(&app, request),
+        "open_connection" => {
+            let Some(window) = target_window(&app) else {
+                return error_reply("no running Oxterm window", 4);
+            };
+            window.connect_id(
+                request["id"].as_str().unwrap_or(""),
+                crate::connections_ui::Placement::Tab,
+            );
+            window.present();
+            json!({ "ok": true })
+        }
         "handover" => {
             let Some((_, term)) = find_terminal(&app, request["pane"].as_str().unwrap_or(""))
             else {

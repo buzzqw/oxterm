@@ -10,7 +10,7 @@
 //! with nobody to stop it.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
@@ -60,6 +60,8 @@ pub struct Spec {
     pub argv: Vec<String>,
     pub env: Vec<(String, String)>,
     pub probe: Option<String>,
+    /// Written to standard input: how a viewer receives a password.
+    pub stdin: Option<String>,
 }
 
 struct Slot {
@@ -205,7 +207,11 @@ fn supervise(spec: Spec, status: &Mutex<Status>, stop: &AtomicBool) {
     command
         .args(args)
         .envs(spec.env.iter().map(|(key, value)| (key, value)))
-        .stdin(Stdio::null())
+        .stdin(if spec.stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     // SAFETY: only async-signal-safe calls between fork and exec. A new session
@@ -228,6 +234,11 @@ fn supervise(spec: Spec, status: &Mutex<Status>, stop: &AtomicBool) {
             return;
         }
     };
+    if let (Some(text), Some(mut stdin)) = (spec.stdin.as_deref(), child.stdin.take()) {
+        // A viewer that exits without reading must not take this thread down;
+        // its exit is reported below like any other.
+        let _ = writeln!(stdin, "{}", text);
+    }
     let errors = Arc::new(Mutex::new(VecDeque::<String>::new()));
     let reader = child.stderr.take().map(|stderr| {
         let errors = Arc::clone(&errors);
@@ -261,8 +272,12 @@ fn supervise(spec: Spec, status: &Mutex<Status>, stop: &AtomicBool) {
                     .lock()
                     .map(|lines| lines.iter().cloned().collect::<Vec<_>>().join("; "))
                     .unwrap_or_default();
+                // A viewer closed by the person is not a failure.
+                if exit.success() {
+                    break Status::Stopped;
+                }
                 break Status::Failed(if text.is_empty() {
-                    format!("ssh exited: {}", exit)
+                    format!("exited: {}", exit)
                 } else {
                     text
                 });
@@ -323,6 +338,7 @@ mod tests {
             argv: vec!["sh".to_string(), "-c".to_string(), script.to_string()],
             env: Vec::new(),
             probe,
+            stdin: None,
         }
     }
 
@@ -410,9 +426,25 @@ mod tests {
                 argv: vec!["/nonexistent/oxterm-test".to_string()],
                 env: Vec::new(),
                 probe: None,
+                stdin: None,
             },
         );
         wait_for(&key, |status| matches!(status, Status::Failed(_)));
+    }
+
+    #[test]
+    fn a_clean_exit_is_stopped_and_stdin_reaches_the_program() {
+        let dir = std::env::temp_dir().join(format!("oxterm-tunnel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("got");
+        let key = key("t", "stdin");
+        let mut spec = sh(&format!("cat > {}", file.display()), None);
+        spec.stdin = Some("secret".to_string());
+        start(&key, spec);
+        wait_for(&key, |status| *status == Status::Stopped);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "secret\n");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -74,7 +74,23 @@ principale. Moduli nuovi: `headless/totp.rs`, `headless/expect.rs`, `headless/pr
 
 **Non portati da PCM:** profili credenziali, template, integrazione KeePassXC (il Secret
 Service può già essere KeePassXC), generatore di password, pannelli di monitoraggio
-(CPU, processi, disco, rete, log), pallini di raggiungibilità, audit log.
+(CPU, processi, disco, rete, log), pallini di raggiungibilità, audit log, sincronizzazione
+di cartelle e coda con percentuale nel browser, editor remoto.
+
+## Aggiornamento: connettori e browser file
+
+Aggiunti `Protocol` su `Connection`, `headless/desktop.rs` (viewer e script dei server VNC)
+e `headless/remote_files.rs` con `src/file_browser.rs`. Scelte da mantenere:
+
+- **Nessun client incorporato:** i desktop sono programmi esterni, come ssh. Il browser usa
+  `sftp` e `lftp` di sistema, con uno script su stdin per operazione.
+- **Server VNC solo su loopback, dietro tunnel ssh in un tab.** Il tab rende visibili errori e
+  domande; il `-t` fa morire il server con il terminale. Pronto significa banner `RFB`, non porta aperta.
+- **Password monouso:** generata qui, digitata con echo spento tramite una regola expect sul
+  prompt `OXTERM-VNC-PASSWORD:`, al viewer TigerVNC con `VNC_PASSWORD` nell'ambiente (TigerVNC
+  1.16 non ha `-autopass`), ai client RDP su stdin. Mai negli argomenti.
+- **wayvnc senza password:** limite noto, documentato nel manuale.
+- **Import:** comando libero, comando server personalizzato e cartella condivisa chiedono consenso.
 
 ## Stato delle fasi
 

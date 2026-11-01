@@ -119,11 +119,13 @@ sleep 0.5
 keys ctrl+shift+j
 keys ctrl+n
 type_text "smoke-box"
-keys Tab
+# Mnemonics rather than Tab: with no window manager, as under xvfb-run, Tab does not
+# leave a combo box such as Protocol.
+keys alt+h
 type_text "server.example"
-keys Tab
+keys alt+u
 type_text "admin"
-keys Tab
+keys alt+r
 type_text "2200"
 keys Return
 wait_for "the saved entry" grep -q '"smoke-box"' "$BOOK"
@@ -134,7 +136,7 @@ printf '%s\n' "smoke-connections: form saved the entry"
 # ── A bad value keeps the form open, and nothing is saved ──
 keys ctrl+n
 type_text "bad-box"
-keys Tab
+keys alt+h
 type_text "-oProxyCommand=evil"
 keys Return
 sleep 0.5

@@ -3,17 +3,24 @@
 //! and forwards a few calls here.
 
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use glib::subclass::prelude::*;
 use gtk::gdk;
 use gtk::prelude::*;
+use zoha_vte::traits::TerminalExt;
 
 use crate::connections_panel::{ConnectionsPanel, RowDecoration};
 use crate::headless::askpass;
 use crate::headless::connections::{
-    self, tunnel_key, Auth, Connection, Entry, Kind, Origin, Prepared, Tunnel, UsageMap,
+    self, tunnel_key, Auth, Connection, Entry, ExpectRule, Kind, Origin, Prepared, Protocol,
+    Tunnel, UsageMap,
 };
+use crate::headless::desktop;
 use crate::headless::preconnect;
+use crate::headless::remote_files;
 use crate::headless::ssh_config;
 use crate::headless::tunnels;
 use crate::logging::LOGGER;
@@ -22,6 +29,9 @@ use crate::terminal::TerminalBox;
 use crate::window::{MainWindow, TerminalWindow};
 
 const DEFAULT_RECONNECT_DELAY: u32 = 5;
+/// A virtual desktop can take a while to come up, and someone may be typing a
+/// password in the tab first.
+const DESKTOP_WAIT: Duration = Duration::from_secs(180);
 const MENU_SHORTCUTS: usize = 10;
 
 /// Where a connection opens.
@@ -285,6 +295,11 @@ impl MainWindow {
                 open_tabs: open.get(&connection.id).copied().unwrap_or(0),
                 ..RowDecoration::default()
             };
+            match states.get(&desktop_key(connection)) {
+                Some(status) if status.is_active() => decoration.open_tabs += 1,
+                Some(tunnels::Status::Failed(_)) => decoration.failed_tunnels += 1,
+                _ => {}
+            }
             for tunnel in &connection.tunnels {
                 match states.get(&tunnel_key(connection, tunnel)) {
                     Some(status) if status.is_active() => decoration.active_tunnels += 1,
@@ -390,9 +405,32 @@ impl MainWindow {
                 Box::new(move |window| window.connect_id(&id, placement)),
             );
         }
-        {
+        let protocol = entry.connection.protocol;
+        if protocol == Protocol::Ssh || protocol.is_file_transfer() {
+            let connection = entry.connection.clone();
+            add(
+                "Browse Files...",
+                Box::new(move |window| window.open_file_browser(connection.clone())),
+            );
             let id = id.to_string();
-            add("Open SFTP", Box::new(move |window| window.open_sftp(&id)));
+            add(
+                if protocol == Protocol::Ftp {
+                    "Open FTP Prompt"
+                } else {
+                    "Open SFTP Prompt"
+                },
+                Box::new(move |window| window.open_sftp(&id)),
+            );
+        }
+        if protocol.is_desktop() && tunnels::status(&desktop_key(&entry.connection)).is_active() {
+            let key = desktop_key(&entry.connection);
+            add(
+                "Disconnect",
+                Box::new(move |window| {
+                    tunnels::stop(&key);
+                    window.watch_tunnels();
+                }),
+            );
         }
         menu.append(&gtk::SeparatorMenuItem::new());
         if !entry.connection.tunnels.is_empty() {
@@ -427,7 +465,7 @@ impl MainWindow {
             tunnels_item.set_submenu(Some(&submenu));
             menu.append(&tunnels_item);
         }
-        {
+        if protocol == Protocol::Ssh {
             let connection = entry.connection.clone();
             add(
                 "Copy Public Key to Server",
@@ -671,11 +709,26 @@ impl MainWindow {
             self.status_message(&error, true);
             return;
         }
-        if crate::notes::which("ssh").is_none() {
-            self.status_message("Cannot connect: ssh is not installed", true);
+        if connection.confirm_connect && !self.confirm_connection(&connection) {
             return;
         }
-        if connection.confirm_connect && !self.confirm_connection(&connection) {
+        if connection.protocol.is_file_transfer() {
+            self.open_file_browser(connection);
+            return;
+        }
+        if connection.protocol.is_desktop() {
+            self.start_desktop(connection);
+            return;
+        }
+        let program = connection
+            .terminal_argv()
+            .and_then(|argv| argv.first().cloned())
+            .unwrap_or_default();
+        if crate::notes::which(&program).is_none() {
+            self.status_message(
+                &format!("Cannot connect: {} is not installed", program),
+                true,
+            );
             return;
         }
         if preconnect::has_work(&connection) {
@@ -736,7 +789,11 @@ impl MainWindow {
             }
         });
         let mut started = false;
-        for tunnel in connection.tunnels.iter().filter(|tunnel| tunnel.autostart) {
+        for tunnel in connection
+            .tunnels
+            .iter()
+            .filter(|tunnel| tunnel.autostart && connection.protocol == Protocol::Ssh)
+        {
             self.start_tunnel(&connection, tunnel);
             started = true;
         }
@@ -888,6 +945,186 @@ impl MainWindow {
         }
     }
 
+    /// Open the two-pane file browser on this entry's server.
+    pub fn open_file_browser(&self, connection: Connection) {
+        let program = if connection.protocol == Protocol::Ftp {
+            "lftp"
+        } else {
+            "sftp"
+        };
+        if crate::notes::which(program).is_none() {
+            self.status_message(&format!("{} is not installed", program), true);
+            return;
+        }
+        let window: gtk::Window = self.clone().upcast();
+        crate::file_browser::open(&window, connection);
+    }
+
+    /// Show a remote desktop. Without a tunnel the viewer starts directly; with one
+    /// a tab carries the ssh, and the viewer starts once the service answers.
+    pub fn start_desktop(&self, connection: Connection) {
+        if desktop::uses_tunnel(&connection) {
+            self.start_tunnelled_desktop(connection);
+            return;
+        }
+        let key = desktop_key(&connection);
+        if tunnels::status(&key).is_active() {
+            self.status_message(&format!("{} is already open", connection.name), false);
+            return;
+        }
+        let weak = crate::SendWeak::new(self);
+        std::thread::spawn(move || {
+            let problems = preconnect::run(&connection);
+            let password = stored_password(&connection);
+            let port = desktop::remote_port(&connection);
+            let viewer = desktop::viewer(&connection, &connection.host, port, password);
+            let error = match viewer {
+                Ok((spec, _)) => {
+                    tunnels::start(&key, spec);
+                    None
+                }
+                Err(error) => Some(error),
+            };
+            crate::run_on_main(move || {
+                if let Some(window) = weak.upgrade() {
+                    for problem in problems.iter().chain(error.iter()) {
+                        window.status_message(problem, true);
+                    }
+                    window.watch_tunnels();
+                    window.reload_connections_panel();
+                }
+            });
+        });
+    }
+
+    fn start_tunnelled_desktop(&self, connection: Connection) {
+        let Some(local_port) = desktop::free_local_port() else {
+            self.status_message("No free local port for the tunnel", true);
+            return;
+        };
+        let weak = crate::SendWeak::new(self);
+        std::thread::spawn(move || {
+            let problems = preconnect::run(&connection);
+            crate::run_on_main(move || {
+                if let Some(window) = weak.upgrade() {
+                    for problem in &problems {
+                        window.status_message(problem, true);
+                    }
+                    window.open_desktop_tab(connection, local_port);
+                }
+            });
+        });
+    }
+
+    fn open_desktop_tab(&self, connection: Connection, local_port: u16) {
+        // A password invented for this session. The server reads it with echo off
+        // from the tab, so it reaches neither a command line nor the scrollback.
+        let one_time = (connection.protocol == Protocol::Vnc
+            && connection.vnc_server.uses_one_time_password())
+        .then(desktop::one_time_password);
+        let mut attached = connection.clone();
+        if let Some(password) = &one_time {
+            attached.expect.push(ExpectRule {
+                pattern: regex::escape(desktop::OTP_PROMPT),
+                command: password.clone(),
+                max_trigger: 1,
+                delay_ms: 0,
+            });
+        }
+        // The tab has its own lifetime: dropping the connection must not reconnect
+        // behind a viewer that is gone.
+        attached.auto_reconnect = false;
+        let argv = desktop::tunnel_argv(&connection, local_port);
+        let title = connection.name.clone();
+        let term = self.add_new_tab(None, None, Some(&title), Some(&title), Some(&argv));
+        self.attach_connection(&term, &attached, true);
+
+        let key = desktop_key(&connection);
+        let started = Arc::new(AtomicBool::new(false));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let weak = crate::SendWeak::new(self);
+        let weak_term = crate::SendWeak::new(&term);
+        {
+            let started = started.clone();
+            let cancelled = cancelled.clone();
+            let key = key.clone();
+            let connection = connection.clone();
+            std::thread::spawn(move || {
+                let deadline = Instant::now() + DESKTOP_WAIT;
+                while !desktop::service_is_ready(connection.protocol, local_port) {
+                    if cancelled.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    if Instant::now() >= deadline {
+                        crate::run_on_main(move || {
+                            if let Some(window) = weak.upgrade() {
+                                window.status_message(
+                                    "The remote desktop did not start: see the tab",
+                                    true,
+                                );
+                            }
+                        });
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+                let password = one_time.clone().or_else(|| stored_password(&connection));
+                match desktop::viewer(&connection, "127.0.0.1", local_port, password) {
+                    Ok((spec, delivered)) => {
+                        tunnels::start(&key, spec);
+                        started.store(true, Ordering::SeqCst);
+                        // A viewer that takes no password from a program: the person
+                        // types it, so it has to be shown, here on their own screen.
+                        if let (false, Some(password)) = (delivered, one_time) {
+                            crate::run_on_main(move || {
+                                if let Some(term) = weak_term.upgrade() {
+                                    term.vte().feed(
+                                        format!("\r\n[Oxterm] VNC password: {}\r\n", password)
+                                            .as_bytes(),
+                                    );
+                                }
+                            });
+                        }
+                    }
+                    Err(error) => crate::run_on_main(move || {
+                        if let Some(window) = weak.upgrade() {
+                            window.status_message(&error, true);
+                        }
+                    }),
+                }
+            });
+        }
+        // The tab and the viewer are one session: closing either ends the other.
+        let weak = crate::SendWeak::new(self);
+        let weak_term = crate::SendWeak::new(&term);
+        glib::timeout_add_seconds_local(1, move || {
+            let term = weak_term.upgrade().filter(|term| term.parent().is_some());
+            let Some(term) = term else {
+                cancelled.store(true, Ordering::SeqCst);
+                tunnels::stop(&key);
+                return glib::ControlFlow::Break;
+            };
+            if !started.load(Ordering::SeqCst) {
+                return glib::ControlFlow::Continue;
+            }
+            let status = tunnels::status(&key);
+            if status.is_active() {
+                return glib::ControlFlow::Continue;
+            }
+            if let Some(window) = weak.upgrade() {
+                match status {
+                    // Keep the tab: what went wrong may be written there.
+                    tunnels::Status::Failed(reason) => {
+                        window.status_message(&format!("Viewer: {}", reason), true);
+                    }
+                    _ => window.close_tab_signal(Some(&term)),
+                }
+                window.reload_connections_panel();
+            }
+            glib::ControlFlow::Break
+        });
+    }
+
     fn copy_key_to_server(&self, connection: &Connection) {
         if crate::notes::which("ssh-copy-id").is_none() {
             self.status_message("ssh-copy-id is not installed", true);
@@ -951,6 +1188,18 @@ impl MainWindow {
                 let name = term
                     .connection_name()
                     .unwrap_or_else(|| "this connection".to_string());
+                if let Some(entry) =
+                    connections::find_entry_by_id(&load_entries().unwrap_or_default(), &id)
+                {
+                    if remote_files::supports_browsing(&entry.connection) {
+                        let connection = entry.connection.clone();
+                        add(
+                            menu,
+                            "Browse Files...",
+                            Box::new(move |window| window.open_file_browser(connection.clone())),
+                        );
+                    }
+                }
                 let edit_id = id.clone();
                 add(
                     menu,
@@ -1008,12 +1257,20 @@ impl MainWindow {
         let Some(entry) = connections::find_entry_by_id(&entries, id) else {
             return;
         };
-        if crate::notes::which("sftp").is_none() {
-            self.status_message("Cannot open SFTP: sftp is not installed", true);
+        let program = if entry.connection.protocol == Protocol::Ftp {
+            "lftp"
+        } else {
+            "sftp"
+        };
+        if crate::notes::which(program).is_none() {
+            self.status_message(&format!("{} is not installed", program), true);
             return;
         }
-        let argv = entry.connection.sftp_argv();
-        let title = format!("sftp {}", entry.connection.name);
+        let argv = match entry.connection.protocol {
+            Protocol::Ftp => entry.connection.terminal_argv().unwrap_or_default(),
+            _ => entry.connection.sftp_argv(),
+        };
+        let title = format!("files {}", entry.connection.name);
         let term = self.add_new_tab(None, None, Some(&title), Some(&title), Some(&argv));
         term.set_connection(
             Some(entry.connection.id.clone()),
@@ -1149,4 +1406,15 @@ pub fn offer_reconnect(window: &MainWindow, tabs: Vec<(String, bool)>, vertical:
             }
         });
     });
+}
+
+fn desktop_key(connection: &Connection) -> String {
+    tunnels::key(&connection.id, "desktop")
+}
+
+/// Reads the keyring, which may wait for an unlock: not on the GUI thread.
+fn stored_password(connection: &Connection) -> Option<String> {
+    (connection.auth == Auth::SecretService)
+        .then(|| askpass::lookup_secret(&connection.id))
+        .flatten()
 }

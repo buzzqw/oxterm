@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::askpass;
+use super::desktop::{self, VncServer};
 use super::paths;
 use super::persistence::atomic_write;
 use super::preconnect;
@@ -142,6 +143,91 @@ fn split_listen(listen: &str) -> Option<(&str, u16)> {
     (port != 0).then_some((bind, port))
 }
 
+/// What an entry connects with. Everything but `Ssh` is a program of its own: a
+/// terminal one runs in a tab, a graphical one in a window of its own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Protocol {
+    #[default]
+    Ssh,
+    Mosh,
+    Telnet,
+    Serial,
+    Sftp,
+    Ftp,
+    Docker,
+    Kubectl,
+    AwsSsm,
+    Command,
+    Rdp,
+    Vnc,
+    Spice,
+}
+
+impl Protocol {
+    pub const ALL: [(Protocol, &'static str, &'static str); 13] = [
+        (Protocol::Ssh, "ssh", "SSH"),
+        (Protocol::Mosh, "mosh", "Mosh"),
+        (Protocol::Telnet, "telnet", "Telnet"),
+        (Protocol::Serial, "serial", "Serial port"),
+        (Protocol::Sftp, "sftp", "SFTP files"),
+        (Protocol::Ftp, "ftp", "FTP files"),
+        (Protocol::Docker, "docker", "Docker container"),
+        (Protocol::Kubectl, "kubectl", "Kubernetes pod"),
+        (Protocol::AwsSsm, "aws_ssm", "AWS Session Manager"),
+        (Protocol::Command, "command", "Any command"),
+        (Protocol::Rdp, "rdp", "RDP desktop"),
+        (Protocol::Vnc, "vnc", "VNC desktop"),
+        (Protocol::Spice, "spice", "SPICE desktop"),
+    ];
+
+    pub fn label(self) -> &'static str {
+        Protocol::ALL
+            .iter()
+            .find(|(protocol, _, _)| *protocol == self)
+            .map_or("SSH", |(_, _, label)| label)
+    }
+
+    /// Short tag for lists; SSH is the default and needs none.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Protocol::Ssh => "",
+            Protocol::Mosh => "MOSH",
+            Protocol::Telnet => "TELNET",
+            Protocol::Serial => "SERIAL",
+            Protocol::Sftp => "SFTP",
+            Protocol::Ftp => "FTP",
+            Protocol::Docker => "DOCKER",
+            Protocol::Kubectl => "K8S",
+            Protocol::AwsSsm => "SSM",
+            Protocol::Command => "CMD",
+            Protocol::Rdp => "RDP",
+            Protocol::Vnc => "VNC",
+            Protocol::Spice => "SPICE",
+        }
+    }
+
+    pub fn is_desktop(self) -> bool {
+        matches!(self, Protocol::Rdp | Protocol::Vnc | Protocol::Spice)
+    }
+
+    /// Whether opening it means the file browser rather than a terminal.
+    pub fn is_file_transfer(self) -> bool {
+        matches!(self, Protocol::Sftp | Protocol::Ftp)
+    }
+
+    fn needs_host(self) -> bool {
+        !matches!(
+            self,
+            Protocol::Serial
+                | Protocol::Docker
+                | Protocol::Kubectl
+                | Protocol::AwsSsm
+                | Protocol::Command
+        )
+    }
+}
+
 /// `StrictHostKeyChecking`. The default leaves the decision to `~/.ssh/config`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -197,6 +283,8 @@ pub struct Connection {
     pub id: String,
     #[serde(default)]
     pub kind: Kind,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub protocol: Protocol,
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub host: String,
@@ -298,6 +386,69 @@ pub struct Connection {
     #[serde(default, skip_serializing_if = "is_default")]
     pub totp: bool,
 
+    // ── Other protocols ──
+    /// Serial device, such as `/dev/ttyUSB0`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub device: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baud: Option<u32>,
+    /// The command of a `Command` entry, split like a shell line but run without one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub command: String,
+    /// Container, for Docker or for a pod with several.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub container: String,
+    /// Shell to start inside a container or pod.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub shell: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pod: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub namespace: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kube_context: String,
+    /// EC2 instance id.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub instance_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub aws_region: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub aws_profile: String,
+    /// Explicit TLS for FTP.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub ftp_tls: bool,
+
+    // ── Remote desktops ──
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub vnc_server: VncServer,
+    /// The X display to share, or the number of a virtual desktop.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vnc_display: String,
+    /// Size of a virtual desktop or RDP window, as `1920x1080`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vnc_geometry: String,
+    /// A server's own command, with `{port}`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vnc_command: String,
+    /// The service's port when `port` means ssh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub desktop_fullscreen: bool,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub view_only: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub rdp_domain: String,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub rdp_clipboard: bool,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub rdp_multimon: bool,
+    /// Local folder shared with the remote desktop.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub rdp_drive: String,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub spice_tls: bool,
+
     // ── Appearance ──
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub font: String,
@@ -329,6 +480,135 @@ impl Connection {
         }
     }
 
+    /// The program and arguments of a terminal session; `None` for a desktop or
+    /// when required details are missing.
+    pub fn terminal_argv(&self) -> Option<Vec<String>> {
+        let text = |values: &[&str]| {
+            values
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+        };
+        Some(match self.protocol {
+            Protocol::Ssh => {
+                let mut argv = text(&["ssh"]);
+                argv.extend(self.session_args());
+                argv
+            }
+            Protocol::Mosh => {
+                let mut argv = text(&["mosh"]);
+                let mut ssh = vec!["ssh".to_string()];
+                if let Some(port) = self.port {
+                    ssh.extend(["-p".to_string(), port.to_string()]);
+                }
+                if !self.identity_file.is_empty() {
+                    ssh.extend(["-i".to_string(), self.identity_file.clone()]);
+                }
+                if !self.proxy_jump.is_empty() {
+                    ssh.extend(["-J".to_string(), self.proxy_jump.clone()]);
+                }
+                if ssh.len() > 1 {
+                    argv.push(format!("--ssh={}", shell_words::join(&ssh)));
+                }
+                argv.push(self.user_at_host());
+                if !self.remote_command.is_empty() {
+                    argv.push("--".to_string());
+                    argv.extend(shell_words::split(&self.remote_command).ok()?);
+                }
+                argv
+            }
+            Protocol::Telnet => {
+                let mut argv = text(&["telnet"]);
+                if !self.user.is_empty() {
+                    argv.extend(["-l".to_string(), self.user.clone()]);
+                }
+                argv.push(self.host.clone());
+                if let Some(port) = self.port {
+                    argv.push(port.to_string());
+                }
+                argv
+            }
+            Protocol::Serial => {
+                let baud = self.baud.unwrap_or(115_200).to_string();
+                vec![
+                    "picocom".to_string(),
+                    "-b".to_string(),
+                    baud,
+                    self.device.clone(),
+                ]
+            }
+            Protocol::Sftp => self.sftp_argv(),
+            Protocol::Ftp => {
+                let mut argv = text(&["lftp"]);
+                if !self.user.is_empty() {
+                    argv.extend(["-u".to_string(), self.user.clone()]);
+                }
+                if let Some(port) = self.port {
+                    argv.extend(["-p".to_string(), port.to_string()]);
+                }
+                argv.push(self.host.clone());
+                argv
+            }
+            Protocol::Docker => vec![
+                "docker".to_string(),
+                "exec".to_string(),
+                "-it".to_string(),
+                self.container.clone(),
+                self.shell_or_default(),
+            ],
+            Protocol::Kubectl => {
+                let mut argv = text(&["kubectl"]);
+                if !self.kube_context.is_empty() {
+                    argv.extend(["--context".to_string(), self.kube_context.clone()]);
+                }
+                if !self.namespace.is_empty() {
+                    argv.extend(["-n".to_string(), self.namespace.clone()]);
+                }
+                argv.extend(["exec".to_string(), "-it".to_string(), self.pod.clone()]);
+                if !self.container.is_empty() {
+                    argv.extend(["-c".to_string(), self.container.clone()]);
+                }
+                argv.extend(["--".to_string(), self.shell_or_default()]);
+                argv
+            }
+            Protocol::AwsSsm => {
+                let mut argv = text(&["aws", "ssm", "start-session", "--target"]);
+                argv.push(self.instance_id.clone());
+                if !self.aws_region.is_empty() {
+                    argv.extend(["--region".to_string(), self.aws_region.clone()]);
+                }
+                if !self.aws_profile.is_empty() {
+                    argv.extend(["--profile".to_string(), self.aws_profile.clone()]);
+                }
+                argv
+            }
+            Protocol::Command => {
+                let argv = shell_words::split(&self.command).ok()?;
+                if argv.is_empty() {
+                    return None;
+                }
+                argv
+            }
+            Protocol::Rdp | Protocol::Vnc | Protocol::Spice => return None,
+        })
+    }
+
+    fn user_at_host(&self) -> String {
+        if self.user.is_empty() || self.host.contains('@') {
+            self.host.clone()
+        } else {
+            format!("{}@{}", self.user, self.host)
+        }
+    }
+
+    fn shell_or_default(&self) -> String {
+        if self.shell.is_empty() {
+            "sh".to_string()
+        } else {
+            self.shell.clone()
+        }
+    }
+
     /// The `[user@]host` argument of `ssh`.
     pub fn destination(&self) -> &str {
         match self.kind {
@@ -341,6 +621,14 @@ impl Connection {
     pub fn summary(&self) -> String {
         if self.kind == Kind::Alias {
             return "~/.ssh/config".to_string();
+        }
+        match self.protocol {
+            Protocol::Serial => return self.device.clone(),
+            Protocol::Docker => return self.container.clone(),
+            Protocol::Kubectl => return self.pod.clone(),
+            Protocol::AwsSsm => return self.instance_id.clone(),
+            Protocol::Command => return self.command.clone(),
+            _ => {}
         }
         let mut text = String::new();
         if !self.user.is_empty() {
@@ -488,6 +776,15 @@ impl Connection {
     /// (`-P` for the port, no `-l`), so the user travels in the destination.
     pub fn sftp_argv(&self) -> Vec<String> {
         let mut argv = vec!["sftp".to_string()];
+        // The options sftp shares with ssh: every `-o`, and the user's own extras.
+        argv.extend(self.extra_args.iter().cloned());
+        let options = self.option_args();
+        for (index, argument) in options.iter().enumerate() {
+            if argument == "-o" {
+                argv.push(argument.clone());
+                argv.extend(options.get(index + 1).cloned());
+            }
+        }
         if self.kind == Kind::Manual {
             if let Some(port) = self.port {
                 argv.push("-P".to_string());
@@ -512,9 +809,19 @@ impl Connection {
 
     /// The command shown to the user and put on the clipboard.
     pub fn command_preview(&self) -> String {
-        let mut argv = vec!["ssh".to_string()];
-        argv.extend(self.session_args());
-        shell_words::join(argv)
+        if self.protocol.is_desktop() {
+            if desktop::uses_tunnel(self) {
+                return shell_words::join(desktop::tunnel_argv(self, 0));
+            }
+            let port = desktop::remote_port(self);
+            return match desktop::viewer(self, &self.host, port, None) {
+                Ok((spec, _)) => shell_words::join(spec.argv),
+                Err(message) => message,
+            };
+        }
+        self.terminal_argv()
+            .map(shell_words::join)
+            .unwrap_or_default()
     }
 
     /// Everything but the display name, so the form can reject bad input before
@@ -537,10 +844,13 @@ impl Connection {
         match self.kind {
             Kind::Alias => check_argument("Host alias", &self.name)?,
             Kind::Manual => {
-                if self.host.is_empty() {
-                    return Err("The host cannot be empty".to_string());
+                if self.protocol.needs_host() {
+                    if self.host.is_empty() {
+                        return Err("The host cannot be empty".to_string());
+                    }
+                    check_argument("Host", &self.host)?;
                 }
-                check_argument("Host", &self.host)?;
+                self.validate_protocol()?;
                 check_optional_argument("User", &self.user)?;
                 check_optional_argument("ProxyJump", &self.proxy_jump)?;
                 check_text("Identity file", &self.identity_file)?;
@@ -592,6 +902,61 @@ impl Connection {
         Ok(())
     }
 
+    /// A value that lands where a program looks for options must not start with
+    /// `-`, for the same reason as a host.
+    fn validate_protocol(&self) -> Result<(), String> {
+        match self.protocol {
+            Protocol::Serial => check_argument("Device", &self.device)?,
+            Protocol::Docker => {
+                check_argument("Container", &self.container)?;
+                check_optional_argument("Shell", &self.shell)?;
+            }
+            Protocol::Kubectl => {
+                check_argument("Pod", &self.pod)?;
+                check_optional_argument("Container", &self.container)?;
+                check_optional_argument("Namespace", &self.namespace)?;
+                check_optional_argument("Context", &self.kube_context)?;
+                check_optional_argument("Shell", &self.shell)?;
+            }
+            Protocol::AwsSsm => {
+                check_argument("Instance", &self.instance_id)?;
+                check_optional_argument("Region", &self.aws_region)?;
+                check_optional_argument("Profile", &self.aws_profile)?;
+            }
+            Protocol::Command => {
+                check_text("Command", &self.command)?;
+                let words = shell_words::split(&self.command)
+                    .map_err(|_| "The command has unbalanced quotes".to_string())?;
+                if words.is_empty() {
+                    return Err("The command cannot be empty".to_string());
+                }
+            }
+            Protocol::Rdp | Protocol::Vnc | Protocol::Spice => {
+                check_optional_argument("Domain", &self.rdp_domain)?;
+                check_text("Display", &self.vnc_display)?;
+                check_text("Server command", &self.vnc_command)?;
+                check_text("Shared folder", &self.rdp_drive)?;
+                if !self.vnc_geometry.is_empty() {
+                    let valid = self
+                        .vnc_geometry
+                        .split_once('x')
+                        .is_some_and(|(w, h)| w.parse::<u16>().is_ok() && h.parse::<u16>().is_ok());
+                    if !valid {
+                        return Err("The size must look like 1920x1080".to_string());
+                    }
+                }
+                if self.protocol == Protocol::Vnc
+                    && self.vnc_server == VncServer::Custom
+                    && self.vnc_command.trim().is_empty()
+                {
+                    return Err("Enter the command that starts the VNC server".to_string());
+                }
+            }
+            Protocol::Ssh | Protocol::Mosh | Protocol::Telnet | Protocol::Sftp | Protocol::Ftp => {}
+        }
+        Ok(())
+    }
+
     /// Whether this entry needs the askpass helper.
     pub fn uses_keyring(&self) -> bool {
         self.auth == Auth::SecretService || self.totp
@@ -603,6 +968,15 @@ impl Connection {
     /// importing an entry: the book is data, this part is not.
     pub fn local_execution_options(&self) -> Vec<String> {
         let mut found = Vec::new();
+        if self.protocol == Protocol::Command {
+            found.push(format!("command: {}", self.command));
+        }
+        if self.protocol == Protocol::Vnc && self.vnc_server == VncServer::Custom {
+            found.push(format!("server command: {}", self.vnc_command));
+        }
+        if !self.rdp_drive.is_empty() {
+            found.push(format!("shared folder: {}", self.rdp_drive));
+        }
         if !self.pre_command.trim().is_empty() {
             found.push(format!("pre-connect command: {}", self.pre_command));
         }
@@ -1240,6 +1614,21 @@ pub struct Prepared {
 }
 
 pub fn prepare_session(connection: &Connection) -> Prepared {
+    if connection.protocol != Protocol::Ssh {
+        // Only ssh has connection sharing or a config to ask about.
+        let mut argv = connection.terminal_argv().unwrap_or_default();
+        if !connection.terminal_type.is_empty() && !argv.is_empty() {
+            argv.insert(0, format!("TERM={}", connection.terminal_type));
+            argv.insert(0, "env".to_string());
+        }
+        return Prepared {
+            plan: ConnectPlan {
+                argv,
+                forwards_agent: false,
+            },
+            keyring_note: None,
+        };
+    }
     let effective = ssh_config::effective_config(&connection.target_args(), PROBE_TIMEOUT);
     let mut plan = connect_plan(connection, effective.as_deref(), &paths::config_dir());
     let mut keyring_note = None;
@@ -1299,6 +1688,7 @@ pub fn tunnel_spec(connection: &Connection, tunnel: &Tunnel) -> tunnels::Spec {
         argv: tunnel_argv(connection, tunnel, batch),
         env,
         probe: tunnel.probe_address(),
+        stdin: None,
     }
 }
 
@@ -1644,6 +2034,198 @@ mod tests {
         let report = import_into(&mut book, incoming, false).unwrap();
         assert_eq!(report.imported, 1, "{:?}", report.skipped);
         assert!(!book.connections[0].totp, "a new id has no stored secret");
+    }
+
+    fn typed(protocol: Protocol) -> Connection {
+        Connection {
+            protocol,
+            ..manual("x", "h")
+        }
+    }
+
+    #[test]
+    fn terminal_protocols_build_their_commands() {
+        let cases: Vec<(Connection, Vec<&str>)> = vec![
+            (
+                Connection {
+                    user: "u".into(),
+                    port: Some(2222),
+                    ..typed(Protocol::Mosh)
+                },
+                vec!["mosh", "--ssh=ssh -p 2222", "u@h"],
+            ),
+            (
+                Connection {
+                    port: Some(2323),
+                    ..typed(Protocol::Telnet)
+                },
+                vec!["telnet", "h", "2323"],
+            ),
+            (
+                Connection {
+                    device: "/dev/ttyUSB0".into(),
+                    baud: Some(9600),
+                    ..typed(Protocol::Serial)
+                },
+                vec!["picocom", "-b", "9600", "/dev/ttyUSB0"],
+            ),
+            (
+                Connection {
+                    user: "u".into(),
+                    port: Some(2121),
+                    ..typed(Protocol::Ftp)
+                },
+                vec!["lftp", "-u", "u", "-p", "2121", "h"],
+            ),
+            (
+                Connection {
+                    container: "web".into(),
+                    shell: "bash".into(),
+                    ..typed(Protocol::Docker)
+                },
+                vec!["docker", "exec", "-it", "web", "bash"],
+            ),
+            (
+                Connection {
+                    pod: "api-0".into(),
+                    namespace: "prod".into(),
+                    kube_context: "c1".into(),
+                    container: "app".into(),
+                    ..typed(Protocol::Kubectl)
+                },
+                vec![
+                    "kubectl",
+                    "--context",
+                    "c1",
+                    "-n",
+                    "prod",
+                    "exec",
+                    "-it",
+                    "api-0",
+                    "-c",
+                    "app",
+                    "--",
+                    "sh",
+                ],
+            ),
+            (
+                Connection {
+                    instance_id: "i-1".into(),
+                    aws_region: "eu-west-1".into(),
+                    aws_profile: "p".into(),
+                    ..typed(Protocol::AwsSsm)
+                },
+                vec![
+                    "aws",
+                    "ssm",
+                    "start-session",
+                    "--target",
+                    "i-1",
+                    "--region",
+                    "eu-west-1",
+                    "--profile",
+                    "p",
+                ],
+            ),
+            (
+                Connection {
+                    command: "htop -d 5".into(),
+                    ..typed(Protocol::Command)
+                },
+                vec!["htop", "-d", "5"],
+            ),
+        ];
+        for (connection, expected) in cases {
+            connection.validate().unwrap();
+            assert_eq!(connection.terminal_argv().unwrap(), expected);
+            assert_eq!(prepare_session(&connection).plan.argv, expected);
+        }
+        assert_eq!(typed(Protocol::Rdp).terminal_argv(), None);
+    }
+
+    #[test]
+    fn protocols_refuse_values_that_become_options() {
+        for bad in [
+            Connection {
+                device: "-x".into(),
+                ..typed(Protocol::Serial)
+            },
+            Connection {
+                container: "--privileged".into(),
+                ..typed(Protocol::Docker)
+            },
+            Connection {
+                pod: "-oX".into(),
+                ..typed(Protocol::Kubectl)
+            },
+            Connection {
+                pod: "p".into(),
+                namespace: "-x".into(),
+                ..typed(Protocol::Kubectl)
+            },
+            Connection {
+                instance_id: "--x".into(),
+                ..typed(Protocol::AwsSsm)
+            },
+            Connection {
+                command: "   ".into(),
+                ..typed(Protocol::Command)
+            },
+            Connection {
+                vnc_geometry: "big".into(),
+                ..typed(Protocol::Rdp)
+            },
+            Connection {
+                vnc_server: VncServer::Custom,
+                ..typed(Protocol::Vnc)
+            },
+        ] {
+            assert!(bad.validate().is_err(), "{:?}", bad.protocol);
+        }
+    }
+
+    #[test]
+    fn hostless_protocols_need_no_host() {
+        let connection = Connection {
+            protocol: Protocol::Docker,
+            container: "web".into(),
+            host: String::new(),
+            name: "c".into(),
+            id: "i".into(),
+            ..Connection::default()
+        };
+        assert!(connection.validate().is_ok());
+        assert_eq!(connection.summary(), "web");
+    }
+
+    #[test]
+    fn imports_ask_about_commands_of_their_own() {
+        assert!(!Connection {
+            command: "curl evil".into(),
+            ..typed(Protocol::Command)
+        }
+        .local_execution_options()
+        .is_empty());
+        assert!(!Connection {
+            vnc_server: VncServer::Custom,
+            vnc_command: "evil".into(),
+            ..typed(Protocol::Vnc)
+        }
+        .local_execution_options()
+        .is_empty());
+    }
+
+    #[test]
+    fn sftp_takes_the_options_it_understands() {
+        let connection = Connection {
+            x11: true,
+            connect_timeout: Some(7),
+            ..typed(Protocol::Sftp)
+        };
+        assert_eq!(
+            connection.sftp_argv(),
+            ["sftp", "-o", "ConnectTimeout=7", "h"]
+        );
     }
 
     #[test]

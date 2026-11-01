@@ -338,6 +338,10 @@ fn row_markup(entry: &Entry, decoration: &RowDecoration) -> String {
         Some(color) => format!("<span foreground=\"{}\"><b>{}</b></span>", color, name),
         None => name.to_string(),
     };
+    let tag = entry.connection.protocol.tag();
+    if !tag.is_empty() {
+        markup.push_str(&format!("  <small><b>{}</b></small>", tag));
+    }
     // State first: the narrow panel ellipsizes the end of the row, and the
     // address is also in the tooltip.
     if decoration.open_tabs > 0 {
@@ -348,7 +352,7 @@ fn row_markup(entry: &Entry, decoration: &RowDecoration) -> String {
     }
     if decoration.failed_tunnels > 0 {
         markup.push_str(&format!(
-            "  <small><span foreground=\"#d9534f\">⇄ {} failed</span></small>",
+            "  <small><span foreground=\"#d9534f\">{} failed</span></small>",
             decoration.failed_tunnels
         ));
     }
