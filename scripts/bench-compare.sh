@@ -173,7 +173,8 @@ term_ns() {
     total="$(proc_ns "${pid}")"
     for child in $(children_of "${pid}"); do
         target="$(readlink "/proc/${child}/exe" 2>/dev/null || true)"
-        if [[ "${target}" == "${exe}" ]]; then
+        # Oxterm's broker is a separate executable next to the main one.
+        if [[ "${target}" == "${exe}" || "${target}" == "${exe}-broker" ]]; then
             total=$(( total + $(term_ns "${child}" "${exe}") ))
         fi
     done
@@ -387,10 +388,11 @@ task_snapshot() {
 }
 
 tree_snapshot() {
-    local pid="$1" exe="$2" child
+    local pid="$1" exe="$2" child target
     task_snapshot "${pid}"
     for child in $(children_of "${pid}"); do
-        if [[ "$(readlink "/proc/${child}/exe" 2>/dev/null || true)" == "${exe}" ]]; then
+        target="$(readlink "/proc/${child}/exe" 2>/dev/null || true)"
+        if [[ "${target}" == "${exe}" || "${target}" == "${exe}-broker" ]]; then
             tree_snapshot "${child}" "${exe}"
         fi
     done

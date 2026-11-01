@@ -115,6 +115,11 @@ privilegi (`ptrace_scope`), quindi gli interventi vengono dalla lettura del codi
 | Browser, cancellazione di cartelle | Un `ssh -G` per ogni operazione | Riusato per 30 s |
 | Tab con colori propri | Caricava tutto il catalogo temi | Solo se il tema non è tra quelli base |
 
+Il RSS di `bench-startup` è salito rispetto al riferimento del 27 ottobre (45 -> 51 MB, 47 ->
+67 MB dopo 5 tab), ma non per questo lavoro: `fd0cc01` misura 53/66 MB e la versione attuale
+54/67 MB con lo stesso script. Il riferimento era vecchio ed è stato rigenerato. La causa della
+crescita precedente non è stata cercata.
+
 **Non cambiato, da valutare:** ogni tasto interroga il broker su un socket (`is_echo_on`), per
 non registrare password. Una connessione persistente ridurrebbe il lavoro, ma a velocità di
 battitura umana il guadagno non si misura.
@@ -164,6 +169,7 @@ mostra le connessioni (`supports_connections`).
 | **Detach Tab** era a senso unico | Corretto: **Return to Main Window**, **Bring Back** nel menu Tabs, voce in palette |
 | Un programma che termina subito poteva chiudere il broker prima che oxterm vedesse il socket: avvio segnalato come fallito e riconnessione persa | Corretto in `spawn_broker`: un broker terminato con successo conta come sessione conclusa |
 | `oxterm capture` usava solo l'adjustment di VTE, che resta indietro rispetto all'output: mancava il testo finale, e `control_api` falliva 6 volte su 8 su questa macchina, anche prima di questo lavoro | Corretto: la fine del testo tiene conto del cursore. 0 fallimenti su 8 |
+| `bench-compare.sh` non contava `oxterm-broker` nella CPU di oxterm, dalla separazione del broker: dati troppo favorevoli | Corretto, e tabella del README rimisurata |
 | Lo script di integrazione remota non attiva cronologia e notifiche | Non corretto: serve una decisione, comportamento documentato nel manuale |
 | Avvisi `clippy` su `terminal.rs`, `vi.rs`, `history.rs` e altri | Non toccati: sono di stile, e l'autore sta cambiando quei file per le prestazioni |
 | `OpenSSH` usa la home di `passwd`, `dirs::home_dir` usa `$HOME` | Solo nota: con `HOME` diversa i due vedono `~/.ssh/config` diversi. Nei test usare `-F` |
