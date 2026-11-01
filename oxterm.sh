@@ -24,7 +24,7 @@ needs_rebuild() {
 
 if needs_rebuild; then
     echo "Oxterm: rebuilding from source..." >&2
-    if ! cargo build --release --locked --manifest-path "$SCRIPT_DIR/Cargo.toml" 2>&1; then
+    if ! cargo build --release --locked --bins --manifest-path "$SCRIPT_DIR/Cargo.toml" 2>&1; then
         echo "Oxterm: build failed, running existing binary" >&2
     fi
     BIN="$SCRIPT_DIR/target/release/oxterm"

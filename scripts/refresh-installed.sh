@@ -16,6 +16,7 @@ set -u
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILT="${ROOT_DIR}/target/release/oxterm"
+BROKER_BUILT="${ROOT_DIR}/target/release/oxterm-broker"
 if [[ ! -x "$BUILT" ]]; then
     printf '%s\n' 'Oxterm: target/release/oxterm is missing; nothing installed' >&2
     exit 0
@@ -27,6 +28,12 @@ install_copy() {
     local dest="$1"
     shift
     if "$@" install -m 0755 "$BUILT" "$dest"; then
+        # The broker is optional: without it the GUI falls back to
+        # `oxterm --broker`, which works but maps the GTK/VTE libraries.
+        if [[ -x "$BROKER_BUILT" ]]; then
+            "$@" install -m 0755 "$BROKER_BUILT" "${dest}-broker" 2>/dev/null ||
+                printf '%s\n' "Oxterm: could not update ${dest}-broker" >&2
+        fi
         printf '%s\n' "Oxterm: updated ${dest}"
         return 0
     fi

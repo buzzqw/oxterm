@@ -17,8 +17,7 @@ use crate::persistence::{sync_parent_directory, write_private_temp};
 use crate::headless::{settings as headless_settings, spec, themes};
 
 pub fn config_dir() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-    home.join(".config").join("oxterm")
+    crate::headless::paths::config_dir()
 }
 
 /// Optional alternative settings file, set via `--config FILE`. When present it

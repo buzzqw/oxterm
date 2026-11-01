@@ -39,16 +39,19 @@ jobs:
           OXTERM_GUI_TESTS: "1"
         run: xvfb-run -a cargo test --locked --test gui_lifecycle --test control_api
 
-      - name: Build release executable
-        run: cargo build --release --locked
+      - name: Build release executables
+        run: cargo build --release --locked --bins
 
-      - name: Package executable
+      - name: Package executables
         run: |
           mkdir -p dist
           install -m 0755 target/release/oxterm oxterm-linux-x86-64
+          install -m 0755 target/release/oxterm-broker oxterm-broker-linux-x86-64
           install -m 0755 oxterm-linux-x86-64 dist/oxterm-linux-x86-64
+          install -m 0755 oxterm-broker-linux-x86-64 dist/oxterm-broker-linux-x86-64
           install -m 0644 themes/licenses.md dist/THEME-LICENSES.md
-          tar -C dist -czf dist/oxterm-linux-x86-64.tar.gz oxterm-linux-x86-64 THEME-LICENSES.md
+          tar -C dist -czf dist/oxterm-linux-x86-64.tar.gz \
+            oxterm-linux-x86-64 oxterm-broker-linux-x86-64 THEME-LICENSES.md
 
       - name: Upload executable artifact
         uses: actions/upload-artifact@v4

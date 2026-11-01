@@ -12,9 +12,10 @@ command -v appimagetool >/dev/null 2>&1 || {
     exit 1
 }
 
-cargo build --release --locked --manifest-path "${ROOT_DIR}/Cargo.toml"
+cargo build --release --locked --bins --manifest-path "${ROOT_DIR}/Cargo.toml"
 rm -rf "${APPDIR}"
 install -Dm755 "${ROOT_DIR}/target/release/oxterm" "${APPDIR}/usr/bin/oxterm"
+install -Dm755 "${ROOT_DIR}/target/release/oxterm-broker" "${APPDIR}/usr/bin/oxterm-broker"
 install -Dm644 "${ROOT_DIR}/packaging/appimage/oxterm.desktop" "${APPDIR}/oxterm.desktop"
 install -Dm644 "${ROOT_DIR}/packaging/appimage/oxterm.svg" "${APPDIR}/oxterm.svg"
 ln -s usr/bin/oxterm "${APPDIR}/AppRun"

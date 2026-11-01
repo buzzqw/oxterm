@@ -13,6 +13,7 @@ pub mod file_uri;
 pub mod framing;
 pub mod notify;
 pub mod osc133;
+pub mod paths;
 pub mod settings;
 pub mod spec;
 pub mod text;

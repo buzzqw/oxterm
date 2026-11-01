@@ -34,16 +34,18 @@ jobs:
         run: |
           cargo fmt --check
           cargo test --all-targets --locked
-          cargo build --release --locked
+          cargo build --release --locked --bins
 
       - name: Prepare executable package
         run: |
           install -m 0755 target/release/oxterm oxterm-latest-linux-x86_64
+          install -m 0755 target/release/oxterm-broker oxterm-broker-latest-linux-x86_64
           install -m 0644 themes/licenses.md THEME-LICENSES.md
-          tar -czf oxterm-latest-linux-x86_64.tar.gz oxterm-latest-linux-x86_64 THEME-LICENSES.md
+          tar -czf oxterm-latest-linux-x86_64.tar.gz \
+            oxterm-latest-linux-x86_64 oxterm-broker-latest-linux-x86_64 THEME-LICENSES.md
 
       - name: Create checksums
-        run: sha256sum oxterm-latest-* > SHA256SUMS
+        run: sha256sum oxterm-*-linux-x86_64 > SHA256SUMS
 
       - name: Update rolling tag
         env:
@@ -70,7 +72,8 @@ jobs:
               --prerelease
           fi
           gh release upload latest \
-          oxterm-latest-linux-x86_64 \
-          oxterm-latest-linux-x86_64.tar.gz \
+            oxterm-latest-linux-x86_64 \
+            oxterm-broker-latest-linux-x86_64 \
+            oxterm-latest-linux-x86_64.tar.gz \
             SHA256SUMS \
             --clobber

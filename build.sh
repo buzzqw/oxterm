@@ -5,7 +5,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-cargo build --release --locked --manifest-path "${ROOT_DIR}/Cargo.toml"
+cargo build --release --locked --bins --manifest-path "${ROOT_DIR}/Cargo.toml"
 install -m 0755 "${ROOT_DIR}/target/release/oxterm" "${ROOT_DIR}/oxterm-linux-x86-64"
+install -m 0755 "${ROOT_DIR}/target/release/oxterm-broker" "${ROOT_DIR}/oxterm-broker-linux-x86-64"
 
 printf '%s\n' "Oxterm: copied definitive build to ${ROOT_DIR}/oxterm-linux-x86-64"
+printf '%s\n' "Oxterm: copied broker build to ${ROOT_DIR}/oxterm-broker-linux-x86-64"

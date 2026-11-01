@@ -119,19 +119,26 @@ Clone the repository and build the optimized executable:
 ```bash
 git clone https://github.com/buzzqw/oxterm.git
 cd oxterm
-cargo build --release --locked
+cargo build --release --locked --bins
 ./target/release/oxterm
 ```
 
-To create the definitive release binary in the project root, run:
+`--bins` also builds `oxterm-broker`, the display-free PTY broker. Keep it next
+to the GUI binary: each session then maps it instead of re-executing the GTK
+binary, which cuts the broker's resident memory from about 20 MB to under 3 MB.
+If the sibling is missing, Oxterm falls back to `oxterm --broker` and still
+works.
+
+To create the definitive release binaries in the project root, run:
 
 ```bash
 ./build.sh
 ./oxterm-linux-x86-64
 ```
 
-`build.sh` runs the locked release build and copies the result to
-`oxterm-linux-x86-64`. The generated root binary is ignored by Git.
+`build.sh` runs the locked release build and copies the results to
+`oxterm-linux-x86-64` and `oxterm-broker-linux-x86-64`. The generated root
+binaries are ignored by Git.
 
 The launcher uses the release binary when available and falls back to the debug
 binary:
@@ -143,14 +150,14 @@ binary:
 The repository includes local build hooks. Configure them with
 `git config core.hooksPath .githooks`; `./setup.sh` also configures them as part
 of its per-user installation. After each commit, the hook builds
-`oxterm-linux-x86-64` in the project root. The generated file is ignored by
-Git. The displayed Oxterm version uses the Cargo version plus the total Git
-commit count as SemVer build metadata, for example
-`MAJOR.MINOR.PATCH+<commit-count>`. Builds without Git metadata show the
-plain release version.
+`oxterm-linux-x86-64` and `oxterm-broker-linux-x86-64` in the project root. The
+generated files are ignored by Git. The displayed Oxterm version uses the
+Cargo version plus the total Git commit count as SemVer build metadata, for
+example `MAJOR.MINOR.PATCH+<commit-count>`. Builds without Git metadata show
+the plain release version.
 
-Install the executable, desktop entry, manual page, shell completions, and
-documentation under `~/.local`:
+Install the executable, broker, desktop entry, manual page, shell completions,
+and documentation under `~/.local`:
 
 ```bash
 ./setup.sh
@@ -169,12 +176,12 @@ To build and install the current source version system-wide as `/usr/bin/oxterm`
 ./install.sh
 ```
 
-The script always rebuilds the release binary before installing it and asks for
-`sudo` only when it needs permission to write the system installation
-directories. It installs the executable, desktop launcher, manual page, shell
-completions, documentation, and Oxterm ox icon system-wide. Run it again after
-building a newer version so the system command and launcher point to the new
-binary.
+The script always rebuilds the release binaries before installing them and asks
+for `sudo` only when it needs permission to write the system installation
+directories. It installs `oxterm` and `oxterm-broker`, desktop launcher, manual
+page, shell completions, documentation, and Oxterm ox icon system-wide. Run it
+again after building a newer version so the system command and launcher point
+to the new binary.
 
 ### Updating an existing clone
 
@@ -383,8 +390,12 @@ window, `Ctrl+B` then `s`/`w` brings it back. The listing includes the last
 command/application received from the shell, with `running` while OSC 133
 reports that command as active and `last` otherwise.
 
-The internal `oxterm --broker SOCKET SESSION_ID` mode is started by the GUI and
-is not normally invoked manually. Its framed Unix-socket protocol supports
+The GUI starts `oxterm-broker` (or, when that sibling file is not installed,
+the internal `oxterm --broker SOCKET SESSION_ID` mode); neither is normally
+invoked manually. The dedicated binary is display-free and does not map GTK or
+VTE, so a session costs under 3 MB instead of about 20 MB.
+
+Its framed Unix-socket protocol supports
 `LIST`, `INFO`, `ATTACH`, `MOVE`, `DETACH`, `RENAME`, `COMMAND`, `LOCAL_ON`,
 `LOCAL_OFF`, `KILL`, `IS_SSH`, `ECHO`, and `IS_ACTIVE`. Attached clients exchange
 length-prefixed frames containing terminal input/output, and can detach without
@@ -563,7 +574,7 @@ Run the standard checks before submitting changes:
 ```bash
 cargo fmt --check
 cargo test --all-targets --locked
-cargo build --release --locked
+cargo build --release --locked --bins
 ```
 
 `src/headless/` is the display-free core: command line and control-command
@@ -574,7 +585,9 @@ enforces the boundary, and `cargo test --lib` runs it without a display.
 The suite also covers frame bounds, metadata sanitization, history and client
 buffering. `tests/remote_broker.rs` starts the release binary as a real broker
 with two PTYs and verifies control commands, multi-client input/output, local
-forwarding toggles, detach, socket permissions, and cleanup. Run that
+forwarding toggles, detach, socket permissions, and cleanup. It also runs
+`oxterm-broker` and asserts that it maps no GTK/VTE libraries and stays under
+12 MB resident. Run that
 integration test alone with:
 
 ```bash
@@ -619,7 +632,7 @@ values depend on the machine and are only meant to show the order of magnitude):
 | CLI parse (one invocation) | ~0.3 µs |
 | Effective defaults / validate all settings | ~9 µs / ~2 µs |
 | Load and validate a settings document | ~12 µs |
-| VI word motion (8 hops, long line) | ~6 µs |
+| VI word motion (8 hops, long line) | ~0.5 µs |
 | JSON frame round trip | ~0.6 µs |
 | `--version` / `--list-settings` | ~27 ms |
 | Window ready, including the first shell | ~300 ms |
@@ -809,6 +822,28 @@ seconds. Recording the replay buffer in bulk, writing straight to the GUI PTY
 when nothing is queued and building the client frame only when a client is
 attached did not move the drain CPU (326-332 ms before and after): what the
 broker spends is the two PTY writes in the kernel, not user-space copying.
+
+The resize path was then completed: the signal handler writes to a self-pipe
+that is part of the broker's `poll` set, so the size is read after `SIGWINCH`
+(or at startup, or when an attached client detaches) instead of after every
+relay wakeup, and `poll` blocks with no timeout when the session is idle. Under
+the same A/B runs the idle CPU stayed at about 5 ms over five seconds — the
+former 1 s wakeup was already small next to the GUI cursor timer — and the
+throughput CPU stayed within run-to-run noise. The useful result is structural:
+there is no longer one `ioctl` per output wakeup, and an idle broker wakes only
+for real input.
+
+The bigger win is memory. `oxterm-broker` is a second, display-free executable
+built from the same `remote.rs`: it links neither GTK nor VTE, so a session
+costs about 2.7 MB resident instead of 20.4 MB, and almost all of the difference
+is mapped library pages (`RssFile` falls from 17.8 MB to 2.6 MB). Packages and
+the release archive install it next to `oxterm`; a lone single-file binary
+falls back to `oxterm --broker` and keeps working.
+
+The VI copy-mode helpers in `src/headless/vi.rs` now walk `char_indices()`
+instead of collecting a `Vec<char>` on every key press. The word-motion
+micro-benchmark (eight hops on a long line) fell from 3.7 µs to 0.5 µs on the
+test machine; the reference baseline was about 6 µs.
 
 A `splice`-based relay is the next step if per-byte CPU ever becomes a
 priority; it is deliberately not done yet, because it complicates the remote

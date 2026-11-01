@@ -4,11 +4,11 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::settings;
+use crate::headless::paths;
 
 const CHILD_FD: RawFd = 3;
 const GUI_FD: RawFd = 4;
@@ -23,11 +23,19 @@ const MAX_CLIENTS: usize = crate::headless::framing::MAX_BROKER_CLIENTS;
 /// broker's memory bounded while staying far above one screen's worth of
 /// output, so an idle program's last full frame is always retained.
 const MAX_REPLAY: usize = 256 * 1024;
-/// Safety-net interval at which the broker re-reads the GUI PTY size while the
-/// local window is the active endpoint. A PTY resize does not wake any of the
-/// descriptors the broker polls, so the GUI sends `SIGWINCH` after a resize
-/// (`BrokerHandle::notify_resize`); this slow poll only covers a missed signal.
+/// Fallback interval at which the broker re-reads the GUI PTY size when the
+/// self-pipe used by the `SIGWINCH` handler could not be created. A PTY resize
+/// does not wake any of the descriptors the broker polls, so the GUI sends
+/// `SIGWINCH` after a resize (`BrokerHandle::notify_resize`). Normally the
+/// signal writes to the self-pipe and the broker blocks in `poll` forever when
+/// idle; the timed poll exists only for the (practically impossible) case where
+/// `pipe(2)` failed.
 const GUI_SIZE_POLL_MS: i32 = 1000;
+
+/// Write end of the self-pipe used by the `SIGWINCH` handler. The handler must
+/// stay async-signal-safe, so it only writes one byte here; the broker loop
+/// polls the read end and re-reads the PTY size when it becomes readable.
+static RESIZE_PIPE_WRITE: AtomicI32 = AtomicI32::new(-1);
 /// A broker must always make progress or block in `poll`. If it keeps waking
 /// up without moving a single byte, something is signalling readiness forever
 /// (a closed descriptor reporting `POLLHUP`, a failed read/write loop) and the
@@ -252,7 +260,7 @@ fn socket_fits(base: &Path) -> bool {
 /// shells (so `--list`, `-a` and `-M` over SSH resolve the same path) and
 /// short enough for a Unix socket.
 fn remote_base_dir() -> PathBuf {
-    let configured = settings::config_dir();
+    let configured = paths::config_dir();
     if socket_fits(&configured) {
         configured
     } else {
@@ -291,7 +299,7 @@ fn create_private_dir(path: &Path) -> io::Result<()> {
 }
 
 pub(crate) fn ensure_remote_dir() -> io::Result<()> {
-    let configured = settings::config_dir();
+    let configured = paths::config_dir();
     let base = remote_base_dir();
     if base == configured {
         std::fs::create_dir_all(&base)?;
@@ -373,8 +381,7 @@ pub fn spawn_broker(
     remove_existing_socket_file(&path)
         .map_err(|e| format!("cannot replace remote session socket: {}", e))?;
 
-    let exe =
-        std::env::current_exe().map_err(|e| format!("cannot find oxterm executable: {}", e))?;
+    let exe = broker_executable()?;
     let child_dup = duplicate_fd(child_master)?;
     let gui_dup = match duplicate_fd(gui_slave) {
         Ok(fd) => fd,
@@ -459,6 +466,48 @@ pub fn spawn_broker(
         pid,
         exited,
     })
+}
+
+/// The executable used for the PTY broker.
+///
+/// `oxterm-broker` is display-free, so each session maps about 2 MB instead of
+/// the ~20 MB of GTK/VTE libraries the GUI links. Packages install it next to
+/// `oxterm`; builds that ship a single executable (and `cargo run` while
+/// developing) fall back to `oxterm --broker`, which behaves identically.
+fn broker_executable() -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("OXTERM_BROKER_BIN") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+    let current =
+        std::env::current_exe().map_err(|e| format!("cannot find oxterm executable: {}", e))?;
+    for name in broker_sibling_names(&current) {
+        let candidate = current.with_file_name(name);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Ok(current)
+}
+
+/// Names to look for next to the GUI binary.
+///
+/// Distributions install `oxterm` and `oxterm-broker`; the release archive
+/// carries versioned names such as `oxterm-1.2.3-linux-x86_64` and
+/// `oxterm-broker-1.2.3-linux-x86_64`, so derive that form too.
+fn broker_sibling_names(current: &Path) -> Vec<std::ffi::OsString> {
+    use std::ffi::OsString;
+    let mut names = vec![OsString::from("oxterm-broker")];
+    if let Some(name) = current.file_name().and_then(|name| name.to_str()) {
+        if let Some(rest) = name.strip_prefix("oxterm") {
+            if !rest.is_empty() {
+                names.push(OsString::from(format!("oxterm-broker{rest}")));
+            }
+        }
+    }
+    names
 }
 
 /// Defence in depth on top of the 0700 socket directory: only accept
@@ -815,7 +864,7 @@ fn relay_terminal(path: &Path, session_id: &str, label: &str, move_first: bool) 
     forward_resize(&mut writer, stdin_fd, &mut last_size);
     let mut input_buffer = Vec::new();
     let mut tmux_prefix = false;
-    let prefix_byte = settings::tmux_prefix_byte();
+    let prefix_byte = paths::tmux_prefix_byte();
     let mut detached = false;
     let result = 'relay: loop {
         let mut poll_fds = [
@@ -1139,10 +1188,27 @@ fn run_broker(path: &Path, id: &str) -> i32 {
     let mut gui_output = VecDeque::new();
     let mut gui_offset = 0usize;
     let mut gui_pending = 0usize;
-    let mut poll_fds = Vec::with_capacity(3);
-    // The GUI sends SIGWINCH after a resize. The handler does nothing; it only
-    // has to interrupt `poll` (no SA_RESTART) so the size is re-read.
-    extern "C" fn on_winch(_: libc::c_int) {}
+    let mut poll_fds = Vec::with_capacity(4);
+    // The GUI sends SIGWINCH after a resize. A plain handler is not enough:
+    // the signal may arrive after the loop checked for it but before it enters
+    // `poll`, in which case poll would sleep forever. The handler therefore
+    // writes to a non-blocking self-pipe that is part of the poll set, and the
+    // loop blocks with no timeout.
+    let resize_pipe = create_resize_pipe();
+    if let Some((_, write_fd)) = resize_pipe {
+        RESIZE_PIPE_WRITE.store(write_fd, Ordering::Relaxed);
+    }
+    extern "C" fn on_winch(_: libc::c_int) {
+        let fd = RESIZE_PIPE_WRITE.load(Ordering::Relaxed);
+        if fd >= 0 {
+            let byte = 1u8;
+            // `write` is async-signal-safe; the pipe is non-blocking, so a
+            // full pipe (one wakeup already pending) is harmless.
+            unsafe {
+                libc::write(fd, &byte as *const u8 as *const _, 1);
+            }
+        }
+    }
     unsafe {
         let mut action: libc::sigaction = std::mem::zeroed();
         action.sa_sigaction = on_winch as extern "C" fn(libc::c_int) as usize;
@@ -1161,6 +1227,12 @@ fn run_broker(path: &Path, id: &str) -> i32 {
     // pinning a CPU core forever.
     let mut stalled_wakeups = 0u32;
     let mut last_progress = Instant::now();
+    // The GUI PTY size is read once at startup, after every SIGWINCH and when
+    // a remote client detaches back to the local window. It is *not* read on
+    // every loop iteration: during a burst that would issue one `ioctl` per
+    // read wakeup, which is exactly the hot path the broker exists to relay.
+    let mut size_dirty = true;
+    let mut last_gui_drives_size = false;
     // Every exit path below records why before breaking.
     let exit_reason: &str;
 
@@ -1170,11 +1242,13 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         // FRAME_RESIZE frames, which would otherwise be reverted on the next
         // iteration by the GUI's size.
         let gui_drives_size = !state.gui_closed && !clients.iter().any(|client| client.attached);
-        if gui_drives_size {
+        if gui_drives_size && (size_dirty || !last_gui_drives_size) {
             sync_gui_size();
+            size_dirty = false;
         }
+        last_gui_drives_size = gui_drives_size;
         poll_fds.clear();
-        poll_fds.reserve(3 + clients.len());
+        poll_fds.reserve(4 + clients.len());
         poll_fds.push(libc::pollfd {
             fd: listener.as_raw_fd(),
             events: libc::POLLIN,
@@ -1213,6 +1287,11 @@ fn run_broker(path: &Path, id: &str) -> i32 {
             },
             revents: 0,
         });
+        poll_fds.push(libc::pollfd {
+            fd: resize_pipe.map_or(-1, |(read_fd, _)| read_fd),
+            events: libc::POLLIN,
+            revents: 0,
+        });
         for client in &clients {
             poll_fds.push(libc::pollfd {
                 fd: client.stream.as_raw_fd(),
@@ -1225,25 +1304,35 @@ fn run_broker(path: &Path, id: &str) -> i32 {
                 revents: 0,
             });
         }
-        // Every broker input is represented by a file descriptor. Sleeping
-        // until readiness avoids needless wakeups when idle. The exception is
-        // the GUI-driven child size: changing a PTY's winsize does not make
-        // any polled descriptor readable, so the broker must wake up on its own
-        // to notice that the window was resized. When a burst has left memory
-        // behind, wait for a short quiet period before trimming so continuous
-        // output does not pay for it.
+        // Every broker input is represented by a file descriptor, including
+        // the SIGWINCH self-pipe, so `poll` can block until readiness. The one
+        // deliberate exception is the quiet period before returning a large
+        // burst's memory to the OS. When a burst has left memory behind, wait
+        // for a short quiet period before trimming so continuous output does
+        // not pay for it.
         let queues_empty = gui_output.is_empty()
             && state.child_input.is_empty()
             && clients.iter().all(|client| client.output.is_empty());
-        let timeout = if gui_drives_size {
-            GUI_SIZE_POLL_MS
-        } else if trim_pending && queues_empty {
+        let timeout = if trim_pending && queues_empty {
             500
+        } else if gui_drives_size && resize_pipe.is_none() {
+            // `pipe(2)` failed, so a SIGWINCH cannot wake the broker reliably.
+            GUI_SIZE_POLL_MS
         } else {
             -1
         };
         let status = unsafe { libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as _, timeout) };
-        if status < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+        if status < 0 {
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                // A signal, normally SIGWINCH, interrupted `poll`. The handler
+                // has queued a wakeup on the self-pipe; drain it and loop
+                // around so the size is read again.
+                if let Some((read_fd, _)) = resize_pipe {
+                    drain_resize_pipe(read_fd);
+                }
+                size_dirty = gui_drives_size;
+                continue;
+            }
             exit_reason = "poll failed";
             break;
         }
@@ -1259,10 +1348,20 @@ fn run_broker(path: &Path, id: &str) -> i32 {
                 }
                 trim_pending = false;
             }
-            // A poll timeout means the broker is idle, not stuck.
+            // A poll timeout means the broker is idle, not stuck. It also
+            // marks the fallback size poll (only used when the self-pipe could
+            // not be created) as due.
+            size_dirty = gui_drives_size;
             stalled_wakeups = 0;
             last_progress = Instant::now();
             continue;
+        }
+
+        if poll_fds[3].revents & libc::POLLIN != 0 {
+            if let Some((read_fd, _)) = resize_pipe {
+                drain_resize_pipe(read_fd);
+                size_dirty = true;
+            }
         }
 
         // Bytes forwarded this iteration, used only by the stall guard below.
@@ -1331,8 +1430,9 @@ fn run_broker(path: &Path, id: &str) -> i32 {
             // Apply a pending resize before forwarding keystrokes, so a
             // command started right after resizing the window already sees the
             // new width instead of wrapping at the previous one.
-            if gui_drives_size {
+            if gui_drives_size && size_dirty {
                 sync_gui_size();
+                size_dirty = false;
             }
             let mut bytes = [0u8; 8192];
             loop {
@@ -1388,7 +1488,7 @@ fn run_broker(path: &Path, id: &str) -> i32 {
 
         let mut remove = Vec::new();
         for index in 0..clients.len() {
-            let poll = poll_fds.get(index + 3).map(|p| p.revents).unwrap_or(0);
+            let poll = poll_fds.get(index + 4).map(|p| p.revents).unwrap_or(0);
             if poll & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
                 && !read_client(index, &mut clients, &mut state, &mut moved)
             {
@@ -1434,6 +1534,12 @@ fn run_broker(path: &Path, id: &str) -> i32 {
     }
     close_fd(CHILD_FD);
     close_fd(GUI_FD);
+    // Stop the handler from writing before the descriptors are closed.
+    RESIZE_PIPE_WRITE.store(-1, Ordering::Relaxed);
+    if let Some((read_fd, write_fd)) = resize_pipe {
+        close_fd(read_fd);
+        close_fd(write_fd);
+    }
     let _ = remove_existing_socket_file(path);
     eprintln!("oxterm broker {}: exiting ({})", id, exit_reason);
     0
@@ -1476,6 +1582,41 @@ fn set_nonblocking(fd: RawFd) {
         let flags = libc::fcntl(fd, libc::F_GETFL);
         if flags >= 0 {
             libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+    }
+}
+
+/// Create the non-blocking, close-on-exec pipe that carries `SIGWINCH` wakeups
+/// from the signal handler to `poll`. Both ends are non-blocking so neither the
+/// handler nor the drain loop can stall; close-on-exec keeps the descriptors
+/// out of the shell the broker spawns.
+fn create_resize_pipe() -> Option<(RawFd, RawFd)> {
+    let mut fds: [RawFd; 2] = [-1; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    for fd in fds {
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            if flags >= 0 {
+                libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
+            let fd_flags = libc::fcntl(fd, libc::F_GETFD);
+            if fd_flags >= 0 {
+                libc::fcntl(fd, libc::F_SETFD, fd_flags | libc::FD_CLOEXEC);
+            }
+        }
+    }
+    Some((fds[0], fds[1]))
+}
+
+/// Consume every pending byte written by the `SIGWINCH` handler.
+fn drain_resize_pipe(fd: RawFd) {
+    let mut bytes = [0u8; 64];
+    loop {
+        let count = unsafe { libc::read(fd, bytes.as_mut_ptr() as *mut _, bytes.len()) };
+        if count <= 0 {
+            break;
         }
     }
 }
@@ -2300,6 +2441,17 @@ mod tests {
             relay_input(b"ls\x02d", &mut prefix, 0x02),
             RelayAction::PrefixDetach { upper: false, ref forwarded } if forwarded == b"ls"
         ));
+    }
+
+    #[test]
+    fn broker_sibling_names_cover_installed_and_versioned_binaries() {
+        let names = broker_sibling_names(std::path::Path::new("/usr/bin/oxterm"));
+        assert_eq!(names, vec![std::ffi::OsString::from("oxterm-broker")]);
+
+        let names = broker_sibling_names(std::path::Path::new("/tmp/oxterm-1.2.3-linux-x86_64"));
+        assert!(names.contains(&std::ffi::OsString::from(
+            "oxterm-broker-1.2.3-linux-x86_64"
+        )));
     }
 
     #[test]

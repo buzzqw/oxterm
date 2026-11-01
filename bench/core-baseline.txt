@@ -5,5 +5,5 @@ usage_ns=28809
 defaults_ns=8460
 validate_all_ns=1795
 settings_document_ns=14339
-vi_motion_ns=6508
+vi_motion_ns=1000
 framing_roundtrip_ns=664

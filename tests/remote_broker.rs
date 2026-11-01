@@ -213,6 +213,12 @@ fn binary_path() -> PathBuf {
         .join(env!("CARGO_PKG_NAME"))
 }
 
+fn broker_binary_path() -> PathBuf {
+    std::env::var_os("CARGO_BIN_EXE_oxterm-broker")
+        .map(PathBuf::from)
+        .unwrap_or_else(binary_path)
+}
+
 struct Fixture {
     child: Child,
     child_slave: RawFd,
@@ -237,6 +243,10 @@ impl Drop for Fixture {
 }
 
 fn start_broker() -> io::Result<Fixture> {
+    start_broker_with(binary_path())
+}
+
+fn start_broker_with(binary: PathBuf) -> io::Result<Fixture> {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock")
@@ -263,7 +273,7 @@ fn start_broker() -> io::Result<Fixture> {
 
     let broker_socket = socket.clone();
     let child = unsafe {
-        let mut command = Command::new(binary_path());
+        let mut command = Command::new(binary);
         command
             .arg("--broker")
             .arg(&broker_socket)
@@ -342,6 +352,9 @@ fn broker_tracks_gui_resizes_without_terminal_io() -> io::Result<()> {
     thread::sleep(Duration::from_millis(150));
 
     set_winsize(fixture.gui_master, 137, 41)?;
+    // The GUI calls `BrokerHandle::notify_resize`, which is exactly this
+    // signal; the broker no longer re-reads the size on a timer.
+    unsafe { libc::kill(fixture.child.id() as i32, libc::SIGWINCH) };
     assert_eq!(
         wait_for_size(fixture.child_slave, (137, 41), Duration::from_secs(2))?,
         (137, 41),
@@ -349,11 +362,43 @@ fn broker_tracks_gui_resizes_without_terminal_io() -> io::Result<()> {
     );
 
     set_winsize(fixture.gui_master, 90, 30)?;
+    unsafe { libc::kill(fixture.child.id() as i32, libc::SIGWINCH) };
     assert_eq!(
         wait_for_size(fixture.child_slave, (90, 30), Duration::from_secs(2))?,
         (90, 30),
         "child PTY did not follow a second GUI PTY resize"
     );
+    Ok(())
+}
+
+#[test]
+fn headless_broker_is_small_and_maps_no_gui_libraries() -> io::Result<()> {
+    let fixture = start_broker_with(broker_binary_path())?;
+    let pid = fixture.child.id();
+    let maps = std::fs::read_to_string(format!("/proc/{pid}/maps"))?;
+    for library in [
+        "libgtk-3",
+        "libgdk-3",
+        "libvte-2.91",
+        "libpango-1.0",
+        "libcairo.so",
+    ] {
+        assert!(
+            !maps.contains(library),
+            "oxterm-broker mapped {library}:\n{maps}"
+        );
+    }
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status"))?;
+    let rss_kb: u64 = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))
+        .and_then(|value| value.split_whitespace().next())
+        .and_then(|value| value.parse().ok())
+        .expect("VmRSS in /proc status");
+    // A GUI broker maps roughly 20 MB of GTK/VTE libraries; the display-free
+    // binary stays under 3 MB in practice. Leave room for allocator and locale
+    // differences between distributions.
+    assert!(rss_kb < 12_000, "oxterm-broker RSS is {rss_kb} kB");
     Ok(())
 }
 

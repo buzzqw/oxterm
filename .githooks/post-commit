@@ -14,13 +14,15 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 printf '%s\n' 'Oxterm post-commit: building release executable...'
-if ! cargo build --release --locked --manifest-path "$ROOT_DIR/Cargo.toml" --quiet; then
+if ! cargo build --release --locked --bins --manifest-path "$ROOT_DIR/Cargo.toml" --quiet; then
     printf '%s\n' 'Oxterm post-commit: release build failed' >&2
     exit 0
 fi
 
 install -m 0755 "$ROOT_DIR/target/release/oxterm" "$ROOT_DIR/oxterm-linux-x86-64"
+install -m 0755 "$ROOT_DIR/target/release/oxterm-broker" "$ROOT_DIR/oxterm-broker-linux-x86-64"
 printf '%s\n' "Oxterm post-commit: created $ROOT_DIR/oxterm-linux-x86-64"
+printf '%s\n' "Oxterm post-commit: created $ROOT_DIR/oxterm-broker-linux-x86-64"
 
 # Keep `oxterm` in PATH on the build that was just made; otherwise a launch
 # starts the old installed version while this checkout is current.

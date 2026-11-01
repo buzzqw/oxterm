@@ -22,7 +22,7 @@ jobs:
         env:
           OXTERM_GUI_TESTS: "1"
         run: xvfb-run -a cargo test --locked --test gui_lifecycle --test control_api
-      - run: cargo build --release --locked
+      - run: cargo build --release --locked --bins
 
   bench:
     name: Performance guard rails
@@ -60,7 +60,7 @@ jobs:
       - name: Check the VTE version
         run: pkg-config --modversion vte-2.91
       - name: Build
-        run: cargo build --release --locked
+        run: cargo build --release --locked --bins
       - name: Run a GUI smoke test
         run: xvfb-run -a ./scripts/smoke-gui.sh
       - name: Check the version output

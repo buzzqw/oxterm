@@ -138,10 +138,12 @@ without stopping the broker. `Ctrl+B`, then `d` turns local forwarding off;
 The broker socket uses a `0700` directory and `0600` socket under
 `~/.config/oxterm/remote/`. If that path would exceed the Unix socket limit
 (for example with a long `$HOME`), Oxterm uses `/tmp/oxterm-<uid>/remote/`
-instead, with the same permissions. The internal
-`oxterm --broker SOCKET SESSION_ID` mode
-owns the child PTY and accepts length-prefixed Unix-socket frames for
-`LIST`, `INFO`, `ATTACH`, `MOVE`, `DETACH`, `RENAME`, `COMMAND`, `LOCAL_ON`,
+instead, with the same permissions. The GUI normally starts the display-free
+`oxterm-broker` executable (falling back to the internal
+`oxterm --broker SOCKET SESSION_ID` mode when the sibling file is not
+installed), which owns the child PTY and accepts length-prefixed Unix-socket
+frames for `LIST`, `INFO`, `ATTACH`, `MOVE`, `DETACH`, `RENAME`, `COMMAND`,
+`LOCAL_ON`,
 `LOCAL_OFF`, and `KILL`. The GUI PTY is a separate endpoint, allowing its local
 forwarding to be disabled without releasing the shell session. On attach the
 broker replays the most recent child output (bounded to a fixed size) to repaint

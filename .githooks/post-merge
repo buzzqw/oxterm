@@ -17,13 +17,14 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 printf '%s\n' 'Oxterm post-merge: building release executable...'
-if ! cargo build --release --locked --manifest-path "$ROOT_DIR/Cargo.toml" --quiet; then
+if ! cargo build --release --locked --bins --manifest-path "$ROOT_DIR/Cargo.toml" --quiet; then
     printf '%s\n' 'Oxterm post-merge: release build failed' >&2
     exit 0
 fi
 
 BUILT="$ROOT_DIR/target/release/oxterm"
 install -m 0755 "$BUILT" "$ROOT_DIR/oxterm-linux-x86-64"
+install -m 0755 "$ROOT_DIR/target/release/oxterm-broker" "$ROOT_DIR/oxterm-broker-linux-x86-64"
 
 # Refresh the copies `oxterm` in PATH resolves to, so the next launch runs this
 # build instead of whichever version was installed last.

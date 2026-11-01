@@ -23,13 +23,14 @@ sha256sums=('SKIP')
 build() {
   cd "$pkgname"
   export CARGO_TARGET_DIR="$srcdir/target"
-  cargo build --release --locked
+  cargo build --release --locked --bins
 }
 
 package() {
   cd "$pkgname"
 
   install -Dm0755 "$srcdir/target/release/oxterm" "$pkgdir/usr/bin/oxterm"
+  install -Dm0755 "$srcdir/target/release/oxterm-broker" "$pkgdir/usr/bin/oxterm-broker"
   install -Dm0644 packaging/oxterm.desktop "$pkgdir/usr/share/applications/oxterm.desktop"
   install -Dm0644 packaging/oxterm.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/oxterm.svg"
   install -Dm0644 manual.md "$pkgdir/usr/share/doc/$pkgname/manual.md"
