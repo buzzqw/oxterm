@@ -92,6 +92,12 @@ e `headless/remote_files.rs` con `src/file_browser.rs`. Scelte da mantenere:
 - **wayvnc senza password:** limite noto, documentato nel manuale.
 - **Import:** comando libero, comando server personalizzato e cartella condivisa chiedono consenso.
 
+**Da sapere per le prove:** senza window manager `Tab` non esce da un combo box, e con xfwm4
+`Alt+H` è catturato dal window manager: `smoke-connections.sh` va eseguito senza window manager,
+come in CI. Le prove reali richiedono `OXTERM_E2E=1` (`tests/remote_files.rs`, con `sshd`, `lftp`
+e `python-pyftpdlib`). Provato dal vivo: x11vnc su `debminis`, x0vncserver locale, SFTP e FTP.
+Non provati dal vivo: wayvnc, desktop virtuali, TurboVNC, TightVNC, RDP, SPICE, mosh, kubectl, AWS.
+
 ## Stato delle fasi
 
 Tutte completate.
@@ -135,6 +141,8 @@ mostra le connessioni (`supports_connections`).
 | I comandi `/...` digitati al prompt finivano alla shell dal 2026-09-12 (`6317cea`): readline spegne `ECHO` e il controllo lo scambiava per un prompt di password. Senza OSC 133 si perdeva anche la cronologia | Corretto con `input_is_visible`: conta come visibile `ECHO`, oppure la modalità raw con la shell in primo piano. `ssh` è raw ma è un processo in primo piano, quindi una password remota resta fuori. Verificato: `read -s` e un programma raw non finiscono su disco |
 | Chiudere un tab senza integrazione shell chiudeva il descrittore 0 del processo (`osc133_rfd` valeva 0 di default, dal commit `f6ad633`): il terminale successivo poteva nascere senza `stdin` | Corretto: valore iniziale -1, e `main` garantisce che i descrittori 0-2 esistano. Trovato dal test di riconnessione |
 | **Detach Tab** era a senso unico | Corretto: **Return to Main Window**, **Bring Back** nel menu Tabs, voce in palette |
+| Un programma che termina subito poteva chiudere il broker prima che oxterm vedesse il socket: avvio segnalato come fallito e riconnessione persa | Corretto in `spawn_broker`: un broker terminato con successo conta come sessione conclusa |
+| `control_api_drives_tabs_panes_and_commands` fallisce a intermittenza su questa macchina (VTE 0.84), anche prima di questo lavoro (5 su 8 su `fd0cc01`, 6 su 8 dopo): `capture` mostra solo il prompt dopo `printf ctl-ok`. In CI (VTE 0.76) passa | **Aperto.** Attendere il prompt invece degli 800 ms fissi non basta: la causa è altrove, forse in `capture` |
 | Lo script di integrazione remota non attiva cronologia e notifiche | Non corretto: serve una decisione, comportamento documentato nel manuale |
 | Avvisi `clippy` su `terminal.rs`, `vi.rs`, `history.rs` e altri | Non toccati: sono di stile, e l'autore sta cambiando quei file per le prestazioni |
 | `OpenSSH` usa la home di `passwd`, `dirs::home_dir` usa `$HOME` | Solo nota: con `HOME` diversa i due vedono `~/.ssh/config` diversi. Nei test usare `-F` |

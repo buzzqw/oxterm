@@ -105,6 +105,16 @@ ssh_lines_are() {
     [[ "$(ssh_lines)" == "$1" ]]
 }
 
+# With no window manager nothing gives the focus back when a dialog closes.
+refocus() {
+    xdotool windowfocus "$WINDOW" 2>/dev/null || true
+    sleep 0.3
+}
+
+form_is_open() {
+    xdotool search --onlyvisible --name "$1" >/dev/null 2>&1
+}
+
 "$BIN" >"$TMP_DIR/app.log" 2>&1 &
 APP_PID=$!
 wait_for "the control socket" "$BIN" new --title first
@@ -118,6 +128,7 @@ sleep 0.5
 # ── Create an entry through the form ──
 keys ctrl+shift+j
 keys ctrl+n
+wait_for "the form" form_is_open "New Connection"
 type_text "smoke-box"
 # Mnemonics rather than Tab: with no window manager, as under xvfb-run, Tab does not
 # leave a combo box such as Protocol.
@@ -134,14 +145,18 @@ wait_for "the saved entry" grep -q '"smoke-box"' "$BOOK"
 printf '%s\n' "smoke-connections: form saved the entry"
 
 # ── A bad value keeps the form open, and nothing is saved ──
+refocus
 keys ctrl+n
+wait_for "the form" form_is_open "New Connection"
 type_text "bad-box"
 keys alt+h
 type_text "-oProxyCommand=evil"
 keys Return
 sleep 0.5
 grep -q 'bad-box' "$BOOK" && die "the form saved an invalid host"
+form_is_open "New Connection" || die "the form closed on an invalid host"
 keys Escape
+refocus
 printf '%s\n' "smoke-connections: form refused an option as a host"
 
 # ── Search and connect from the panel ──
@@ -163,11 +178,13 @@ sed -i 's/"host": "server.example"/"auth": "secret_service",\n      &/' "$BOOK"
 keys ctrl+shift+j
 keys Down
 keys F2
+wait_for "the form" form_is_open "Edit Connection"
 keys ctrl+Next
 keys alt+p
 type_text "hunter2-smoke"
 keys Return
 wait_for "the keyring write" grep -q '^store$' "$KEYRING_LOG"
+refocus
 grep -q 'secret_service' "$BOOK" || die "saving lost the method"
 grep -q 'hunter2-smoke' "$BOOK" && die "the password reached the book"
 grep -q 'hunter2-smoke' "$HOME/keyring.secret" || die "the keyring did not get the password"
