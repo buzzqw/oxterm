@@ -84,6 +84,12 @@ impl BrokerHandle {
         let _ = control_request(&self.path, &format!("RENAME {} {}", self.id, field(name)));
     }
 
+    /// Ask the broker to append the child's output to `path` (created private).
+    /// The broker owns the output, so the log survives the window closing.
+    pub fn start_log(&self, path: &Path) -> Result<(), String> {
+        control_request(&self.path, &format!("LOG\t{}\t{}", self.id, path.display())).map(|_| ())
+    }
+
     pub fn update_command(&self, command: &str, running: bool) {
         let _ = control_request(
             &self.path,
@@ -1167,6 +1173,7 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         .map(|value| value == "1")
         .unwrap_or(true);
     let mut state = BrokerState {
+        log: None,
         id: id.to_string(),
         name: std::env::var("OXTERM_BROKER_NAME").unwrap_or_default(),
         title: std::env::var("OXTERM_BROKER_TITLE").unwrap_or_else(|_| "Terminal".to_string()),
@@ -1408,6 +1415,12 @@ fn run_broker(path: &Path, id: &str) -> i32 {
                         &bytes[..count as usize],
                     );
                     record_replay(&mut state.replay, &bytes[..count as usize]);
+                    if let Some(log) = state.log.as_mut() {
+                        // A full disk must not stop the session, only its log.
+                        if log.write_all(&bytes[..count as usize]).is_err() {
+                            state.log = None;
+                        }
+                    }
                     output_since_trim += count as usize;
                     if output_since_trim >= 512 * 1024 {
                         output_since_trim = 0;
@@ -1545,7 +1558,21 @@ fn run_broker(path: &Path, id: &str) -> i32 {
     0
 }
 
+/// Open a session log: private, appended to, and never through a symlink, since
+/// the folder comes from a setting and the file may be read later as trusted.
+fn open_session_log(path: &Path) -> io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
 struct BrokerState {
+    /// Where the child's output is also written, when the session is logged.
+    log: Option<std::fs::File>,
     id: String,
     name: String,
     title: String,
@@ -1699,6 +1726,23 @@ fn handle_command(
     frame: &[u8],
 ) -> bool {
     let command = String::from_utf8_lossy(frame);
+    if let Some(request) = command.strip_prefix("LOG\t") {
+        let reply: &[u8] = match request.split_once('\t') {
+            Some((id, path)) if id == state.id => match open_session_log(Path::new(path)) {
+                Ok(mut file) => {
+                    // The child started before this request: what it already
+                    // printed, such as a login banner, belongs in the log too.
+                    let (head, tail) = state.replay.as_slices();
+                    let _ = file.write_all(head).and_then(|_| file.write_all(tail));
+                    state.log = Some(file);
+                    b"OK\n"
+                }
+                Err(_) => b"ERR cannot open the log file",
+            },
+            _ => b"ERR session not found",
+        };
+        return clients[index].queue(reply);
+    }
     if let Some(update) = command.strip_prefix("UPDATE\t") {
         let mut fields = update.splitn(4, '\t');
         if fields.next() != Some(state.id.as_str()) {
@@ -2249,6 +2293,7 @@ mod tests {
 
     fn test_state(replay: VecDeque<u8>) -> BrokerState {
         BrokerState {
+            log: None,
             id: "test".to_string(),
             name: String::new(),
             title: String::new(),
@@ -2336,6 +2381,7 @@ mod tests {
             },
         ];
         let mut state = BrokerState {
+            log: None,
             id: "test".to_string(),
             name: String::new(),
             title: String::new(),
@@ -2373,6 +2419,7 @@ mod tests {
     #[test]
     fn gui_disconnect_disables_local_polling_and_drops_pending_output() {
         let mut state = BrokerState {
+            log: None,
             id: "test".to_string(),
             name: String::new(),
             title: String::new(),

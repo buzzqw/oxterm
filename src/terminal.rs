@@ -262,6 +262,12 @@ const PALETTE_ACTIONS: &[PaletteAction] = &[
         keys: "Ctrl+Shift+K",
     },
     PaletteAction {
+        id: "reattach-tab",
+        title: "Return to main window",
+        detail: "Put a detached terminal back as a tab",
+        keys: "",
+    },
+    PaletteAction {
         id: "connections-panel",
         title: "Connections panel",
         detail: "Browse, edit and open saved SSH connections",
@@ -1125,6 +1131,13 @@ mod imp {
         pub connection_name: RefCell<Option<String>>,
         /// Color scheme for this terminal alone, overriding the settings.
         pub color_override: RefCell<Option<String>>,
+        pub font_override: RefCell<Option<String>>,
+        pub scrollback_override: Cell<Option<i64>>,
+        pub encoding_override: RefCell<Option<String>>,
+        pub connection_macros: RefCell<Vec<crate::headless::connections::Macro>>,
+        /// Reconnect when ssh loses the connection: delay, attempts so far, start.
+        pub reconnect: RefCell<Option<(u32, u32, std::time::Instant)>>,
+        pub expect_handler: RefCell<Option<glib::SignalHandlerId>>,
         /// Saved connections offered by the palette, read once per opening.
         pub palette_connections: RefCell<Option<Vec<(String, String, String)>>>,
 
@@ -1220,6 +1233,11 @@ glib::wrapper! {
 impl TerminalBox {
     pub fn new(window: &MainWindow) -> TerminalBox {
         let this: TerminalBox = glib::Object::new();
+        // Not the derived default of 0: closing "the FIFO" of a terminal that
+        // never opened one would close this process's standard input, and the
+        // next PTY would land on that number and reach its child closed.
+        *this.imp().osc133_rfd.borrow_mut() = -1;
+        *this.imp().pty_fd.borrow_mut() = -1;
         this.set_orientation(gtk::Orientation::Vertical);
         this.set_hexpand(true);
         this.set_vexpand(true);
@@ -1271,7 +1289,12 @@ impl TerminalBox {
     fn init(&self, window: &MainWindow) {
         let s = settings();
         let vte = zoha_vte::Terminal::new();
-        vte.set_scrollback_lines(s.get_i64("scrollback_lines"));
+        vte.set_scrollback_lines(
+            self.imp()
+                .scrollback_override
+                .get()
+                .unwrap_or_else(|| s.get_i64("scrollback_lines")),
+        );
         vte.set_mouse_autohide(true);
         vte.set_scroll_on_output(false);
         vte.set_scroll_on_keystroke(s.get_bool("scroll_on_keystroke"));
@@ -1340,7 +1363,12 @@ impl TerminalBox {
         // URL detection already works independently of this.
         vte.set_allow_hyperlink(true);
 
-        let encoding = s.get_str("encoding");
+        let encoding = self
+            .imp()
+            .encoding_override
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| s.get_str("encoding"));
         let _ = vte.set_encoding(Some(&encoding));
 
         let scroll = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
@@ -1648,6 +1676,9 @@ impl TerminalBox {
         let mut fd = pango::FontDescription::new();
         fd.set_family(&family);
         fd.set_size(size as i32 * pango::SCALE);
+        if let Some(font) = self.imp().font_override.borrow().as_deref() {
+            fd = pango::FontDescription::from_string(font);
+        }
         let vte = self.vte();
         vte.set_font(Some(&fd));
         apply_font_rendering(&vte, &s);
@@ -2422,6 +2453,130 @@ impl TerminalBox {
         if changed {
             self.apply_colors();
             self.apply_palette();
+        }
+    }
+
+    /// Font, scrollback and encoding for this terminal alone.
+    pub fn set_session_overrides(
+        &self,
+        font: Option<String>,
+        scrollback: Option<i64>,
+        encoding: Option<String>,
+    ) {
+        let font = font.filter(|value| !value.is_empty());
+        let encoding = encoding.filter(|value| !value.is_empty());
+        if font.is_none() && scrollback.is_none() && encoding.is_none() {
+            return;
+        }
+        *self.imp().font_override.borrow_mut() = font;
+        self.imp().scrollback_override.set(scrollback);
+        *self.imp().encoding_override.borrow_mut() = encoding;
+        self.apply_settings();
+    }
+
+    pub fn connection_macros(&self) -> Vec<crate::headless::connections::Macro> {
+        self.imp().connection_macros.borrow().clone()
+    }
+
+    pub fn set_connection_macros(&self, macros: Vec<crate::headless::connections::Macro>) {
+        *self.imp().connection_macros.borrow_mut() = macros;
+    }
+
+    pub fn enable_reconnect(&self, delay: u32, attempts: u32) {
+        *self.imp().reconnect.borrow_mut() = Some((delay, attempts, Instant::now()));
+    }
+
+    /// The attempts made so far, for the tab that replaces this one.
+    pub fn reconnect_attempts(&self) -> u32 {
+        self.imp()
+            .reconnect
+            .borrow()
+            .map_or(0, |(_, attempts, _)| attempts)
+    }
+
+    /// Append this session's output to a new file in `dir`.
+    pub fn start_session_log(&self, dir: &str, name: &str) -> Result<std::path::PathBuf, String> {
+        use std::os::unix::fs::DirBuilderExt;
+        let dir = match dir.strip_prefix("~/") {
+            Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
+            None => std::path::PathBuf::from(dir),
+        };
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)
+            .map_err(|error| format!("cannot create {}: {}", dir.display(), error))?;
+        let safe: String = name
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || "-_.".contains(c) {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let stamp: String = crate::logging::utc_iso_now()
+            .chars()
+            .filter(|c| c.is_ascii_digit())
+            .take(14)
+            .collect();
+        let path = dir.join(format!("{}-{}.log", safe, stamp));
+        match self.imp().remote_handle.borrow().as_ref() {
+            Some(handle) => handle.start_log(&path)?,
+            None => return Err("this terminal has no broker to log through".to_string()),
+        }
+        Ok(path)
+    }
+
+    /// Type commands when patterns appear (see `headless::expect`).
+    pub fn set_expect_rules(&self, rules: &[crate::headless::connections::ExpectRule]) {
+        use crate::headless::expect::Watcher;
+        if rules.is_empty() {
+            return;
+        }
+        let watcher = std::rc::Rc::new(RefCell::new(Watcher::new(rules)));
+        let pending = std::rc::Rc::new(Cell::new(false));
+        let weak = crate::SendWeak::new(self);
+        let handler = self.vte().connect_contents_changed(move |_| {
+            // Output arrives in bursts: look once it settles, not on every chunk.
+            if pending.replace(true) {
+                return;
+            }
+            let pending = pending.clone();
+            let watcher = watcher.clone();
+            let weak = crate::SendWeak::new(&weak.upgrade().unwrap());
+            glib::timeout_add_local_once(Duration::from_millis(80), move || {
+                pending.set(false);
+                let Some(term) = weak.upgrade() else {
+                    return;
+                };
+                term.check_expect(&watcher);
+            });
+        });
+        *self.imp().expect_handler.borrow_mut() = Some(handler);
+    }
+
+    fn check_expect(&self, watcher: &RefCell<crate::headless::expect::Watcher>) {
+        let vte = self.vte();
+        if !vte.is_input_enabled() {
+            return;
+        }
+        let (column, row) = vte.cursor_position();
+        let tail = text::range(&vte, (row - 20).max(0), 0, row, column).unwrap_or_default();
+        let sends = watcher.borrow_mut().check(&tail);
+        for send in sends {
+            let weak = crate::SendWeak::new(self);
+            glib::timeout_add_local_once(Duration::from_millis(send.delay_ms), move || {
+                if let Some(term) = weak.upgrade() {
+                    term.control_send(&send.command, true);
+                }
+            });
+        }
+        if watcher.borrow().finished() {
+            if let Some(handler) = self.imp().expect_handler.borrow_mut().take() {
+                vte.disconnect(handler);
+            }
         }
     }
 
@@ -3594,6 +3749,9 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         self.cleanup_shell_integration();
         self.vte()
             .feed(format!("\r\n\x1b[33m{}\x1b[0m\r\n", child_status_message(status)).as_bytes());
+        if self.schedule_reconnect(status) {
+            return;
+        }
         // With `--hold`, keep the terminal on screen after the command exits so
         // its final output stays visible (as in kitty/xterm --hold).
         if *self.imp().hold.borrow() {
@@ -3608,6 +3766,45 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             }
             glib::ControlFlow::Break
         });
+    }
+
+    /// ssh exits with 255 when the connection fails or drops, and with the remote
+    /// status otherwise, so `exit` and a failed last command do not reconnect.
+    fn schedule_reconnect(&self, status: i32) -> bool {
+        const MAX_ATTEMPTS: u32 = 20;
+        /// A session that lasted this long worked: the count starts over.
+        const STABLE: Duration = Duration::from_secs(60);
+        if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 255 {
+            return false;
+        }
+        let Some((delay, attempts, started)) = *self.imp().reconnect.borrow() else {
+            return false;
+        };
+        let attempts = if started.elapsed() >= STABLE {
+            1
+        } else {
+            attempts + 1
+        };
+        if attempts > MAX_ATTEMPTS {
+            self.vte()
+                .feed(b"\x1b[33m[Oxterm: giving up after 20 attempts]\x1b[0m\r\n");
+            return true;
+        }
+        *self.imp().reconnect.borrow_mut() = Some((delay, attempts, started));
+        self.vte().feed(
+            format!(
+                "\x1b[33m[Oxterm: reconnecting in {} s, attempt {}. Close this tab to stop.]\x1b[0m\r\n",
+                delay, attempts
+            )
+            .as_bytes(),
+        );
+        let weak = crate::SendWeak::new(self);
+        glib::timeout_add_seconds_local_once(delay.max(1), move || {
+            if let Some(term) = weak.upgrade() {
+                term.call_window(|window| window.reconnect_signal(&term));
+            }
+        });
+        true
     }
 
     fn on_selection_changed(&self, term: &zoha_vte::Terminal) {
@@ -4130,12 +4327,27 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         });
         tab_menu.append(&rename_tab_item);
 
-        let detach_tab_item = gtk::MenuItem::with_label("Detach Tab");
-        detach_tab_item.set_tooltip_text(Some("Move this tab into its own window"));
+        let detached = self.call_window(|w| w.is_detached()).unwrap_or(false);
+        let detach_tab_item = gtk::MenuItem::with_label(if detached {
+            "Return to Main Window"
+        } else {
+            "Detach Tab"
+        });
+        detach_tab_item.set_tooltip_text(Some(if detached {
+            "Put this terminal back as a tab of the main window"
+        } else {
+            "Move this tab into its own window"
+        }));
         let weak = crate::SendWeak::new(self);
         detach_tab_item.connect_activate(move |_| {
             if let Some(t) = weak.upgrade() {
-                t.call_window(|w| w.detach_tab_signal(&t));
+                t.call_window(|w| {
+                    if w.is_detached() {
+                        w.reattach_signal();
+                    } else {
+                        w.detach_tab_signal(&t);
+                    }
+                });
             }
         });
         tab_menu.append(&detach_tab_item);
@@ -4158,6 +4370,22 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             w.split_signal("horizontal")
         });
         menu_window_action(&split_menu, self, "Unsplit", |w| w.split_signal("single"));
+
+        let macros = self.connection_macros();
+        if !macros.is_empty() {
+            let macros_menu = menu_submenu(&menu, "Macros");
+            for item in macros {
+                let entry = gtk::MenuItem::with_label(&item.name);
+                entry.set_tooltip_text(Some(&item.command));
+                let weak = crate::SendWeak::new(self);
+                entry.connect_activate(move |_| {
+                    if let Some(t) = weak.upgrade() {
+                        t.control_send(&item.command, true);
+                    }
+                });
+                macros_menu.append(&entry);
+            }
+        }
 
         // ── Tools ────────────────────────────────────────────
         let tools_menu = menu_submenu(&menu, "Tools");
@@ -5363,6 +5591,9 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             }
             "ssh-picker" => {
                 self.call_window(|window| window.ssh_picker_signal());
+            }
+            "reattach-tab" => {
+                self.call_window(|window| window.reattach_signal());
             }
             "connections-panel" => {
                 self.call_window(|window| window.connections_panel_signal());

@@ -25,6 +25,7 @@ use serde_json::Value;
 use super::askpass;
 use super::paths;
 use super::persistence::atomic_write;
+use super::preconnect;
 use super::ssh_config;
 use super::text::fuzzy_score;
 use super::tunnels;
@@ -141,6 +142,54 @@ fn split_listen(listen: &str) -> Option<(&str, u16)> {
     (port != 0).then_some((bind, port))
 }
 
+/// `StrictHostKeyChecking`. The default leaves the decision to `~/.ssh/config`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostKeyCheck {
+    #[default]
+    Default,
+    Ask,
+    AcceptNew,
+    Strict,
+}
+
+/// A command kept on an entry, typed on request.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Macro {
+    pub name: String,
+    pub command: String,
+}
+
+fn default_max_trigger() -> u32 {
+    1
+}
+
+fn default_expect_delay() -> u64 {
+    500
+}
+
+/// Type `command` when `pattern` appears in the terminal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExpectRule {
+    pub pattern: String,
+    pub command: String,
+    #[serde(default = "default_max_trigger")]
+    pub max_trigger: u32,
+    #[serde(default = "default_expect_delay")]
+    pub delay_ms: u64,
+}
+
+impl Default for ExpectRule {
+    fn default() -> ExpectRule {
+        ExpectRule {
+            pattern: String::new(),
+            command: String::new(),
+            max_trigger: default_max_trigger(),
+            delay_ms: default_expect_delay(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Connection {
     /// Stable identity used by tabs, restored sessions and the keyring, so a
@@ -183,6 +232,80 @@ pub struct Connection {
     /// at a glance. Empty follows the global settings; an unknown name is ignored.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub color_scheme: String,
+
+    // ── ssh options ──
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub x11: bool,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub compression: bool,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub agent_forward: bool,
+    /// Seconds; 0 turns keepalives off, empty follows the configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keepalive_interval: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connect_timeout: Option<u32>,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub host_key_check: HostKeyCheck,
+    /// Do not reuse a shared connection for this entry.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub no_sharing: bool,
+    /// Old algorithms, for routers, NAS boxes and other aged servers.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub legacy_kex: bool,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub legacy_cipher: bool,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub legacy_hostkey: bool,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub legacy_mac: bool,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub legacy_pubkey: bool,
+    /// `TERM` for this session.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub terminal_type: String,
+
+    // ── Session ──
+    /// Stay in a login shell once `remote_command` ends.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub keep_shell: bool,
+    /// A local command to run first, such as bringing up a VPN. Runs without a
+    /// shell.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pre_command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_command_timeout: Option<u32>,
+    /// MAC address to wake before connecting.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub wol_mac: String,
+    /// Seconds to wait for the woken host to answer.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub wol_wait: u32,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub auto_reconnect: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconnect_delay: Option<u32>,
+    /// Record the session's output in `log_dir`.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub log_output: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub log_dir: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub macros: Vec<Macro>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect: Vec<ExpectRule>,
+    /// A one-time code secret is in the keyring for this entry.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub totp: bool,
+
+    // ── Appearance ──
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub font: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scrollback: Option<i64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub encoding: String,
+
     #[serde(flatten)]
     pub unknown: BTreeMap<String, Value>,
 }
@@ -250,19 +373,113 @@ impl Connection {
                 args.push(port.to_string());
             }
         }
+        // First: for `ssh` the first value given wins, so these beat the options.
         args.extend(self.extra_args.iter().cloned());
+        args.extend(self.option_args());
         args.push(self.destination().to_string());
         args
+    }
+
+    /// The `ssh` options chosen in the form.
+    fn option_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        for (enabled, flag) in [
+            (self.x11, "-X"),
+            (self.compression, "-C"),
+            (self.agent_forward, "-A"),
+        ] {
+            if enabled {
+                args.push(flag.to_string());
+            }
+        }
+        let mut option = |value: String| {
+            args.push("-o".to_string());
+            args.push(value);
+        };
+        if let Some(seconds) = self.keepalive_interval {
+            option(format!("ServerAliveInterval={}", seconds));
+            if seconds > 0 {
+                option("ServerAliveCountMax=3".to_string());
+            }
+        }
+        if let Some(seconds) = self.connect_timeout {
+            option(format!("ConnectTimeout={}", seconds));
+        }
+        match self.host_key_check {
+            HostKeyCheck::Default => {}
+            HostKeyCheck::Ask => option("StrictHostKeyChecking=ask".to_string()),
+            HostKeyCheck::AcceptNew => option("StrictHostKeyChecking=accept-new".to_string()),
+            HostKeyCheck::Strict => option("StrictHostKeyChecking=yes".to_string()),
+        }
+        if self.no_sharing {
+            option("ControlMaster=no".to_string());
+            option("ControlPath=none".to_string());
+        }
+        for (enabled, value) in [
+            (
+                self.legacy_kex,
+                "KexAlgorithms=+diffie-hellman-group1-sha1,diffie-hellman-group14-sha1",
+            ),
+            (
+                self.legacy_cipher,
+                "Ciphers=+aes128-cbc,aes256-cbc,3des-cbc",
+            ),
+            (self.legacy_hostkey, "HostKeyAlgorithms=+ssh-rsa,ssh-dss"),
+            (self.legacy_mac, "MACs=+hmac-sha1,hmac-md5"),
+            (self.legacy_pubkey, "PubkeyAcceptedAlgorithms=+ssh-rsa"),
+        ] {
+            if enabled {
+                option(value.to_string());
+            }
+        }
+        args
+    }
+
+    /// `ssh-copy-id` for this entry; the same target, its own flags.
+    pub fn copy_id_argv(&self) -> Vec<String> {
+        let mut argv = vec!["ssh-copy-id".to_string()];
+        if self.kind == Kind::Manual {
+            if let Some(port) = self.port {
+                argv.push("-p".to_string());
+                argv.push(port.to_string());
+            }
+            if !self.identity_file.is_empty() {
+                argv.push("-i".to_string());
+                argv.push(self.identity_file.clone());
+            }
+            if !self.proxy_jump.is_empty() {
+                argv.push("-o".to_string());
+                argv.push(format!("ProxyJump={}", self.proxy_jump));
+            }
+            if !self.user.is_empty() && !self.host.contains('@') {
+                argv.push(format!("{}@{}", self.user, self.host));
+                return argv;
+            }
+        }
+        argv.push(self.destination().to_string());
+        argv
+    }
+
+    /// The command run on the server, if any.
+    fn effective_remote_command(&self) -> Option<String> {
+        if self.remote_command.is_empty() {
+            return None;
+        }
+        Some(if self.keep_shell {
+            format!("{}; exec $SHELL -l", self.remote_command)
+        } else {
+            self.remote_command.clone()
+        })
     }
 
     /// Arguments of an interactive session, without the leading `ssh`.
     pub fn session_args(&self) -> Vec<String> {
         let mut args = self.target_args();
-        if !self.remote_command.is_empty() {
+        if let Some(command) = self.effective_remote_command() {
             let destination = args.pop().unwrap_or_default();
             args.push("-t".to_string());
             args.push(destination);
-            args.push(self.remote_command.clone());
+            args.push(command);
         }
         args
     }
@@ -341,13 +558,60 @@ impl Connection {
         for tunnel in &self.tunnels {
             validate_tunnel(tunnel)?;
         }
+        check_token("Terminal type", &self.terminal_type)?;
+        check_text("Font", &self.font)?;
+        check_token("Encoding", &self.encoding)?;
+        check_text("Log folder", &self.log_dir)?;
+        if self.log_output && self.log_dir.trim().is_empty() {
+            return Err("Choose a folder for the session log".to_string());
+        }
+        if !self.pre_command.trim().is_empty() {
+            check_text("Pre-connect command", &self.pre_command)?;
+            if shell_words::split(&self.pre_command).is_err() {
+                return Err("The pre-connect command has unbalanced quotes".to_string());
+            }
+        }
+        if !self.wol_mac.trim().is_empty() && preconnect::parse_mac(&self.wol_mac).is_none() {
+            return Err(format!("Invalid MAC address: {}", self.wol_mac));
+        }
+        for item in &self.macros {
+            check_text("Macro name", &item.name)?;
+            check_text("Macro command", &item.command)?;
+            if item.name.trim().is_empty() || item.command.trim().is_empty() {
+                return Err("A macro needs a name and a command".to_string());
+            }
+        }
+        for rule in &self.expect {
+            check_text("Expect command", &rule.command)?;
+            if rule.pattern.is_empty() || rule.command.is_empty() {
+                return Err("An expect rule needs a pattern and a command".to_string());
+            }
+            regex::Regex::new(&rule.pattern)
+                .map_err(|_| format!("Invalid pattern: {}", rule.pattern))?;
+        }
         Ok(())
     }
 
-    /// `extra_args` options that make `ssh` run a local program. Shown before
-    /// connecting to an imported entry: the book is data, this part is not.
+    /// Whether this entry needs the askpass helper.
+    pub fn uses_keyring(&self) -> bool {
+        self.auth == Auth::SecretService || self.totp
+    }
+
+    /// What in this entry acts on this computer, or by itself, instead of only
+    /// describing a destination: options that run a local program, a pre-connect
+    /// command, a log file, typing commands when a pattern appears. Shown before
+    /// importing an entry: the book is data, this part is not.
     pub fn local_execution_options(&self) -> Vec<String> {
         let mut found = Vec::new();
+        if !self.pre_command.trim().is_empty() {
+            found.push(format!("pre-connect command: {}", self.pre_command));
+        }
+        if !self.expect.is_empty() {
+            found.push(format!("{} expect rule(s)", self.expect.len()));
+        }
+        if self.log_output {
+            found.push(format!("log folder: {}", self.log_dir));
+        }
         for argument in &self.extra_args {
             let lower = argument.to_ascii_lowercase();
             if [
@@ -634,7 +898,9 @@ pub fn import_into(
             Kind::Alias => alias_id(&connection.name),
             Kind::Manual => new_id(),
         };
+        // A new id has nothing stored in the keyring under it.
         connection.auth = Auth::Default;
+        connection.totp = false;
         if book.connections.iter().any(|entry| entry.name == name) {
             report.skipped.push(format!("{}: the name is taken", name));
             continue;
@@ -904,6 +1170,25 @@ pub fn build_tree(entries: &[Entry], usage: &UsageMap, query: &str) -> Vec<Node>
     nodes
 }
 
+/// Favorites first, then the most recently used, for the SSH menu.
+pub fn menu_shortcuts(entries: &[Entry], usage: &UsageMap, limit: usize) -> Vec<usize> {
+    let mut favorites: Vec<usize> = (0..entries.len())
+        .filter(|&index| entries[index].connection.favorite)
+        .collect();
+    favorites.sort_by_key(|&index| sort_key(&entries[index].connection));
+    let mut recent: Vec<(u64, usize)> = (0..entries.len())
+        .filter(|&index| !entries[index].connection.favorite)
+        .filter_map(|index| {
+            let used = usage.get(&entries[index].connection.id)?.last_used;
+            (used > 0).then_some((used, index))
+        })
+        .collect();
+    recent.sort_by(|a, b| b.cmp(a));
+    favorites.extend(recent.into_iter().map(|(_, index)| index));
+    favorites.truncate(limit);
+    favorites
+}
+
 // ── Commands ─────────────────────────────────────────────────
 
 /// What it takes to open an entry in a terminal.
@@ -923,10 +1208,18 @@ pub fn connect_plan(
     let mut argv = vec!["ssh".to_string()];
     let mut forwards_agent = false;
     if let Some(config) = effective {
-        argv.extend(ssh_config::sharing_options(config, socket_dir));
+        if connection.no_sharing {
+            argv.extend(ssh_config::keepalive_options(config));
+        } else {
+            argv.extend(ssh_config::sharing_options(config, socket_dir));
+        }
         forwards_agent = ssh_config::agent_forwarding_enabled(config);
     }
     argv.extend(connection.session_args());
+    if !connection.terminal_type.is_empty() {
+        argv.insert(0, format!("TERM={}", connection.terminal_type));
+        argv.insert(0, "env".to_string());
+    }
     ConnectPlan {
         argv,
         forwards_agent,
@@ -950,7 +1243,7 @@ pub fn prepare_session(connection: &Connection) -> Prepared {
     let effective = ssh_config::effective_config(&connection.target_args(), PROBE_TIMEOUT);
     let mut plan = connect_plan(connection, effective.as_deref(), &paths::config_dir());
     let mut keyring_note = None;
-    if connection.auth == Auth::SecretService {
+    if connection.uses_keyring() {
         match askpass_environment(connection, effective.as_deref()) {
             Ok(environment) => {
                 // `env` keeps the terminal API simple and adds nothing secret:
@@ -961,6 +1254,9 @@ pub fn prepare_session(connection: &Connection) -> Prepared {
                         .into_iter()
                         .map(|(key, value)| format!("{}={}", key, value)),
                 );
+                if plan.argv.first().is_some_and(|program| program == "env") {
+                    plan.argv.remove(0);
+                }
                 argv.append(&mut plan.argv);
                 plan.argv = argv;
             }
@@ -980,7 +1276,11 @@ pub fn askpass_environment(
     let target = effective
         .and_then(askpass::target_from_config)
         .ok_or("Could not resolve this host's user; ssh will prompt")?;
-    Ok(askpass::ssh_environment(&helper, &connection.id, &target))
+    let mut environment = askpass::ssh_environment(&helper, &connection.id, &target);
+    if connection.totp {
+        environment.push((askpass::ENV_TOTP.to_string(), "1".to_string()));
+    }
+    Ok(environment)
 }
 
 /// What to run for one tunnel of an entry. Blocks on `ssh -G` for an entry with
@@ -988,7 +1288,7 @@ pub fn askpass_environment(
 pub fn tunnel_spec(connection: &Connection, tunnel: &Tunnel) -> tunnels::Spec {
     let mut env = Vec::new();
     let mut batch = true;
-    if connection.auth == Auth::SecretService {
+    if connection.uses_keyring() {
         let effective = ssh_config::effective_config(&connection.target_args(), PROBE_TIMEOUT);
         if let Ok(values) = askpass_environment(connection, effective.as_deref()) {
             env = values;
@@ -1114,6 +1414,236 @@ mod tests {
             connection.command_preview(),
             "ssh -t h 'tmux new -A -s main'"
         );
+    }
+
+    #[test]
+    fn form_options_become_ssh_options_before_the_destination() {
+        let connection = Connection {
+            x11: true,
+            compression: true,
+            agent_forward: true,
+            keepalive_interval: Some(45),
+            connect_timeout: Some(7),
+            host_key_check: HostKeyCheck::AcceptNew,
+            no_sharing: true,
+            legacy_kex: true,
+            legacy_cipher: true,
+            legacy_hostkey: true,
+            legacy_mac: true,
+            legacy_pubkey: true,
+            extra_args: vec!["-oConnectTimeout=1".into()],
+            ..manual("db", "h")
+        };
+        let args = connection.session_args();
+        assert_eq!(args.last().map(String::as_str), Some("h"));
+        assert_eq!(
+            args[0], "-oConnectTimeout=1",
+            "extra arguments win: first value counts"
+        );
+        for flag in ["-X", "-C", "-A"] {
+            assert!(args.iter().any(|arg| arg == flag), "{}", flag);
+        }
+        let options: Vec<&str> = args
+            .windows(2)
+            .filter(|pair| pair[0] == "-o")
+            .map(|pair| pair[1].as_str())
+            .collect();
+        for expected in [
+            "ServerAliveInterval=45",
+            "ServerAliveCountMax=3",
+            "ConnectTimeout=7",
+            "StrictHostKeyChecking=accept-new",
+            "ControlMaster=no",
+            "ControlPath=none",
+            "KexAlgorithms=+diffie-hellman-group1-sha1,diffie-hellman-group14-sha1",
+            "Ciphers=+aes128-cbc,aes256-cbc,3des-cbc",
+            "HostKeyAlgorithms=+ssh-rsa,ssh-dss",
+            "MACs=+hmac-sha1,hmac-md5",
+            "PubkeyAcceptedAlgorithms=+ssh-rsa",
+        ] {
+            assert!(options.contains(&expected), "{}: {:?}", expected, options);
+        }
+        assert_eq!(
+            ssh_config::ssh_destination(&args).as_deref(),
+            Some("h"),
+            "the production badge still finds the host"
+        );
+    }
+
+    #[test]
+    fn options_apply_to_config_hosts_too() {
+        let mut alias = Connection::alias("web");
+        alias.compression = true;
+        assert_eq!(alias.session_args(), ["-C", "web"]);
+    }
+
+    #[test]
+    fn keepalive_zero_turns_it_off() {
+        let connection = Connection {
+            keepalive_interval: Some(0),
+            ..manual("db", "h")
+        };
+        assert_eq!(
+            connection.session_args(),
+            ["-o", "ServerAliveInterval=0", "h"]
+        );
+    }
+
+    #[test]
+    fn a_startup_command_can_stay_in_a_shell() {
+        let connection = Connection {
+            remote_command: "cd /var/log".into(),
+            keep_shell: true,
+            ..manual("db", "h")
+        };
+        assert_eq!(
+            connection.session_args(),
+            ["-t", "h", "cd /var/log; exec $SHELL -l"]
+        );
+    }
+
+    #[test]
+    fn no_sharing_keeps_the_keepalives() {
+        let connection = Connection {
+            no_sharing: true,
+            ..manual("db", "h")
+        };
+        let config = "controlpath none\nserveraliveinterval 0\n";
+        let plan = connect_plan(&connection, Some(config), Path::new("/cfg"));
+        assert!(
+            !plan.argv.iter().any(|arg| arg == "ControlMaster=auto"),
+            "{:?}",
+            plan.argv
+        );
+        assert!(plan.argv.iter().any(|arg| arg == "ServerAliveInterval=30"));
+    }
+
+    #[test]
+    fn terminal_type_travels_in_the_environment() {
+        let connection = Connection {
+            terminal_type: "vt100".into(),
+            ..manual("db", "h")
+        };
+        let plan = connect_plan(&connection, None, Path::new("/cfg"));
+        assert_eq!(plan.argv, ["env", "TERM=vt100", "ssh", "h"]);
+    }
+
+    #[test]
+    fn ssh_copy_id_gets_the_same_target() {
+        let connection = Connection {
+            user: "admin".into(),
+            port: Some(2222),
+            proxy_jump: "bastion".into(),
+            ..manual("db", "h")
+        };
+        assert_eq!(
+            connection.copy_id_argv(),
+            [
+                "ssh-copy-id",
+                "-p",
+                "2222",
+                "-o",
+                "ProxyJump=bastion",
+                "admin@h"
+            ]
+        );
+        assert_eq!(
+            Connection::alias("web").copy_id_argv(),
+            ["ssh-copy-id", "web"]
+        );
+    }
+
+    #[test]
+    fn new_fields_are_validated() {
+        let valid = manual("x", "h");
+        for bad in [
+            Connection {
+                wol_mac: "nope".into(),
+                ..valid.clone()
+            },
+            Connection {
+                pre_command: "'open".into(),
+                ..valid.clone()
+            },
+            Connection {
+                terminal_type: "two words".into(),
+                ..valid.clone()
+            },
+            Connection {
+                log_output: true,
+                ..valid.clone()
+            },
+            Connection {
+                macros: vec![Macro::default()],
+                ..valid.clone()
+            },
+            Connection {
+                expect: vec![ExpectRule {
+                    pattern: "[".into(),
+                    command: "x".into(),
+                    ..ExpectRule::default()
+                }],
+                ..valid.clone()
+            },
+            Connection {
+                expect: vec![ExpectRule {
+                    pattern: "a".into(),
+                    ..ExpectRule::default()
+                }],
+                ..valid.clone()
+            },
+        ] {
+            assert!(bad.validate().is_err(), "{:?}", bad);
+        }
+        assert!(Connection {
+            wol_mac: "aa:bb:cc:dd:ee:ff".into(),
+            pre_command: "wg-quick up vpn0".into(),
+            terminal_type: "xterm".into(),
+            log_output: true,
+            log_dir: "/tmp/logs".into(),
+            macros: vec![Macro {
+                name: "s".into(),
+                command: "uptime".into()
+            }],
+            expect: vec![ExpectRule {
+                pattern: "a".into(),
+                command: "b".into(),
+                ..ExpectRule::default()
+            }],
+            ..valid
+        }
+        .validate()
+        .is_ok());
+    }
+
+    #[test]
+    fn import_treats_automation_as_needing_consent() {
+        let mut book = Book::default();
+        let mut incoming = Book::default();
+        incoming.connections.push(Connection {
+            pre_command: "curl evil".into(),
+            ..manual("a", "h")
+        });
+        incoming.connections.push(Connection {
+            expect: vec![ExpectRule {
+                pattern: "x".into(),
+                command: "rm -rf".into(),
+                ..ExpectRule::default()
+            }],
+            ..manual("b", "h")
+        });
+        incoming.connections.push(Connection {
+            log_output: true,
+            log_dir: "/home/me/.ssh".into(),
+            ..manual("c", "h")
+        });
+        incoming.connections.push(Connection {
+            totp: true,
+            ..manual("d", "h")
+        });
+        let report = import_into(&mut book, incoming, false).unwrap();
+        assert_eq!(report.imported, 1, "{:?}", report.skipped);
+        assert!(!book.connections[0].totp, "a new id has no stored secret");
     }
 
     #[test]

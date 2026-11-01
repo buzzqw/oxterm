@@ -192,6 +192,11 @@ pub trait TerminalWindow {
     /// Pick a host from ~/.ssh/config and open an SSH tab.
     fn ssh_picker_signal(&self) {}
     fn connections_panel_signal(&self) {}
+    fn is_detached(&self) -> bool {
+        false
+    }
+    fn reattach_signal(&self) {}
+    fn reconnect_signal(&self, _term: &TerminalBox) {}
     /// Whether this window can open saved connections: a detached window has no
     /// tab bar to put them in.
     fn supports_connections(&self) -> bool {
@@ -419,6 +424,67 @@ glib::wrapper! {
 }
 
 impl DetachedWindow {
+    /// Put this terminal back as a tab of a main window, creating one if the
+    /// last was closed. The shell, its broker and its screen carry on.
+    pub fn return_to_main_window(&self) {
+        let Some(term) = self.terminal_box() else {
+            return;
+        };
+        let Some(app) = self.application() else {
+            self.status_message("This window has no application to return to", true);
+            return;
+        };
+        let _app_hold = app.hold();
+        let existing = app
+            .windows()
+            .into_iter()
+            .find_map(|window| window.downcast::<MainWindow>().ok());
+        let fresh = existing.is_none();
+        let main = match existing {
+            Some(main) => main,
+            None => {
+                let start_dir = Some(term.get_cwd());
+                let main =
+                    MainWindow::new(Some(&app), start_dir, None, false, WindowOptions::default());
+                app.add_window(&main);
+                main
+            }
+        };
+        let placeholders = if fresh {
+            main.all_terminals()
+        } else {
+            Vec::new()
+        };
+        let title = self
+            .title()
+            .map(|text| text.to_string())
+            .unwrap_or_default();
+        let title = title
+            .strip_prefix(&format!("{} - ", APP_NAME))
+            .unwrap_or(&title)
+            .to_string();
+        // Before the window goes: its destroy handler ends a terminal it owns.
+        *self.imp().terminal.borrow_mut() = None;
+        if let Some(parent) = term
+            .parent()
+            .and_then(|parent| parent.downcast::<gtk::Container>().ok())
+        {
+            parent.remove(&term);
+        }
+        main.adopt_terminal(&term, &title);
+        for placeholder in placeholders {
+            main.close_tab_signal(Some(&placeholder));
+        }
+        main.show_all();
+        main.present();
+        // SAFETY of the GTK contract: nothing else owns this window, and it no
+        // longer holds the terminal.
+        unsafe {
+            self.destroy();
+        }
+        main.reload_connections_panel();
+    }
+
     fn update_cwd_badge(&self, term: &TerminalBox) {
         let Some(label) = self.imp().cwd_label.borrow().clone() else {
             return;
@@ -729,6 +795,18 @@ impl DetachedWindow {
         let mut menus = Vec::new();
 
         let file_menu = gtk::Menu::new();
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &file_menu,
+            "Return to Main Window",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.return_to_main_window();
+                }
+            }),
+            None,
+            Some("Put this terminal back as a tab of the main window"),
+        );
         let weak = crate::SendWeak::new(self);
         self.menu_item(
             &file_menu,
@@ -1496,6 +1574,12 @@ impl DetachedWindow {
 }
 
 impl TerminalWindow for DetachedWindow {
+    fn is_detached(&self) -> bool {
+        true
+    }
+    fn reattach_signal(&self) {
+        self.return_to_main_window();
+    }
     fn new_tab_signal(&self) {
         self.on_new_window();
     }
@@ -1594,6 +1678,7 @@ mod main_imp {
             RefCell<Option<std::rc::Rc<crate::connections_panel::ConnectionsPanel>>>,
         pub connections_slot: RefCell<Option<gtk::Box>>,
         pub tunnel_watch_active: std::cell::Cell<bool>,
+        pub pending_reconnect_attempts: std::cell::Cell<u32>,
         /// Menu popups are built once, after the first terminal is up.
         pub menus_built: Cell<bool>,
         pub stats_source_id: RefCell<Option<glib::SourceId>>,
@@ -2171,7 +2256,7 @@ impl MainWindow {
         terminals
     }
 
-    fn find_terminal(&self, term: &TerminalBox) -> Option<(gtk::Notebook, u32)> {
+    pub(crate) fn find_terminal(&self, term: &TerminalBox) -> Option<(gtk::Notebook, u32)> {
         for nb in [
             self.imp().notebook.borrow().clone(),
             self.imp().notebook2.borrow().clone(),
@@ -2550,7 +2635,9 @@ impl MainWindow {
         let menubar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         menubar.style_context().add_class("oxterm-menu-row");
         let mut buttons = Vec::new();
-        for label in ["File", "Edit", "View", "Terminal", "Tabs", "Notes", "Help"] {
+        for label in [
+            "File", "Edit", "View", "Terminal", "Tabs", "Notes", "SSH", "Help",
+        ] {
             let btn = gtk::MenuButton::new();
             btn.set_label(label);
             btn.set_relief(gtk::ReliefStyle::None);
@@ -3243,6 +3330,14 @@ impl MainWindow {
         // Tabs
         let tabs_menu = gtk::Menu::new();
         *self.imp().tabs_menu.borrow_mut() = Some(tabs_menu.clone());
+        // Detached windows come and go without touching this window's tabs.
+        let weak = crate::SendWeak::new(self);
+        tabs_menu.connect_show(move |menu| {
+            if let Some(w) = weak.upgrade() {
+                w.populate_tab_menu(menu);
+                menu.show_all();
+            }
+        });
         menus.push(("Tabs".into(), tabs_menu));
 
         let notes_menu = gtk::Menu::new();
@@ -3346,6 +3441,17 @@ impl MainWindow {
             Some("Open the notes directory in the file manager"),
         );
         menus.push(("Notes".into(), notes_menu));
+
+        let ssh_menu = gtk::Menu::new();
+        let weak = crate::SendWeak::new(self);
+        ssh_menu.connect_show(move |menu| {
+            if let Some(w) = weak.upgrade() {
+                w.populate_ssh_menu(menu);
+            }
+        });
+        // A menu with no items never opens, so it needs one before the first show.
+        self.populate_ssh_menu(&ssh_menu);
+        menus.push(("SSH".into(), ssh_menu));
 
         // Help
         let help_menu = gtk::Menu::new();
@@ -3981,6 +4087,28 @@ impl MainWindow {
     fn populate_tab_menu(&self, menu: &gtk::Menu) {
         for child in menu.children() {
             menu.remove(&child);
+        }
+        let detached = self.detached_windows();
+        for window in &detached {
+            let Some(term) = window.terminal_box() else {
+                continue;
+            };
+            let title = term
+                .connection_name()
+                .or_else(|| window.title().map(|text| text.to_string()))
+                .unwrap_or_else(|| "Terminal".to_string());
+            let item = gtk::MenuItem::with_label(&format!("Bring Back: {}", title));
+            item.set_tooltip_text(Some("Return this detached terminal to a tab here"));
+            let weak = crate::SendWeak::new(window);
+            item.connect_activate(move |_| {
+                if let Some(window) = weak.upgrade() {
+                    window.return_to_main_window();
+                }
+            });
+            menu.append(&item);
+        }
+        if !detached.is_empty() {
+            menu.append(&gtk::SeparatorMenuItem::new());
         }
         let nb = self.imp().notebook.borrow().clone().unwrap();
         let nb2 = self.imp().notebook2.borrow().clone().unwrap();
@@ -5167,6 +5295,55 @@ impl MainWindow {
         }
     }
 
+    /// Give an existing terminal a tab here, the reverse of `detach_tab`.
+    pub fn adopt_terminal(&self, term: &TerminalBox, title: &str) {
+        let nb = self.active_notebook();
+        let (lbl_box, lbl, indicator) = self.make_tab_label(title, term);
+        self.imp().tab_labels.borrow_mut().insert(
+            term.clone(),
+            TabLabel {
+                event_box: lbl_box.clone(),
+                label: lbl,
+                indicator,
+                alert: Cell::new(None),
+            },
+        );
+        self.imp()
+            .tab_base_titles
+            .borrow_mut()
+            .insert(term.clone(), title.to_string());
+        term.set_window_ref(self);
+        let idx = nb.append_page(term, Some(&lbl_box));
+        nb.set_tab_reorderable(term, true);
+        nb.set_show_tabs(settings().get_bool("show_tabs"));
+        nb.show_all();
+        nb.set_current_page(Some(idx));
+        self.update_tabs_menu();
+        if term.connection_id().is_some() {
+            self.pin_tab_title(term, title);
+        }
+        self.apply_ssh_alert(term);
+        let weak = crate::SendWeak::new(term);
+        glib::idle_add_local(move || {
+            if let Some(t) = weak.upgrade() {
+                t.vte().grab_focus();
+            }
+            glib::ControlFlow::Break
+        });
+    }
+
+    /// Windows holding a detached terminal of this process.
+    fn detached_windows(&self) -> Vec<DetachedWindow> {
+        self.application()
+            .map(|app| {
+                app.windows()
+                    .into_iter()
+                    .filter_map(|window| window.downcast::<DetachedWindow>().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     fn detach_tab(&self, term: Option<&TerminalBox>) {
         let term = match term {
             Some(t) => t.clone(),
@@ -5206,7 +5383,11 @@ impl MainWindow {
         }
         term.set_window_ref(&new_win);
         let weak = crate::SendWeak::new(&term);
-        new_win.connect_destroy(move |_| {
+        new_win.connect_destroy(move |window| {
+            // Not when the terminal went back to a main window: it lives on there.
+            if window.terminal_box().is_none() {
+                return;
+            }
             if let Some(t) = weak.upgrade() {
                 t.terminate();
             }
@@ -6056,6 +6237,9 @@ impl TerminalWindow for MainWindow {
     }
     fn connections_panel_signal(&self) {
         self.toggle_connections_panel();
+    }
+    fn reconnect_signal(&self, term: &TerminalBox) {
+        self.reconnect_terminal(term);
     }
     fn supports_connections(&self) -> bool {
         true

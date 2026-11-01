@@ -13,12 +13,16 @@ use crate::headless::askpass;
 use crate::headless::connections::{
     self, tunnel_key, Auth, Connection, Entry, Kind, Origin, Prepared, Tunnel, UsageMap,
 };
+use crate::headless::preconnect;
 use crate::headless::ssh_config;
 use crate::headless::tunnels;
 use crate::logging::LOGGER;
 use crate::settings::settings;
 use crate::terminal::TerminalBox;
 use crate::window::{MainWindow, TerminalWindow};
+
+const DEFAULT_RECONNECT_DELAY: u32 = 5;
+const MENU_SHORTCUTS: usize = 10;
 
 /// Where a connection opens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,8 +178,9 @@ impl MainWindow {
                 .borrow()
                 .as_ref()
                 .and_then(|panel| panel.id_at(&path));
-            if let Some(id) = id {
-                window.show_connection_menu(&id);
+            match id {
+                Some(id) => window.show_connection_menu(&id),
+                None => window.show_group_menu(&path),
             }
             glib::Propagation::Stop
         });
@@ -294,7 +299,12 @@ impl MainWindow {
             }
             decoration
         });
-        panel.status.set_text(status.as_deref().unwrap_or(""));
+        let empty_hint = (entries.is_empty() && query.is_empty()).then_some(
+            "No connections yet. Click New to add one. Hosts in ~/.ssh/config appear here by themselves.",
+        );
+        panel
+            .status
+            .set_text(status.as_deref().or(empty_hint).unwrap_or(""));
     }
 
     fn open_connection_counts(&self) -> std::collections::HashMap<String, usize> {
@@ -325,6 +335,30 @@ impl MainWindow {
         if let Some(id) = id {
             self.connect_id(&id, Placement::Tab);
         }
+    }
+
+    fn show_group_menu(&self, path: &gtk::TreePath) {
+        let panel = self.imp().connections_panel.borrow().clone();
+        let Some(panel) = panel else {
+            return;
+        };
+        let ids = panel.ids_under(path);
+        if ids.is_empty() {
+            return;
+        }
+        let menu = gtk::Menu::new();
+        let item = gtk::MenuItem::with_label(&format!("Open All ({})", ids.len()));
+        let weak = crate::SendWeak::new(self);
+        item.connect_activate(move |_| {
+            if let Some(window) = weak.upgrade() {
+                for id in &ids {
+                    window.connect_id(id, Placement::Tab);
+                }
+            }
+        });
+        menu.append(&item);
+        menu.show_all();
+        crate::popup_transient_menu(&menu);
     }
 
     fn show_connection_menu(&self, id: &str) {
@@ -392,6 +426,13 @@ impl MainWindow {
             let tunnels_item = gtk::MenuItem::with_label("Tunnels");
             tunnels_item.set_submenu(Some(&submenu));
             menu.append(&tunnels_item);
+        }
+        {
+            let connection = entry.connection.clone();
+            add(
+                "Copy Public Key to Server",
+                Box::new(move |window| window.copy_key_to_server(&connection)),
+            );
         }
         {
             let command = entry.connection.command_preview();
@@ -465,8 +506,9 @@ impl MainWindow {
             let mut copy = entry.connection.clone();
             copy.id = connections::new_id();
             copy.name = format!("{} copy", copy.name);
-            // The password belongs to the original's keyring entry.
+            // The secrets belong to the original's keyring entries.
             copy.auth = Auth::Default;
+            copy.totp = false;
             self.run_form("Duplicate Connection", copy);
         }
     }
@@ -474,6 +516,7 @@ impl MainWindow {
     fn run_form(&self, title: &str, initial: Connection) {
         let id = initial.id.clone();
         let was_secret = initial.auth == Auth::SecretService;
+        let had_totp = initial.totp;
         let available = askpass::keyring_available();
         let check = |connection: &Connection| -> Result<(), String> {
             let book = connections::load_book(&connections::book_path())?;
@@ -500,22 +543,30 @@ impl MainWindow {
         // Keyring tools can wait on an unlock prompt: never on the GUI thread.
         let label = connection.name.clone();
         let wants_secret = connection.auth == Auth::SecretService;
+        let wants_totp = connection.totp;
         let password = result.password;
+        let totp_secret = result.totp_secret;
         let weak = crate::SendWeak::new(self);
         std::thread::spawn(move || {
-            let error = match password {
-                Some(password) => askpass::store_secret(&id, &label, &password).err(),
-                None => {
-                    if was_secret && !wants_secret {
-                        askpass::clear_secret(&id);
-                    }
-                    None
+            let mut errors = Vec::new();
+            match password {
+                Some(password) => {
+                    errors.extend(askpass::store_secret(&id, &label, &password).err())
                 }
-            };
-            if let Some(error) = error {
+                None if was_secret && !wants_secret => askpass::clear_secret(&id),
+                None => {}
+            }
+            match totp_secret {
+                Some(secret) => {
+                    errors.extend(askpass::store_totp_secret(&id, &label, &secret).err())
+                }
+                None if had_totp && !wants_totp => askpass::clear_totp_secret(&id),
+                None => {}
+            }
+            if !errors.is_empty() {
                 crate::run_on_main(move || {
                     if let Some(window) = weak.upgrade() {
-                        window.status_message(&error, true);
+                        window.status_message(&errors.join("; "), true);
                     }
                 });
             }
@@ -577,9 +628,12 @@ impl MainWindow {
                 for tunnel in &connection.tunnels {
                     tunnels::stop(&tunnel_key(&connection, tunnel));
                 }
-                if connection.auth == Auth::SecretService {
+                if connection.uses_keyring() {
                     let id = connection.id.clone();
-                    std::thread::spawn(move || askpass::clear_secret(&id));
+                    std::thread::spawn(move || {
+                        askpass::clear_secret(&id);
+                        askpass::clear_totp_secret(&id);
+                    });
                 }
                 self.reload_connections_panel();
             }
@@ -624,11 +678,18 @@ impl MainWindow {
         if connection.confirm_connect && !self.confirm_connection(&connection) {
             return;
         }
+        if preconnect::has_work(&connection) {
+            self.status_message(&format!("Preparing {}...", connection.name), false);
+        }
         let weak = crate::SendWeak::new(self);
         std::thread::spawn(move || {
+            let problems = preconnect::run(&connection);
             let prepared = connections::prepare_session(&connection);
             crate::run_on_main(move || {
                 if let Some(window) = weak.upgrade() {
+                    for problem in &problems {
+                        window.status_message(problem, true);
+                    }
                     window.finish_connect(connection, prepared, placement);
                 }
             });
@@ -666,11 +727,7 @@ impl MainWindow {
         let Some(term) = term else {
             return;
         };
-        term.set_connection(Some(connection.id.clone()), Some(connection.name.clone()));
-        term.set_color_override(Some(connection.color_scheme.clone()));
-        if placement != Placement::Window {
-            self.pin_tab_title(&term, &title);
-        }
+        self.attach_connection(&term, &connection, placement != Placement::Window);
         // Writes to disk with an fsync; not worth a stall on the GUI thread.
         let id = connection.id.clone();
         std::thread::spawn(move || {
@@ -695,6 +752,97 @@ impl MainWindow {
             );
         }
         self.reload_connections_panel();
+    }
+
+    /// Everything a saved connection means for its terminal.
+    pub fn attach_connection(&self, term: &TerminalBox, connection: &Connection, pin_title: bool) {
+        term.set_connection(Some(connection.id.clone()), Some(connection.name.clone()));
+        term.set_color_override(Some(connection.color_scheme.clone()));
+        term.set_session_overrides(
+            Some(connection.font.clone()),
+            connection.scrollback,
+            Some(connection.encoding.clone()),
+        );
+        term.set_connection_macros(connection.macros.clone());
+        term.set_expect_rules(&connection.expect);
+        if connection.auto_reconnect {
+            term.enable_reconnect(
+                connection
+                    .reconnect_delay
+                    .unwrap_or(DEFAULT_RECONNECT_DELAY),
+                self.imp().pending_reconnect_attempts.take(),
+            );
+        }
+        if connection.log_output {
+            if let Err(error) = term.start_session_log(&connection.log_dir, &connection.name) {
+                self.status_message(&format!("Session log: {}", error), true);
+            }
+        }
+        if pin_title {
+            self.pin_tab_title(term, &connection.name);
+        }
+    }
+
+    /// The same, for a terminal opened through the control API.
+    pub fn attach_connection_id(&self, term: &TerminalBox, id: &str) {
+        match load_entries() {
+            Ok(entries) => match connections::find_entry_by_id(&entries, id) {
+                Some(entry) => self.attach_connection(term, &entry.connection, true),
+                None => term.set_connection(Some(id.to_string()), None),
+            },
+            Err(_) => term.set_connection(Some(id.to_string()), None),
+        }
+    }
+
+    /// Replace a terminal whose connection dropped with a new one in the same
+    /// place. A new tab rather than a respawn: everything that opens a connection
+    /// (options, stored password, log) then runs the one tested way.
+    pub fn reconnect_terminal(&self, old: &TerminalBox) {
+        let Some(id) = old.connection_id() else {
+            return;
+        };
+        let Some((notebook, position)) = self.find_terminal(old) else {
+            return;
+        };
+        let Ok(entries) = load_entries() else {
+            return;
+        };
+        let Some(connection) =
+            connections::find_entry_by_id(&entries, &id).map(|entry| entry.connection.clone())
+        else {
+            return;
+        };
+        let attempts = old.reconnect_attempts();
+        let weak = crate::SendWeak::new(self);
+        let weak_old = crate::SendWeak::new(old);
+        let weak_notebook = crate::SendWeak::new(&notebook);
+        std::thread::spawn(move || {
+            let prepared = connections::prepare_session(&connection);
+            crate::run_on_main(move || {
+                let (Some(window), Some(old), Some(notebook)) =
+                    (weak.upgrade(), weak_old.upgrade(), weak_notebook.upgrade())
+                else {
+                    return;
+                };
+                // The tab may have been closed during the wait: that means stop.
+                if window.find_terminal(&old).is_none() {
+                    return;
+                }
+                window.imp().pending_reconnect_attempts.set(attempts);
+                let title = connection.name.clone();
+                let term = window.add_new_tab(
+                    None,
+                    Some(&notebook),
+                    Some(&title),
+                    Some(&title),
+                    Some(&prepared.plan.argv),
+                );
+                window.attach_connection(&term, &connection, true);
+                notebook.reorder_child(&term, Some(position));
+                window.close_tab_signal(Some(&old));
+                window.reload_connections_panel();
+            });
+        });
     }
 
     fn open_connection_terminal(
@@ -738,6 +886,119 @@ impl MainWindow {
                 Some(term)
             }
         }
+    }
+
+    fn copy_key_to_server(&self, connection: &Connection) {
+        if crate::notes::which("ssh-copy-id").is_none() {
+            self.status_message("ssh-copy-id is not installed", true);
+            return;
+        }
+        let title = format!("copy key to {}", connection.name);
+        let argv = connection.copy_id_argv();
+        self.add_new_tab(None, None, Some(&title), Some(&title), Some(&argv));
+    }
+
+    fn generate_ssh_key(&self) {
+        if crate::notes::which("ssh-keygen").is_none() {
+            self.status_message("ssh-keygen is not installed", true);
+            return;
+        }
+        // In a terminal, so the file name and passphrase prompts stay ssh-keygen's
+        // own and a passphrase never appears on a command line.
+        let argv = vec![
+            "ssh-keygen".to_string(),
+            "-t".to_string(),
+            "ed25519".to_string(),
+        ];
+        let title = "ssh-keygen".to_string();
+        self.add_new_tab(None, None, Some(&title), Some(&title), Some(&argv));
+    }
+
+    /// The SSH menu, rebuilt each time it opens so favorites, recent connections
+    /// and the current tab's macros are up to date.
+    pub fn populate_ssh_menu(&self, menu: &gtk::Menu) {
+        for child in menu.children() {
+            menu.remove(&child);
+        }
+        let add = |menu: &gtk::Menu, label: &str, action: Box<dyn Fn(&MainWindow)>| {
+            let item = gtk::MenuItem::with_label(label);
+            let weak = crate::SendWeak::new(self);
+            item.connect_activate(move |_| {
+                if let Some(window) = weak.upgrade() {
+                    action(&window);
+                }
+            });
+            menu.append(&item);
+        };
+        add(
+            menu,
+            "Connections Panel\tCtrl+Shift+J",
+            Box::new(|window| window.toggle_connections_panel()),
+        );
+        add(
+            menu,
+            "New Connection...",
+            Box::new(|window| window.new_connection()),
+        );
+        add(
+            menu,
+            "Quick Connect...\tCtrl+Shift+K",
+            Box::new(|window| window.ssh_picker_signal()),
+        );
+        if let Some(term) = self.current_terminal() {
+            if let Some(id) = term.connection_id() {
+                menu.append(&gtk::SeparatorMenuItem::new());
+                let name = term
+                    .connection_name()
+                    .unwrap_or_else(|| "this connection".to_string());
+                let edit_id = id.clone();
+                add(
+                    menu,
+                    &format!("Edit {}...", name),
+                    Box::new(move |window| window.edit_connection(&edit_id)),
+                );
+                let macros = term.connection_macros();
+                if !macros.is_empty() {
+                    let submenu = gtk::Menu::new();
+                    for item in macros {
+                        let entry = gtk::MenuItem::with_label(&item.name);
+                        entry.set_tooltip_text(Some(&item.command));
+                        let weak = crate::SendWeak::new(&term);
+                        entry.connect_activate(move |_| {
+                            if let Some(term) = weak.upgrade() {
+                                term.control_send(&item.command, true);
+                            }
+                        });
+                        submenu.append(&entry);
+                    }
+                    let macros_item = gtk::MenuItem::with_label("Macros");
+                    macros_item.set_submenu(Some(&submenu));
+                    menu.append(&macros_item);
+                }
+            }
+        }
+        let entries = load_entries().unwrap_or_default();
+        let usage = connections::load_usage(&connections::usage_path());
+        let shortcuts = connections::menu_shortcuts(&entries, &usage, MENU_SHORTCUTS);
+        if !shortcuts.is_empty() {
+            menu.append(&gtk::SeparatorMenuItem::new());
+            for index in shortcuts {
+                let connection = entries[index].connection.clone();
+                let id = connection.id.clone();
+                add(
+                    menu,
+                    &connection.name,
+                    Box::new(move |window| window.connect_id(&id, Placement::Tab)),
+                );
+            }
+        }
+        menu.append(&gtk::SeparatorMenuItem::new());
+        add(
+            menu,
+            "Generate SSH Key...",
+            Box::new(|window| window.generate_ssh_key()),
+        );
+        menu.show_all();
     }
 
     fn open_sftp(&self, id: &str) {
@@ -867,6 +1128,9 @@ pub fn offer_reconnect(window: &MainWindow, tabs: Vec<(String, bool)>, vertical:
         let prepared: Vec<_> = wanted
             .into_iter()
             .map(|(connection, right)| {
+                for problem in preconnect::run(&connection) {
+                    LOGGER.warning(&format!("connection_preconnect_failed {}", problem));
+                }
                 let plan = connections::prepare_session(&connection);
                 (connection, plan, right)
             })

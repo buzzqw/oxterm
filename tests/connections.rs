@@ -382,6 +382,118 @@ fn connect_opens_a_tab_running_the_saved_command() {
 }
 
 #[test]
+fn saved_options_reach_ssh_and_the_session_automation_runs() {
+    if !gui_tests_enabled() {
+        return;
+    }
+    let home = TempHome::new();
+    let seen = home.path().join("seen.log");
+    let answered = home.path().join("answered.log");
+    // The first run drops the connection (255), like a network failure. The
+    // second prints a prompt, which a saved rule answers.
+    home.write_script(
+        "ssh",
+        &format!(
+            r#"if [ "$1" = "-G" ]; then
+    printf 'user tester\nhostname h.example\nport 22\ncontrolpath none\nserveraliveinterval 0\n'
+    exit 0
+fi
+printf '%s TERM=%s\n' "$*" "$TERM" >> '{seen}'
+if [ "$(wc -l < '{seen}')" = 1 ]; then
+    echo first-session-output
+    exit 255
+fi
+echo second-session-output
+printf 'Continue? '
+read answer
+printf '%s\n' "$answer" >> '{answered}'
+exec sleep 60"#,
+            seen = seen.display(),
+            answered = answered.display()
+        ),
+    );
+    let logs = home.path().join("logs");
+    let marker = home.path().join("pre-ran");
+    home.write_book(&format!(
+        r#"{{"version":1,"connections":[{{"id":"c9","name":"full","host":"h",
+          "x11":true,"compression":true,"keepalive_interval":45,"legacy_kex":true,
+          "terminal_type":"vt220","auto_reconnect":true,"reconnect_delay":1,
+          "log_output":true,"log_dir":"{logs}","pre_command":"touch {marker}",
+          "macros":[{{"name":"m","command":"uptime"}}],
+          "expect":[{{"pattern":"Continue\\?","command":"yes-from-rule","delay_ms":10}}]
+        }}]}}"#,
+        logs = logs.display(),
+        marker = marker.display()
+    ));
+    let _gui = Gui::start(&home);
+
+    let output = home.oxterm(&["connect", "full"]);
+    assert!(output.status.success(), "{:?}", output);
+    assert!(marker.exists(), "the pre-connect command ran first");
+
+    wait_until("the rule's answer after reconnecting", || {
+        fs::read_to_string(&answered).is_ok_and(|text| text.contains('\n'))
+    });
+    assert_eq!(
+        fs::read_to_string(&answered).unwrap().trim(),
+        "yes-from-rule"
+    );
+
+    let lines = fs::read_to_string(&seen).unwrap();
+    assert_eq!(lines.lines().count(), 2, "one reconnect: {}", lines);
+    let first = lines.lines().next().unwrap();
+    for option in [
+        "-X",
+        "-C",
+        "ServerAliveInterval=45",
+        "KexAlgorithms=+",
+        "TERM=vt220",
+    ] {
+        assert!(first.contains(option), "{} missing from {}", option, first);
+    }
+
+    wait_until("the session logs", || {
+        fs::read_dir(&logs).map_or(false, |files| {
+            files.flatten().any(|file| {
+                fs::read_to_string(file.path())
+                    .is_ok_and(|text| text.contains("second-session-output"))
+            })
+        })
+    });
+    for file in fs::read_dir(&logs).unwrap().flatten() {
+        let mode = file.metadata().unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "{:?}", file.path());
+    }
+}
+
+#[test]
+fn a_clean_exit_does_not_reconnect() {
+    if !gui_tests_enabled() {
+        return;
+    }
+    let home = TempHome::new();
+    let seen = home.path().join("seen.log");
+    home.write_script(
+        "ssh",
+        &format!(
+            r#"if [ "$1" = "-G" ]; then printf 'user t\nhostname h\n'; exit 0; fi
+echo run >> '{}'
+exit 1"#,
+            seen.display()
+        ),
+    );
+    home.write_book(
+        r#"{"version":1,"connections":[{"id":"c8","name":"quits","host":"h",
+           "auto_reconnect":true,"reconnect_delay":1}]}"#,
+    );
+    let _gui = Gui::start(&home);
+    assert!(home.oxterm(&["connect", "quits"]).status.success());
+    wait_until("ssh to run", || seen.exists());
+    thread::sleep(Duration::from_secs(3));
+    assert_eq!(fs::read_to_string(&seen).unwrap().lines().count(), 1);
+}
+
+#[test]
 fn tunnels_report_the_real_state_of_the_process() {
     if !gui_tests_enabled() {
         return;

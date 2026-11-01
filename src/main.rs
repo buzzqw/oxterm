@@ -266,7 +266,25 @@ impl App {
     }
 }
 
+/// Make sure descriptors 0, 1 and 2 exist. A launcher may start the GUI without
+/// them, and then the first file opened takes one of those numbers: a PTY opened
+/// as 0 would be replaced or closed while setting up its child's standard input.
+fn ensure_standard_descriptors() {
+    for fd in 0..=2 {
+        if unsafe { libc::fcntl(fd, libc::F_GETFD) } == -1 {
+            let null = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDWR) };
+            if null >= 0 && null != fd {
+                unsafe {
+                    libc::dup2(null, fd);
+                    libc::close(null);
+                }
+            }
+        }
+    }
+}
+
 fn main() {
+    ensure_standard_descriptors();
     let args: Vec<String> = std::env::args().collect();
     logging::configure_logging();
     if let Some(mode) = remote::parse_cli_mode(&args) {

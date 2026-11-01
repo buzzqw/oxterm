@@ -272,15 +272,8 @@ pub fn agent_forwarding_enabled(effective_config: &str) -> bool {
 /// shell wrapper uses. This keeps host-picker tabs as fast as tabs where `ssh`
 /// was typed at an integrated prompt.
 pub fn sharing_options(effective_config: &str, socket_dir: &Path) -> Vec<String> {
-    let value = |key: &str| {
-        effective_config.lines().find_map(|line| {
-            line.strip_prefix(key)
-                .and_then(|rest| rest.strip_prefix(' '))
-                .map(str::trim)
-        })
-    };
     let mut options = Vec::new();
-    if value("controlpath").map_or(true, |path| path == "none") {
+    if config_value(effective_config, "controlpath").is_none_or(|path| path == "none") {
         options.extend([
             "-o".to_string(),
             "ControlMaster=auto".to_string(),
@@ -290,15 +283,29 @@ pub fn sharing_options(effective_config: &str, socket_dir: &Path) -> Vec<String>
             "ControlPersist=10m".to_string(),
         ]);
     }
-    if value("serveraliveinterval") == Some("0") {
-        options.extend([
-            "-o".to_string(),
-            "ServerAliveInterval=30".to_string(),
-            "-o".to_string(),
-            "ServerAliveCountMax=4".to_string(),
-        ]);
-    }
+    options.extend(keepalive_options(effective_config));
     options
+}
+
+/// Keepalives, when the user's configuration leaves them unset.
+pub fn keepalive_options(effective_config: &str) -> Vec<String> {
+    if config_value(effective_config, "serveraliveinterval") != Some("0") {
+        return Vec::new();
+    }
+    vec![
+        "-o".to_string(),
+        "ServerAliveInterval=30".to_string(),
+        "-o".to_string(),
+        "ServerAliveCountMax=4".to_string(),
+    ]
+}
+
+fn config_value<'a>(effective_config: &'a str, key: &str) -> Option<&'a str> {
+    effective_config.lines().find_map(|line| {
+        line.strip_prefix(key)
+            .and_then(|rest| rest.strip_prefix(' '))
+            .map(str::trim)
+    })
 }
 
 /// Effective OpenSSH configuration for `args` (`ssh -G ...`).

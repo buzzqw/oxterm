@@ -27,6 +27,7 @@ printf 'test\n' | gnome-keyring-daemon --unlock --components=secrets >/dev/null 
 sleep 1
 printf 's3cret-pw' | secret-tool store --label='Oxterm e2e' oxterm-connection good
 printf 'wrong-pw' | secret-tool store --label='Oxterm e2e' oxterm-connection bad
+printf 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ' | secret-tool store --label='Oxterm e2e' oxterm-connection-totp code
 
 client() {
     rm -rf "$HOME/.config/oxterm/askpass"
@@ -40,4 +41,8 @@ client password bad 1
 client keyboard-interactive bad 1
 # Nothing stored: the person is asked and nothing is sent.
 client password absent 0
+# A verification code computed from the stored secret, on a real prompt.
+client keyboard-interactive code login totp
+# The same prompt without the option enabled goes to the person.
+client keyboard-interactive code 0 totp-off
 printf '%s\n' 'password-login: ok'

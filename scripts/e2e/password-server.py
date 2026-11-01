@@ -5,15 +5,27 @@ Needs paramiko. An unprivileged sshd cannot verify system passwords, so a real
 `ssh` client talks to this instead. It logs each attempt, which lets the caller
 count how many times a stored password was really sent.
 """
+import hmac
 import socket
+import struct
 import sys
 import threading
+import time
 
 import paramiko
 
 PASSWORD = "s3cret-pw"
+TOTP_SECRET = b"12345678901234567890"  # Base32: GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ
 method, log_path = sys.argv[1], sys.argv[2]
+ask_code = len(sys.argv) > 3 and sys.argv[3] == "totp"
 host_key = paramiko.RSAKey.generate(2048)
+
+
+def totp_now():
+    digest = hmac.new(TOTP_SECRET, struct.pack(">Q", int(time.time()) // 30), "sha1").digest()
+    offset = digest[19] & 15
+    value = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
+    return f"{value % 1000000:06d}"
 
 
 def log(line):
@@ -32,11 +44,12 @@ class Server(paramiko.ServerInterface):
 
     def check_auth_interactive(self, username, submethods):
         query = paramiko.InteractiveQuery()
-        query.add_prompt("Password: ", False)
+        query.add_prompt("Verification code: " if ask_code else "Password: ", False)
         return query
 
     def check_auth_interactive_response(self, responses):
-        ok = len(responses) == 1 and responses[0] == PASSWORD
+        expected = totp_now() if ask_code else PASSWORD
+        ok = len(responses) == 1 and responses[0] == expected
         log(f"keyboard-interactive ok={ok}")
         return paramiko.AUTH_SUCCESSFUL if ok else paramiko.AUTH_FAILED
 

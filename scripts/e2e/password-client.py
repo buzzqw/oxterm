@@ -14,10 +14,15 @@ import sys
 import time
 
 home, helper, method, connection_id, expect = sys.argv[1:6]
+extra = sys.argv[6:]
 server = os.path.join(os.path.dirname(os.path.abspath(__file__)), "password-server.py")
 log_path = os.path.join(home, f"auth-{connection_id}-{method}.log")
+if os.path.exists(log_path):
+    os.remove(log_path)
 process = subprocess.Popen(
-    [sys.executable, "-I", server, method, log_path], stdout=subprocess.PIPE, text=True
+    [sys.executable, "-I", server, method, log_path, *(["totp"] if extra else [])],
+    stdout=subprocess.PIPE,
+    text=True,
 )
 port = process.stdout.readline().strip()
 argv = [
@@ -26,6 +31,7 @@ argv = [
     "SSH_ASKPASS_REQUIRE=force",
     f"OXTERM_ASKPASS_ID={connection_id}",
     "OXTERM_ASKPASS_TARGET=tester@127.0.0.1",
+    *(["OXTERM_ASKPASS_TOTP=1"] if extra == ["totp"] else []),
     "ssh",
     "-F", "/dev/null",
     "-o", f"UserKnownHostsFile={home}/known-{connection_id}-{method}",
@@ -51,7 +57,7 @@ while time.time() < deadline:
         if not data:
             break
         output += data
-    if re.search(rb"[Pp]assword: $", output):
+    if re.search(rb"([Pp]assword|code): $", output):
         asked_person = True
         break
 try:

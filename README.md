@@ -43,7 +43,7 @@ memory footprint and the memory-safety guarantees of Rust.
   an editor jump in a new tab, with a configurable `editor_jump_command`
 - Searchable session switcher across local windows, foreign panes, and detached
   broker sessions, with attach/focus actions
-- Connection manager: a searchable panel with groups, tags, favorites and saved tunnels, a form that shows the exact `ssh` command, optional keyring passwords, and `oxterm connect`; it runs your OpenSSH and never edits `~/.ssh/config`
+- Connection manager in the **SSH** menu: a searchable panel with groups, tags, favorites and saved tunnels; a form that shows the exact `ssh` command, with X11, keepalive, old algorithms, Wake-on-LAN, a pre-connect command, automatic reconnection, session logs, macros, automation rules, per-connection colors and fonts, and keyring passwords and one-time codes; and `oxterm connect`. It runs your OpenSSH and never edits `~/.ssh/config`
 - SSH host picker from saved connections and `~/.ssh/config`, plus an explicit copy-on-demand
   shell-integration installer for remote bash/zsh sessions
 - Production-host tab highlighting, tunnel inspection, and a ForwardAgent

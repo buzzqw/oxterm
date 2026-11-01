@@ -253,6 +253,25 @@ impl ConnectionsPanel {
         (!id.is_empty()).then_some(id)
     }
 
+    /// Every connection below a group row, once each: a host can be listed under
+    /// Favorites and its own group, and opening a group should not open it twice.
+    pub fn ids_under(&self, path: &gtk::TreePath) -> Vec<String> {
+        let mut ids = Vec::new();
+        self.store.foreach(|model, row, iter| {
+            if row.is_descendant(path) {
+                let id = model
+                    .value(iter, COLUMN_ID as i32)
+                    .get::<String>()
+                    .unwrap_or_default();
+                if !id.is_empty() && !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            false
+        });
+        ids
+    }
+
     /// Select `id`, unless it is a row the search or a fold currently hides.
     fn select_id(&self, id: &str) {
         let mut found = None;

@@ -210,6 +210,29 @@ wait_for "the deletion" bash -c "! grep -q 'smoke-box' '$BOOK'"
 wait_for "the keyring cleanup" grep -q '^clear$' "$KEYRING_LOG"
 printf '%s\n' "smoke-connections: deleting removed the entry and its password"
 
+# ── A detached tab can come back, with its session untouched ──
+keys Escape
+LINES_BEFORE="$(ssh_lines)"
+"$BIN" new --title back-and-forth -- sh -c 'echo still-the-same-session; exec sleep 300' >/dev/null
+sleep 1
+BACK_PANE="$("$BIN" --list | awk -F'\t' '/back-and-forth/ {print $1}' | tail -1)"
+[[ -n "$BACK_PANE" ]] || die "the test tab did not appear"
+keys ctrl+shift+p
+type_text "detach tab"
+keys Return
+sleep 1
+xdotool search --onlyvisible --name 'back-and-forth' windowfocus 2>/dev/null || true
+sleep 0.3
+keys ctrl+shift+p
+type_text "return to main"
+keys Return
+sleep 1
+"$BIN" capture --pane "$BACK_PANE" | grep -q still-the-same-session ||
+    die "the session did not survive coming back"
+[[ "$("$BIN" --list | grep -c "$BACK_PANE")" == 1 ]] || die "the pane was lost"
+[[ "$(ssh_lines)" == "$LINES_BEFORE" ]] || die "coming back opened a connection"
+printf '%s\n' "smoke-connections: a detached tab came back"
+
 # ── A restored session asks, then reopens connections where they were ──
 kill "$APP_PID"
 wait "$APP_PID" 2>/dev/null || true

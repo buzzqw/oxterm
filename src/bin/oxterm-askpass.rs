@@ -1,8 +1,9 @@
 //! `SSH_ASKPASS` helper for connections whose password lives in the keyring.
 //!
 //! `ssh` runs this with the prompt as its argument and reads the answer from
-//! stdout. It answers on its own only for the exact password prompt of the
-//! connection's target, once per `ssh` process (see `headless::askpass`). Every
+//! stdout. It answers on its own only for a password or one-time code prompt that
+//! names the connection's target, once per `ssh` process (see
+//! `headless::askpass`). Every
 //! other prompt is shown on the controlling terminal, which `ssh` shares with
 //! this process, so host-key checks and passphrases stay with the person. With
 //! no terminal the helper fails, which `ssh` treats as a refusal.
@@ -21,8 +22,10 @@ fn main() -> ExitCode {
     let prompt = std::env::args().nth(1).unwrap_or_default();
     let target = std::env::var(askpass::ENV_TARGET).unwrap_or_default();
     let id = std::env::var(askpass::ENV_ID).unwrap_or_default();
-    let answer = match askpass::decide(&prompt, &target) {
+    let totp = std::env::var_os(askpass::ENV_TOTP).is_some();
+    let answer = match askpass::decide(&prompt, &target, totp) {
         Decision::UseStoredPassword => stored_password(&id).or_else(|| ask(&prompt, false)),
+        Decision::UseTotpCode => stored_code(&id).or_else(|| ask(&prompt, false)),
         Decision::AskVisible => ask(&prompt, true),
         Decision::AskHidden => ask(&prompt, false),
     };
@@ -39,15 +42,22 @@ fn main() -> ExitCode {
 }
 
 fn stored_password(id: &str) -> Option<String> {
-    if id.is_empty() {
-        return None;
-    }
-    // The parent is the `ssh` process that asked.
-    let parent = std::os::unix::process::parent_id();
-    if !askpass::first_attempt(parent) {
+    if id.is_empty() || !first_attempt("password") {
         return None;
     }
     askpass::lookup_secret(id)
+}
+
+fn stored_code(id: &str) -> Option<String> {
+    if id.is_empty() || !first_attempt("totp") {
+        return None;
+    }
+    askpass::lookup_totp_code(id)
+}
+
+/// The parent is the `ssh` process that asked.
+fn first_attempt(kind: &str) -> bool {
+    askpass::first_attempt(std::os::unix::process::parent_id(), kind)
 }
 
 /// Ask on `/dev/tty`; `None` when there is no terminal or it is closed.

@@ -642,10 +642,18 @@ while `/proc` cannot lie about the process.
 
 ### Saved connections
 
-`Ctrl+Shift+J` (or **Connections Panel** in the session menu) opens a side panel
-with every saved connection and every host in `~/.ssh/config`, grouped into
-Favorites, Recent, your own groups, Ungrouped and `~/.ssh/config`. Type to search
-names, hosts, users, groups, tags and notes.
+Everything starts from the **SSH** menu, to the right of **Notes**:
+
+1. Choose **New Connection...**, fill in a name and a host, and press **Save**.
+   Hosts already in `~/.ssh/config` need no setup: they are listed by themselves.
+2. Choose the connection from the **SSH** menu, or open **Connections Panel**
+   (`Ctrl+Shift+J`) and press `Enter` on it.
+
+The panel lists every saved connection and every host in `~/.ssh/config`, grouped
+into Favorites, Recent, your own groups, Ungrouped and `~/.ssh/config`. Type to
+search names, hosts, users, groups, tags and notes. Right-click a group for
+**Open All**. The **SSH** menu also lists favorites and recent connections, and
+the current connection's macros.
 
 - `Enter` or a double click opens a tab, `Ctrl+Enter` a split. The context menu
   also offers a new window, `sftp`, tunnels, copying the `ssh` command, favorites,
@@ -665,6 +673,9 @@ names, hosts, users, groups, tags and notes.
   the production highlight also looks at that name, since an address rarely says
   `prod`.
 - A tab moved to a separate window, or to another Oxterm, stays that connection.
+  To bring a detached tab back, choose **Return to Main Window** in its **File**
+  menu or right-click menu, or **Bring Back** in the main window's **Tabs** menu.
+  The session carries on untouched.
 - **Ask before connecting** adds a confirmation. After a restart, tabs that held
   a connection are never reopened silently: Oxterm asks first, then reopens them in
   their old order and on their old side of a split.
@@ -677,14 +688,42 @@ secrets, so it can be copied or versioned; usage counts live in
 `connections-state.json`. A damaged file is reported and never overwritten, and a
 file from a newer Oxterm opens read-only.
 
+**What an entry can do.** The form has these pages:
+
+| Page | Options |
+| --- | --- |
+| Connection | Name, host, user, port, `ProxyJump`, group, tags, favorite, notes |
+| Authentication | Key (those in `~/.ssh` are listed), stored password, one-time codes |
+| SSH | X11 (`-X`), compression (`-C`), agent forwarding (`-A`), keepalive, connect timeout, unknown-host policy, `TERM`, no connection sharing, extra arguments, old algorithms for aged servers |
+| Session | Remote command (and staying in a shell after it), a local command to run first such as bringing up a VPN, Wake-on-LAN, automatic reconnection, recording the output to a file, asking before connecting |
+| Tunnels | Saved local, remote and SOCKS tunnels |
+| Macros | Named commands, run from the terminal's right-click menu or the **SSH** menu |
+| Automation | Type a command when a pattern appears in the terminal |
+| Appearance | Color scheme, font, scrollback and encoding for this entry's tabs |
+
+- **Reconnection** happens only when `ssh` exits with 255, meaning the connection
+  failed or dropped: `exit` or a failed last command closes the tab as usual. It
+  gives up after 20 attempts in a row, and closing the tab stops it.
+- **Session logs** go to a new private file per connection, with the terminal's
+  raw output: read them with `less -R`. The PTY broker writes them, so they keep
+  going if the window closes.
+- **The local command** runs without a shell: quotes work, `;` and `$()` do not. A
+  failure is reported, and the connection is still attempted.
+- **Automation rules** react to what the server prints, so a server can trigger
+  them: never put a secret in one.
+- **Keys.** **Generate SSH Key...** in the **SSH** menu runs `ssh-keygen` in a tab.
+  **Copy Public Key to Server** in the panel's context menu runs `ssh-copy-id`.
+
 **Passwords.** Keys and an agent are the better choice. Where a server only takes
 passwords, set the entry's method to **Password in the system keyring**: it is
 stored with `secret-tool`, never in Oxterm's files. `oxterm-askpass`, installed
 next to `oxterm`, answers only the exact `user@host's password:` prompt of that
 entry, or OpenSSH's `(user@host) Password:` for keyboard-interactive servers, and
 only once per `ssh`, so a wrong password cannot lock the account. A
-jump host, a generic `Password:`, passphrases, one-time codes and host-key
-questions are always asked in the terminal. Without `secret-tool` or the helper,
+jump host, a generic `Password:`, passphrases and host-key questions are always
+asked in the terminal. **Answer one-time codes** does the same for 6-digit,
+30-second codes: paste the secret or `otpauth://` link, which goes to the keyring,
+and Oxterm answers a code prompt only when it names this user and host. Without `secret-tool` or the helper,
 `ssh` simply prompts as usual.
 
 **Tunnels.** An entry can save local (`-L`), remote (`-R`) and SOCKS (`-D`)
@@ -709,8 +748,9 @@ oxterm tunnel stop db-prod-1
 ```
 
 An import gives every entry a new id and never replaces an existing one. An entry
-whose extra arguments would run a local program, such as `ProxyCommand`, is
-skipped unless you pass `--allow-local-commands`.
+that would act by itself is skipped unless you pass `--allow-local-commands`:
+extra arguments such as `ProxyCommand`, a pre-connect command, automation rules, or
+a log folder.
 
 ### SSH connections
 

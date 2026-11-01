@@ -62,6 +62,20 @@ Flusso di apertura:
 La CLI calcola il comando nel client, perché le richieste di controllo sono servite
 sul thread GUI, che non deve aspettare `ssh -G`.
 
+## Aggiornamento: opzioni portate da PCM
+
+Su richiesta dell'autore oxterm ha ora un menu **SSH** a destra di **Notes** e le opzioni
+SSH di PCM: X11, compressione, agent forwarding, keepalive, timeout, politica host
+sconosciuti, algoritmi legacy, `TERM`, condivisione disattivabile; comando locale
+pre-connessione, Wake-on-LAN, riconnessione, log di sessione (scritto dal broker), macro,
+regole expect, TOTP; font, scrollback ed encoding per voce; apertura di un intero gruppo;
+`ssh-copy-id` e `ssh-keygen` in un tab. Un tab staccato ora può tornare nella finestra
+principale. Moduli nuovi: `headless/totp.rs`, `headless/expect.rs`, `headless/preconnect.rs`.
+
+**Non portati da PCM:** profili credenziali, template, integrazione KeePassXC (il Secret
+Service può già essere KeePassXC), generatore di password, pannelli di monitoraggio
+(CPU, processi, disco, rete, log), pallini di raggiungibilità, audit log.
+
 ## Stato delle fasi
 
 Tutte completate.
@@ -103,6 +117,8 @@ mostra le connessioni (`supports_connections`).
 | Il titolo remoto sostituisce il nome della connessione | Corretto con `pin_tab_title` |
 | Il controllo AUR compila il tag `v1.1.19`, che non contiene `oxterm-broker`, e fallisce anche su `master` dal commit `5f49453` | Corretto: la CI costruisce il commit corrente con la stessa ricetta |
 | I comandi `/...` digitati al prompt finivano alla shell dal 2026-09-12 (`6317cea`): readline spegne `ECHO` e il controllo lo scambiava per un prompt di password. Senza OSC 133 si perdeva anche la cronologia | Corretto con `input_is_visible`: conta come visibile `ECHO`, oppure la modalità raw con la shell in primo piano. `ssh` è raw ma è un processo in primo piano, quindi una password remota resta fuori. Verificato: `read -s` e un programma raw non finiscono su disco |
+| Chiudere un tab senza integrazione shell chiudeva il descrittore 0 del processo (`osc133_rfd` valeva 0 di default, dal commit `f6ad633`): il terminale successivo poteva nascere senza `stdin` | Corretto: valore iniziale -1, e `main` garantisce che i descrittori 0-2 esistano. Trovato dal test di riconnessione |
+| **Detach Tab** era a senso unico | Corretto: **Return to Main Window**, **Bring Back** nel menu Tabs, voce in palette |
 | Lo script di integrazione remota non attiva cronologia e notifiche | Non corretto: serve una decisione, comportamento documentato nel manuale |
 | Avvisi `clippy` su `terminal.rs`, `vi.rs`, `history.rs` e altri | Non toccati: sono di stile, e l'autore sta cambiando quei file per le prestazioni |
 | `OpenSSH` usa la home di `passwd`, `dirs::home_dir` usa `$HOME` | Solo nota: con `HOME` diversa i due vedono `~/.ssh/config` diversi. Nei test usare `-F` |

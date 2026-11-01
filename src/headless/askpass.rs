@@ -24,9 +24,11 @@ use super::paths;
 
 pub const ENV_ID: &str = "OXTERM_ASKPASS_ID";
 pub const ENV_TARGET: &str = "OXTERM_ASKPASS_TARGET";
+pub const ENV_TOTP: &str = "OXTERM_ASKPASS_TOTP";
 pub const HELPER_NAME: &str = "oxterm-askpass";
 
 const SECRET_ATTRIBUTE: &str = "oxterm-connection";
+const TOTP_ATTRIBUTE: &str = "oxterm-connection-totp";
 /// A marker this old belongs to an earlier `ssh` that reused the pid.
 const ATTEMPT_MAX_AGE: Duration = Duration::from_secs(300);
 
@@ -35,6 +37,8 @@ const ATTEMPT_MAX_AGE: Duration = Duration::from_secs(300);
 pub enum Decision {
     /// Answer from the keyring.
     UseStoredPassword,
+    /// Answer with a code computed from the secret in the keyring.
+    UseTotpCode,
     /// Ask on the terminal with echo: a question such as the host-key check.
     AskVisible,
     /// Ask on the terminal without echo: a passphrase, code or other password.
@@ -54,10 +58,30 @@ pub fn target_from_config(effective_config: &str) -> Option<String> {
     Some(format!("{}@{}", value("user")?, value("hostname")?))
 }
 
-/// Classify a prompt against the expected target. Only an exact
-/// `user@host's password: ` is ever answered automatically.
-pub fn decide(prompt: &str, target: &str) -> Decision {
+/// Classify a prompt against the expected target. Only a prompt that names the
+/// target is ever answered automatically.
+pub fn decide(prompt: &str, target: &str, totp: bool) -> Decision {
     let trimmed = prompt.trim();
+    // OpenSSH prefixes what a server asks with `(user@host)`, so this is bound to
+    // the target just as the password prompt is. A bastion's code prompt names
+    // the bastion, and the secret is not its to receive.
+    if totp && !target.is_empty() {
+        if let Some(question) = trimmed.strip_prefix(&format!("({}) ", target)) {
+            let question = question.to_lowercase();
+            if [
+                "verification code",
+                "one-time",
+                "otp",
+                "authenticator",
+                "token",
+            ]
+            .iter()
+            .any(|word| question.contains(word))
+            {
+                return Decision::UseTotpCode;
+            }
+        }
+    }
     // Keyboard-interactive (PAM) servers ask through OpenSSH's own
     // `(user@host) Password:`, which names the target just as well. Any other
     // text after the prefix is the server's: a code, or a question.
@@ -83,11 +107,11 @@ fn attempts_dir() -> PathBuf {
 /// True the first time it is called for a given `ssh` process. A wrong stored
 /// password must not be replayed: `ssh` would retry it until the server locks
 /// the account, so a second prompt goes to the person instead.
-pub fn first_attempt(ssh_pid: u32) -> bool {
-    first_attempt_in(&attempts_dir(), ssh_pid)
+pub fn first_attempt(ssh_pid: u32, kind: &str) -> bool {
+    first_attempt_in(&attempts_dir(), &format!("{}-{}", ssh_pid, kind))
 }
 
-fn first_attempt_in(dir: &Path, ssh_pid: u32) -> bool {
+fn first_attempt_in(dir: &Path, marker: &str) -> bool {
     let builder = {
         let mut builder = fs::DirBuilder::new();
         builder.recursive(true).mode(0o700);
@@ -102,7 +126,7 @@ fn first_attempt_in(dir: &Path, ssh_pid: u32) -> bool {
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(dir.join(ssh_pid.to_string()))
+        .open(dir.join(marker))
         .is_ok()
 }
 
@@ -137,8 +161,17 @@ pub fn keyring_available() -> bool {
 
 /// The stored password, without its line ending.
 pub fn lookup_secret(id: &str) -> Option<String> {
+    lookup(SECRET_ATTRIBUTE, id)
+}
+
+/// The current one-time code, computed from the stored secret.
+pub fn lookup_totp_code(id: &str) -> Option<String> {
+    super::totp::current_code(&lookup(TOTP_ATTRIBUTE, id)?)
+}
+
+fn lookup(attribute: &str, id: &str) -> Option<String> {
     let output = Command::new("secret-tool")
-        .args(["lookup", SECRET_ATTRIBUTE, id])
+        .args(["lookup", attribute, id])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
@@ -152,13 +185,26 @@ pub fn lookup_secret(id: &str) -> Option<String> {
 }
 
 pub fn store_secret(id: &str, label: &str, secret: &str) -> Result<(), String> {
+    store(
+        SECRET_ATTRIBUTE,
+        id,
+        &format!("Oxterm SSH: {}", label),
+        secret,
+    )
+}
+
+pub fn store_totp_secret(id: &str, label: &str, secret: &str) -> Result<(), String> {
+    store(
+        TOTP_ATTRIBUTE,
+        id,
+        &format!("Oxterm SSH one-time code: {}", label),
+        secret,
+    )
+}
+
+fn store(attribute: &str, id: &str, label: &str, secret: &str) -> Result<(), String> {
     let mut child = Command::new("secret-tool")
-        .args([
-            "store",
-            &format!("--label=Oxterm SSH: {}", label),
-            SECRET_ATTRIBUTE,
-            id,
-        ])
+        .args(["store", &format!("--label={}", label), attribute, id])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -180,8 +226,16 @@ pub fn store_secret(id: &str, label: &str, secret: &str) -> Result<(), String> {
 }
 
 pub fn clear_secret(id: &str) {
+    clear(SECRET_ATTRIBUTE, id);
+}
+
+pub fn clear_totp_secret(id: &str) {
+    clear(TOTP_ATTRIBUTE, id);
+}
+
+fn clear(attribute: &str, id: &str) {
     let _ = Command::new("secret-tool")
-        .args(["clear", SECRET_ATTRIBUTE, id])
+        .args(["clear", attribute, id])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -214,11 +268,11 @@ mod tests {
     #[test]
     fn only_the_exact_target_password_prompt_is_answered() {
         assert_eq!(
-            decide("admin@10.0.0.1's password: ", TARGET),
+            decide("admin@10.0.0.1's password: ", TARGET, false),
             Decision::UseStoredPassword
         );
         assert_eq!(
-            decide("(admin@10.0.0.1) Password: ", TARGET),
+            decide("(admin@10.0.0.1) Password: ", TARGET, false),
             Decision::UseStoredPassword
         );
     }
@@ -235,7 +289,12 @@ mod tests {
             "admin@10.0.0.1.evil.example's password: ",
             "x admin@10.0.0.1's password: ",
         ] {
-            assert_eq!(decide(prompt, TARGET), Decision::AskHidden, "{}", prompt);
+            assert_eq!(
+                decide(prompt, TARGET, false),
+                Decision::AskHidden,
+                "{}",
+                prompt
+            );
         }
     }
 
@@ -244,9 +303,13 @@ mod tests {
         let prompt = "The authenticity of host 'h (1.2.3.4)' can't be established.\n\
                       ED25519 key fingerprint is SHA256:abc.\n\
                       Are you sure you want to continue connecting (yes/no/[fingerprint])? ";
-        assert_eq!(decide(prompt, TARGET), Decision::AskVisible);
+        assert_eq!(decide(prompt, TARGET, false), Decision::AskVisible);
         assert_eq!(
-            decide("Please type 'yes', 'no' or the fingerprint: ", TARGET),
+            decide(
+                "Please type 'yes', 'no' or the fingerprint: ",
+                TARGET,
+                false
+            ),
             Decision::AskVisible
         );
     }
@@ -258,13 +321,41 @@ mod tests {
             "Verification code: ",
             "One-time password (OATH) for `admin': ",
         ] {
-            assert_eq!(decide(prompt, TARGET), Decision::AskHidden, "{}", prompt);
+            assert_eq!(
+                decide(prompt, TARGET, false),
+                Decision::AskHidden,
+                "{}",
+                prompt
+            );
         }
     }
 
     #[test]
+    fn a_code_goes_only_to_the_target_and_only_when_enabled() {
+        let prompt = "(admin@10.0.0.1) Verification code: ";
+        assert_eq!(decide(prompt, TARGET, true), Decision::UseTotpCode);
+        assert_eq!(decide(prompt, TARGET, false), Decision::AskHidden);
+        for other in [
+            "(admin@bastion) Verification code: ",
+            "Verification code: ",
+            "(admin@10.0.0.1) Enter your favorite color: ",
+        ] {
+            assert_eq!(
+                decide(other, TARGET, true),
+                Decision::AskHidden,
+                "{}",
+                other
+            );
+        }
+        assert_eq!(
+            decide("(admin@10.0.0.1) Password: ", TARGET, true),
+            Decision::UseStoredPassword
+        );
+    }
+
+    #[test]
     fn an_unknown_target_answers_nothing() {
-        assert_eq!(decide("'s password: ", ""), Decision::AskHidden);
+        assert_eq!(decide("'s password: ", "", false), Decision::AskHidden);
     }
 
     #[test]
@@ -278,9 +369,15 @@ mod tests {
     fn a_stored_password_is_offered_only_once_per_ssh() {
         let dir = std::env::temp_dir().join(format!("oxterm-askpass-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        assert!(first_attempt_in(&dir, 41));
-        assert!(!first_attempt_in(&dir, 41), "a retry goes to the person");
-        assert!(first_attempt_in(&dir, 42), "another ssh starts over");
+        assert!(first_attempt_in(&dir, "41-password"));
+        assert!(
+            !first_attempt_in(&dir, "41-password"),
+            "a retry goes to the person"
+        );
+        assert!(
+            first_attempt_in(&dir, "42-password"),
+            "another ssh starts over"
+        );
         use std::os::unix::fs::PermissionsExt;
         let mode = fs::metadata(&dir).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o700);

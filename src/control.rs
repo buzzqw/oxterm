@@ -205,6 +205,9 @@ fn run_connect(name: &str, split: bool, pane: Option<&str>, yes: bool) -> i32 {
     }
     // Resolved here and not by the GUI: `ssh -G` can block, and a control request
     // is answered on the GUI thread.
+    for problem in crate::headless::preconnect::run(connection) {
+        eprintln!("oxterm connect: {}", problem);
+    }
     let prepared = connections::prepare_session(connection);
     if let Some(note) = prepared.keyring_note {
         eprintln!("oxterm connect: {}", note);
@@ -223,7 +226,6 @@ fn run_connect(name: &str, split: bool, pane: Option<&str>, yes: bool) -> i32 {
                 "title": connection.name,
                 "command": prepared.plan.argv,
                 "connection_id": connection.id,
-                "color_scheme": connection.color_scheme,
             }),
         )
         .map(|reply| reply["pane"].as_str().unwrap_or_default().to_string())
@@ -233,7 +235,6 @@ fn run_connect(name: &str, split: bool, pane: Option<&str>, yes: bool) -> i32 {
             "title": connection.name,
             "command": prepared.plan.argv,
             "connection_id": connection.id,
-            "color_scheme": connection.color_scheme,
         }))
     };
     match result {
@@ -782,13 +783,8 @@ fn dispatch(request: &Value) -> Value {
             let title = request["title"].as_str();
             let command = request_command(request);
             let term = window.add_new_tab(cwd, None, title, title, command.as_ref());
-            term.set_connection(
-                request["connection_id"].as_str().map(str::to_string),
-                request["title"].as_str().map(str::to_string),
-            );
-            if request["connection_id"].is_string() {
-                window.pin_tab_title(&term, title.unwrap_or_default());
-                term.set_color_override(request["color_scheme"].as_str().map(str::to_string));
+            if let Some(id) = request["connection_id"].as_str() {
+                window.attach_connection_id(&term, id);
             }
             window.reload_connections_panel();
             window.present();
@@ -811,13 +807,8 @@ fn dispatch(request: &Value) -> Value {
             let Some(term) = window.split_terminal(mode, cwd, command.as_ref(), title) else {
                 return error_reply("this window already has two panes", 1);
             };
-            term.set_connection(
-                request["connection_id"].as_str().map(str::to_string),
-                request["title"].as_str().map(str::to_string),
-            );
-            if request["connection_id"].is_string() {
-                window.pin_tab_title(&term, title.unwrap_or_default());
-                term.set_color_override(request["color_scheme"].as_str().map(str::to_string));
+            if let Some(id) = request["connection_id"].as_str() {
+                window.attach_connection_id(&term, id);
             }
             window.reload_connections_panel();
             window.present();
