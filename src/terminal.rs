@@ -74,6 +74,7 @@ const HINT_CHARS: &str = "asdfghjklqwertyuiopzxcvbnm";
 
 static HINT_URL_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
 static HINT_PATH_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+static HINT_FILE_LINE_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
 static HINT_GIT_SHA_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
 static HINT_IP_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
 static URL_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
@@ -88,6 +89,16 @@ fn hint_url_re() -> &'static Regex {
 fn hint_path_re() -> &'static Regex {
     HINT_PATH_RE.get_or_init(|| {
         Regex::new(r"(~?/[\w.\-~+#@!]{2,}(?:/[\w.\-~+#@!]+)*/?)|(\./[\w.\-~+#@!]{1,}(?:/[\w.\-~+#@!]+)*/?)").unwrap()
+    })
+}
+
+/// Source locations such as `src/window.rs:1820:34` or `/tmp/a.c:12`.
+///
+/// The leading boundary keeps `C:\` and URL authorities out of the match; the
+/// shape is validated again by [`parse_file_location`].
+fn hint_file_line_re() -> &'static Regex {
+    HINT_FILE_LINE_RE.get_or_init(|| {
+        Regex::new(r"(?:^|[\s(\[\{'`<>])([A-Za-z0-9_./~+@\-]+:[0-9]{1,6}(?::[0-9]{1,4})?)").unwrap()
     })
 }
 
@@ -154,6 +165,199 @@ fn safe_web_url(raw: &str) -> Option<String> {
         return None;
     }
     Some(url)
+}
+
+/// A source location of the form `path:line[:column]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FileLocation {
+    path: String,
+    line: u32,
+    column: Option<u32>,
+}
+
+/// Parse compiler/log locations such as `src/window.rs:1820:34`.
+///
+/// This deliberately accepts only shapes that look like source files: a path
+/// with a directory component, a known source extension, or a well-known
+/// extensionless filename. That keeps `example.com:8080` and `12:30` out.
+fn parse_file_location(raw: &str) -> Option<FileLocation> {
+    let text = raw
+        .trim()
+        .trim_matches(|c| {
+            matches!(
+                c,
+                '"' | '\''
+                    | '`'
+                    | '“'
+                    | '”'
+                    | '‘'
+                    | '’'
+                    | '('
+                    | ')'
+                    | '['
+                    | ']'
+                    | '{'
+                    | '}'
+                    | '<'
+                    | '>'
+            )
+        })
+        .trim_end_matches(|c| matches!(c, ',' | ';' | '.'));
+    let mut parts = text.rsplitn(3, ':');
+    let last = parts.next()?;
+    let second = parts.next();
+    let third = parts.next();
+    let (path, line, column) = match (third, second) {
+        (Some(path), Some(line)) => (
+            path,
+            line.parse::<u32>().ok()?,
+            Some(last.parse::<u32>().ok()?),
+        ),
+        (None, Some(path)) => (path, last.parse::<u32>().ok()?, None),
+        _ => return None,
+    };
+    if path.is_empty() || line == 0 || column == Some(0) || !looks_like_file_path(path) {
+        return None;
+    }
+    Some(FileLocation {
+        path: path.to_string(),
+        line,
+        column,
+    })
+}
+
+fn looks_like_file_path(path: &str) -> bool {
+    if path.contains("://") || path.starts_with("git@") {
+        return false;
+    }
+    // host:port, not a file
+    if path.contains('@') && !path.contains('/') {
+        return false;
+    }
+    if path
+        .split('.')
+        .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+    {
+        return false;
+    }
+    if path.contains('/') {
+        return true;
+    }
+    let name = path.rsplit('/').next().unwrap_or(path);
+    if matches!(
+        name,
+        "Makefile"
+            | "Dockerfile"
+            | "Containerfile"
+            | "Jenkinsfile"
+            | "Vagrantfile"
+            | "Rakefile"
+            | "Gemfile"
+            | "Procfile"
+            | "Justfile"
+            | "CMakeLists.txt"
+    ) {
+        return true;
+    }
+    let Some((_, extension)) = name.rsplit_once('.') else {
+        return false;
+    };
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "rs" | "c"
+            | "h"
+            | "cc"
+            | "cpp"
+            | "cxx"
+            | "hpp"
+            | "hh"
+            | "go"
+            | "py"
+            | "pyi"
+            | "js"
+            | "mjs"
+            | "cjs"
+            | "jsx"
+            | "ts"
+            | "tsx"
+            | "java"
+            | "kt"
+            | "kts"
+            | "rb"
+            | "php"
+            | "pl"
+            | "pm"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "fish"
+            | "lua"
+            | "swift"
+            | "m"
+            | "mm"
+            | "cs"
+            | "fs"
+            | "fsx"
+            | "hs"
+            | "ml"
+            | "mli"
+            | "ex"
+            | "exs"
+            | "erl"
+            | "hrl"
+            | "clj"
+            | "cljs"
+            | "cljc"
+            | "scala"
+            | "sc"
+            | "sql"
+            | "md"
+            | "markdown"
+            | "rst"
+            | "txt"
+            | "log"
+            | "json"
+            | "jsonl"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "ini"
+            | "cfg"
+            | "conf"
+            | "config"
+            | "xml"
+            | "html"
+            | "htm"
+            | "css"
+            | "scss"
+            | "sass"
+            | "less"
+            | "vue"
+            | "svelte"
+            | "dart"
+            | "zig"
+            | "nim"
+            | "v"
+            | "sv"
+            | "vhd"
+            | "vhdl"
+            | "tex"
+            | "bib"
+            | "adoc"
+            | "org"
+            | "cmake"
+            | "mk"
+            | "gradle"
+            | "properties"
+            | "service"
+            | "desktop"
+            | "env"
+            | "lock"
+            | "diff"
+            | "patch"
+            | "csv"
+            | "tsv"
+    )
 }
 
 /// Whether `text` is a single filesystem path, as selected by the user.
@@ -459,6 +663,77 @@ mod security_tests {
         let start = line.find("https").unwrap();
         assert_eq!(char_column(line, start), 6);
         assert_eq!(char_column(line, 0), 0);
+    }
+
+    #[test]
+    fn hint_regex_matches_source_locations() {
+        let captures = hint_file_line_re()
+            .captures("src/window.rs:1820:34")
+            .unwrap();
+        assert_eq!(captures.get(1).unwrap().as_str(), "src/window.rs:1820:34");
+        let captures = hint_file_line_re().captures("--> /tmp/a.c:12").unwrap();
+        assert_eq!(captures.get(1).unwrap().as_str(), "/tmp/a.c:12");
+    }
+
+    #[test]
+    fn file_line_hints_do_not_duplicate_path_labels() {
+        let matches = super::hints::hint_matches_for_line("src/window.rs:1820:34", 7);
+        assert_eq!(
+            matches,
+            vec![(
+                "file-line".to_string(),
+                "src/window.rs:1820:34".to_string(),
+                0,
+                7
+            )]
+        );
+        let matches = super::hints::hint_matches_for_line("see /tmp/a.rs:12:3", 0);
+        assert!(matches
+            .iter()
+            .any(|(kind, text, ..)| kind == "file-line" && text == "/tmp/a.rs:12:3"));
+    }
+
+    #[test]
+    fn parses_source_locations_and_rejects_lookalikes() {
+        assert_eq!(
+            parse_file_location("src/window.rs:1820:34"),
+            Some(FileLocation {
+                path: "src/window.rs".to_string(),
+                line: 1820,
+                column: Some(34),
+            })
+        );
+        assert_eq!(
+            parse_file_location("(main.c:7)"),
+            Some(FileLocation {
+                path: "main.c".to_string(),
+                line: 7,
+                column: None,
+            })
+        );
+        assert_eq!(
+            parse_file_location("./target/debug/log.txt:42:1"),
+            Some(FileLocation {
+                path: "./target/debug/log.txt".to_string(),
+                line: 42,
+                column: Some(1),
+            })
+        );
+        assert_eq!(parse_file_location("example.com:8080"), None);
+        assert_eq!(parse_file_location("1.2.3.4:80"), None);
+        assert_eq!(parse_file_location("12:30"), None);
+        assert_eq!(parse_file_location("https://example.test/x.rs:1"), None);
+        assert_eq!(parse_file_location("file.rs:0"), None);
+    }
+
+    #[test]
+    fn shell_quotes_editor_paths() {
+        assert_eq!(
+            shell_quote(std::path::Path::new("/tmp/plain")),
+            "'/tmp/plain'"
+        );
+        assert_eq!(shell_quote(std::path::Path::new("/tmp/a b")), "'/tmp/a b'");
+        assert_eq!(shell_quote(std::path::Path::new("a'b")), "'a'\\''b'");
     }
 
     #[test]
@@ -3082,6 +3357,40 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         None
     }
 
+    fn file_location_from_text_at(&self, x: f64, y: f64) -> Option<FileLocation> {
+        let (col, row) = self.pixel_to_cell(x, y);
+        let scroll_top = self.vadjustment().value() as i64;
+        let row = row + scroll_top;
+        let vte = self.vte();
+        let text = text::range(&vte, row, 0, row, -1).unwrap_or_default();
+        if text.is_empty() {
+            return None;
+        }
+        let line = text.trim_end_matches('\n');
+        let col = col as usize;
+        for captures in hint_file_line_re().captures_iter(line) {
+            let Some(matched) = captures.get(1) else {
+                continue;
+            };
+            let start = char_column(line, matched.start());
+            let end = start + matched.as_str().chars().count();
+            if start <= col && col < end {
+                return parse_file_location(matched.as_str());
+            }
+        }
+        None
+    }
+
+    /// The source location the user selected, if the whole selection is one.
+    fn selected_file_location(&self) -> Option<FileLocation> {
+        let vte = self.vte();
+        if !vte.has_selection() {
+            return None;
+        }
+        let text = vte.text_selected(Format::Text)?;
+        parse_file_location(text.as_str())
+    }
+
     /// The path the user selected, if the whole selection is a path.
     fn selected_path(&self) -> Option<String> {
         let vte = self.vte();
@@ -3127,6 +3436,56 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 _ => return None,
             }
         }
+    }
+
+    /// Resolve a reported source location against the shell's working
+    /// directory and open it in the configured editor in a new tab.
+    fn open_file_location(&self, location: &FileLocation) {
+        let raw = location.path.trim();
+        let expanded = if raw == "~" {
+            dirs::home_dir()
+        } else if let Some(rest) = raw.strip_prefix("~/") {
+            dirs::home_dir().map(|home| home.join(rest))
+        } else if raw.starts_with('/') {
+            Some(std::path::PathBuf::from(raw))
+        } else {
+            Some(std::path::Path::new(&self.get_cwd()).join(raw))
+        };
+        let Some(path) = expanded else {
+            self.vte()
+                .feed(b"\r\n\x1b[31mCannot open file: the home directory is unknown.\x1b[0m\r\n");
+            return;
+        };
+        if !path.is_file() {
+            self.vte().feed(
+                format!(
+                    "\r\n\x1b[31mCannot open {}: no such file.\x1b[0m\r\n",
+                    path.display()
+                )
+                .as_bytes(),
+            );
+            return;
+        }
+        let configured = settings().get_str("editor_jump_command");
+        let template = if configured.trim().is_empty() {
+            "${EDITOR:-vi} +{line} {file}".to_string()
+        } else {
+            configured
+        };
+        let file = shell_quote(&path);
+        let column = location.column.unwrap_or(1);
+        let script = template
+            .replace("{file}", &file)
+            .replace("{line}", &location.line.to_string())
+            .replace("{col}", &column.to_string());
+        let command = vec!["/bin/sh".to_string(), "-c".to_string(), script];
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| location.path.clone());
+        let title = format!("{}:{}", name, location.line);
+        let cwd = self.get_cwd();
+        self.call_window(|win| win.open_command_tab(&cwd, command, &title));
     }
 
     fn open_path_in_file_manager(&self, path: &std::path::Path) {
@@ -3194,6 +3553,9 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             .selected_path()
             .or_else(|| self.path_from_text_at(px, py))
             .and_then(|candidate| self.existing_path(&candidate));
+        let file_location = self
+            .selected_file_location()
+            .or_else(|| self.file_location_from_text_at(px, py));
 
         // ── Clipboard ────────────────────────────────────────
         // The few actions used all the time stay at the top level; the rest is
@@ -3278,6 +3640,28 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).set_text(&copied);
             })
             .set_tooltip_text(Some("Copy this path to the clipboard"));
+        }
+
+        // ── Source locations (`file:line:col`) ───────────────
+        if let Some(location) = file_location {
+            menu.append(&gtk::SeparatorMenuItem::new());
+            let location_for_open = location.clone();
+            menu_action(&menu, self, "Open in Editor", move |t| {
+                t.open_file_location(&location_for_open)
+            })
+            .set_tooltip_text(Some(&format!(
+                "Open {}:{} in the configured editor",
+                location.path, location.line
+            )));
+
+            let text = match location.column {
+                Some(column) => format!("{}:{}:{}", location.path, location.line, column),
+                None => format!("{}:{}", location.path, location.line),
+            };
+            menu_action(&menu, self, "Copy Location", move |_t| {
+                gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).set_text(&text);
+            })
+            .set_tooltip_text(Some("Copy this file:line location"));
         }
 
         // ── Notes ────────────────────────────────────────────
@@ -3714,6 +4098,14 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             }
             if key == K::p || key == K::P {
                 self.show_command_bar();
+                return glib::Propagation::Stop;
+            }
+            if key == K::o || key == K::O {
+                self.call_window(|win| win.session_palette_signal());
+                return glib::Propagation::Stop;
+            }
+            if key == K::k || key == K::K {
+                self.call_window(|win| win.ssh_picker_signal());
                 return glib::Propagation::Stop;
             }
             if key == K::h || key == K::H {

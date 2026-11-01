@@ -100,6 +100,35 @@ fn paned_size(paned: &gtk::Paned) -> i32 {
     }
 }
 
+/// Move a list selection by `step`, skipping rows hidden by the filter.
+fn move_selection(list: &gtk::ListBox, step: i32) {
+    let len = list.children().len() as i32;
+    let mut index = list.selected_row().map(|row| row.index()).unwrap_or(-1);
+    loop {
+        index += step;
+        if index < 0 || index >= len {
+            return;
+        }
+        let Some(row) = list.row_at_index(index) else {
+            return;
+        };
+        if row.is_visible() {
+            list.select_row(Some(&row));
+            return;
+        }
+    }
+}
+
+/// Guards against spawning several discovery threads when the session
+/// switcher shortcut is pressed repeatedly while a slow window is probed.
+static SESSION_PALETTE_LOADING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Quote one argument for `/bin/sh`, including embedded single quotes.
+fn quote_shell_arg(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 fn show_note_feedback(
     bar: &RefCell<Option<gtk::InfoBar>>,
     label: &RefCell<Option<gtk::Label>>,
@@ -155,6 +184,10 @@ pub trait TerminalWindow {
     fn prev_tab_signal(&self);
     fn next_tab_signal(&self);
     fn session_list_signal(&self);
+    /// Searchable switcher across local, foreign and detached sessions.
+    fn session_palette_signal(&self) {}
+    /// Pick a host from ~/.ssh/config and open an SSH tab.
+    fn ssh_picker_signal(&self) {}
     /// Rename the tab that owns `term`. Windows without tabs (a detached
     /// terminal) leave this as a no-op.
     fn rename_tab_signal(&self, term: &TerminalBox) {
@@ -4132,6 +4165,24 @@ impl MainWindow {
         for child in menu.children() {
             menu.remove(&child);
         }
+        let weak = crate::SendWeak::new(self);
+        let switcher = gtk::MenuItem::with_label("Session Switcher...");
+        switcher.connect_activate(move |_| {
+            if let Some(w) = weak.upgrade() {
+                w.show_session_palette();
+            }
+        });
+        menu.append(&switcher);
+        let weak = crate::SendWeak::new(self);
+        let ssh = gtk::MenuItem::with_label("Connect to SSH Host...");
+        ssh.connect_activate(move |_| {
+            if let Some(w) = weak.upgrade() {
+                w.show_ssh_host_picker();
+            }
+        });
+        menu.append(&ssh);
+        menu.append(&gtk::SeparatorMenuItem::new());
+
         let sessions = crate::session::list_sessions();
         if !sessions.is_empty() {
             for name in &sessions {
@@ -4173,6 +4224,42 @@ impl MainWindow {
         menu.show_all();
     }
 
+    /// Bring this window forward and select the page that owns `term`.
+    ///
+    /// Reattaching first restores local output when another view moved the
+    /// session away, which is what a session switcher should do.
+    pub fn focus_terminal(&self, term: &TerminalBox) {
+        term.reattach_local();
+        self.present();
+        if let Some((notebook, page)) = self.find_terminal(term) {
+            self.jump_to_tab(&notebook, page);
+        } else {
+            term.vte().grab_focus();
+        }
+    }
+
+    /// Focus a terminal in whichever window of this process owns it.
+    pub fn focus_terminal_in_app(&self, term: &TerminalBox) {
+        if let Some(app) = self.application() {
+            for window in app.windows() {
+                if let Some(main) = window.downcast_ref::<MainWindow>() {
+                    if main.find_terminal(term).is_some() {
+                        main.focus_terminal(term);
+                        return;
+                    }
+                }
+            }
+        }
+        term.reattach_local();
+        if let Some(window) = term
+            .toplevel()
+            .and_then(|widget| widget.downcast::<gtk::Window>().ok())
+        {
+            window.present();
+        }
+        term.vte().grab_focus();
+    }
+
     fn jump_to_tab(&self, nb: &gtk::Notebook, page_idx: u32) {
         nb.set_current_page(Some(page_idx));
         nb.show_all();
@@ -4183,79 +4270,492 @@ impl MainWindow {
         }
     }
 
-    fn show_tmux_session_list(&self) {
+    /// Collect local, foreign and detached sessions in the background, then
+    /// show a searchable switcher. The control/broker probes can block, so
+    /// they never run on the GTK thread.
+    fn show_session_palette(&self) {
+        if SESSION_PALETTE_LOADING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        let weak = crate::SendWeak::new(self);
+        std::thread::spawn(move || {
+            let foreign = crate::control::foreign_panes();
+            let remote = crate::remote::list_sessions();
+            crate::run_on_main(move || {
+                SESSION_PALETTE_LOADING.store(false, std::sync::atomic::Ordering::Release);
+                if let Some(window) = weak.upgrade() {
+                    window.build_session_palette(foreign, remote);
+                }
+            });
+        });
+    }
+
+    fn build_session_palette(
+        &self,
+        foreign: Vec<crate::control::ForeignPane>,
+        remote: Vec<String>,
+    ) {
+        enum Target {
+            Local(TerminalBox),
+            Foreign {
+                socket: std::path::PathBuf,
+                id: String,
+            },
+            Remote {
+                id: String,
+            },
+        }
+        struct Item {
+            target: Target,
+            title: String,
+            detail: String,
+            search: String,
+        }
+
+        let mut items: Vec<Item> = Vec::new();
+        let mut known: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut local_terms: Vec<TerminalBox> = Vec::new();
+        if let Some(app) = self.application() {
+            for window in app.windows() {
+                if let Some(main) = window.downcast_ref::<MainWindow>() {
+                    local_terms.extend(main.all_terminals());
+                } else if let Some(detached) = window.downcast_ref::<DetachedWindow>() {
+                    if let Some(term) = detached.terminal_box() {
+                        local_terms.push(term);
+                    }
+                }
+            }
+        }
+        if local_terms.is_empty() {
+            local_terms = self.all_terminals();
+        }
+        for term in local_terms {
+            let id = term.remote_id();
+            if !known.insert(id.clone()) {
+                continue;
+            }
+            let title = term
+                .vte()
+                .window_title()
+                .map(|title| title.to_string())
+                .filter(|title| !title.is_empty())
+                .unwrap_or_else(|| id.clone());
+            let command = term.remote_command();
+            let command = if command.is_empty() {
+                "-".to_string()
+            } else {
+                command
+            };
+            let cwd = term.get_cwd();
+            let detail = format!("{}  ·  {}  [{}]", cwd, command, term.remote_status());
+            let search = format!("{} {} {} {}", title, id, cwd, command).to_lowercase();
+            items.push(Item {
+                target: Target::Local(term),
+                title,
+                detail,
+                search,
+            });
+        }
+        for pane in foreign {
+            if !known.insert(pane.id.clone()) {
+                continue;
+            }
+            let title = if pane.title.is_empty() {
+                "(untitled)".to_string()
+            } else {
+                pane.title.clone()
+            };
+            let command = if pane.command.is_empty() {
+                "-".to_string()
+            } else {
+                pane.command.clone()
+            };
+            let detail = format!(
+                "{}  ·  {}{}  ·  another window",
+                pane.cwd,
+                command,
+                if pane.running { " (running)" } else { "" }
+            );
+            let search = format!("{} {} {} {}", title, pane.id, pane.cwd, command).to_lowercase();
+            items.push(Item {
+                target: Target::Foreign {
+                    socket: pane.socket,
+                    id: pane.id,
+                },
+                title,
+                detail,
+                search,
+            });
+        }
+        for line in remote {
+            let fields: Vec<&str> = line.split('\t').collect();
+            let Some(id) = fields.first().copied().filter(|id| !id.is_empty()) else {
+                continue;
+            };
+            // A session with a local view is already represented by a tab or
+            // a foreign pane; only offer the broker-only ones for attach.
+            if fields.get(4).copied() != Some("local-off") {
+                continue;
+            }
+            if !known.insert(id.to_string()) {
+                continue;
+            }
+            let name = fields.get(1).copied().unwrap_or("");
+            let title = if !name.is_empty() {
+                name.to_string()
+            } else {
+                let title = fields.get(2).copied().unwrap_or("");
+                if title.is_empty() {
+                    id.to_string()
+                } else {
+                    title.to_string()
+                }
+            };
+            let cwd = fields.get(3).copied().unwrap_or("");
+            let command = fields.get(5).copied().unwrap_or("");
+            let command = if command.is_empty() { "-" } else { command };
+            let detail = format!(
+                "{}  ·  {}{}  ·  detached session",
+                cwd,
+                command,
+                if fields.get(6).copied() == Some("running") {
+                    " (running)"
+                } else {
+                    ""
+                }
+            );
+            let search = format!("{} {} {} {}", title, id, cwd, command).to_lowercase();
+            items.push(Item {
+                target: Target::Remote { id: id.to_string() },
+                title,
+                detail,
+                search,
+            });
+        }
+
         let dialog = gtk::Dialog::with_buttons(
-            Some("Oxterm Sessions"),
+            Some("Sessions"),
             Some(self),
             gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
             &[("Close", gtk::ResponseType::Close)],
         );
+        dialog.set_default_size(780, 460);
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        content.set_margin_start(12);
+        content.set_margin_end(12);
+        content.set_margin_top(12);
+        content.set_margin_bottom(12);
+        let entry = gtk::Entry::new();
+        entry.set_placeholder_text(Some("Filter by title, pane id, directory or command"));
+        content.pack_start(&entry, false, false, 0);
+
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::Single);
-        let mut choices = Vec::new();
-        let nb = self.imp().notebook.borrow().clone().unwrap();
-        let nb2 = self.imp().notebook2.borrow().clone().unwrap();
-        for notebook in [&nb, &nb2] {
-            for i in 0..notebook.n_pages() {
-                let Some(page) = notebook.nth_page(Some(i)) else {
-                    continue;
-                };
-                let Ok(term) = page.downcast::<TerminalBox>() else {
-                    continue;
-                };
-                let label = gtk::Label::new(Some(&format!(
-                    "{}  |  {}  |  {}  |  {}  |  {} [{}]",
-                    self.get_tab_text(&term),
-                    term.remote_id(),
-                    term.remote_status(),
-                    term.get_cwd(),
-                    if term.remote_command().is_empty() {
-                        "-".to_string()
-                    } else {
-                        term.remote_command()
-                    },
-                    term.remote_command_status()
-                )));
-                label.set_xalign(0.0);
-                label.set_margin_start(8);
-                label.set_margin_end(8);
-                label.set_margin_top(6);
-                label.set_margin_bottom(6);
-                let row = gtk::ListBoxRow::new();
-                row.add(&label);
-                list.add(&row);
-                choices.push(term);
-            }
+        list.set_activate_on_single_click(false);
+        let mut rows: Vec<(gtk::ListBoxRow, String)> = Vec::new();
+        for item in &items {
+            let title = gtk::Label::new(None);
+            title.set_markup(&format!("<b>{}</b>", glib::markup_escape_text(&item.title)));
+            title.set_xalign(0.0);
+            title.set_ellipsize(pango::EllipsizeMode::End);
+            let detail = gtk::Label::new(None);
+            detail.set_text(&item.detail);
+            detail.set_xalign(0.0);
+            detail.set_ellipsize(pango::EllipsizeMode::Middle);
+            detail.style_context().add_class("oxterm-stats-label");
+            let column = gtk::Box::new(gtk::Orientation::Vertical, 2);
+            column.set_margin_start(10);
+            column.set_margin_end(10);
+            column.set_margin_top(6);
+            column.set_margin_bottom(6);
+            column.pack_start(&title, false, false, 0);
+            column.pack_start(&detail, false, false, 0);
+            let row = gtk::ListBoxRow::new();
+            row.add(&column);
+            list.add(&row);
+            rows.push((row, item.search.clone()));
         }
-        if choices.is_empty() {
-            let label = gtk::Label::new(Some("No active Oxterm terminals."));
+        if items.is_empty() {
+            let label = gtk::Label::new(Some("No sessions found."));
             label.set_margin_top(12);
             label.set_margin_bottom(12);
             list.add(&label);
         }
-        let weak = crate::SendWeak::new(self);
-        let dialog_for_rows = dialog.clone();
-        list.connect_row_activated(move |_list, row| {
-            let index = row.index();
-            if index < 0 {
-                return;
-            }
-            if let Some(term) = choices.get(index as usize) {
-                term.reattach_local();
-                if let Some(w) = weak.upgrade() {
-                    if let Some((notebook, page)) = w.find_terminal(term) {
-                        w.jump_to_tab(&notebook, page);
-                    }
+        let scroll = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
+        scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        scroll.add(&list);
+        content.pack_start(&scroll, true, true, 0);
+        dialog.content_area().pack_start(&content, true, true, 0);
+
+        let list_for_filter = list.clone();
+        let rows_for_filter = rows.clone();
+        entry.connect_changed(move |entry| {
+            let query = entry.text().to_lowercase();
+            let mut first_visible = None;
+            for (row, search) in &rows_for_filter {
+                let visible = query.is_empty() || search.contains(&query);
+                row.set_visible(visible);
+                if visible && first_visible.is_none() {
+                    first_visible = Some(row.clone());
                 }
-                dialog_for_rows.close();
+            }
+            if let Some(row) = first_visible {
+                list_for_filter.select_row(Some(&row));
             }
         });
-        list.show_all();
-        dialog.content_area().pack_start(&list, true, true, 0);
-        dialog.set_default_size(760, 320);
+
+        let items = std::rc::Rc::new(items);
+        let activate: std::rc::Rc<dyn Fn(i32)> = {
+            let items = items.clone();
+            let dialog = dialog.clone();
+            let weak = crate::SendWeak::new(self);
+            std::rc::Rc::new(move |index: i32| {
+                let Some(item) = items.get(index as usize) else {
+                    return;
+                };
+                dialog.close();
+                let Some(window) = weak.upgrade() else {
+                    return;
+                };
+                match &item.target {
+                    Target::Local(term) => window.focus_terminal_in_app(term),
+                    Target::Foreign { socket, id } => {
+                        let socket = socket.clone();
+                        let id = id.clone();
+                        let weak = weak.clone();
+                        std::thread::spawn(move || {
+                            if let Err(error) = crate::control::focus_pane(&socket, &id) {
+                                crate::run_on_main(move || {
+                                    if let Some(window) = weak.upgrade() {
+                                        window.status_message(
+                                            &format!("Could not focus session: {}", error),
+                                            true,
+                                        );
+                                    }
+                                });
+                            }
+                        });
+                    }
+                    Target::Remote { id } => {
+                        let binary = std::env::current_exe()
+                            .map(|path| path.to_string_lossy().into_owned())
+                            .unwrap_or_else(|_| "oxterm".to_string());
+                        let command = vec![binary, "-a".to_string(), id.clone()];
+                        let title = item.title.clone();
+                        window.add_new_tab(None, None, Some(&title), Some(&title), Some(&command));
+                    }
+                }
+            })
+        };
+        let activate_for_list = activate.clone();
+        list.connect_row_activated(move |_, row| activate_for_list(row.index()));
+        let activate_for_entry = activate.clone();
+        let list_for_entry = list.clone();
+        entry.connect_activate(move |_| {
+            if let Some(row) = list_for_entry.selected_row().filter(|row| row.is_visible()) {
+                activate_for_entry(row.index());
+                return;
+            }
+            for index in 0..list_for_entry.children().len() as i32 {
+                if let Some(row) = list_for_entry.row_at_index(index) {
+                    if row.is_visible() {
+                        activate_for_entry(index);
+                        return;
+                    }
+                }
+            }
+        });
+        let list_for_keys = list.clone();
+        entry.connect_key_press_event(move |_, event| match event.keyval() {
+            K::Down => {
+                move_selection(&list_for_keys, 1);
+                glib::Propagation::Stop
+            }
+            K::Up => {
+                move_selection(&list_for_keys, -1);
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        });
         dialog.show_all();
+        entry.grab_focus();
+        if let Some(row) = list.row_at_index(0) {
+            list.select_row(Some(&row));
+        }
         dialog.run();
         dialog.close();
+    }
+
+    /// Pick a concrete `Host` alias and open it in a new tab.
+    ///
+    /// The install button copies an explicit `ssh host '…'` command to the
+    /// clipboard; Oxterm never injects shell integration into a session behind
+    /// the user's back.
+    fn show_ssh_host_picker(&self) {
+        let hosts = crate::headless::ssh_config::load_hosts();
+        let dialog = gtk::Dialog::with_buttons(
+            Some("Connect to SSH Host"),
+            Some(self),
+            gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+            &[
+                ("Connect", gtk::ResponseType::Accept),
+                ("Copy Integration Command", gtk::ResponseType::Apply),
+                ("Cancel", gtk::ResponseType::Cancel),
+            ],
+        );
+        dialog.set_default_size(640, 430);
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        content.set_margin_start(12);
+        content.set_margin_end(12);
+        content.set_margin_top(12);
+        content.set_margin_bottom(12);
+        let entry = gtk::Entry::new();
+        entry.set_placeholder_text(Some("Filter hosts from ~/.ssh/config, or type user@host"));
+        content.pack_start(&entry, false, false, 0);
+        let list = gtk::ListBox::new();
+        list.set_selection_mode(gtk::SelectionMode::Single);
+        list.set_activate_on_single_click(false);
+        let mut rows: Vec<(gtk::ListBoxRow, String)> = Vec::new();
+        for host in &hosts {
+            let label = gtk::Label::new(Some(host));
+            label.set_xalign(0.0);
+            label.set_margin_start(10);
+            label.set_margin_end(10);
+            label.set_margin_top(6);
+            label.set_margin_bottom(6);
+            let row = gtk::ListBoxRow::new();
+            row.add(&label);
+            list.add(&row);
+            rows.push((row, host.to_lowercase()));
+        }
+        if hosts.is_empty() {
+            let label = gtk::Label::new(Some("No concrete Host entries found; type a host above."));
+            label.set_margin_top(12);
+            label.set_margin_bottom(12);
+            list.add(&label);
+        }
+        let scroll = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
+        scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        scroll.add(&list);
+        content.pack_start(&scroll, true, true, 0);
+        let hint = gtk::Label::new(Some(
+            "Shell integration is installed only when you run the copied command; nothing is sent automatically.",
+        ));
+        hint.set_xalign(0.0);
+        hint.set_line_wrap(true);
+        hint.style_context().add_class("dim-label");
+        content.pack_start(&hint, false, false, 0);
+        dialog.content_area().pack_start(&content, true, true, 0);
+
+        let list_for_filter = list.clone();
+        let rows_for_filter = rows.clone();
+        entry.connect_changed(move |entry| {
+            let query = entry.text().to_lowercase();
+            let mut first_visible = None;
+            for (row, host) in &rows_for_filter {
+                let visible = query.is_empty() || host.contains(&query);
+                row.set_visible(visible);
+                if visible && first_visible.is_none() {
+                    first_visible = Some(row.clone());
+                }
+            }
+            if let Some(row) = first_visible {
+                list_for_filter.select_row(Some(&row));
+            }
+        });
+        let dialog_for_rows = dialog.clone();
+        list.connect_row_activated(move |_, _| {
+            dialog_for_rows.response(gtk::ResponseType::Accept);
+        });
+        let dialog_for_entry = dialog.clone();
+        let list_for_entry = list.clone();
+        entry.connect_activate(move |_| {
+            if let Some(row) = list_for_entry.selected_row().filter(|row| row.is_visible()) {
+                list_for_entry.select_row(Some(&row));
+                dialog_for_entry.response(gtk::ResponseType::Accept);
+                return;
+            }
+            for index in 0..list_for_entry.children().len() as i32 {
+                if let Some(row) = list_for_entry.row_at_index(index) {
+                    if row.is_visible() {
+                        list_for_entry.select_row(Some(&row));
+                        dialog_for_entry.response(gtk::ResponseType::Accept);
+                        return;
+                    }
+                }
+            }
+            dialog_for_entry.response(gtk::ResponseType::Accept);
+        });
+        let list_for_keys = list.clone();
+        entry.connect_key_press_event(move |_, event| match event.keyval() {
+            K::Down => {
+                move_selection(&list_for_keys, 1);
+                glib::Propagation::Stop
+            }
+            K::Up => {
+                move_selection(&list_for_keys, -1);
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        });
+        dialog.show_all();
+        entry.grab_focus();
+        if let Some(row) = list.row_at_index(0) {
+            list.select_row(Some(&row));
+        }
+        let response = dialog.run();
+        let selected = list
+            .selected_row()
+            .filter(|row| row.is_visible())
+            .and_then(|row| usize::try_from(row.index()).ok())
+            .and_then(|index| hosts.get(index))
+            .cloned();
+        let typed = entry.text().trim().to_string();
+        let host = selected
+            .filter(|host| !host.is_empty())
+            .or_else(|| (!typed.is_empty()).then_some(typed));
+        dialog.close();
+        let Some(host) = host else {
+            return;
+        };
+        if !host.chars().all(|c| !c.is_control() && !c.is_whitespace()) {
+            self.status_message("Invalid SSH host name", true);
+            return;
+        }
+        match response {
+            gtk::ResponseType::Accept => self.connect_ssh_host(&host),
+            gtk::ResponseType::Apply => self.copy_ssh_integration(&host),
+            _ => {}
+        }
+    }
+
+    fn connect_ssh_host(&self, host: &str) {
+        if crate::notes::which("ssh").is_none() {
+            self.status_message("Cannot connect: ssh is not installed", true);
+            return;
+        }
+        let command = vec!["ssh".to_string(), host.to_string()];
+        let title = host.to_string();
+        self.add_new_tab(None, None, Some(&title), Some(&title), Some(&command));
+    }
+
+    fn copy_ssh_integration(&self, host: &str) {
+        let encoded =
+            crate::headless::ssh_config::base64_encode(crate::terminal::OSC133_SCRIPT.as_bytes());
+        let install = format!(
+            "mkdir -p \"$HOME/.config/oxterm\" && printf %s '{}' | base64 -d > \"$HOME/.config/oxterm/osc133.sh\" && chmod 600 \"$HOME/.config/oxterm/osc133.sh\" && rc=\"$HOME/.bashrc\"; case \"$SHELL\" in *zsh*) rc=\"$HOME/.zshrc\";; esac; grep -q 'oxterm/osc133.sh' \"$rc\" 2>/dev/null || printf '\\n[ -r \"$HOME/.config/oxterm/osc133.sh\" ] && . \"$HOME/.config/oxterm/osc133.sh\"\\n' >> \"$rc\"; echo 'Oxterm shell integration installed; open a new shell.'",
+            encoded
+        );
+        let command = format!(
+            "ssh {} {}",
+            quote_shell_arg(host),
+            quote_shell_arg(&install)
+        );
+        gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).set_text(&command);
+        self.status_message(
+            "Integration command copied (bash/zsh); run it in a local shell to install it on the remote host",
+            false,
+        );
     }
 
     fn on_switch_tab(&self, page: &gtk::Widget, page_num: u32) {
@@ -4991,7 +5491,7 @@ impl MainWindow {
     }
 
     pub fn session_list_signal(&self) {
-        self.show_tmux_session_list();
+        self.show_session_palette();
     }
 
     pub fn broadcast_feed(&self, source: &TerminalBox, data: &[u8]) {
@@ -5366,6 +5866,12 @@ impl TerminalWindow for MainWindow {
     }
     fn session_list_signal(&self) {
         MainWindow::session_list_signal(self);
+    }
+    fn session_palette_signal(&self) {
+        self.show_session_palette();
+    }
+    fn ssh_picker_signal(&self) {
+        self.show_ssh_host_picker();
     }
     fn open_command_tab(&self, cwd: &str, command: Vec<String>, title: &str) {
         let term = self.add_new_tab(Some(cwd), None, Some(title), Some(title), Some(&command));

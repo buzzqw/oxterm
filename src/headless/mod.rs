@@ -16,6 +16,7 @@ pub mod osc133;
 pub mod paths;
 pub mod settings;
 pub mod spec;
+pub mod ssh_config;
 pub mod text;
 pub mod themes;
 pub mod vi;

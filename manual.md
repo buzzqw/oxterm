@@ -242,6 +242,13 @@ open it with the desktop browser. Explicit OSC 8 hyperlinks emitted by
 programs (for example `ls --hyperlink=auto`) are also honored when they target
 one of those two schemes; other schemes are blocked.
 
+Source locations such as `src/window.rs:1820:34` are recognized too. Press
+`Ctrl+Shift+H` and choose the label, or right-click the location and choose
+**Open in Editor**. The path is resolved against the pane's working directory
+and opened in a new tab with `editor_jump_command` (default
+`${EDITOR:-vi} +{line} {file}`). The template supports `{file}`, `{line}`, and
+`{col}`; for example, `code --goto {file}:{line}:{col}`.
+
 Press `Ctrl+Shift+F` to search the scrollback: type a query and use `Enter` /
 `Shift+Enter` to jump to the next / previous match, with optional case-sensitive
 and regular-expression modes. This searches the on-screen text and scrollback,
@@ -301,7 +308,8 @@ Snippet** only appear when there is something to act on.
 - Top level: **Copy**, **Paste**, **Paste Selection**, and **Select All**,
   followed by **Copy Link** / **Open Link in Browser** when the cursor is over
   a link, or **Open in File Manager** / **Copy Path** when the cursor is over
-  an existing path (or the current selection is one).
+  an existing path (or the current selection is one), or **Open in Editor** /
+  **Copy Location** when it is over a `file:line[:col]` location.
 - **Copy As**: **HTML**, **Whole Scrollback**, and, when available, **Last
   Command** and **Last Command Output**.
 - **Notes**: **Add Selection to Note...**, **Note Command Output...**,
@@ -342,6 +350,13 @@ came from, and it keeps the OSC 133 shell integration when the source window had
 it: command blocks, history and notifications continue here. Closing the adopted
 tab ends that session, as closing any other tab does; it does not go back to the
 window it came from.
+
+**Session switcher** (`Ctrl+Shift+O`, or `Ctrl+B` then `s`/`w`) searches across
+the panes of every local Oxterm window, panes owned by other Oxterm processes,
+and broker sessions with no local view. Press Enter to focus a local or foreign
+pane, or to attach a detached session in a new tab. Filtering matches the title,
+pane id, directory, and last command; foreign panes are focused through the
+control socket and are not moved.
 
 ### Windows
 
@@ -617,6 +632,14 @@ while `/proc` cannot lie about the process.
 
 ### SSH connections
 
+**Host picker.** `Ctrl+Shift+K` lists concrete `Host` entries from
+`~/.ssh/config`, including files pulled in by `Include`; wildcard and negated
+patterns are skipped. Pick an alias (or type `user@host`) and **Connect** opens
+a new tab running `ssh`. **Copy Integration Command** copies an explicit
+`ssh host '…'` command that installs the OSC 133 script on the remote bash/zsh
+account; run it yourself when you want it. Oxterm never injects shell
+integration into a session automatically.
+
 With shell integration active, `ssh` typed at the prompt goes through a small
 wrapper that:
 
@@ -663,7 +686,7 @@ remote tmux detaches instead of the local terminal.
 | `Ctrl++ / Ctrl+- / Ctrl+0` | Zoom font in / out / reset |
 | `Ctrl+Shift+E / Ctrl+Shift+D` | Vertical / horizontal split |
 | `Ctrl+Shift+M / Ctrl+M` | Set / jump to next quickmark |
-| `Ctrl+Shift+H` | Hint mode for URLs, paths and Git SHAs |
+| `Ctrl+Shift+H` | Hint mode for URLs, paths, file:line locations and Git SHAs |
 | `Ctrl+Shift+Y` | VI-style copy mode |
 | `Ctrl+Shift+G` | Open the last command's output in a pager |
 | `Ctrl+Shift+B` | Toggle broadcast input |
@@ -678,6 +701,8 @@ remote tmux detaches instead of the local terminal.
 | `Ctrl+Alt+PageUp` | Switch split pane |
 | `Ctrl+Shift+Up / Ctrl+Shift+Down` | Previous / next prompt |
 | `Ctrl+Shift+P` | Command palette |
+| `Ctrl+Shift+O` | Searchable session switcher |
+| `Ctrl+Shift+K` | Connect to an SSH host from ~/.ssh/config |
 | `Ctrl+B, then c` | New tab (tmux-compatible) |
 | `Ctrl+B, then n / p` | Next / previous tab |
 | `Ctrl+B, then % / "` | Vertical / horizontal split |

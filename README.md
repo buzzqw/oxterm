@@ -39,6 +39,12 @@ memory footprint and the memory-safety guarantees of Rust.
 - Timestamped Markdown notes with an in-app Notes menu, a searchable Notes panel (SQLite FTS5) with `#tags` and preview, per-entry context, and configurable editor integration
 - OSC 133 shell integration for prompts, command boundaries, and exit status
 - Sticky command header, failure marks on the scrollbar, and open-output-in-pager
+- Smart open: hint mode and the context menu turn `path:line:col` output into
+  an editor jump in a new tab, with a configurable `editor_jump_command`
+- Searchable session switcher across local windows, foreign panes, and detached
+  broker sessions, with attach/focus actions
+- SSH host picker from `~/.ssh/config`, plus an explicit copy-on-demand
+  shell-integration installer for remote bash/zsh sessions
 - Smart command-finished notifications: only when the terminal is unfocused or a command runs long, with failures always reported, plus a red dot on tabs whose last command failed
 - Scriptable control API: `new`, `split`, `send`, `capture`, and `wait` against a running window
 - VI copy mode with motions, text objects, visual block selection, scrolloff, and bookmarks
@@ -462,7 +468,7 @@ completion.
 | `Ctrl++` / `Ctrl+-` / `Ctrl+0` | Zoom font in / out / reset |
 | `Ctrl+Shift+E` / `Ctrl+Shift+D` | Vertical / horizontal split |
 | `Ctrl+Shift+M` / `Ctrl+M` | Set / jump to quickmark |
-| `Ctrl+Shift+H` | Hint mode for URLs, paths, and Git SHAs |
+| `Ctrl+Shift+H` | Hint mode for URLs, paths, file:line locations, and Git SHAs |
 | `Ctrl+Shift+Y` | VI-style copy mode |
 | `Ctrl+Shift+B` | Toggle broadcast input |
 | `click` | Open the URL under the cursor |
@@ -472,11 +478,13 @@ completion.
 | `Ctrl+Alt+PageUp` | Switch split pane |
 | `Ctrl+Shift+Up` / `Ctrl+Shift+Down` | Previous / next OSC 133 prompt |
 | `Ctrl+Shift+P` | Command palette |
+| `Ctrl+Shift+O` | Searchable session switcher |
+| `Ctrl+Shift+K` | Connect to an SSH host from `~/.ssh/config` |
 | `Ctrl+B`, then `c` | New tab (tmux-compatible) |
 | `Ctrl+B`, then `n` / `p` | Next / previous tab |
 | `Ctrl+B`, then `%` / `"` | Vertical / horizontal split |
 | `Ctrl+B`, then `o` | Switch split pane |
-| `Ctrl+B`, then `s` / `w` | Show the interactive terminal list |
+| `Ctrl+B`, then `s` / `w` | Open the session switcher |
 | `Ctrl+B`, then `d` | Detach the local terminal PTY |
 | `Ctrl+B`, then `x` | Close tab |
 | `Alt+1` ... `Alt+9` | Replay one of the 9 most recent history entries (at the shell prompt) |
@@ -487,6 +495,28 @@ the prefix. The prefix defaults to `Ctrl+B` and can be changed under
 Preferences → Input → "tmux-style prefix keys" and the "Prefix key (Ctrl+)"
 field. Set it to `Ctrl+A` (or turn the prefix off) when you use tmux or screen
 inside Oxterm and need `Ctrl+B` to reach them.
+
+### Smart open, sessions and SSH
+
+- **Smart open.** Hint mode recognizes `path:line[:col]` locations next to URLs,
+  paths, and Git SHAs. Selecting one opens the file at that line in a new tab
+  using `editor_jump_command` (default `${EDITOR:-vi} +{line} {file}`), resolved
+  against the pane's current directory. The same action is available from
+  **Open in Editor** / **Copy Location** in the context menu. Set the template
+  to your editor, for example `code --goto {file}:{line}:{col}` or
+  `nvim +{line} {file}`; `{file}`, `{line}`, and `{col}` are replaced with
+  safely quoted values.
+- **Session switcher.** `Ctrl+Shift+O` (also `Ctrl+B`, then `s`/`w`) opens a
+  searchable list of local panes across all windows, panes owned by other
+  Oxterm processes, and detached broker sessions. Enter focuses a local or
+  foreign pane, or attaches a detached session in a new tab. Foreign panes are
+  focused through the control socket, without moving or restarting them.
+- **SSH hosts.** `Ctrl+Shift+K` lists concrete `Host` aliases from
+  `~/.ssh/config`, including `Include` files; typing `user@host` works too.
+  **Copy Integration Command** places an explicit `ssh host '…'` command on the
+  clipboard that installs the OSC 133 script on the remote bash/zsh account
+  when you run it. Oxterm never injects shell integration into an SSH session
+  automatically.
 
 ## Configuration and Data
 

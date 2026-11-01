@@ -507,6 +507,24 @@ fn dispatch(request: &Value) -> Value {
             Some(_) => json!({ "ok": true }),
             None => error_reply("pane not found", 3),
         },
+        "focus" => {
+            let Some((window, term)) = find_terminal(&app, request["pane"].as_str().unwrap_or(""))
+            else {
+                return error_reply("pane not found", 3);
+            };
+            if let Some(window) = window {
+                window.focus_terminal(&term);
+            } else {
+                if let Some(window) = term
+                    .toplevel()
+                    .and_then(|widget| widget.downcast::<gtk::Window>().ok())
+                {
+                    window.present();
+                }
+                term.vte().grab_focus();
+            }
+            json!({ "ok": true })
+        }
         "new" => {
             let Some(window) = target_window(&app) else {
                 return error_reply("no running Oxterm window", 4);
@@ -657,6 +675,13 @@ pub(crate) fn socket_alive(path: &Path) -> bool {
 /// its next prompt (see `TerminalBox::open_osc133_fifo`).
 pub(crate) fn handover(socket: &Path, id: &str) -> Result<(), String> {
     request_at(socket, &json!({ "op": "handover", "pane": id }))
+        .map(|_| ())
+        .map_err(|(_, error)| error)
+}
+
+/// Ask another Oxterm window to come forward and select one of its panes.
+pub(crate) fn focus_pane(socket: &Path, id: &str) -> Result<(), String> {
+    request_at(socket, &json!({ "op": "focus", "pane": id }))
         .map(|_| ())
         .map_err(|(_, error)| error)
 }

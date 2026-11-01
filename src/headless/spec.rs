@@ -686,6 +686,12 @@ pub const SETTINGS: &[Setting] = &[
         "Editor used for notes and configuration files.",
     ),
     setting(
+        "editor_jump_command",
+        Kind::Text,
+        Default::Text("${EDITOR:-vi} +{line} {file}"),
+        "Editor command for file:line locations from hints and the context menu; use {file}, {line} and {col}.",
+    ),
+    setting(
         "snippets",
         Kind::StringMap,
         Default::Map,
@@ -1344,7 +1350,7 @@ pub const KEYBINDS: &[Keybind] = &[
     },
     Keybind {
         keys: "Ctrl+Shift+H",
-        description: "Hint mode for URLs, paths and Git SHAs",
+        description: "Hint mode for URLs, paths, file:line locations and Git SHAs",
     },
     Keybind {
         keys: "Ctrl+Shift+Y",
@@ -1401,6 +1407,14 @@ pub const KEYBINDS: &[Keybind] = &[
     Keybind {
         keys: "Ctrl+Shift+P",
         description: "Command palette",
+    },
+    Keybind {
+        keys: "Ctrl+Shift+O",
+        description: "Searchable session switcher",
+    },
+    Keybind {
+        keys: "Ctrl+Shift+K",
+        description: "Connect to an SSH host from ~/.ssh/config",
     },
     Keybind {
         keys: "Ctrl+B, then c",

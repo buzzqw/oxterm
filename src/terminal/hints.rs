@@ -57,9 +57,14 @@ impl TerminalBox {
         *self.imp().hints_buffer.borrow_mut() = String::new();
         self.imp().hints_map.borrow_mut().clear();
         let vte_w = self.vte().allocated_width();
+        let vte_h = self.vte().allocated_height();
         let hints_fixed = self.imp().hints_fixed.borrow().clone().unwrap();
-        hints_fixed.set_size_request(vte_w, -1);
-        hints_fixed.show_all();
+        // The overlay starts empty, so without an explicit height GTK can
+        // allocate it 0 px tall and clip every label added afterwards.
+        hints_fixed.set_size_request(vte_w, vte_h);
+        // `no_show_all` keeps the overlay out of the initial window show; a
+        // plain `show` is what makes it visible here.
+        hints_fixed.show();
         let matches = self.scan_for_hints();
         let labels = Self::generate_hint_labels(matches.len());
         for (i, (mtype, text, col, row)) in matches.iter().enumerate() {
@@ -127,6 +132,10 @@ impl TerminalBox {
         let clipboard = gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD);
         if mtype == "url" {
             self.open_url(&text);
+        } else if mtype == "file-line" {
+            if let Some(location) = super::parse_file_location(&text) {
+                self.open_file_location(&location);
+            }
         } else if mtype == "path" {
             clipboard.set_text(&text);
             let expanded = if let Some(rest) = text.strip_prefix("~/") {
@@ -171,55 +180,86 @@ impl TerminalBox {
             if row > last_row {
                 break;
             }
-            for m in hint_url_re().find_iter(line) {
-                matches.push((
-                    "url".to_string(),
-                    m.as_str().to_string(),
-                    char_column(line, m.start()) as i64,
-                    row,
-                ));
-            }
-            for m in hint_path_re().find_iter(line) {
-                let p = m.as_str().trim();
-                if p.chars().count() >= 3 {
-                    matches.push((
-                        "path".to_string(),
-                        p.to_string(),
-                        char_column(line, m.start()) as i64,
-                        row,
-                    ));
-                }
-            }
-            for m in hint_git_sha_re().find_iter(line) {
-                let sha = m.as_str().to_string();
-                if !sha.chars().all(|c| c.is_ascii_digit()) && sha.chars().count() >= 7 {
-                    matches.push((
-                        "git-sha".to_string(),
-                        sha,
-                        char_column(line, m.start()) as i64,
-                        row,
-                    ));
-                }
-            }
-            for m in hint_ip_re().find_iter(line) {
-                let ip = m.as_str().to_string();
-                let parts: Vec<&str> = ip.split('.').collect();
-                if parts.iter().all(|p| {
-                    p.parse::<i64>()
-                        .map(|v| (0..=255).contains(&v))
-                        .unwrap_or(false)
-                }) {
-                    matches.push((
-                        "ip".to_string(),
-                        ip,
-                        char_column(line, m.start()) as i64,
-                        row,
-                    ));
-                }
-            }
+            matches.extend(hint_matches_for_line(line, row));
         }
         let max_matches = HINT_CHARS.len() + HINT_CHARS.len() * HINT_CHARS.len();
         matches.truncate(max_matches);
         matches
     }
+}
+
+/// Per-line hint detection, split out so it can be tested without a VTE.
+pub(super) fn hint_matches_for_line(line: &str, row: i64) -> Vec<(String, String, i64, i64)> {
+    let mut matches = Vec::new();
+    for m in hint_url_re().find_iter(line) {
+        matches.push((
+            "url".to_string(),
+            m.as_str().to_string(),
+            char_column(line, m.start()) as i64,
+            row,
+        ));
+    }
+    // Offer `file:line[:col]` before the plain path so the editor action wins
+    // over "open the file manager", and remember the spans so the path scanner
+    // does not emit a second label on the same characters.
+    let mut file_line_spans: Vec<(usize, usize)> = Vec::new();
+    for captures in hint_file_line_re().captures_iter(line) {
+        let Some(matched) = captures.get(1) else {
+            continue;
+        };
+        if super::parse_file_location(matched.as_str()).is_some() {
+            file_line_spans.push((matched.start(), matched.end()));
+            matches.push((
+                "file-line".to_string(),
+                matched.as_str().to_string(),
+                char_column(line, matched.start()) as i64,
+                row,
+            ));
+        }
+    }
+    for m in hint_path_re().find_iter(line) {
+        if file_line_spans
+            .iter()
+            .any(|(start, end)| m.start() < *end && *start < m.end())
+        {
+            continue;
+        }
+        let p = m.as_str().trim();
+        if p.chars().count() >= 3 {
+            matches.push((
+                "path".to_string(),
+                p.to_string(),
+                char_column(line, m.start()) as i64,
+                row,
+            ));
+        }
+    }
+    for m in hint_git_sha_re().find_iter(line) {
+        let sha = m.as_str().to_string();
+        if !sha.chars().all(|c| c.is_ascii_digit()) && sha.chars().count() >= 7 {
+            matches.push((
+                "git-sha".to_string(),
+                sha,
+                char_column(line, m.start()) as i64,
+                row,
+            ));
+        }
+    }
+    for m in hint_ip_re().find_iter(line) {
+        let ip = m.as_str().to_string();
+        let parts: Vec<&str> = ip.split('.').collect();
+        if parts.iter().all(|p| {
+            p.parse::<i64>()
+                .map(|v| (0..=255).contains(&v))
+                .unwrap_or(false)
+        }) {
+            matches.push((
+                "ip".to_string(),
+                ip,
+                char_column(line, m.start()) as i64,
+                row,
+            ));
+        }
+    }
+    matches
 }
