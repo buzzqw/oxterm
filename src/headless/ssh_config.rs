@@ -152,6 +152,42 @@ fn expand_glob(pattern: &Path) -> Vec<PathBuf> {
     current.into_iter().filter(|path| path.exists()).collect()
 }
 
+/// Extra `ssh` options that mirror the shell-integration wrapper.
+///
+/// `ssh -G <host>` prints the effective configuration; when the user has not
+/// configured connection sharing or keepalives, add the same defaults the
+/// shell wrapper uses. This keeps host-picker tabs as fast as tabs where `ssh`
+/// was typed at an integrated prompt.
+pub fn sharing_options(effective_config: &str, socket_dir: &Path) -> Vec<String> {
+    let value = |key: &str| {
+        effective_config.lines().find_map(|line| {
+            line.strip_prefix(key)
+                .and_then(|rest| rest.strip_prefix(' '))
+                .map(str::trim)
+        })
+    };
+    let mut options = Vec::new();
+    if value("controlpath").map_or(true, |path| path == "none") {
+        options.extend([
+            "-o".to_string(),
+            "ControlMaster=auto".to_string(),
+            "-o".to_string(),
+            format!("ControlPath={}", socket_dir.join("cm-%C").display()),
+            "-o".to_string(),
+            "ControlPersist=10m".to_string(),
+        ]);
+    }
+    if value("serveraliveinterval") == Some("0") {
+        options.extend([
+            "-o".to_string(),
+            "ServerAliveInterval=30".to_string(),
+            "-o".to_string(),
+            "ServerAliveCountMax=4".to_string(),
+        ]);
+    }
+    options
+}
+
 /// Standard base64, used to paste the shell-integration script through a
 /// single-line SSH command without here-docs or local quoting surprises.
 pub fn base64_encode(data: &[u8]) -> String {
@@ -256,6 +292,29 @@ mod tests {
         assert!(wildcard_match("host?", "host1"));
         assert!(wildcard_match("*", "anything"));
         assert!(!wildcard_match("a*b", "abx"));
+    }
+
+    #[test]
+    fn sharing_options_respect_the_effective_config() {
+        let dir = Path::new("/home/ana/.config/oxterm");
+        let options = sharing_options("serveraliveinterval 0\n", dir);
+        assert!(options.iter().any(|option| option == "ControlMaster=auto"));
+        assert!(options
+            .iter()
+            .any(|option| option == "ControlPath=/home/ana/.config/oxterm/cm-%C"));
+        assert!(options
+            .iter()
+            .any(|option| option == "ServerAliveInterval=30"));
+
+        let configured = "controlpath /tmp/master\nserveraliveinterval 15\n";
+        assert!(sharing_options(configured, dir).is_empty());
+
+        let disabled = "controlpath none\nserveraliveinterval 15\n";
+        let options = sharing_options(disabled, dir);
+        assert!(options.iter().any(|option| option == "ControlMaster=auto"));
+        assert!(!options
+            .iter()
+            .any(|option| option == "ServerAliveInterval=30"));
     }
 
     #[test]

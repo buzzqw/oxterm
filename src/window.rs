@@ -124,6 +124,27 @@ fn move_selection(list: &gtk::ListBox, step: i32) {
 static SESSION_PALETTE_LOADING: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// `ssh` command for a host-picker connection, with the same connection
+/// sharing and keepalives the shell-integration wrapper applies.
+fn ssh_connect_command(host: &str) -> Vec<String> {
+    let mut command = vec!["ssh".to_string()];
+    if let Ok(output) = std::process::Command::new("ssh")
+        .arg("-G")
+        .arg(host)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        let config = String::from_utf8_lossy(&output.stdout);
+        command.extend(crate::headless::ssh_config::sharing_options(
+            &config,
+            &crate::settings::config_dir(),
+        ));
+    }
+    command.push(host.to_string());
+    command
+}
+
 /// Quote one argument for `/bin/sh`, including embedded single quotes.
 fn quote_shell_arg(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
@@ -4734,7 +4755,7 @@ impl MainWindow {
             self.status_message("Cannot connect: ssh is not installed", true);
             return;
         }
-        let command = vec!["ssh".to_string(), host.to_string()];
+        let command = ssh_connect_command(host);
         let title = host.to_string();
         self.add_new_tab(None, None, Some(&title), Some(&title), Some(&command));
     }
