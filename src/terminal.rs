@@ -2645,6 +2645,12 @@ impl TerminalBox {
         self.get_ssh_target().is_some()
     }
 
+    /// Drop the short-lived ssh-target cache, so a delayed badge check sees a
+    /// client that started just after the tab did.
+    pub fn refresh_ssh_target(&self) {
+        *self.imp().ssh_target_cache.borrow_mut() = None;
+    }
+
     /// The `[user@]host` destination of the active ssh/mosh session.
     pub fn ssh_destination(&self) -> Option<String> {
         crate::headless::ssh_config::ssh_destination(&self.get_ssh_target()?)

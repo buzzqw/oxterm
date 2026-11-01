@@ -3666,6 +3666,9 @@ impl MainWindow {
         self.update_tabs_menu();
 
         term.set_remote_info(&base, &term.get_cwd());
+        // Apply the badge after the label is realized: styling it before the
+        // first show can be replaced by the theme's normal tab style.
+        term.show_all();
         self.apply_ssh_alert(&term);
         // ssh is usually started by the shell a moment after the tab exists;
         // one delayed check catches that without a permanent polling timer.
@@ -3674,12 +3677,16 @@ impl MainWindow {
             let term = term.clone();
             glib::timeout_add_seconds_local(2, move || {
                 if let Some(window) = weak.upgrade() {
-                    window.apply_ssh_alert(&term);
+                    term.refresh_ssh_target();
+                    // Force the style once after the window is mapped: a
+                    // markup set before the first show can be replaced by the
+                    // theme's normal tab style.
+                    let title = window.get_tab_text(&term);
+                    window.set_tab_text(&term, &title);
                 }
                 glib::ControlFlow::Break
             });
         }
-        term.show_all();
         let weak = crate::SendWeak::new(&term);
         glib::idle_add_local(move || {
             if let Some(t) = weak.upgrade() {
