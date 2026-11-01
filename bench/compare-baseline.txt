@@ -2,9 +2,11 @@
 # Times are milliseconds (minimum of 3 runs); RSS is KiB.
 # Oxterm and its opponents are measured on the same display with an
 # isolated HOME; see the header of the script for the caveats.
+# Oxterm's RSS lines were refreshed after the display-free broker split; the
+# timing lines remain from the original reference run.
 oxterm.startup_ms=572
 oxterm.idle_cpu_ms=5.7
-oxterm.idle_rss_kb=121204
+oxterm.idle_rss_kb=93508
 oxterm.exec_ms=135
 oxterm.drain_ms=123
 oxterm.drain_cpu_ms=332.4
@@ -16,7 +18,7 @@ oxterm.chunks_cpu_ms=389.8
 oxterm.resize_ms=219
 oxterm.resize_cpu_ms=38.1
 oxterm.close_ms=17
-oxterm.peak_rss_kb=125060
+oxterm.peak_rss_kb=97020
 ghostty.startup_ms=667
 ghostty.idle_cpu_ms=24.7
 ghostty.idle_rss_kb=174576

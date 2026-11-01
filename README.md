@@ -681,10 +681,16 @@ minimum of three runs; absolute values depend on the machine and on its load:
 | 20 window resizes | 219 ms | **115 ms** | 282 ms | 455 ms |
 | CPU for the 20 resizes | 38.1 ms | 46.0 ms | 24.6 ms | **20.3 ms** |
 | Close window to process exit | **17 ms** | 58 ms | 24 ms | 21 ms |
-| Total tree RSS when idle | 118 MB | 170 MB | 116 MB | **80 MB** |
-| Peak tree RSS under the ANSI payload | 122 MB | 177 MB | 131 MB | **78 MB** |
+| Total tree RSS when idle | 91 MB* | 170 MB | 116 MB | **80 MB** |
+| Peak tree RSS under the ANSI payload | 95 MB* | 177 MB | 131 MB | **78 MB** |
 
 Bold marks the best value in each row.
+
+\* The Oxterm RSS rows were re-measured after the display-free broker split
+(CachyOS, Intel i7-1355U, release build); the other rows are the original Ryzen
+reference run. About 18 MB of the drop from the earlier 118/122 MB values comes
+from the broker no longer mapping GTK/VTE; the rest is machine and library
+variation.
 
 CPU time is the more informative row: wall time in the drain test is bounded by
 how each terminal acknowledges PTY output, while CPU time shows what the
@@ -735,9 +741,10 @@ xfce4-terminal is the closest peer: it uses the same VTE parser, grid and
 renderer without Oxterm's broker, and it sets the efficiency floor. It spends
 the least CPU on the ANSI payload (189.6 ms against 332.4 ms for Oxterm,
 253.3 ms for Alacritty and 510.0 ms for Ghostty), the least on the plain and
-write-bound payloads, and the least memory (80 MB idle against 118 MB for
-Oxterm and 116 MB for Alacritty). Of Oxterm's 332.4 ms, 81.0 ms is its PTY
-broker — the difference between the terminal-only and GUI-process rows.
+write-bound payloads, and the least memory (80 MB idle against 91 MB for
+Oxterm after the broker split and 116 MB for Alacritty). Of Oxterm's 332.4 ms,
+81.0 ms is its PTY broker — the difference between the terminal-only and
+GUI-process rows.
 xfce4-terminal pays for that economy on wall time: it is the slowest in the
 resize storm (455 ms) and lands with Alacritty in the middle of the throughput
 ranking. Startup to a mapped window is the one row where the four stay within a
