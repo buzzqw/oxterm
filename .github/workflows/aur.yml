@@ -58,8 +58,13 @@ jobs:
         run: |
           set -euo pipefail
           build_dir="$(mktemp -d)"
-          cp packaging/aur/PKGBUILD "$build_dir/"
-          chown builder "$build_dir"
+          # The published PKGBUILD pins the release tag, which predates whatever
+          # this commit changes (a new binary would fail to install). Build this
+          # checkout with the same recipe; the tag only exists after a release.
+          sed 's|^source=.*|source=("$pkgname::git+file://'"$GITHUB_WORKSPACE"'#commit='"$GITHUB_SHA"'")|' \
+            packaging/aur/PKGBUILD > "$build_dir/PKGBUILD"
+          grep -q "$GITHUB_SHA" "$build_dir/PKGBUILD"
+          chown -R builder "$build_dir"
           su builder -c "cd '$build_dir' && makepkg -f --noconfirm --log"
           package_file="$(find "$build_dir" -maxdepth 1 -name 'oxterm-[0-9]*.pkg.tar.zst' -print -quit)"
           echo "PACKAGE_FILE=$package_file" >> "$GITHUB_ENV"
