@@ -845,6 +845,28 @@ instead of collecting a `Vec<char>` on every key press. The word-motion
 micro-benchmark (eight hops on a long line) fell from 3.7 µs to 0.5 µs on the
 test machine; the reference baseline was about 6 µs.
 
+Three smaller fixes from the same review:
+
+- Theme lookup checks Oxterm's own palettes before the generated catalogue, so
+  a default `Dark (Default)`/`Light` session never parses the 112 KB
+  `themes.json` or scans `~/.config/oxterm/themes/`: the first lookup falls
+  from about 1.5 ms to 33 µs, while later lookups are about 25 ns and the full
+  catalogue stays lazy for the settings dialog and `--list-themes`.
+- The history worker reads `.git/HEAD` directly instead of forking
+  `git rev-parse --abbrev-ref HEAD` for the Git-branch column. A fork/exec
+  costs about 2.9 ms on the test machine; the file read costs about 1.2 µs and
+  still handles worktrees, submodules, bare repositories and `GIT_DIR`.
+- The history worker's second thread, which only forwarded requests from the
+  full bounded queue into an overflow channel, is gone: one FIFO channel feeds
+  the worker without blocking the GUI. Settings getters also skip the overrides
+  mutex when no `-o`/`--font` overrides exist and no longer clone the JSON value
+  for scalar reads (about 28 ns per lookup).
+
+The control server keeps one thread per connection: spawning a thread costs
+about 24-48 µs, a small part of the 0.3 ms control round trip, while a bounded
+pool would let a few long `oxterm wait` requests starve latency-sensitive
+pings.
+
 A `splice`-based relay is the next step if per-byte CPU ever becomes a
 priority; it is deliberately not done yet, because it complicates the remote
 client fan-out for no measured gain in wall time.

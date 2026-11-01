@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::{self, SyncSender, TrySendError};
+use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -19,7 +19,6 @@ pub fn history_db_path() -> PathBuf {
 
 const TRIM_CHECK_INTERVAL: u32 = 50;
 const TRIM_MAX_ROWS: i64 = 1_000_000;
-const HISTORY_QUEUE_SIZE: usize = 256;
 
 type SearchCallback = Box<dyn FnOnce(Vec<Vec<Value>>) + Send + 'static>;
 type SqlCallback = Box<dyn FnOnce(Result<Vec<Vec<Value>>, String>) + Send + 'static>;
@@ -34,7 +33,7 @@ enum HistoryRequest {
         exit_code: i64,
         duration_ms: Option<i64>,
         git_branch: Option<String>,
-        /// Resolve the git branch of `cwd` on the worker (spawns `git`).
+        /// Resolve the git branch of `cwd` on the worker.
         lookup_branch: bool,
     },
     SetResult {
@@ -64,42 +63,21 @@ enum HistoryRequest {
     Clear,
 }
 
-struct HistoryWorker {
-    sender: SyncSender<HistoryRequest>,
-    overflow_sender: mpsc::Sender<HistoryRequest>,
-}
-
-static HISTORY_WORKER: OnceLock<HistoryWorker> = OnceLock::new();
+static HISTORY_WORKER: OnceLock<mpsc::Sender<HistoryRequest>> = OnceLock::new();
 static HISTORY_TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-/// Requests parked in the overflow channel. While any are pending, new
-/// requests must queue behind them so the worker sees them in order.
-static OVERFLOW_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-fn history_worker() -> &'static HistoryWorker {
+/// One unbounded MPSC channel feeds the history worker. The worker drains it in
+/// order, so there is no need for the extra thread (and its OS stack) that used
+/// to forward requests from a full bounded channel into an overflow channel.
+/// As before, enqueuing never blocks the GTK thread.
+fn history_worker() -> &'static mpsc::Sender<HistoryRequest> {
     HISTORY_WORKER.get_or_init(|| {
-        let (sender, receiver) = mpsc::sync_channel(HISTORY_QUEUE_SIZE);
-        let (overflow_sender, overflow_receiver) = mpsc::channel();
-        let sender_for_overflow = sender.clone();
+        let (sender, receiver) = mpsc::channel();
         std::thread::Builder::new()
             .name("oxterm-history".to_string())
             .spawn(move || history_worker_loop(receiver))
             .expect("could not start history worker");
-        std::thread::Builder::new()
-            .name("oxterm-history-overflow".to_string())
-            .spawn(move || {
-                for request in overflow_receiver {
-                    let sent = sender_for_overflow.send(request).is_ok();
-                    OVERFLOW_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
-                    if !sent {
-                        break;
-                    }
-                }
-            })
-            .expect("could not start history overflow worker");
-        HistoryWorker {
-            sender,
-            overflow_sender,
-        }
+        sender
     })
 }
 
@@ -218,38 +196,26 @@ fn history_worker_loop(receiver: mpsc::Receiver<HistoryRequest>) {
     }
 }
 
-/// Queue a request for the worker without ever blocking the caller. Once a
-/// request has spilled into the overflow channel, later ones follow it there
-/// so they cannot overtake it (e.g. a Clear overtaking an earlier Add).
+/// Queue a request for the worker without ever blocking the caller. A single
+/// FIFO queue keeps ordering (e.g. a Clear cannot overtake an earlier Add).
 /// Returns false if the worker has stopped and the request was dropped.
 fn send_history_request(request: HistoryRequest, what: &str) -> bool {
-    let worker = history_worker();
-    let request = if OVERFLOW_IN_FLIGHT.load(Ordering::Acquire) == 0 {
-        match worker.sender.try_send(request) {
-            Ok(()) => return true,
-            Err(TrySendError::Full(request)) => request,
-            Err(TrySendError::Disconnected(_)) => {
-                crate::logging::log_warning(&format!("history worker stopped; {} skipped", what));
-                return false;
-            }
-        }
-    } else {
-        request
-    };
-    OVERFLOW_IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
-    if worker.overflow_sender.send(request).is_err() {
-        OVERFLOW_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+    if history_worker().send(request).is_err() {
         crate::logging::log_warning(&format!("history worker stopped; {} dropped", what));
         return false;
     }
     true
 }
 
-/// Branch of the git repository containing `cwd`, if any. Runs `git`, so it
-/// is only called from the history worker thread.
+/// Branch of the git repository containing `cwd`, if any.
+///
+/// Reads `.git/HEAD` directly instead of spawning `git rev-parse`: this runs on
+/// the history worker for shell prompts, and a fork/exec costs a few
+/// milliseconds while reading one small file costs microseconds. Worktrees and
+/// submodules are handled through the `.git` file's `gitdir:` indirection.
 fn current_git_branch(cwd: &str) -> Option<String> {
     // A command can emit more than one OSC 133 command-start event in quick
-    // succession; a short TTL avoids spawning git for each of them.
+    // succession; a short TTL avoids repeating even the cheap filesystem walk.
     static CACHE: OnceLock<Mutex<HashMap<String, (Instant, Option<String>)>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(entries) = cache.lock() {
@@ -259,23 +225,7 @@ fn current_git_branch(cwd: &str) -> Option<String> {
             }
         }
     }
-    let output = std::process::Command::new("git")
-        .args(["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok();
-    let branch = output.and_then(|output| {
-        if !output.status.success() {
-            return None;
-        }
-        let branch = String::from_utf8(output.stdout).ok()?.trim().to_string();
-        if branch.is_empty() || branch == "HEAD" {
-            None
-        } else {
-            Some(branch)
-        }
-    });
+    let branch = read_git_branch(Path::new(cwd));
     if let Ok(mut entries) = cache.lock() {
         if entries.len() >= 256 {
             entries.clear();
@@ -283,6 +233,54 @@ fn current_git_branch(cwd: &str) -> Option<String> {
         entries.insert(cwd.to_string(), (Instant::now(), branch.clone()));
     }
     branch
+}
+
+/// Resolve the checked-out branch below `start` without running git.
+fn read_git_branch(start: &Path) -> Option<String> {
+    // Match `git -C`: an explicit GIT_DIR overrides repository discovery.
+    if let Some(git_dir) = std::env::var_os("GIT_DIR") {
+        let git_dir = Path::new(&git_dir);
+        let git_dir = if git_dir.is_absolute() {
+            git_dir.to_path_buf()
+        } else {
+            start.join(git_dir)
+        };
+        return branch_from_git_dir(&git_dir);
+    }
+    let mut directory = start;
+    loop {
+        let dot_git = directory.join(".git");
+        if let Ok(metadata) = std::fs::metadata(&dot_git) {
+            if metadata.is_dir() {
+                return branch_from_git_dir(&dot_git);
+            }
+            if metadata.is_file() {
+                let contents = std::fs::read_to_string(&dot_git).ok()?;
+                let target = contents
+                    .lines()
+                    .find_map(|line| line.strip_prefix("gitdir:"))?;
+                let target = Path::new(target.trim());
+                let git_dir = if target.is_absolute() {
+                    target.to_path_buf()
+                } else {
+                    directory.join(target)
+                };
+                return branch_from_git_dir(&git_dir);
+            }
+        }
+        // A bare repository has no `.git` entry: it is the git directory.
+        if directory.join("HEAD").is_file() && directory.join("objects").is_dir() {
+            return branch_from_git_dir(directory);
+        }
+        directory = directory.parent()?;
+    }
+}
+
+fn branch_from_git_dir(git_dir: &Path) -> Option<String> {
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let reference = head.trim().strip_prefix("ref: ")?;
+    let branch = reference.strip_prefix("refs/heads/")?;
+    (!branch.is_empty()).then(|| branch.to_string())
 }
 
 /// Owns the SQLite connection. Only the history worker thread (and tests)
@@ -1021,9 +1019,70 @@ fn rusqlite_value_to_json(v: rusqlite::types::Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_read_only_sql, HistoryManager};
+    use super::{is_read_only_sql, read_git_branch, HistoryManager};
     use rusqlite::Connection;
+    use std::fs;
     use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir() -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("oxterm-git-{}-{unique}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn reads_branch_from_git_head_without_running_git() {
+        let root = temp_dir();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join(".git/HEAD"), "ref: refs/heads/feature/x\n").unwrap();
+        let nested = root.join("src/deep");
+        fs::create_dir_all(&nested).unwrap();
+        assert_eq!(read_git_branch(&nested).as_deref(), Some("feature/x"));
+
+        fs::write(
+            root.join(".git/HEAD"),
+            "0123456789012345678901234567890123456789\n",
+        )
+        .unwrap();
+        assert_eq!(read_git_branch(&root), None);
+
+        fs::remove_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join("HEAD"), "ref: refs/heads/bare\n").unwrap();
+        fs::create_dir_all(root.join("objects")).unwrap();
+        assert_eq!(read_git_branch(&root).as_deref(), Some("bare"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn follows_gitdir_files_for_worktrees() {
+        let root = temp_dir();
+        let git_dir = root.join("real-git");
+        fs::create_dir_all(&git_dir).unwrap();
+        fs::write(git_dir.join("HEAD"), "ref: refs/heads/worktree-branch\n").unwrap();
+        let worktree = root.join("worktree");
+        fs::create_dir_all(&worktree).unwrap();
+        fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", git_dir.display()),
+        )
+        .unwrap();
+        assert_eq!(
+            read_git_branch(&worktree).as_deref(),
+            Some("worktree-branch")
+        );
+
+        fs::write(worktree.join(".git"), "gitdir: ../real-git\n").unwrap();
+        assert_eq!(
+            read_git_branch(&worktree).as_deref(),
+            Some("worktree-branch")
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     fn test_history() -> HistoryManager {
         let conn = Connection::open_in_memory().unwrap();

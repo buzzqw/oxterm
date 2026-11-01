@@ -86,14 +86,27 @@ pub fn all() -> &'static BTreeMap<String, Theme> {
     })
 }
 
+/// Look up a theme by name.
+///
+/// Oxterm's own palettes are checked before the generated catalogue so the
+/// common startup path (`Dark (Default)` and `Light`) does not have to parse
+/// the 112 KB `themes.json` bundle or scan the user theme directory. The full
+/// catalogue is still loaded lazily on a cache miss, for example when a
+/// settings dialog or `--list-themes` needs every theme.
 pub fn get(name: &str) -> Option<&'static Theme> {
-    all().get(name)
+    originals_cached().get(name).or_else(|| all().get(name))
 }
 
 pub fn default_theme() -> &'static Theme {
-    get("Dark (Default)")
+    originals_cached()
+        .get("Dark (Default)")
         .or_else(|| all().values().next())
         .expect("at least one built-in theme")
+}
+
+fn originals_cached() -> &'static BTreeMap<String, Theme> {
+    static ORIGINALS: OnceLock<BTreeMap<String, Theme>> = OnceLock::new();
+    ORIGINALS.get_or_init(originals)
 }
 
 /// Every theme embedded in the binary.
@@ -613,6 +626,14 @@ mod tests {
         assert!(themes.contains_key("Tokyo Night"));
         assert!(themes.contains_key("Dracula"));
         assert!(themes.contains_key("0x96f"));
+    }
+
+    #[test]
+    fn lookups_cover_originals_and_the_lazy_catalogue() {
+        assert_eq!(get("Dark (Default)").unwrap().background, "#0a0a0a");
+        assert_eq!(get("Light").unwrap().background, "#ffffff");
+        assert!(get("Catppuccin Mocha").is_some());
+        assert!(get("Definitely Missing").is_none());
     }
 
     #[test]

@@ -43,6 +43,9 @@ pub fn config_file() -> PathBuf {
 /// loaded configuration on every read but are **never** written back to disk, so
 /// the user's stored settings stay untouched.
 static OVERRIDES: OnceLock<Mutex<Map<String, Value>>> = OnceLock::new();
+/// Fast path for the common case (no `-o`/`--font` overrides): every settings
+/// lookup can skip the overrides mutex entirely.
+static HAS_OVERRIDES: AtomicBool = AtomicBool::new(false);
 
 fn overrides() -> &'static Mutex<Map<String, Value>> {
     OVERRIDES.get_or_init(|| Mutex::new(Map::new()))
@@ -59,11 +62,15 @@ pub fn set_override(key: &str, value: Value) -> Result<(), String> {
         .lock()
         .map_err(|_| "settings overrides lock is unavailable".to_string())?
         .insert(key.to_string(), value);
+    HAS_OVERRIDES.store(true, Ordering::Release);
     Ok(())
 }
 
 fn override_value(key: &str) -> Option<Value> {
-    overrides().lock().unwrap().get(key).cloned()
+    if !HAS_OVERRIDES.load(Ordering::Acquire) {
+        return None;
+    }
+    overrides().lock().ok()?.get(key).cloned()
 }
 
 /// Keys overridden for this session, sorted. Used by the diagnostics report so
@@ -366,30 +373,53 @@ impl Settings {
     }
 
     pub fn get_str(&self, key: &str) -> String {
-        self.get_default(key, Value::String(String::new()))
-            .as_str()
+        if let Some(value) = override_value(key) {
+            return value.as_str().unwrap_or("").to_string();
+        }
+        self.ensure_loaded();
+        self.data()
+            .get(key)
+            .and_then(Value::as_str)
             .unwrap_or("")
             .to_string()
     }
 
     pub fn get_str_default(&self, key: &str, default: &str) -> String {
-        self.get_default(key, Value::String(default.to_string()))
-            .as_str()
+        if let Some(value) = override_value(key) {
+            return value.as_str().unwrap_or(default).to_string();
+        }
+        self.ensure_loaded();
+        self.data()
+            .get(key)
+            .and_then(Value::as_str)
             .unwrap_or(default)
             .to_string()
     }
 
     pub fn get_i64(&self, key: &str) -> i64 {
-        self.get_default(key, json!(0)).as_i64().unwrap_or(0)
+        if let Some(value) = override_value(key) {
+            return value.as_i64().unwrap_or(0);
+        }
+        self.ensure_loaded();
+        self.data().get(key).and_then(Value::as_i64).unwrap_or(0)
     }
 
     pub fn get_f64(&self, key: &str) -> f64 {
-        self.get_default(key, json!(0.0)).as_f64().unwrap_or(0.0)
+        if let Some(value) = override_value(key) {
+            return value.as_f64().unwrap_or(0.0);
+        }
+        self.ensure_loaded();
+        self.data().get(key).and_then(Value::as_f64).unwrap_or(0.0)
     }
 
     pub fn get_bool(&self, key: &str) -> bool {
-        self.get_default(key, json!(false))
-            .as_bool()
+        if let Some(value) = override_value(key) {
+            return value.as_bool().unwrap_or(false);
+        }
+        self.ensure_loaded();
+        self.data()
+            .get(key)
+            .and_then(Value::as_bool)
             .unwrap_or(false)
     }
 
