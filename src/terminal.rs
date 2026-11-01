@@ -256,8 +256,14 @@ const PALETTE_ACTIONS: &[PaletteAction] = &[
     PaletteAction {
         id: "ssh-picker",
         title: "Connect to SSH host",
-        detail: "Choose a host from ~/.ssh/config",
+        detail: "Choose a saved connection or a host from ~/.ssh/config",
         keys: "Ctrl+Shift+K",
+    },
+    PaletteAction {
+        id: "connections-panel",
+        title: "Connections panel",
+        detail: "Browse, edit and open saved SSH connections",
+        keys: "Ctrl+Shift+J",
     },
 ];
 
@@ -1112,6 +1118,9 @@ mod imp {
         pub remote_stats_ts: RefCell<f64>,
         pub remote_stats_running: RefCell<bool>,
         pub ssh_target_cache: RefCell<Option<(Instant, Option<Vec<String>>)>>,
+        /// The saved connection this terminal was opened from.
+        pub connection_id: RefCell<Option<String>>,
+        pub connection_name: RefCell<Option<String>>,
 
         /// `(row, kind, exit status)`; the status is `None` when the shell
         /// reported an event without one.
@@ -2361,6 +2370,21 @@ impl TerminalBox {
                 handle.update_command(&command, running);
             }
         }
+    }
+
+    pub fn connection_id(&self) -> Option<String> {
+        self.imp().connection_id.borrow().clone()
+    }
+
+    /// The saved connection's display name, which can say what the address does
+    /// not: `db-prod-1` may well be `10.0.0.1`.
+    pub fn connection_name(&self) -> Option<String> {
+        self.imp().connection_name.borrow().clone()
+    }
+
+    pub fn set_connection(&self, id: Option<String>, name: Option<String>) {
+        *self.imp().connection_id.borrow_mut() = id;
+        *self.imp().connection_name.borrow_mut() = name;
     }
 
     pub fn remote_id(&self) -> String {
@@ -4473,6 +4497,10 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 self.call_window(|win| win.ssh_picker_signal());
                 return glib::Propagation::Stop;
             }
+            if key == K::j || key == K::J {
+                self.call_window(|win| win.connections_panel_signal());
+                return glib::Propagation::Stop;
+            }
             if key == K::h || key == K::H {
                 if settings().get_bool("hint_mode_enabled") {
                     self.activate_hints();
@@ -5239,6 +5267,9 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             }
             "ssh-picker" => {
                 self.call_window(|window| window.ssh_picker_signal());
+            }
+            "connections-panel" => {
+                self.call_window(|window| window.connections_panel_signal());
             }
             _ => {}
         }

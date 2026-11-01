@@ -1426,7 +1426,11 @@ pub const KEYBINDS: &[Keybind] = &[
     },
     Keybind {
         keys: "Ctrl+Shift+K",
-        description: "Connect to an SSH host from ~/.ssh/config",
+        description: "Connect to a saved connection or a host from ~/.ssh/config",
+    },
+    Keybind {
+        keys: "Ctrl+Shift+J",
+        description: "Show or hide the connections panel",
     },
     Keybind {
         keys: "Ctrl+B, then c",
