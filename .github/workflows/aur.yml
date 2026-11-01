@@ -72,6 +72,7 @@ jobs:
           for expected in \
             usr/bin/oxterm \
             usr/bin/oxterm-broker \
+            usr/bin/oxterm-askpass \
             usr/share/applications/oxterm.desktop \
             usr/share/icons/hicolor/scalable/apps/oxterm.svg \
             usr/share/man/man1/oxterm.1.gz \

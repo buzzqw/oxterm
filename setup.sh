@@ -50,17 +50,19 @@ fi
 
 SOURCE_BIN="${ROOT_DIR}/target/release/oxterm"
 SOURCE_BROKER="${ROOT_DIR}/target/release/oxterm-broker"
-if [[ ! -x "${SOURCE_BIN}" || ! -x "${SOURCE_BROKER}" ]]; then
+SOURCE_ASKPASS="${ROOT_DIR}/target/release/oxterm-askpass"
+if [[ ! -x "${SOURCE_BIN}" || ! -x "${SOURCE_BROKER}" || ! -x "${SOURCE_ASKPASS}" ]]; then
     if [[ "$BUILD" == true ]]; then
         printf '%s\n' "Oxterm: release binaries were not produced" >&2
     else
-        printf '%s\n' "Oxterm: ${SOURCE_BIN} or ${SOURCE_BROKER} is missing; run ./setup.sh without --no-build" >&2
+        printf '%s\n' "Oxterm: ${SOURCE_BIN}, ${SOURCE_BROKER} or ${SOURCE_ASKPASS} is missing; run ./setup.sh without --no-build" >&2
     fi
     exit 1
 fi
 
 install -Dm755 "${SOURCE_BIN}" "${PREFIX}/bin/oxterm"
 install -Dm755 "${SOURCE_BROKER}" "${PREFIX}/bin/oxterm-broker"
+install -Dm755 "${SOURCE_ASKPASS}" "${PREFIX}/bin/oxterm-askpass"
 
 install -Dm644 "${ROOT_DIR}/packaging/oxterm.svg" \
     "${PREFIX}/share/icons/hicolor/scalable/apps/oxterm.svg"

@@ -47,11 +47,13 @@ jobs:
           mkdir -p dist
           install -m 0755 target/release/oxterm oxterm-linux-x86-64
           install -m 0755 target/release/oxterm-broker oxterm-broker-linux-x86-64
+          install -m 0755 target/release/oxterm-askpass oxterm-askpass-linux-x86-64
           install -m 0755 oxterm-linux-x86-64 dist/oxterm-linux-x86-64
           install -m 0755 oxterm-broker-linux-x86-64 dist/oxterm-broker-linux-x86-64
+          install -m 0755 oxterm-askpass-linux-x86-64 dist/oxterm-askpass-linux-x86-64
           install -m 0644 themes/licenses.md dist/THEME-LICENSES.md
           tar -C dist -czf dist/oxterm-linux-x86-64.tar.gz \
-            oxterm-linux-x86-64 oxterm-broker-linux-x86-64 THEME-LICENSES.md
+            oxterm-linux-x86-64 oxterm-broker-linux-x86-64 oxterm-askpass-linux-x86-64 THEME-LICENSES.md
 
       - name: Upload executable artifact
         uses: actions/upload-artifact@v4
