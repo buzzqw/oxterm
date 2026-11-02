@@ -1297,7 +1297,11 @@ fn show_bookmarks_menu(browser: &Rc<Browser>, remote: bool, button: &gtk::Button
 pub fn open(parent: &gtk::Window, connection: Connection) {
     let window = gtk::Window::new(gtk::WindowType::Toplevel);
     window.set_title(&format!("Files: {}", connection.name));
-    window.set_transient_for(None::<&gtk::Window>);
+    // Keep the browser above its terminal: without a transient parent some
+    // window managers open it behind and it looks as if nothing happened.
+    window.set_transient_for(Some(parent));
+    window.set_destroy_with_parent(false);
+    window.set_position(gtk::WindowPosition::CenterOnParent);
     window.set_default_size(1000, 620);
     if let Some(application) = parent.application() {
         window.set_application(Some(&application));

@@ -988,7 +988,9 @@ the tab, and closing the tab closes the viewer.
 **File browser.** An SFTP or FTP entry opens a two-pane window, with this computer on
 the left and the server on the right. **Browse Files...** in the panel's context menu
 or the **Connections** menu does the same for any SSH entry, reusing an open
-connection so no new login is needed.
+connection so no new login is needed. Right-click an SSH tab and choose
+**Browse Remote Files...** to do it from the tab itself; a raw `ssh user@host`
+session works too, without a saved entry.
 
 - Double-click a folder to enter it, or a file to copy it to the other side.
 - Use **Upload** and **Download**, or drag between the panes. You can also drop files

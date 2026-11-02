@@ -1391,6 +1391,44 @@ pub fn find_entry_by_id<'a>(entries: &'a [Entry], id: &str) -> Option<&'a Entry>
     entries.iter().find(|entry| entry.connection.id == id)
 }
 
+/// Build a temporary SSH connection from `[user@]host[:port]`.
+///
+/// Used when a file browser is opened for an `ssh` command that is not a saved
+/// connection, for example from the tab menu or the `remote-browser` plugin.
+pub fn from_destination(name: &str) -> Option<Connection> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let (user, rest) = match name.rsplit_once('@') {
+        Some((user, host)) => (user.to_string(), host),
+        None => (String::new(), name),
+    };
+    if rest.is_empty() {
+        return None;
+    }
+    let (host, port) = match rest.rsplit_once(':') {
+        Some((host, port)) if !host.is_empty() && !host.contains(':') => {
+            match port.parse::<u16>() {
+                Ok(port) => (host.to_string(), Some(port)),
+                Err(_) => (rest.to_string(), None),
+            }
+        }
+        _ => (rest.to_string(), None),
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some(Connection {
+        id: format!("browse:{}", name),
+        name: name.to_string(),
+        host,
+        user,
+        port,
+        ..Default::default()
+    })
+}
+
 // ── Tree shown by the panel ──────────────────────────────────
 
 #[derive(Clone, Debug, PartialEq)]

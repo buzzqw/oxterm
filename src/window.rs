@@ -4076,6 +4076,21 @@ impl MainWindow {
         }
     }
 
+    fn browsing_connection_for(
+        &self,
+        term: &TerminalBox,
+    ) -> Option<crate::headless::connections::Connection> {
+        if let Some(id) = term.connection_id() {
+            let entries = crate::connections_ui::load_entries().ok()?;
+            let entry = crate::headless::connections::find_entry_by_id(&entries, &id)?;
+            if crate::headless::remote_files::supports_browsing(&entry.connection) {
+                return Some(entry.connection.clone());
+            }
+        }
+        let destination = term.ssh_destination()?;
+        crate::headless::connections::from_destination(&destination)
+    }
+
     fn on_tab_button_press(&self, term: &TerminalBox) {
         let menu = gtk::Menu::new();
         let weak = crate::SendWeak::new(self);
@@ -4097,6 +4112,16 @@ impl MainWindow {
                 }
             });
             menu.append(&item_reset);
+        }
+        if let Some(connection) = self.browsing_connection_for(term) {
+            let weak = crate::SendWeak::new(self);
+            let item_browse = gtk::MenuItem::with_label("Browse Remote Files...");
+            item_browse.connect_activate(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.open_file_browser(connection.clone());
+                }
+            });
+            menu.append(&item_browse);
         }
         menu.append(&gtk::SeparatorMenuItem::new());
         let weak = crate::SendWeak::new(self);
