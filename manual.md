@@ -219,8 +219,8 @@ error, `3` when the pane is not found and `4` when no running Oxterm window can
 be reached. The socket lives next to the broker sockets (`0700` directory,
 `0600` socket), accepts only peers with the same user id, and never listens on
 the network. `send` respects read-only mode. `oxterm browse NAME` opens the
-two-pane file browser for a saved connection or SSH host without opening a
-terminal tab.
+two-pane file browser for a saved connection, a host from `~/.ssh/config`, or a
+raw `[user@]host[:port]` destination, without opening a terminal tab.
 
 #### Events
 

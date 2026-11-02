@@ -762,28 +762,64 @@ fn run_plugins_ui() -> i32 {
     }
 }
 
+fn connection_from_destination(name: &str) -> Option<connections::Connection> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let (user, rest) = match name.rsplit_once('@') {
+        Some((user, host)) => (user.to_string(), host),
+        None => (String::new(), name),
+    };
+    if rest.is_empty() {
+        return None;
+    }
+    let (host, port) = match rest.rsplit_once(':') {
+        Some((host, port)) if !host.is_empty() && !host.contains(':') => {
+            match port.parse::<u16>() {
+                Ok(port) => (host.to_string(), Some(port)),
+                Err(_) => (rest.to_string(), None),
+            }
+        }
+        _ => (rest.to_string(), None),
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some(connections::Connection {
+        id: format!("browse:{}", name),
+        name: name.to_string(),
+        host,
+        user,
+        port,
+        ..Default::default()
+    })
+}
+
 fn run_browse(name: &str) -> i32 {
     let entries = match client_entries() {
         Ok(entries) => entries,
         Err(error) => return fail(error.0, "browse", &error.1),
     };
-    let Some(entry) = connections::find_entry(&entries, name) else {
+    let request = if let Some(entry) = connections::find_entry(&entries, name) {
+        if !crate::headless::remote_files::supports_browsing(&entry.connection) {
+            return fail(
+                1,
+                "browse",
+                "this connection is not an SSH, SFTP or FTP entry",
+            );
+        }
+        json!({ "op": "browse", "id": entry.connection.id })
+    } else if connection_from_destination(name).is_some() {
+        // `ssh user@host` from a plugin or a script needs no saved entry.
+        json!({ "op": "browse", "destination": name })
+    } else {
         return fail(3, "browse", &format!("no connection named {}", name));
     };
-    if !crate::headless::remote_files::supports_browsing(&entry.connection) {
-        return fail(
-            1,
-            "browse",
-            "this connection is not an SSH, SFTP or FTP entry",
-        );
-    }
     let Some(socket) = live_sockets().into_iter().next() else {
         return fail(4, "browse", "no running Oxterm window");
     };
-    match request_at(
-        &socket,
-        &json!({ "op": "browse", "id": entry.connection.id }),
-    ) {
+    match request_at(&socket, &request) {
         Ok(_) => 0,
         Err(error) => fail(error.0, "browse", &error.1),
     }
@@ -1576,13 +1612,23 @@ fn dispatch(request: &Value) -> Value {
                 Err(error) => return error_reply(&error, 1),
             };
             let id = request["id"].as_str().unwrap_or("");
-            let Some(entry) = entries.into_iter().find(|entry| entry.connection.id == id) else {
+            let connection = if let Some(entry) = entries
+                .into_iter()
+                .find(|entry| !id.is_empty() && entry.connection.id == id)
+            {
+                entry.connection
+            } else if let Some(destination) = request["destination"].as_str() {
+                match connection_from_destination(destination) {
+                    Some(connection) => connection,
+                    None => return error_reply("invalid destination", 2),
+                }
+            } else {
                 return error_reply("connection not found", 3);
             };
-            if !crate::headless::remote_files::supports_browsing(&entry.connection) {
+            if !crate::headless::remote_files::supports_browsing(&connection) {
                 return error_reply("this connection cannot be browsed", 2);
             }
-            window.open_file_browser(entry.connection);
+            window.open_file_browser(connection);
             json!({ "ok": true })
         }
         "open_connection" => {
@@ -1947,4 +1993,26 @@ fn pane_info(term: &TerminalBox) -> Value {
         // before the handover so a moved tab keeps its blocks and history.
         "osc133_fifo": term.osc133_fifo().unwrap_or_default(),
     })
+}
+
+#[cfg(test)]
+mod browse_destination_tests {
+    use super::*;
+
+    #[test]
+    fn parses_raw_ssh_destinations() {
+        let connection = connection_from_destination("user@host:2222").unwrap();
+        assert_eq!(connection.user, "user");
+        assert_eq!(connection.host, "host");
+        assert_eq!(connection.port, Some(2222));
+        assert_eq!(connection.name, "user@host:2222");
+
+        let connection = connection_from_destination("localhost").unwrap();
+        assert_eq!(connection.host, "localhost");
+        assert_eq!(connection.user, "");
+        assert_eq!(connection.port, None);
+
+        assert!(connection_from_destination("").is_none());
+        assert!(connection_from_destination("@").is_none());
+    }
 }

@@ -220,9 +220,9 @@ pub const VERBS: &[Verb] = &[
         synopsis: "browse NAME",
         summary: "Open the two-pane file browser for a connection",
         help: "Usage: oxterm browse NAME\n\n\
-               Open the SFTP/FTP file browser for a saved connection or a host from\n\
-               ~/.ssh/config. NAME must resolve to an SSH, SFTP or FTP entry. The\n\
-               browser window belongs to the running Oxterm and needs sftp or lftp.\n",
+               Open the SFTP/FTP file browser for a saved connection, a host from\n\
+               ~/.ssh/config, or a [user@]host[:port] destination. The browser window\n\
+               belongs to the running Oxterm and needs sftp or lftp.\n",
     },
     Verb {
         name: "events",
