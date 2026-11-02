@@ -111,7 +111,7 @@ impl App {
 
             let css_provider = gtk::CssProvider::new();
             let css = b"
-                vte-terminal { padding-left: 8px; padding-right: 4px; }
+                vte-terminal { padding-left: 8px; padding-right: 8px; }
                 .oxterm-notes-panel { border-left: 1px solid alpha(currentColor, 0.2); }
                 .oxterm-menu-row { background: alpha(@theme_fg_color, 0.05); padding: 1px 4px; }                .oxterm-menu-row button { padding: 3px 10px; }
                 .command-bar-frame { border: 1px solid alpha(currentColor, 0.3); background: alpha(@theme_bg_color, 0.95); }
@@ -136,10 +136,16 @@ impl App {
             ";
             let _ = css_provider.load_from_data(css);
             if let Some(screen) = gdk::Screen::default() {
+                // VTE installs its own `vte-terminal { padding: 1px; }`
+                // provider on every terminal widget at APPLICATION priority.
+                // A widget-level provider wins over a screen-level one at the
+                // same priority, so the base padding below must use a higher
+                // priority or it is silently ignored and text ends up one
+                // pixel from the widget edge.
                 gtk::StyleContext::add_provider_for_screen(
                     &screen,
                     &css_provider,
-                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
                 );
             }
         });

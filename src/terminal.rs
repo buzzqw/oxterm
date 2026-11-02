@@ -1438,6 +1438,19 @@ impl TerminalBox {
         let scroll = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
         scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
         scroll.add(&vte);
+        // A terminal only scrolls vertically (through the scrollback). The
+        // ScrolledWindow nevertheless installs a horizontal adjustment on the
+        // VTE, which implements GtkScrollable; any leftover range there shifts
+        // the whole grid sideways instead of reflowing it, hiding the first
+        // columns of every line. Pin it at zero so a narrower window always
+        // re-flows.
+        if let Some(hadj) = vte.hadjustment() {
+            hadj.connect_value_changed(|adj| {
+                if adj.value() != 0.0 {
+                    adj.set_value(0.0);
+                }
+            });
+        }
         *self.imp().scroll.borrow_mut() = Some(scroll.clone());
         self.apply_padding();
         // New adjustments have not emitted a value-changed signal yet, so they
