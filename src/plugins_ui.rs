@@ -26,7 +26,8 @@ pub fn show(parent: &gtk::Window) {
     content.set_margin_bottom(12);
 
     let hint = gtk::Label::new(Some(
-        "Plugins start with Oxterm. Restart every Oxterm window after installing or removing one.",
+        "Plugins run in the background. After installing one, press Start Plugins. \
+         After updating or removing one, restart every Oxterm window.",
     ));
     hint.set_xalign(0.0);
     hint.set_line_wrap(true);
@@ -66,16 +67,29 @@ pub fn show(parent: &gtk::Window) {
     let remove = gtk::Button::with_label("Remove");
     let install_folder = gtk::Button::with_label("Install Folder...");
     let install_git = gtk::Button::with_label("Install Git URL...");
+    let start = gtk::Button::with_label("Start Plugins");
     buttons.pack_start(&open_folder, false, false, 0);
     buttons.pack_start(&open_state, false, false, 0);
     buttons.pack_start(&log, false, false, 0);
     buttons.pack_start(&remove, false, false, 0);
     buttons.pack_end(&install_git, false, false, 0);
     buttons.pack_end(&install_folder, false, false, 0);
+    buttons.pack_end(&start, false, false, 0);
     content.pack_start(&buttons, false, false, 0);
 
     let store = Store::default_store();
     reload(&store, &model, &status);
+
+    {
+        let store = store.clone();
+        let model = model.clone();
+        let status = status.clone();
+        start.connect_clicked(move |_| {
+            crate::plugins::start_missing();
+            reload(&store, &model, &status);
+            status.set_text("Started installed plugins. They run in the background.");
+        });
+    }
 
     {
         let store = store.clone();
@@ -235,7 +249,11 @@ fn reload(store: &Store, model: &gtk::ListStore, status: &gtk::Label) {
             for installed in list {
                 let manifest = &installed.manifest;
                 let status = if manifest.enabled {
-                    "enabled".to_string()
+                    if crate::plugins::is_running(&manifest.id) {
+                        "running".to_string()
+                    } else {
+                        "installed".to_string()
+                    }
                 } else {
                     "disabled".to_string()
                 };

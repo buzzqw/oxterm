@@ -410,8 +410,10 @@ browser automatically when an SSH or Mosh session starts).
 
 The same list is available in the window: **Plugins → Installed Plugins…** (or
 `oxterm plugins`) opens a manager that can install from a folder or a git URL,
-open the plugin and state folders, show a plugin's log, and remove a plugin.
-Restart Oxterm after changing the list; the dialog says so.
+open the plugin and state folders, show a plugin's log, start newly installed
+plugins, and remove a plugin. The status column says `running` or `installed`.
+**Start Plugins** starts what is installed but not running, without restarting
+Oxterm; after updating or removing one, restart Oxterm.
 
 A plugin process receives:
 

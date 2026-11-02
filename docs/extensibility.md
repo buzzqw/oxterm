@@ -396,4 +396,4 @@ Deviazioni rispetto alla prima stesura:
 - 2026-11-02: browser file: sync ricorsiva, segnalibri per connessione, modifica
   remota con upload al salvataggio e `oxterm browse`.
 - 2026-11-02: gestore grafico dei plugin nel menu **Plugins** e con
-  `oxterm plugins`.
+  `oxterm plugins`; stato `running`/`installed` e pulsante **Start Plugins**.

@@ -14,10 +14,11 @@
 //!
 //! A plugin that exits is restarted up to three times, with a growing delay.
 
+use std::collections::HashSet;
 use std::io::Write;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -29,7 +30,18 @@ use crate::logging::LOGGER;
 static STOP: once_cell::sync::Lazy<Arc<AtomicBool>> =
     once_cell::sync::Lazy::new(|| Arc::new(AtomicBool::new(false)));
 
+/// Plugin ids that currently have a host thread. The manager uses this to show
+/// what is running and to avoid starting the same plugin twice.
+static RUNNING: once_cell::sync::Lazy<Mutex<HashSet<String>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(HashSet::new()));
+
 pub fn start_all() {
+    start_missing();
+}
+
+/// Start every enabled plugin that is not running yet. Safe to call again after
+/// installing a plugin from the manager.
+pub fn start_missing() {
     if std::env::var_os("OXTERM_NO_PLUGINS").is_some() {
         return;
     }
@@ -47,15 +59,40 @@ pub fn start_all() {
         }
         let manifest = plugin.manifest;
         let id = manifest.id.clone();
+        {
+            let Ok(mut running) = RUNNING.lock() else {
+                return;
+            };
+            if running.contains(&id) {
+                continue;
+            }
+            running.insert(id.clone());
+        }
         let stop = STOP.clone();
         let store = store.clone();
+        let thread_id = id.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("oxterm-plugin-{}", id))
-            .spawn(move || run_loop(store, manifest, stop));
+            .spawn(move || {
+                run_loop(store, manifest, stop);
+                if let Ok(mut running) = RUNNING.lock() {
+                    running.remove(&thread_id);
+                }
+            });
         if let Err(error) = spawned {
+            if let Ok(mut running) = RUNNING.lock() {
+                running.remove(&id);
+            }
             LOGGER.warning(&format!("plugin_thread_failed id={} error={}", id, error));
         }
     }
+}
+
+pub fn is_running(id: &str) -> bool {
+    RUNNING
+        .lock()
+        .map(|running| running.contains(id))
+        .unwrap_or(false)
 }
 
 /// Ask every plugin host thread to stop. The processes themselves also carry a
