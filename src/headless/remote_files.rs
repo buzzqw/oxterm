@@ -423,6 +423,51 @@ pub fn transfer(
     Ok(())
 }
 
+/// Copy the contents of one directory into another, merging and overwriting.
+///
+/// SFTP's `put -r src dst` nests `src` inside an existing `dst`; adding `/.` to
+/// the source copies its contents instead, which is what a sync means.
+pub fn sync_script(
+    protocol: Protocol,
+    upload: bool,
+    from: &str,
+    to: &str,
+) -> Result<String, String> {
+    if protocol == Protocol::Ftp {
+        let operation = if upload {
+            Operation::Upload {
+                local: from.to_string(),
+                remote: to.to_string(),
+            }
+        } else {
+            Operation::Download {
+                remote: from.to_string(),
+                local: to.to_string(),
+            }
+        };
+        return script(protocol, &operation);
+    }
+    let source = format!("{}/.", from.trim_end_matches('/'));
+    let target = format!("{}/", to.trim_end_matches('/'));
+    Ok(format!(
+        "{} -pr {} {}\n",
+        if upload { "put" } else { "get" },
+        quote_path(&source)?,
+        quote_path(&target)?
+    ))
+}
+
+pub fn sync_directory(
+    connection: &Connection,
+    upload: bool,
+    from: &str,
+    to: &str,
+) -> Result<(), String> {
+    let text = sync_script(connection.protocol, upload, from, to)?;
+    run(connection, &text)?;
+    Ok(())
+}
+
 /// A readable size.
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
@@ -542,6 +587,24 @@ drwxr-xr-x 2 ftp ftp 0 Nov 01 15:16 folder/\n";
             ftp_file_transfer(true, "/l", "/r").unwrap(),
             "put \"/l\" -o \"/r\"\n"
         );
+    }
+
+    #[test]
+    fn sync_scripts_copy_contents_not_the_folder_itself() {
+        assert_eq!(
+            sync_script(Protocol::Sftp, true, "/tmp/a", "/tmp/b").unwrap(),
+            "put -pr \"/tmp/a/.\" \"/tmp/b/\"\n"
+        );
+        assert_eq!(
+            sync_script(Protocol::Sftp, false, "/tmp/a/", "/tmp/b/").unwrap(),
+            "get -pr \"/tmp/a/.\" \"/tmp/b/\"\n"
+        );
+        assert!(sync_script(Protocol::Ftp, true, "/l", "/r")
+            .unwrap()
+            .contains("mirror -R"));
+        assert!(sync_script(Protocol::Ftp, false, "/r", "/l")
+            .unwrap()
+            .contains("mirror "));
     }
 
     #[test]

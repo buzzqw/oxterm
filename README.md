@@ -46,7 +46,8 @@ memory footprint and the memory-safety guarantees of Rust.
 - Connection manager in the **Connections** menu: a searchable panel with groups, tags, favorites and saved tunnels; a form that shows the exact `ssh` command, with X11, keepalive, old algorithms, Wake-on-LAN, a pre-connect command, automatic reconnection, session logs, macros, automation rules, per-connection colors and fonts, and keyring passwords and one-time codes; and `oxterm connect`. It runs your OpenSSH and never edits `~/.ssh/config`
 - More connection types from the same menu: Mosh, Telnet, serial, Docker, Kubernetes, AWS Session Manager and any command in a tab; RDP, VNC and SPICE through their own viewers, in a tab so their questions stay visible
 - VNC that starts its own server over ssh: x11vnc, TigerVNC, TurboVNC, TightVNC, wayvnc or your own command, on the remote loopback only, with a one-time password
-- Two-pane SFTP and FTP file browser with drag and drop
+- Two-pane SFTP and FTP file browser with drag and drop, recursive folder
+  sync, bookmarks and remote editing that uploads on save
 - SSH host picker from saved connections and `~/.ssh/config`, plus an explicit copy-on-demand
   shell-integration installer for remote bash/zsh sessions
 - Production-host tab highlighting, tunnel inspection, and a ForwardAgent
@@ -290,6 +291,7 @@ Scriptable control (acts on a running Oxterm, opens no window):
   connect NAME [--split [--pane ID]] [--yes]                           Open a saved SSH connection
   connections [--json|export|import FILE]                              List, export or import saved connections
   tunnel list|start|stop [NAME [INDEX]]                                Control a connection's saved tunnels
+  browse NAME                                                          Open the two-pane file browser for a connection
   events [--pane ID] [--event NAME]... [--output] [--json]             Subscribe to a pane's event stream
   action set-tab-color|set-tab-title|notify|open-url|...               Ask a running Oxterm to perform an action
   workspace [--new-window] [--replace] FILE                            Open tabs, splits and commands from a JSON file

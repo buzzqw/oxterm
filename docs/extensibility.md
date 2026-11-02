@@ -318,6 +318,15 @@ Implementata:
   disegnare UI o orchestrare il workspace in una sandbox reale. L'host esterno
   della Fase 3 copre già automazioni, notifiche e pannelli esterni.
 
+## Browser file: core, non plugin
+
+Il browser SFTP/FTP a due pannelli resta nel core (`src/file_browser.rs`), non
+diventa un plugin: l'API plugin è un processo esterno e non può disegnare una
+finestra dentro Oxterm. Le funzioni "alla WinSCP" — sincronizzazione ricorsiva,
+segnalibri e modifica remota con upload al salvataggio — sono state aggiunte lì.
+Un plugin può usare `oxterm browse NAME` per aprire il browser, oppure
+automatizzare i trasferimenti con i verbi del control socket.
+
 ## Stato dell'implementazione (2026-11-02)
 
 Le Fasi 1, 2 e 3 sono implementate; della Fase 4 c'è MCP, mentre WASM è
@@ -346,6 +355,8 @@ rinviato:
 | Controllo permessi sulle richieste con `OXTERM_PLUGIN_ID` | `src/control.rs` | fatto |
 | Server MCP e tool | `src/headless/mcp.rs`, `src/control.rs` | fatto, con test e prova reale |
 | Pannelli WASM | — | rinviati |
+| Sync ricorsiva, segnalibri e modifica remota nel browser | `src/file_browser.rs`, `src/headless/bookmarks.rs`, `src/headless/remote_files.rs` | fatto, provato con un server SSH locale |
+| `oxterm browse NAME` | `src/control.rs`, `src/headless/control_cli.rs` | fatto |
 
 Deviazioni rispetto alla prima stesura:
 
@@ -381,3 +392,5 @@ Deviazioni rispetto alla prima stesura:
   contributi alla palette da `extensions.json`, con test headless e GUI.
 - 2026-11-02: Fase 3 implementata (manifest, install/update/remove, host dei
   plugin, permessi) e `oxterm mcp` della Fase 4. WASM rinviato.
+- 2026-11-02: browser file: sync ricorsiva, segnalibri per connessione, modifica
+  remota con upload al salvataggio e `oxterm browse`.

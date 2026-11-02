@@ -181,6 +181,7 @@ oxterm action set-tab-color|set-tab-title|notify|open-url|insert-text|...
 oxterm workspace [--new-window] [--replace] FILE
 oxterm plugin list|install|remove|update|permissions ...
 oxterm mcp
+oxterm browse NAME
 ```
 
 `new` prints the id of the new pane and `new DIR` is a shorthand for
@@ -216,7 +217,9 @@ Exit statuses are `0` for success, `1` for a failed operation, `2` for a usage
 error, `3` when the pane is not found and `4` when no running Oxterm window can
 be reached. The socket lives next to the broker sockets (`0700` directory,
 `0600` socket), accepts only peers with the same user id, and never listens on
-the network. `send` respects read-only mode.
+the network. `send` respects read-only mode. `oxterm browse NAME` opens the
+two-pane file browser for a saved connection or SSH host without opening a
+terminal tab.
 
 #### Events
 
@@ -981,10 +984,22 @@ connection so no new login is needed.
 - Double-click a folder to enter it, or a file to copy it to the other side.
 - Use **Upload** and **Download**, or drag between the panes. You can also drop files
   from a file manager onto the server's pane.
+- **Sync →** and **← Sync** copy the whole current folder tree, recursively,
+  overwriting existing files and keeping extra files in the destination. The
+  transfer goes through `sftp`/`lftp`, so it reuses the connection's own
+  authentication.
+- **Bookmark** saves the current folder; **Bookmarks** jumps back to it. Local
+  bookmarks are shared by every browser, remote ones belong to the connection.
+  They live in `~/.config/oxterm/file_bookmarks.json`.
+- **Edit** on a remote file downloads it to a private cache copy, opens it with
+  the desktop editor (`xdg-open`), and uploads it back every time it is saved.
+  The temporary copy stays in `~/.cache/oxterm/remote-edit/`.
 - Copies run one at a time in the background, folders included. Oxterm asks before
-  replacing an existing name.
+  replacing an existing name; a sync asks once for the whole folder.
 - **New Folder**, **Rename** (`F2`), **Delete** (`Delete`), **Refresh** (`F5`) and
   **Up** (`Backspace`) work on both sides.
+- `oxterm browse NAME` opens the same browser from a terminal, which is handy
+  from a script or an agent.
 - Browsing cannot ask questions: SFTP needs a key, an agent, a password in the keyring
   or an open tab to that host. Plain FTP sends the password unencrypted, so prefer
   **Use TLS** or SFTP.

@@ -7,6 +7,7 @@
 //! `tests/headless.rs` enforces the boundary.
 
 pub mod askpass;
+pub mod bookmarks;
 pub mod cli;
 pub mod connections;
 pub mod control_cli;

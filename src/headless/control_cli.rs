@@ -84,6 +84,9 @@ pub enum CliMode {
         action: PluginAction,
     },
     Mcp,
+    Browse {
+        name: String,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -210,6 +213,15 @@ pub const VERBS: &[Verb] = &[
                Show or change the saved tunnels of a connection in the running Oxterm.\n\
                INDEX is the number 'tunnel list' prints; without it the command\n\
                applies to all of that connection's tunnels.\n",
+    },
+    Verb {
+        name: "browse",
+        synopsis: "browse NAME",
+        summary: "Open the two-pane file browser for a connection",
+        help: "Usage: oxterm browse NAME\n\n\
+               Open the SFTP/FTP file browser for a saved connection or a host from\n\
+               ~/.ssh/config. NAME must resolve to an SSH, SFTP or FTP entry. The\n\
+               browser window belongs to the running Oxterm and needs sftp or lftp.\n",
     },
     Verb {
         name: "events",
@@ -401,6 +413,23 @@ fn parse_tunnel(args: &[String], help: &'static str) -> Result<CliMode, String> 
         action,
         name,
         index,
+    })
+}
+
+fn parse_browse(args: &[String], help: &'static str) -> Result<CliMode, String> {
+    let mut name = None;
+    for arg in args {
+        match arg.as_str() {
+            "-h" | "--help" => return Ok(CliMode::Help(help)),
+            value if value.starts_with('-') => {
+                return Err(format!("unknown option: {}", value));
+            }
+            value if name.is_none() => name = Some(value.to_string()),
+            value => return Err(format!("unexpected argument: {}", value)),
+        }
+    }
+    Ok(CliMode::Browse {
+        name: name.ok_or("browse requires a connection name")?,
     })
 }
 
@@ -689,6 +718,7 @@ pub fn parse_verb(args: &[String]) -> Result<CliMode, String> {
         "connections" => return parse_connections(&args[1..], entry.help),
         "tunnel" => return parse_tunnel(&args[1..], entry.help),
         "events" => return parse_events(&args[1..], entry.help),
+        "browse" => return parse_browse(&args[1..], entry.help),
         "action" => return parse_action(&args[1..], entry.help),
         "workspace" => return parse_workspace(&args[1..], entry.help),
         "plugin" => return parse_plugin(&args[1..], entry.help),
@@ -1192,5 +1222,13 @@ mod tests {
         assert!(parse_verb(&args(&["plugin", "list", "x"])).is_err());
         assert_eq!(parse_verb(&args(&["mcp"])).unwrap(), CliMode::Mcp);
         assert!(parse_verb(&args(&["mcp", "x"])).is_err());
+        assert_eq!(
+            parse_verb(&args(&["browse", "db"])).unwrap(),
+            CliMode::Browse {
+                name: "db".to_string()
+            }
+        );
+        assert!(parse_verb(&args(&["browse"])).is_err());
+        assert!(parse_verb(&args(&["browse", "a", "b"])).is_err());
     }
 }

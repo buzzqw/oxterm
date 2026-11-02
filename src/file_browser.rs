@@ -15,6 +15,7 @@ use std::time::Duration;
 use gtk::gdk;
 use gtk::prelude::*;
 
+use crate::headless::bookmarks::{self, Bookmark, Side};
 use crate::headless::connections::Connection;
 use crate::headless::remote_files::{self, human_size, Operation, RemoteEntry};
 
@@ -46,6 +47,21 @@ enum Job {
         path: String,
         is_dir: bool,
     },
+    EditDownload {
+        remote: String,
+        local: String,
+        name: String,
+    },
+    EditUpload {
+        local: String,
+        remote: String,
+        name: String,
+    },
+    Sync {
+        upload: bool,
+        from: String,
+        to: String,
+    },
 }
 
 enum Outcome {
@@ -57,6 +73,23 @@ enum Outcome {
         result: Result<(), String>,
     },
     Changed(Result<(), String>),
+    EditReady {
+        local: PathBuf,
+        remote: String,
+        name: String,
+        result: Result<(), String>,
+    },
+    EditUploaded {
+        remote: String,
+        name: String,
+        result: Result<(), String>,
+    },
+    Synced {
+        upload: bool,
+        from: String,
+        to: String,
+        result: Result<(), String>,
+    },
 }
 
 fn worker(connection: Connection, jobs: mpsc::Receiver<Job>, results: mpsc::Sender<Outcome>) {
@@ -88,6 +121,31 @@ fn worker(connection: Connection, jobs: mpsc::Receiver<Job>, results: mpsc::Send
             Job::Delete { path, is_dir } => {
                 Outcome::Changed(remote_files::delete(&connection, &path, is_dir))
             }
+            Job::EditDownload {
+                remote,
+                local,
+                name,
+            } => Outcome::EditReady {
+                local: PathBuf::from(local.clone()),
+                result: remote_files::transfer(&connection, false, false, &remote, &local),
+                remote,
+                name,
+            },
+            Job::EditUpload {
+                local,
+                remote,
+                name,
+            } => Outcome::EditUploaded {
+                result: remote_files::transfer(&connection, true, false, &local, &remote),
+                remote,
+                name,
+            },
+            Job::Sync { upload, from, to } => Outcome::Synced {
+                upload,
+                result: remote_files::sync_directory(&connection, upload, &from, &to),
+                from,
+                to,
+            },
         };
         if results.send(outcome).is_err() {
             return;
@@ -105,10 +163,14 @@ struct Pane {
     new_folder: gtk::Button,
     rename: gtk::Button,
     delete: gtk::Button,
+    bookmark: gtk::Button,
+    bookmarks: gtk::Button,
+    sync: gtk::Button,
+    edit: Option<gtk::Button>,
 }
 
 impl Pane {
-    fn build(title: &str) -> Pane {
+    fn build(title: &str, remote: bool) -> Pane {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
         let caption = gtk::Label::new(None);
         caption.set_markup(&format!("<b>{}</b>", glib::markup_escape_text(title)));
@@ -174,6 +236,30 @@ impl Pane {
         actions.pack_start(&delete, false, false, 0);
         root.pack_start(&actions, false, false, 0);
 
+        let tools = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        let bookmark = gtk::Button::with_label("Bookmark");
+        bookmark.set_tooltip_text(Some("Save this folder as a bookmark"));
+        let bookmarks = gtk::Button::with_label("Bookmarks");
+        bookmarks.set_tooltip_text(Some("Jump to a saved folder"));
+        let sync = gtk::Button::with_label(if remote { "← Sync" } else { "Sync →" });
+        sync.set_tooltip_text(Some(if remote {
+            "Copy every item in this folder to this computer"
+        } else {
+            "Copy every item in this folder to the server"
+        }));
+        tools.pack_start(&bookmark, false, false, 0);
+        tools.pack_start(&bookmarks, false, false, 0);
+        tools.pack_start(&sync, false, false, 0);
+        let edit = if remote {
+            let edit = gtk::Button::with_label("Edit");
+            edit.set_tooltip_text(Some("Edit the selected remote file in place"));
+            tools.pack_start(&edit, false, false, 0);
+            Some(edit)
+        } else {
+            None
+        };
+        root.pack_start(&tools, false, false, 0);
+
         Pane {
             root,
             path,
@@ -184,6 +270,10 @@ impl Pane {
             new_folder,
             rename,
             delete,
+            bookmark,
+            bookmarks,
+            sync,
+            edit,
         }
     }
 
@@ -231,6 +321,24 @@ impl Pane {
             .collect()
     }
 
+    /// Every row as (name, is_dir), in display order.
+    fn all(&self) -> Vec<(String, bool)> {
+        let mut rows = Vec::new();
+        self.store.foreach(|model, _, iter| {
+            let name = model
+                .value(iter, COLUMN_NAME as i32)
+                .get::<String>()
+                .unwrap_or_default();
+            let is_dir = model
+                .value(iter, COLUMN_IS_DIR as i32)
+                .get::<bool>()
+                .unwrap_or(false);
+            rows.push((name, is_dir));
+            false
+        });
+        rows
+    }
+
     fn contains(&self, name: &str) -> bool {
         let mut found = false;
         self.store.foreach(|model, _, iter| {
@@ -248,8 +356,15 @@ impl Pane {
     }
 }
 
+struct EditSession {
+    remote: String,
+    last_modified: Option<std::time::SystemTime>,
+    uploading: Cell<bool>,
+}
+
 struct Browser {
     window: gtk::Window,
+    connection: Connection,
     local: Pane,
     remote: Pane,
     status: gtk::Label,
@@ -259,8 +374,34 @@ struct Browser {
     pending: Cell<usize>,
     polling: Cell<bool>,
     queued: RefCell<VecDeque<String>>,
+    edits: RefCell<Vec<EditSession>>,
     /// For the polling timer. Weak: the timer must not keep a closed browser alive.
     me: RefCell<std::rc::Weak<Browser>>,
+}
+
+/// A stable temporary path for editing one remote file. The hash keeps two
+/// files with the same name in different remote folders apart.
+fn edit_local_path(connection_id: &str, remote: &str, name: &str) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    remote.hash(&mut hasher);
+    let safe = |text: &str| -> String {
+        text.chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || "._-".contains(character) {
+                    character
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    };
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("oxterm")
+        .join("remote-edit")
+        .join(safe(connection_id))
+        .join(format!("{:016x}-{}", hasher.finish(), safe(name)))
 }
 
 fn local_entries(path: &Path) -> Result<Vec<RemoteEntry>, String> {
@@ -483,6 +624,236 @@ impl Browser {
         }
     }
 
+    fn bookmarks_for(&self, remote: bool) -> Vec<Bookmark> {
+        let file = bookmarks::bookmark_path();
+        let list = match bookmarks::load(&file) {
+            Ok(list) => list,
+            Err(error) => {
+                self.say(&error);
+                return Vec::new();
+            }
+        };
+        let connection = if remote {
+            Some(self.connection.id.as_str())
+        } else {
+            None
+        };
+        bookmarks::visible(
+            &list,
+            if remote { Side::Remote } else { Side::Local },
+            connection,
+        )
+        .into_iter()
+        .cloned()
+        .collect()
+    }
+
+    fn add_bookmark(&self, remote: bool) {
+        let pane = if remote { &self.remote } else { &self.local };
+        let path = pane.current();
+        let default = path
+            .rsplit('/')
+            .find(|part| !part.is_empty())
+            .unwrap_or("Folder")
+            .to_string();
+        let Some(name) = self.ask_name("Bookmark Name", &default) else {
+            return;
+        };
+        let file = bookmarks::bookmark_path();
+        let mut list = match bookmarks::load(&file) {
+            Ok(list) => list,
+            Err(error) => {
+                self.say(&error);
+                return;
+            }
+        };
+        let bookmark = Bookmark {
+            name,
+            path: path.clone(),
+            side: if remote { Side::Remote } else { Side::Local },
+            connection: if remote {
+                Some(self.connection.id.clone())
+            } else {
+                None
+            },
+        };
+        match bookmarks::add(&mut list, bookmark).and_then(|_| bookmarks::save(&file, &list)) {
+            Ok(()) => self.say(&format!("Bookmarked {}", path)),
+            Err(error) => self.say(&error),
+        }
+    }
+
+    fn remove_bookmark(&self, remote: bool) {
+        let pane = if remote { &self.remote } else { &self.local };
+        let path = pane.current();
+        let file = bookmarks::bookmark_path();
+        let mut list = match bookmarks::load(&file) {
+            Ok(list) => list,
+            Err(error) => {
+                self.say(&error);
+                return;
+            }
+        };
+        let connection = if remote {
+            Some(self.connection.id.as_str())
+        } else {
+            None
+        };
+        let side = if remote { Side::Remote } else { Side::Local };
+        if bookmarks::remove(&mut list, side, connection, &path) {
+            match bookmarks::save(&file, &list) {
+                Ok(()) => self.say(&format!("Removed bookmark for {}", path)),
+                Err(error) => self.say(&error),
+            }
+        } else {
+            self.say("This folder has no bookmark");
+        }
+    }
+
+    /// Copy the whole current folder tree to the other pane.
+    fn sync_current(&self, upload: bool) {
+        let (source, target) = if upload {
+            (&self.local, &self.remote)
+        } else {
+            (&self.remote, &self.local)
+        };
+        if source.all().is_empty() {
+            self.say("This folder is empty");
+            return;
+        }
+        let question = format!(
+            "Copy every item from\n{}\nto\n{}\n\nExisting files are overwritten. \
+             Extra files in the destination are kept.",
+            source.current(),
+            target.current()
+        );
+        if !self.confirm(&question) {
+            return;
+        }
+        let from = source.current();
+        let to = target.current();
+        self.say(&format!("Syncing {}...", from));
+        self.submit(Job::Sync { upload, from, to });
+    }
+
+    /// Download the selected remote file to a temporary copy and open it; every
+    /// save is uploaded back. The polling timer stops when the browser closes or
+    /// the temporary file disappears.
+    fn edit_selected(self: &Rc<Self>) {
+        let selected = self.remote.selected();
+        let [(name, false)] = selected.as_slice() else {
+            self.say("Select one remote file to edit");
+            return;
+        };
+        let remote = remote_files::join(&self.remote.current(), name);
+        let local = edit_local_path(&self.connection.id, &remote, name);
+        if self
+            .edits
+            .borrow()
+            .iter()
+            .any(|session| session.remote == remote)
+        {
+            self.open_editor(&local);
+            return;
+        }
+        if let Some(parent) = local.parent() {
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                self.say(&format!("{}: {}", parent.display(), error));
+                return;
+            }
+        }
+        if local.exists()
+            && !self.confirm(&format!(
+                "An edited copy of '{}' already exists. Download the server version and replace it?",
+                name
+            ))
+        {
+            self.watch_edit(local.clone(), remote, name.clone());
+            self.open_editor(&local);
+            return;
+        }
+        self.say(&format!("Downloading {}...", name));
+        self.submit(Job::EditDownload {
+            remote,
+            local: local.display().to_string(),
+            name: name.clone(),
+        });
+    }
+
+    fn open_editor(&self, local: &Path) {
+        if crate::notes::which("xdg-open").is_none() {
+            self.say("Cannot open the editor: xdg-open is not installed");
+            return;
+        }
+        let path = local.to_string_lossy().to_string();
+        if !crate::notes::spawn_detached("xdg-open", &[&path]) {
+            self.say("Could not start the editor");
+        }
+    }
+
+    fn start_editing(self: &Rc<Self>, local: PathBuf, remote: String, name: String) {
+        if !self
+            .edits
+            .borrow()
+            .iter()
+            .any(|session| session.remote == remote)
+        {
+            self.watch_edit(local.clone(), remote, name.clone());
+        }
+        self.open_editor(&local);
+        self.say(&format!("Editing {}; changes upload automatically", name));
+    }
+
+    fn watch_edit(self: &Rc<Self>, local: PathBuf, remote: String, name: String) {
+        let last_modified = std::fs::metadata(&local)
+            .and_then(|metadata| metadata.modified())
+            .ok();
+        self.edits.borrow_mut().push(EditSession {
+            remote: remote.clone(),
+            last_modified,
+            uploading: Cell::new(false),
+        });
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_seconds_local(2, move || {
+            let Some(browser) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let Ok(metadata) = std::fs::metadata(&local) else {
+                browser
+                    .edits
+                    .borrow_mut()
+                    .retain(|session| session.remote != remote);
+                return glib::ControlFlow::Break;
+            };
+            let modified = metadata.modified().ok();
+            let (uploading, changed) = {
+                let edits = browser.edits.borrow();
+                let Some(session) = edits.iter().find(|session| session.remote == remote) else {
+                    return glib::ControlFlow::Break;
+                };
+                (session.uploading.get(), session.last_modified != modified)
+            };
+            if uploading || !changed {
+                return glib::ControlFlow::Continue;
+            }
+            if let Some(session) = browser
+                .edits
+                .borrow_mut()
+                .iter_mut()
+                .find(|session| session.remote == remote)
+            {
+                session.last_modified = modified;
+                session.uploading.set(true);
+            }
+            browser.submit(Job::EditUpload {
+                local: local.display().to_string(),
+                remote: remote.clone(),
+                name: name.clone(),
+            });
+            glib::ControlFlow::Continue
+        });
+    }
+
     fn make_folder(&self, remote: bool) {
         let Some(name) = self.ask_name("New Folder", "") else {
             return;
@@ -607,7 +978,7 @@ impl Browser {
         }
     }
 
-    fn apply(&self, outcome: Outcome) {
+    fn apply(self: &Rc<Self>, outcome: Outcome) {
         self.finished();
         match outcome {
             Outcome::Home(Ok(path)) => self.load_remote(&path),
@@ -648,6 +1019,56 @@ impl Browser {
                     Err(error) => self.say(&format!("{}: {}", label, error)),
                 }
             }
+            Outcome::Synced {
+                upload,
+                from,
+                to,
+                result,
+            } => match result {
+                Ok(()) => {
+                    self.say(&format!(
+                        "Synced {} {} {}",
+                        from,
+                        if upload { "→" } else { "←" },
+                        to
+                    ));
+                    self.reload_remote();
+                    self.reload_local();
+                }
+                Err(error) => self.say(&format!("Sync failed: {}", error)),
+            },
+            Outcome::EditReady {
+                local,
+                remote,
+                name,
+                result,
+            } => match result {
+                Ok(()) => self.start_editing(local, remote, name),
+                Err(error) => self.say(&format!("Could not download {}: {}", name, error)),
+            },
+            Outcome::EditUploaded {
+                remote,
+                name,
+                result,
+            } => {
+                if let Some(session) = self
+                    .edits
+                    .borrow()
+                    .iter()
+                    .find(|session| session.remote == remote)
+                {
+                    session.uploading.set(false);
+                }
+                match result {
+                    Ok(()) => {
+                        self.say(&format!("Uploaded {}", name));
+                        if self.remote.current() == remote_files::parent(&remote) {
+                            self.reload_remote();
+                        }
+                    }
+                    Err(error) => self.say(&format!("{}: {}", name, error)),
+                }
+            }
             Outcome::Changed(Ok(())) => self.reload_remote(),
             Outcome::Changed(Err(error)) => self.say(&error),
         }
@@ -673,6 +1094,33 @@ fn connect_pane(browser: &Rc<Browser>, remote: bool) {
     pane.new_folder.connect_clicked(on(Browser::make_folder));
     pane.rename.connect_clicked(on(Browser::rename_selected));
     pane.delete.connect_clicked(on(Browser::delete_selected));
+    let weak = Rc::downgrade(browser);
+    pane.bookmark.connect_clicked(move |_| {
+        if let Some(browser) = weak.upgrade() {
+            browser.add_bookmark(remote);
+        }
+    });
+    let weak = Rc::downgrade(browser);
+    pane.bookmarks.connect_clicked(move |button| {
+        if let Some(browser) = weak.upgrade() {
+            show_bookmarks_menu(&browser, remote, button);
+        }
+    });
+    let weak = Rc::downgrade(browser);
+    let upload = !remote;
+    pane.sync.connect_clicked(move |_| {
+        if let Some(browser) = weak.upgrade() {
+            browser.sync_current(upload);
+        }
+    });
+    if let Some(edit) = pane.edit.clone() {
+        let weak = Rc::downgrade(browser);
+        edit.connect_clicked(move |_| {
+            if let Some(browser) = weak.upgrade() {
+                browser.edit_selected();
+            }
+        });
+    }
     let weak = Rc::downgrade(browser);
     pane.refresh.connect_clicked(move |_| {
         if let Some(browser) = weak.upgrade() {
@@ -779,6 +1227,72 @@ fn connect_pane(browser: &Rc<Browser>, remote: bool) {
         });
 }
 
+/// The bookmarks menu: saved folders plus add/remove for the current one.
+fn show_bookmarks_menu(browser: &Rc<Browser>, remote: bool, button: &gtk::Button) {
+    let menu = gtk::Menu::new();
+    let saved = browser.bookmarks_for(remote);
+    if saved.is_empty() {
+        let empty = gtk::MenuItem::with_label("No bookmarks yet");
+        empty.set_sensitive(false);
+        menu.append(&empty);
+    } else {
+        for bookmark in saved {
+            let item =
+                gtk::MenuItem::with_label(&format!("{}  —  {}", bookmark.name, bookmark.path));
+            let weak = Rc::downgrade(browser);
+            let path = bookmark.path.clone();
+            item.connect_activate(move |_| {
+                if let Some(browser) = weak.upgrade() {
+                    if remote {
+                        browser.load_remote(&path);
+                    } else {
+                        browser.load_local(&path);
+                    }
+                }
+            });
+            menu.append(&item);
+        }
+    }
+    menu.append(&gtk::SeparatorMenuItem::new());
+
+    let add = gtk::MenuItem::with_label("Add Bookmark for This Folder...");
+    {
+        let weak = Rc::downgrade(browser);
+        add.connect_activate(move |_| {
+            if let Some(browser) = weak.upgrade() {
+                browser.add_bookmark(remote);
+            }
+        });
+    }
+    menu.append(&add);
+
+    let remove = gtk::MenuItem::with_label("Remove Bookmark for This Folder");
+    {
+        let weak = Rc::downgrade(browser);
+        remove.connect_activate(move |_| {
+            if let Some(browser) = weak.upgrade() {
+                browser.remove_bookmark(remote);
+            }
+        });
+    }
+    menu.append(&remove);
+
+    menu.show_all();
+    let menu_weak = menu.clone();
+    menu.connect_deactivate(move |_| {
+        let menu = menu_weak.clone();
+        glib::idle_add_local_once(move || unsafe {
+            menu.destroy();
+        });
+    });
+    menu.popup_at_widget(
+        button,
+        gdk::Gravity::SouthWest,
+        gdk::Gravity::NorthWest,
+        None,
+    );
+}
+
 /// Open a browser window for `connection`.
 pub fn open(parent: &gtk::Window, connection: Connection) {
     let window = gtk::Window::new(gtk::WindowType::Toplevel);
@@ -794,8 +1308,8 @@ pub fn open(parent: &gtk::Window, connection: Connection) {
     let worker_connection = connection.clone();
     std::thread::spawn(move || worker(worker_connection, job_receiver, result_sender));
 
-    let local = Pane::build("This computer");
-    let remote = Pane::build(&connection.name);
+    let local = Pane::build("This computer", false);
+    let remote = Pane::build(&connection.name, true);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
     content.set_margin_start(8);
     content.set_margin_end(8);
@@ -829,6 +1343,7 @@ pub fn open(parent: &gtk::Window, connection: Connection) {
 
     let browser = Rc::new(Browser {
         window: window.clone(),
+        connection: connection.clone(),
         local,
         remote,
         status,
@@ -838,6 +1353,7 @@ pub fn open(parent: &gtk::Window, connection: Connection) {
         pending: Cell::new(0),
         polling: Cell::new(false),
         queued: RefCell::new(VecDeque::new()),
+        edits: RefCell::new(Vec::new()),
         me: RefCell::new(std::rc::Weak::new()),
     });
     *browser.me.borrow_mut() = Rc::downgrade(&browser);

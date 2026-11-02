@@ -189,6 +189,7 @@ pub fn run_cli(mode: CliMode) -> i32 {
         } => run_workspace(&file, new_window, replace),
         CliMode::Plugin { action } => run_plugin(action),
         CliMode::Mcp => run_mcp(),
+        CliMode::Browse { name } => run_browse(&name),
     }
 }
 
@@ -748,6 +749,33 @@ struct Target {
 fn client_entries() -> Result<Vec<connections::Entry>, (i32, String)> {
     let book = connections::load_book(&connections::book_path()).map_err(|error| (1, error))?;
     Ok(connections::merge(&book, &ssh_config::load_hosts()))
+}
+
+fn run_browse(name: &str) -> i32 {
+    let entries = match client_entries() {
+        Ok(entries) => entries,
+        Err(error) => return fail(error.0, "browse", &error.1),
+    };
+    let Some(entry) = connections::find_entry(&entries, name) else {
+        return fail(3, "browse", &format!("no connection named {}", name));
+    };
+    if !crate::headless::remote_files::supports_browsing(&entry.connection) {
+        return fail(
+            1,
+            "browse",
+            "this connection is not an SSH, SFTP or FTP entry",
+        );
+    }
+    let Some(socket) = live_sockets().into_iter().next() else {
+        return fail(4, "browse", "no running Oxterm window");
+    };
+    match request_at(
+        &socket,
+        &json!({ "op": "browse", "id": entry.connection.id }),
+    ) {
+        Ok(_) => 0,
+        Err(error) => fail(error.0, "browse", &error.1),
+    }
 }
 
 fn run_connect(name: &str, split: bool, pane: Option<&str>, yes: bool) -> i32 {
@@ -1513,6 +1541,24 @@ fn dispatch(request: &Value) -> Value {
                 };
             window.apply_workspace(&workspace, request["replace"].as_bool().unwrap_or(false));
             json!({ "ok": true, "name": workspace.name })
+        }
+        "browse" => {
+            let Some(window) = target_window(&app) else {
+                return error_reply("no running Oxterm window", 4);
+            };
+            let entries = match crate::connections_ui::load_entries() {
+                Ok(entries) => entries,
+                Err(error) => return error_reply(&error, 1),
+            };
+            let id = request["id"].as_str().unwrap_or("");
+            let Some(entry) = entries.into_iter().find(|entry| entry.connection.id == id) else {
+                return error_reply("connection not found", 3);
+            };
+            if !crate::headless::remote_files::supports_browsing(&entry.connection) {
+                return error_reply("this connection cannot be browsed", 2);
+            }
+            window.open_file_browser(entry.connection);
+            json!({ "ok": true })
         }
         "open_connection" => {
             let Some(window) = target_window(&app) else {
