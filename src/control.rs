@@ -10,7 +10,7 @@
 //! socket, the directory and socket are owned by the current user, and peers
 //! are checked with SO_PEERCRED before a request is read.
 
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Once;
@@ -23,7 +23,9 @@ use gtk::prelude::*;
 use zoha_vte::traits::TerminalExt;
 
 use crate::headless::connections::{self, Kind};
-use crate::headless::control_cli::{ActionCommand, CaptureScope, CliMode, TunnelAction};
+use crate::headless::control_cli::{
+    ActionCommand, CaptureScope, CliMode, PluginAction, TunnelAction,
+};
 use crate::headless::framing;
 use crate::headless::ssh_config;
 use crate::headless::tunnels;
@@ -185,6 +187,8 @@ pub fn run_cli(mode: CliMode) -> i32 {
             new_window,
             replace,
         } => run_workspace(&file, new_window, replace),
+        CliMode::Plugin { action } => run_plugin(action),
+        CliMode::Mcp => run_mcp(),
     }
 }
 
@@ -219,6 +223,7 @@ fn run_events(path: &Path, names: &[String], output: bool, _json: bool) -> i32 {
         "op": "subscribe",
         "events": if names.is_empty() { Value::Null } else { json!(names) },
         "include_output": output,
+        "plugin_id": std::env::var("OXTERM_PLUGIN_ID").ok(),
     });
     if let Err(error) = write_json(&mut stream, &request) {
         return fail(1, "events", &error);
@@ -406,6 +411,329 @@ fn wait_for_window_ready(socket: &Path) {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+fn run_plugin(action: PluginAction) -> i32 {
+    use crate::headless::plugins::Store;
+    let store = Store::default_store();
+    match action {
+        PluginAction::List => match store.list() {
+            Ok(plugins) => {
+                if plugins.is_empty() {
+                    println!("No plugins installed.");
+                    return 0;
+                }
+                println!(
+                    "{:<28} {:<12} {:<9} {:<32} SOURCE",
+                    "ID", "VERSION", "STATUS", "PERMISSIONS"
+                );
+                for plugin in plugins {
+                    let manifest = &plugin.manifest;
+                    let permissions = if manifest.permissions.is_empty() {
+                        "-".to_string()
+                    } else {
+                        manifest.permissions.join(",")
+                    };
+                    let source = if plugin.source.is_empty() {
+                        "-".to_string()
+                    } else {
+                        plugin.source.clone()
+                    };
+                    println!(
+                        "{:<28} {:<12} {:<9} {:<32} {}",
+                        manifest.id,
+                        manifest.version,
+                        if manifest.enabled {
+                            "enabled"
+                        } else {
+                            "disabled"
+                        },
+                        permissions,
+                        source
+                    );
+                }
+                0
+            }
+            Err(error) => fail(1, "plugin", &error),
+        },
+        PluginAction::Install { source, force } => match store.install(&source, force) {
+            Ok(plugin) => {
+                println!(
+                    "installed {} {}",
+                    plugin.manifest.id, plugin.manifest.version
+                );
+                println!(
+                    "permissions: {}",
+                    if plugin.manifest.permissions.is_empty() {
+                        "none".to_string()
+                    } else {
+                        plugin.manifest.permissions.join(", ")
+                    }
+                );
+                println!("source: {}", plugin.source);
+                println!("restart Oxterm to start it");
+                0
+            }
+            Err(error) => fail(1, "plugin", &error),
+        },
+        PluginAction::Remove { id, purge } => match store.remove(&id, purge) {
+            Ok(()) => {
+                println!("removed {}", id);
+                0
+            }
+            Err(error) => fail(1, "plugin", &error),
+        },
+        PluginAction::Update { id } => match store.update(id.as_deref()) {
+            Ok(messages) => {
+                if messages.is_empty() {
+                    println!("Nothing to update.");
+                } else {
+                    for message in messages {
+                        println!("{}", message);
+                    }
+                }
+                0
+            }
+            Err(error) => fail(1, "plugin", &error),
+        },
+        PluginAction::Permissions { id } => match store.find(&id) {
+            Ok(plugin) => {
+                if plugin.manifest.permissions.is_empty() {
+                    println!("{}: none", id);
+                } else {
+                    println!("{}: {}", id, plugin.manifest.permissions.join(", "));
+                }
+                0
+            }
+            Err(error) => fail(1, "plugin", &error),
+        },
+    }
+}
+
+fn run_mcp() -> i32 {
+    use crate::headless::mcp;
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+    for line in stdin.lock().lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(_) => break,
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let request: Value = match serde_json::from_str(&line) {
+            Ok(request) => request,
+            Err(error) => {
+                let response = mcp::error(&Value::Null, -32700, &format!("parse error: {}", error));
+                let _ = writeln!(stdout, "{}", response);
+                let _ = stdout.flush();
+                continue;
+            }
+        };
+        // Notifications have no id and must not receive a response.
+        let Some(id) = request.get("id").cloned() else {
+            continue;
+        };
+        let response = match mcp::classify(&request) {
+            mcp::Request::Initialize => mcp::result(&id, mcp::initialize_result()),
+            mcp::Request::ToolsList => mcp::result(&id, json!({ "tools": mcp::tools() })),
+            mcp::Request::ToolsCall { name, arguments } => {
+                mcp::result(&id, mcp_tool(&name, &arguments))
+            }
+            mcp::Request::Ping => mcp::result(&id, json!({})),
+            mcp::Request::Notification => continue,
+            mcp::Request::Unknown(method) => {
+                mcp::error(&id, -32601, &format!("method not found: {}", method))
+            }
+        };
+        if writeln!(stdout, "{}", response).is_err() {
+            break;
+        }
+        let _ = stdout.flush();
+    }
+    0
+}
+
+fn mcp_tool(name: &str, arguments: &Value) -> Value {
+    use crate::headless::mcp;
+    let result = match name {
+        "terminal_list" => mcp_list(),
+        "terminal_new" => mcp_new(arguments),
+        "terminal_split" => mcp_split(arguments),
+        "terminal_send" => mcp_send(arguments),
+        "terminal_capture" => mcp_capture(arguments),
+        "terminal_wait" => mcp_wait(arguments),
+        "terminal_workspace" => mcp_workspace(arguments),
+        other => Err(format!("unknown tool: {}", other)),
+    };
+    match result {
+        Ok(text) => mcp::tool_ok(text),
+        Err(error) => mcp::tool_error(error),
+    }
+}
+
+fn mcp_command(value: Option<&Value>) -> Result<Option<Vec<String>>, String> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(items)) => {
+            let mut command = Vec::with_capacity(items.len());
+            for item in items {
+                command.push(
+                    item.as_str()
+                        .ok_or("command must be an array of strings")?
+                        .to_string(),
+                );
+            }
+            Ok(Some(command))
+        }
+        Some(_) => Err("command must be an array of strings".to_string()),
+    }
+}
+
+fn mcp_list() -> Result<String, String> {
+    let socket = live_sockets()
+        .into_iter()
+        .next()
+        .ok_or("no running Oxterm window")?;
+    let reply = request_at(&socket, &json!({ "op": "list" })).map_err(|(_, error)| error)?;
+    serde_json::to_string_pretty(&reply["panes"]).map_err(|error| error.to_string())
+}
+
+fn mcp_new(arguments: &Value) -> Result<String, String> {
+    let command = mcp_command(arguments.get("command"))?;
+    let request = json!({
+        "op": "new",
+        "cwd": arguments.get("cwd").and_then(Value::as_str),
+        "title": arguments.get("title").and_then(Value::as_str),
+        "command": command,
+    });
+    client_new(&request).map_err(|(_, error)| error)
+}
+
+fn mcp_split(arguments: &Value) -> Result<String, String> {
+    let target =
+        resolve_pane(arguments.get("pane").and_then(Value::as_str)).map_err(|(_, error)| error)?;
+    let vertical = arguments
+        .get("direction")
+        .and_then(Value::as_str)
+        .map(|direction| direction != "horizontal")
+        .unwrap_or(true);
+    let command = mcp_command(arguments.get("command"))?;
+    let request = json!({
+        "op": "split",
+        "pane": target.id,
+        "vertical": vertical,
+        "cwd": arguments.get("cwd").and_then(Value::as_str),
+        "title": arguments.get("title").and_then(Value::as_str),
+        "command": command,
+    });
+    let reply = request_at(&target.socket, &request).map_err(|(_, error)| error)?;
+    Ok(reply["pane"].as_str().unwrap_or("").to_string())
+}
+
+fn mcp_send(arguments: &Value) -> Result<String, String> {
+    let target =
+        resolve_pane(arguments.get("pane").and_then(Value::as_str)).map_err(|(_, error)| error)?;
+    let text = arguments
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or("text is required")?;
+    let request = json!({
+        "op": "send",
+        "pane": target.id,
+        "text": text,
+        "enter": arguments.get("enter").and_then(Value::as_bool).unwrap_or(false),
+    });
+    request_at(&target.socket, &request).map_err(|(_, error)| error)?;
+    Ok(format!("typed {} bytes", text.len()))
+}
+
+fn mcp_capture(arguments: &Value) -> Result<String, String> {
+    let target =
+        resolve_pane(arguments.get("pane").and_then(Value::as_str)).map_err(|(_, error)| error)?;
+    let all = arguments
+        .get("all")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let lines = arguments
+        .get("scrollback")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let (scope, lines) = if all {
+        ("all", 0)
+    } else if lines > 0 {
+        ("lines", lines)
+    } else {
+        ("screen", 0)
+    };
+    let reply = request_at(
+        &target.socket,
+        &json!({
+            "op": "capture",
+            "pane": target.id,
+            "scope": scope,
+            "lines": lines,
+        }),
+    )
+    .map_err(|(_, error)| error)?;
+    Ok(reply["text"].as_str().unwrap_or("").to_string())
+}
+
+fn mcp_wait(arguments: &Value) -> Result<String, String> {
+    let target =
+        resolve_pane(arguments.get("pane").and_then(Value::as_str)).map_err(|(_, error)| error)?;
+    let timeout = arguments
+        .get("timeout")
+        .and_then(Value::as_f64)
+        .filter(|seconds| *seconds > 0.0)
+        .map(Duration::from_secs_f64);
+    let status = mcp_wait_status(&target, timeout)?;
+    Ok(format!("exit status {}", status))
+}
+
+fn mcp_wait_status(target: &Target, timeout: Option<Duration>) -> Result<i64, String> {
+    let deadline = timeout.map(|limit| Instant::now() + limit);
+    let baseline = request_at(&target.socket, &json!({ "op": "gen", "pane": target.id }))
+        .map_err(|(_, error)| error)?["generation"]
+        .as_u64()
+        .unwrap_or(0);
+    loop {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err("timed out waiting for the command".to_string());
+        }
+        std::thread::sleep(Duration::from_millis(120));
+        let reply = request_at(&target.socket, &json!({ "op": "gen", "pane": target.id }))
+            .map_err(|(_, error)| error)?;
+        if reply["generation"].as_u64().unwrap_or(0) > baseline {
+            return reply["exit"]
+                .as_i64()
+                .ok_or_else(|| "the command finished without reporting a status".to_string());
+        }
+        if reply["alive"].as_bool() == Some(false) {
+            return Err("the pane closed before a command finished".to_string());
+        }
+    }
+}
+
+fn mcp_workspace(arguments: &Value) -> Result<String, String> {
+    let file = arguments
+        .get("file")
+        .and_then(Value::as_str)
+        .ok_or("file is required")?;
+    let raw = crate::headless::workspace::read(Path::new(file))?;
+    let workspace = crate::headless::workspace::parse(&raw)?;
+    let socket = live_sockets()
+        .into_iter()
+        .next()
+        .ok_or("no running Oxterm window")?;
+    let request = json!({
+        "op": "workspace",
+        "document": raw,
+        "replace": arguments.get("replace").and_then(Value::as_bool).unwrap_or(false),
+    });
+    request_at(&socket, &request).map_err(|(_, error)| error)?;
+    Ok(format!("opened workspace {}", workspace.name))
 }
 
 struct Target {
@@ -817,6 +1145,16 @@ fn request_at_with_timeout(
     request: &Value,
     timeout: Duration,
 ) -> Result<Value, (i32, String)> {
+    // A request made by a plugin carries its identity, so the server can check
+    // the permissions declared in its manifest. User scripts leave it unset.
+    let mut request = request.clone();
+    if request.is_object() && request.get("plugin_id").is_none() {
+        if let Ok(id) = std::env::var("OXTERM_PLUGIN_ID") {
+            if !id.is_empty() {
+                request["plugin_id"] = json!(id);
+            }
+        }
+    }
     let mut stream = std::os::unix::net::UnixStream::connect(path)
         .map_err(|e| (4, format!("cannot reach the Oxterm control socket: {}", e)))?;
     stream
@@ -825,7 +1163,7 @@ fn request_at_with_timeout(
     stream
         .set_write_timeout(Some(timeout))
         .map_err(|e| (1, e.to_string()))?;
-    write_json(&mut stream, request).map_err(|e| (1, e))?;
+    write_json(&mut stream, &request).map_err(|e| (1, e))?;
     let reply = read_json(&mut stream).map_err(|e| (1, e))?;
     if reply["ok"].as_bool() == Some(true) {
         Ok(reply)
@@ -990,12 +1328,52 @@ fn error_reply(message: &str, code: i32) -> Value {
     json!({ "ok": false, "error": message, "code": code })
 }
 
+/// Check the manifest permissions of a request that identifies a plugin.
+///
+/// This is not a sandbox: a plugin runs with the user's privileges and can omit
+/// `OXTERM_PLUGIN_ID`. It keeps a well-behaved plugin honest and makes a denied
+/// action explain itself instead of silently succeeding.
+fn plugin_allows(request: &Value, permission: &str) -> Result<(), String> {
+    let Some(id) = request
+        .get("plugin_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    else {
+        return Ok(());
+    };
+    let store = crate::headless::plugins::Store::default_store();
+    let plugin = store
+        .find(id)
+        .map_err(|error| format!("unknown plugin {}: {}", id, error))?;
+    if plugin.manifest.has_permission(permission) {
+        Ok(())
+    } else {
+        Err(format!("plugin {} lacks the {} permission", id, permission))
+    }
+}
+
+fn plugin_denied(request: &Value, permission: &str) -> Option<Value> {
+    plugin_allows(request, permission)
+        .err()
+        .map(|error| error_reply(&error, 1))
+}
+
 /// Keep a control connection open and stream events until the peer goes away.
 ///
 /// A heartbeat every 30 seconds both proves liveness and notices a client that
 /// closed without reading: the write fails and the subscription is released.
 fn serve_events(stream: &mut std::os::unix::net::UnixStream, request: &Value) {
     use crate::headless::events::{self, EventFilter};
+    let include_output = request["include_output"].as_bool().unwrap_or(false);
+    let permission = if include_output {
+        "read-screen"
+    } else {
+        "events"
+    };
+    if let Err(error) = plugin_allows(request, permission) {
+        let _ = write_json(stream, &error_reply(&error, 1));
+        return;
+    }
     let filter = EventFilter {
         pane: request["pane"].as_str().map(str::to_string),
         events: request["events"].as_array().map(|rows| {
@@ -1003,7 +1381,7 @@ fn serve_events(stream: &mut std::os::unix::net::UnixStream, request: &Value) {
                 .filter_map(|row| row.as_str().map(str::to_string))
                 .collect()
         }),
-        include_output: request["include_output"].as_bool().unwrap_or(false),
+        include_output,
     };
     let Some((id, receiver)) = events::bus().subscribe(filter) else {
         let _ = write_json(stream, &error_reply("too many event subscribers", 1));
@@ -1071,6 +1449,9 @@ fn dispatch(request: &Value) -> Value {
             json!({ "ok": true })
         }
         "new" => {
+            if let Some(reply) = plugin_denied(request, "spawn") {
+                return reply;
+            }
             let Some(window) = target_window(&app) else {
                 return error_reply("no running Oxterm window", 4);
             };
@@ -1086,6 +1467,9 @@ fn dispatch(request: &Value) -> Value {
             json!({ "ok": true, "pane": term.remote_id() })
         }
         "split" => {
+            if let Some(reply) = plugin_denied(request, "spawn") {
+                return reply;
+            }
             let Some((window, _)) =
                 find_main_terminal(&app, request["pane"].as_str().unwrap_or(""))
             else {
@@ -1112,6 +1496,9 @@ fn dispatch(request: &Value) -> Value {
         "tunnel" => handle_tunnel(&app, request),
         "action" => handle_action(&app, request),
         "workspace" => {
+            if let Some(reply) = plugin_denied(request, "workspace") {
+                return reply;
+            }
             let Some(window) = target_window(&app) else {
                 return error_reply("no running Oxterm window", 4);
             };
@@ -1153,6 +1540,9 @@ fn dispatch(request: &Value) -> Value {
             json!({ "ok": true })
         }
         "send" => {
+            if let Some(reply) = plugin_denied(request, "send-input") {
+                return reply;
+            }
             let Some((_, term)) = find_terminal(&app, request["pane"].as_str().unwrap_or(""))
             else {
                 return error_reply("pane not found", 3);
@@ -1165,6 +1555,9 @@ fn dispatch(request: &Value) -> Value {
             json!({ "ok": true })
         }
         "capture" => {
+            if let Some(reply) = plugin_denied(request, "read-screen") {
+                return reply;
+            }
             let Some((_, term)) = find_terminal(&app, request["pane"].as_str().unwrap_or(""))
             else {
                 return error_reply("pane not found", 3);
@@ -1277,6 +1670,16 @@ pub(crate) fn focus_pane(socket: &Path, id: &str) -> Result<(), String> {
 
 fn handle_action(app: &gtk::Application, request: &Value) -> Value {
     let action = request["action"].as_str().unwrap_or("");
+    let needed = match action {
+        "notify" => "notify",
+        "open-url" => "open-files",
+        "insert-text" => "send-input",
+        "set-tab-color" | "set-tab-title" | "mark-failure" | "clear-failure" => "workspace",
+        _ => "workspace",
+    };
+    if let Err(error) = plugin_allows(request, needed) {
+        return error_reply(&error, 1);
+    }
     if action == "notify" {
         crate::terminal::send_desktop_notification(
             request["title"].as_str().unwrap_or("Oxterm"),

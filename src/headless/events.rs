@@ -15,7 +15,7 @@ use serde_json::Value;
 
 /// Concurrent event subscriptions. The control socket already limits clients;
 /// this is the tighter limit that keeps a script from flooding the bus.
-pub const MAX_SUBSCRIBERS: usize = 8;
+pub const MAX_SUBSCRIBERS: usize = 16;
 
 /// Events buffered for one subscriber before it is considered too slow.
 pub const SUBSCRIBER_QUEUE: usize = 256;

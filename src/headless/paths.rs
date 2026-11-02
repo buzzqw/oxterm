@@ -13,6 +13,15 @@ pub fn config_dir() -> PathBuf {
     home.join(".config").join("oxterm")
 }
 
+/// The user's Oxterm data directory: plugins, locks and per-plugin state.
+pub fn data_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
+        return PathBuf::from(path).join("oxterm");
+    }
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    home.join(".local").join("share").join("oxterm")
+}
+
 /// The control byte sent by the tmux-style prefix, read from the stored
 /// settings. A separate `oxterm attach` process does not inherit the GUI's
 /// in-memory overrides, so the on-disk document is the right source.

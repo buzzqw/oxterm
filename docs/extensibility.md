@@ -231,7 +231,7 @@ manuale spiega il file e i comandi.
 ### 1.5 Sicurezza
 
 - Il socket resta privato dell'utente, con controllo `SO_PEERCRED` come oggi.
-- Al massimo 8 sottoscrizioni contemporanee, code limitate, disconnessione dei
+- Al massimo 16 sottoscrizioni contemporanee, code limitate, disconnessione dei
   client lenti.
 - `output_line` è spento per default e limitato per frequenza.
 - Nessun trigger può leggere o modificare la riga di input corrente, per non
@@ -287,30 +287,41 @@ Implementata in `~/.config/oxterm/extensions.json` e nel comando
 
 ## Fase 3 — Pacchetti plugin
 
-- Directory: `$XDG_DATA_HOME/oxterm/plugins/<id>/`.
+Implementata:
+
+- Directory: `$XDG_DATA_HOME/oxterm/plugins/<id>/`; stato privato in
+  `$XDG_DATA_HOME/oxterm/state/<id>/`.
 - Manifest `plugin.json`: `id`, `name`, `version`, `api_version`, `permissions`,
-  `settings`, `entrypoints`.
-- Comandi: `oxterm plugin install|list|update|remove`, lockfile
-  `plugins.lock.json` con URL e commit.
-- Permessi: `read-screen`, `send-input`, `spawn`, `open-files`, `network`,
-  `clipboard`, `notify`, `workspace`, `status-bar`. Richiesta al primo uso,
-  revoca dalle preferenze, indicatore nella tab quando un plugin è attivo.
-- API del plugin = processo esterno che parla il protocollo `events`/`action`
-  della Fase 1. Nessun runtime nuovo.
+  `events`, `command` (argv), `enabled`. Non ci sono `settings` né
+  `entrypoints`: il comando è l'entrypoint e le impostazioni vivono nello state
+  directory del plugin.
+- Comandi: `oxterm plugin list|install|remove|update|permissions`, lockfile
+  `plugins.lock.json` con sorgente e commit. Installazione da directory locale o
+  URL git (`git clone --depth 1`).
+- Permessi: `events`, `read-screen`, `send-input`, `spawn`, `open-files`,
+  `network`, `clipboard`, `notify`, `workspace`, `status-bar`. Sono controllati
+  per le richieste che portano `OXTERM_PLUGIN_ID`; non sono una sandbox, perché
+  un processo esterno ha già i privilegi dell'utente.
+- Runtime: un processo per plugin, eventi JSON su stdin filtrati dal manifest,
+  `OXTERM_CONTROL`/`OXTERM_PLUGIN_*` nell'ambiente, riavvio fino a tre volte,
+  `PR_SET_PDEATHSIG` per non sopravvivere a Oxterm.
 
 ## Fase 4 — Pannelli WASM e MCP
 
-- **WASM** con `wasmtime` dietro feature `plugins-wasm`, oppure in un helper
-  `oxterm-plugin-host` separato per non gonfiare il binario principale.
-  Capacità esplicite, niente accesso al filesystem se non concesso, rendering
-  in un `DrawingArea` con una griglia di celle o un buffer ANSI.
-- **MCP** come binario separato `oxterm-mcp` che espone `new`, `split`, `send`,
-  `capture`, `wait` come tool MCP. Non richiede WASM e può arrivare prima della
-  Fase 4: è il modo più economico per far pilotare Oxterm a un agente.
+- **MCP implementato** come `oxterm mcp` (nello stesso binario, non un helper
+  separato): JSON-RPC su stdin/stdout, tool `terminal_list`, `terminal_new`,
+  `terminal_split`, `terminal_send`, `terminal_capture`, `terminal_wait`,
+  `terminal_workspace`. Usa il control socket esistente.
+- **WASM rinviato.** `wasmtime` aggiunge peso al binario e richiede un vero
+  modello di capacità e un renderer di pannelli; senza un caso d'uso concreto
+  non vale la pena introdurlo ora. Resta il candidato per plugin che devono
+  disegnare UI o orchestrare il workspace in una sandbox reale. L'host esterno
+  della Fase 3 copre già automazioni, notifiche e pannelli esterni.
 
 ## Stato dell'implementazione (2026-11-02)
 
-La Fase 1 e la Fase 2 sono implementate in questo ramo:
+Le Fasi 1, 2 e 3 sono implementate; della Fase 4 c'è MCP, mentre WASM è
+rinviato:
 
 | Pezzo | File | Stato |
 | --- | --- | --- |
@@ -330,6 +341,11 @@ La Fase 1 e la Fase 2 sono implementate in questo ramo:
 | Status bar dei widget | `src/status_bar.rs`, `src/window.rs` | fatto |
 | Voci della palette da `extensions.json` | `src/extensions.rs`, `src/terminal.rs` | fatto |
 | Voci nel menu contestuale | — | rimandate |
+| Manifest, lock, install/update/remove dei plugin | `src/headless/plugins.rs` | fatto, con test |
+| Host dei plugin e inoltro eventi | `src/plugins.rs` | fatto, verificato con un plugin reale |
+| Controllo permessi sulle richieste con `OXTERM_PLUGIN_ID` | `src/control.rs` | fatto |
+| Server MCP e tool | `src/headless/mcp.rs`, `src/control.rs` | fatto, con test e prova reale |
+| Pannelli WASM | — | rinviati |
 
 Deviazioni rispetto alla prima stesura:
 
@@ -348,8 +364,9 @@ Deviazioni rispetto alla prima stesura:
    ristilare. Resta da valutare un overlay sul widget.
 3. ~~Formato workspace.~~ JSON, implementato: layout, una o due pane, tab con
    `title`, `cwd`, `command`, `color`.
-4. **Runtime WASM.** `wasmtime` o `extism`; decidere solo dopo aver misurato
-   l'impatto sul binario.
+4. **Runtime WASM.** `wasmtime` o `extism`; **rinviato**: nessun caso d'uso che
+   giustifichi peso e complessità finché l'host esterno basta. Da riprendere se
+   serviranno pannelli che disegnano dentro Oxterm.
 5. **Eventi come JSON Lines o frame?** Sul socket restano frame come oggi; la
    CLI stampa JSON Lines per comodità di `jq`.
 
@@ -362,3 +379,5 @@ Deviazioni rispetto alla prima stesura:
   limiti di VTE 0.70.
 - 2026-11-02: Fase 2 implementata: `oxterm workspace`, status bar dei widget e
   contributi alla palette da `extensions.json`, con test headless e GUI.
+- 2026-11-02: Fase 3 implementata (manifest, install/update/remove, host dei
+  plugin, permessi) e `oxterm mcp` della Fase 4. WASM rinviato.
