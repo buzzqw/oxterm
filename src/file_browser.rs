@@ -1401,7 +1401,11 @@ pub fn open(parent: &gtk::Window, connection: Connection) {
     content.pack_start(&panes, true, true, 0);
     let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let spinner = gtk::Spinner::new();
-    let status = gtk::Label::new(Some("Connecting..."));
+    let status = gtk::Label::new(Some(if connection.no_sharing {
+        "Connection sharing is off for this entry: every folder and transfer opens a new SSH session."
+    } else {
+        "Connecting..."
+    }));
     status.set_xalign(0.0);
     status.set_line_wrap(true);
     let password = gtk::Button::with_label("Password...");

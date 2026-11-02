@@ -240,8 +240,10 @@ fn sftp_command(connection: &Connection) -> Command {
     // `-b -` stops at the first error. ssh takes the first value of an option, so
     // this keeps a stored password possible where `-b` would imply BatchMode.
     command.args(["-q", "-b", "-", "-o", "BatchMode=no"]);
-    if let Some(config) = effective.as_deref() {
-        command.args(ssh_config::sharing_options(config, &paths::config_dir()));
+    if !connection.no_sharing {
+        if let Some(config) = effective.as_deref() {
+            command.args(ssh_config::sharing_options(config, &paths::config_dir()));
+        }
     }
     command.args(&connection.sftp_argv()[1..]);
     if connection.uses_keyring() {

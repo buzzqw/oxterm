@@ -1359,10 +1359,25 @@ impl MainWindow {
             self.status_message(&format!("{} is not installed", program), true);
             return;
         }
-        let argv = match entry.connection.protocol {
+        let mut argv = match entry.connection.protocol {
             Protocol::Ftp => entry.connection.terminal_argv().unwrap_or_default(),
             _ => entry.connection.sftp_argv(),
         };
+        if entry.connection.protocol != Protocol::Ftp && !entry.connection.no_sharing {
+            // Without a master every sftp start pays a full SSH handshake.
+            let path = crate::headless::paths::config_dir().join("cm-%C");
+            argv.splice(
+                1..1,
+                [
+                    "-o".to_string(),
+                    "ControlMaster=auto".to_string(),
+                    "-o".to_string(),
+                    format!("ControlPath={}", path.display()),
+                    "-o".to_string(),
+                    "ControlPersist=10m".to_string(),
+                ],
+            );
+        }
         let title = format!("files {}", entry.connection.name);
         let term = self.add_new_tab(None, None, Some(&title), Some(&title), Some(&argv));
         term.set_connection(

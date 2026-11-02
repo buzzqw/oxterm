@@ -939,7 +939,9 @@ session works too, without a saved entry.
   accepts a password needs this button (or a key, an agent, or an already open
   shared connection).
 - Copies run one at a time in the background, folders included. Oxterm asks before
-  replacing an existing name; a sync asks once for the whole folder.
+  replacing an existing name; a sync asks once for the whole folder. Browsing is
+  much faster with SSH connection sharing: if the entry has **Do not share this
+  connection** checked, every folder and transfer starts a new SSH session.
 - **New Folder**, **Rename** (`F2`), **Delete** (`Delete`), **Refresh** (`F5`) and
   **Up** (`Backspace`) work on both sides.
 - `oxterm browse NAME` opens the same browser from a terminal, which is handy
