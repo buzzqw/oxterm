@@ -2636,7 +2636,7 @@ impl MainWindow {
         menubar.style_context().add_class("oxterm-menu-row");
         let mut buttons = Vec::new();
         for label in [
-            "File", "Edit", "View", "Terminal", "Tabs", "Notes", "SSH", "Help",
+            "File", "Edit", "View", "Terminal", "Tabs", "Notes", "Connections", "Help",
         ] {
             let btn = gtk::MenuButton::new();
             btn.set_label(label);
@@ -3442,16 +3442,16 @@ impl MainWindow {
         );
         menus.push(("Notes".into(), notes_menu));
 
-        let ssh_menu = gtk::Menu::new();
+        let connections_menu = gtk::Menu::new();
         let weak = crate::SendWeak::new(self);
-        ssh_menu.connect_show(move |menu| {
+        connections_menu.connect_show(move |menu| {
             if let Some(w) = weak.upgrade() {
-                w.populate_ssh_menu(menu, true);
+                w.populate_connections_menu(menu, true);
             }
         });
         // A menu with no items never opens, so it needs its fixed items now.
-        self.populate_ssh_menu(&ssh_menu, false);
-        menus.push(("SSH".into(), ssh_menu));
+        self.populate_connections_menu(&connections_menu, false);
+        menus.push(("Connections".into(), connections_menu));
 
         // Help
         let help_menu = gtk::Menu::new();

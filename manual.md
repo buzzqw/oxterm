@@ -642,18 +642,18 @@ while `/proc` cannot lie about the process.
 
 ### Saved connections
 
-Everything starts from the **SSH** menu, to the right of **Notes**:
+Everything starts from the **Connections** menu, to the right of **Notes**:
 
 1. Choose **New Connection...**, fill in a name and a host, and press **Save**.
    Hosts already in `~/.ssh/config` need no setup: they are listed by themselves.
-2. Choose the connection from the **SSH** menu, or open **Connections Panel**
+2. Choose the connection from the **Connections** menu, or open **Connections Panel**
    (`Ctrl+Shift+J`) and press `Enter` on it.
 
 The panel lists every saved connection and every host in `~/.ssh/config`, grouped
 into Favorites, Recent, your own groups, Ungrouped and `~/.ssh/config`. Type to
 search names, hosts, users, groups, tags and notes. Right-click a group for
-**Open All**. The **SSH** menu also lists favorites and recent connections, and
-the current connection's macros.
+**Open All**. The **Connections** menu also lists favorites and recent
+connections, and the current connection's macros.
 
 - `Enter` or a double click opens a tab, `Ctrl+Enter` a split. The context menu
   also offers a new window, `sftp`, tunnels, copying the `ssh` command, favorites,
@@ -733,8 +733,8 @@ stops a shared screen and closes the tab, and closing the tab closes the viewer.
 
 **File browser.** An SFTP or FTP entry opens a two-pane window, with this computer on
 the left and the server on the right. **Browse Files...** in the panel's context menu
-or the **SSH** menu does the same for any SSH entry, reusing an open connection so no
-new login is needed.
+or the **Connections** menu does the same for any SSH entry, reusing an open
+connection so no new login is needed.
 
 - Double-click a folder to enter it, or a file to copy it to the other side.
 - Use **Upload** and **Download**, or drag between the panes. You can also drop files
@@ -757,7 +757,7 @@ new login is needed.
 | SSH | X11 (`-X`), compression (`-C`), agent forwarding (`-A`), keepalive, connect timeout, unknown-host policy, `TERM`, no connection sharing, extra arguments, old algorithms for aged servers |
 | Session | Remote command (and staying in a shell after it), a local command to run first such as bringing up a VPN, Wake-on-LAN, automatic reconnection, recording the output to a file, asking before connecting |
 | Tunnels | Saved local, remote and SOCKS tunnels |
-| Macros | Named commands, run from the terminal's right-click menu or the **SSH** menu |
+| Macros | Named commands, run from the terminal's right-click menu or the **Connections** menu |
 | Automation | Type a command when a pattern appears in the terminal |
 | Appearance | Color scheme, font, scrollback and encoding for this entry's tabs |
 
@@ -771,7 +771,7 @@ new login is needed.
   failure is reported, and the connection is still attempted.
 - **Automation rules** react to what the server prints, so a server can trigger
   them: never put a secret in one.
-- **Keys.** **Generate SSH Key...** in the **SSH** menu runs `ssh-keygen` in a tab.
+- **Keys.** **Generate SSH Key...** in the **Connections** menu runs `ssh-keygen` in a tab.
   **Copy Public Key to Server** in the panel's context menu runs `ssh-copy-id`.
 
 **Passwords.** Keys and an agent are the better choice. Where a server only takes

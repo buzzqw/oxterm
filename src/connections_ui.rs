@@ -1174,9 +1174,9 @@ impl MainWindow {
         self.add_new_tab(None, None, Some(&title), Some(&title), Some(&argv));
     }
 
-    /// The SSH menu, rebuilt each time it opens so favorites, recent connections
-    /// and the current tab's macros are up to date.
-    pub fn populate_ssh_menu(&self, menu: &gtk::Menu, with_saved: bool) {
+    /// The Connections menu, rebuilt each time it opens so favorites, recent
+    /// connections and the current tab's macros are up to date.
+    pub fn populate_connections_menu(&self, menu: &gtk::Menu, with_saved: bool) {
         for child in menu.children() {
             menu.remove(&child);
         }

@@ -1544,7 +1544,7 @@ pub fn build_tree(entries: &[Entry], usage: &UsageMap, query: &str) -> Vec<Node>
     nodes
 }
 
-/// Favorites first, then the most recently used, for the SSH menu.
+/// Favorites first, then the most recently used, for the Connections menu.
 pub fn menu_shortcuts(entries: &[Entry], usage: &UsageMap, limit: usize) -> Vec<usize> {
     let mut favorites: Vec<usize> = (0..entries.len())
         .filter(|&index| entries[index].connection.favorite)

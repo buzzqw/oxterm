@@ -1065,7 +1065,7 @@ pub fn edit(
     let (macro_page, macro_list, add_macro) = list_page(
         "Add Macro",
         "Commands kept with this connection. Run them from the terminal's right-click menu \
-         or the SSH menu.",
+         or the Connections menu.",
     );
     for item in &initial.macros {
         add_macro_row(&fields, &macro_list, item.clone());
