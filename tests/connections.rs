@@ -603,12 +603,20 @@ fn every_terminal_protocol_runs_its_program_in_a_tab() {
 }
 
 #[test]
-fn a_direct_desktop_gets_its_password_on_stdin_only() {
+fn a_direct_desktop_gets_its_password_at_the_viewers_prompt() {
     if !gui_tests_enabled() {
         return;
     }
     let home = TempHome::new();
-    let log = fake(&home, "xfreerdp3");
+    let log = home.path().join("xfreerdp3.log");
+    // Stands in for a viewer: the tab answers its prompt, as a person would.
+    home.write_script(
+        "xfreerdp3",
+        &format!(
+            "printf '%s\\n' \"$*\" >> '{log}'\nprintf 'Password: '\nIFS= read -r pw\nprintf '%s' \"$pw\" >> '{log}'\nexec sleep 60",
+            log = log.display()
+        ),
+    );
     home.write_script("secret-tool", "printf 'rdp-s3cret\\n'");
     home.write_book(
         r#"{"version":1,"connections":[{"id":"r1","name":"win","protocol":"rdp","host":"h",
@@ -621,13 +629,7 @@ fn a_direct_desktop_gets_its_password_on_stdin_only() {
     });
     let text = fs::read_to_string(&log).unwrap();
     let arguments = text.lines().next().unwrap();
-    for flag in [
-        "/v:h:3389",
-        "/u:admin",
-        "/d:CORP",
-        "+clipboard",
-        "/from-stdin",
-    ] {
+    for flag in ["/v:h:3389", "/u:admin", "/d:CORP", "+clipboard"] {
         assert!(
             arguments.contains(flag),
             "{} missing from {}",
@@ -635,6 +637,16 @@ fn a_direct_desktop_gets_its_password_on_stdin_only() {
             arguments
         );
     }
+    assert!(
+        !arguments.contains("/from-stdin"),
+        "the password is typed at the prompt, not piped: {}",
+        arguments
+    );
+    assert!(
+        !arguments.contains("/cert:tofu"),
+        "the certificate question must reach the tab: {}",
+        arguments
+    );
     assert!(
         !arguments.contains("rdp-s3cret"),
         "the password reached the arguments"

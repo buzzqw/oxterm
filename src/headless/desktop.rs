@@ -2,16 +2,19 @@
 //! started on the far side.
 //!
 //! Oxterm embeds no RDP or VNC client: a viewer is an external program, as ssh is.
-//! A server started on demand listens on the remote loopback only and is reached
-//! through an ssh tunnel, so nothing new is exposed on the network. The ssh runs
-//! in a tab: it can ask for a password or a host key there, the server's messages
-//! stay readable, and closing the tab ends the session, because a terminal hangup
-//! takes the server with it.
+//! It runs in a tab, so its logs and questions (a changed certificate, a password)
+//! stay visible and answerable, and closing the tab ends it. A server started on
+//! demand listens on the remote loopback only and is reached through an ssh tunnel,
+//! so nothing new is exposed on the network. That ssh runs in its own tab: it can
+//! ask for a password or a host key there, the server's messages stay readable, and
+//! closing the tab ends the session, because a terminal hangup takes the server with
+//! it.
 //!
-//! Secrets never appear in an argument vector, which any local user can read. RDP
-//! clients read a stored password from standard input, and TigerVNC's viewer from
-//! its environment, readable only by the same user. A server started for one
-//! session gets a one-time password typed into the tab with echo off.
+//! Secrets never appear in an argument vector, which any local user can read. A
+//! stored RDP password is typed at the viewer's own prompt, with echo off, and
+//! TigerVNC's viewer reads it from its environment, readable only by the same user.
+//! A server started for one session gets a one-time password typed into the tab with
+//! echo off.
 
 use std::io::Read;
 use std::net::{TcpListener, TcpStream};
@@ -21,10 +24,13 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use super::connections::{Connection, Protocol};
-use super::tunnels::Spec;
 
 /// What the server asks for, and what the tab's automation answers.
 pub const OTP_PROMPT: &str = "OXTERM-VNC-PASSWORD:";
+
+/// FreeRDP and rdesktop ask for the password on their terminal. Anchored to the
+/// start of a line so a gateway's `GatewayPassword:` is not answered with it.
+pub const PASSWORD_PROMPT: &str = r"(?m)^Password:\s*$";
 
 const VNC_BASE_PORT: u16 = 5900;
 const RDP_PORT: u16 = 3389;
@@ -371,6 +377,17 @@ fn vnc_viewer_takes_env_password(program: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// A viewer ready to run in a tab. Its output, logs and questions stay visible
+/// and answerable there, as they would from a shell.
+pub struct Viewer {
+    pub argv: Vec<String>,
+    pub env: Vec<(String, String)>,
+    /// The password the viewer asks for on its terminal: the tab types it.
+    pub prompt_password: Option<String>,
+    /// True when the password reached the viewer without asking.
+    pub delivered: bool,
+}
+
 /// What to run to show a desktop at `host:port`, and whether a password reached
 /// it. `password` comes from the keyring, or was made up for this session.
 pub fn viewer(
@@ -378,11 +395,13 @@ pub fn viewer(
     host: &str,
     port: u16,
     password: Option<String>,
-) -> Result<(Spec, bool), String> {
-    let mut argv: Vec<String> = Vec::new();
-    let mut env = Vec::new();
-    let mut stdin = None;
-    let mut delivered = false;
+) -> Result<Viewer, String> {
+    let mut viewer = Viewer {
+        argv: Vec::new(),
+        env: Vec::new(),
+        prompt_password: None,
+        delivered: false,
+    };
     match connection.protocol {
         Protocol::Rdp => {
             let program = first_available(&[
@@ -398,22 +417,20 @@ pub fn viewer(
                     connection,
                     host,
                     port,
-                    &mut argv,
-                    &mut stdin,
+                    &mut viewer.argv,
+                    &mut viewer.prompt_password,
                     password,
-                    &mut delivered,
                 );
-                argv.insert(0, program.to_string());
+                viewer.argv.insert(0, program.to_string());
             } else {
-                argv.push(program.to_string());
+                viewer.argv.push(program.to_string());
                 freerdp_args(
                     connection,
                     host,
                     port,
-                    &mut argv,
-                    &mut stdin,
+                    &mut viewer.argv,
+                    &mut viewer.prompt_password,
                     password,
-                    &mut delivered,
                 );
             }
         }
@@ -421,6 +438,7 @@ pub fn viewer(
             if !program_exists("remote-viewer") {
                 return Err("No SPICE client found: install virt-viewer".to_string());
             }
+            let argv = &mut viewer.argv;
             argv.push("remote-viewer".to_string());
             argv.push("--title".to_string());
             argv.push(connection.name.clone());
@@ -438,6 +456,7 @@ pub fn viewer(
             let program =
                 first_available(&["vncviewer", "xtigervncviewer", "tigervnc", "remote-viewer"])
                     .ok_or("No VNC viewer found: install tigervnc-viewer or virt-viewer")?;
+            let argv = &mut viewer.argv;
             argv.push(program.to_string());
             if program == "remote-viewer" {
                 if connection.desktop_fullscreen {
@@ -452,22 +471,14 @@ pub fn viewer(
                     argv.push("-ViewOnly".to_string());
                 }
                 if let Some(secret) = password.filter(|_| vnc_viewer_takes_env_password(program)) {
-                    env.push(("VNC_PASSWORD".to_string(), secret));
-                    delivered = true;
+                    viewer.env.push(("VNC_PASSWORD".to_string(), secret));
+                    viewer.delivered = true;
                 }
                 argv.push(format!("{}::{}", host, port));
             }
         }
     }
-    Ok((
-        Spec {
-            argv,
-            env,
-            probe: None,
-            stdin,
-        },
-        delivered,
-    ))
+    Ok(viewer)
 }
 
 fn freerdp_args(
@@ -475,9 +486,8 @@ fn freerdp_args(
     host: &str,
     port: u16,
     argv: &mut Vec<String>,
-    stdin: &mut Option<String>,
+    prompt_password: &mut Option<String>,
     password: Option<String>,
-    delivered: &mut bool,
 ) {
     argv.push(format!("/v:{}:{}", host, port));
     if !connection.user.is_empty() {
@@ -486,9 +496,6 @@ fn freerdp_args(
     if !connection.rdp_domain.is_empty() {
         argv.push(format!("/d:{}", connection.rdp_domain));
     }
-    // With no terminal nobody can answer the certificate question: trust the first
-    // one seen, and refuse a changed one.
-    argv.push("/cert:tofu".to_string());
     argv.push(format!("/t:{}", connection.name));
     if connection.desktop_fullscreen {
         argv.push("/f".to_string());
@@ -506,11 +513,7 @@ fn freerdp_args(
     if !connection.rdp_drive.is_empty() {
         argv.push(format!("/drive:shared,{}", connection.rdp_drive));
     }
-    if let Some(secret) = password {
-        argv.push("/from-stdin".to_string());
-        *stdin = Some(secret);
-        *delivered = true;
-    }
+    *prompt_password = password;
 }
 
 fn rdesktop_args(
@@ -518,9 +521,8 @@ fn rdesktop_args(
     host: &str,
     port: u16,
     argv: &mut Vec<String>,
-    stdin: &mut Option<String>,
+    prompt_password: &mut Option<String>,
     password: Option<String>,
-    delivered: &mut bool,
 ) {
     argv.extend(["-T".to_string(), connection.name.clone()]);
     if !connection.user.is_empty() {
@@ -543,11 +545,7 @@ fn rdesktop_args(
             format!("disk:shared={}", connection.rdp_drive),
         ]);
     }
-    if let Some(secret) = password {
-        argv.extend(["-p".to_string(), "-".to_string()]);
-        *stdin = Some(secret);
-        *delivered = true;
-    }
+    *prompt_password = password;
     argv.push(format!("{}:{}", host, port));
 }
 
@@ -694,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn freerdp_gets_the_password_on_stdin_only() {
+    fn freerdp_asks_for_the_password_on_its_terminal() {
         let connection = Connection {
             name: "win".into(),
             protocol: Protocol::Rdp,
@@ -706,26 +704,16 @@ mod tests {
             ..Connection::default()
         };
         let mut argv = vec!["xfreerdp3".to_string()];
-        let mut stdin = None;
-        let mut delivered = false;
+        let mut prompt = None;
         freerdp_args(
             &connection,
             "h",
             3389,
             &mut argv,
-            &mut stdin,
+            &mut prompt,
             Some("s3cret".into()),
-            &mut delivered,
         );
-        for expected in [
-            "/v:h:3389",
-            "/u:admin",
-            "/d:CORP",
-            "/f",
-            "+clipboard",
-            "/from-stdin",
-            "/cert:tofu",
-        ] {
+        for expected in ["/v:h:3389", "/u:admin", "/d:CORP", "/f", "+clipboard"] {
             assert!(
                 argv.iter().any(|arg| arg == expected),
                 "{}: {:?}",
@@ -733,13 +721,22 @@ mod tests {
                 argv
             );
         }
+        assert!(
+            !argv.iter().any(|arg| arg == "/from-stdin"),
+            "the password is typed at the prompt, not piped: {:?}",
+            argv
+        );
+        assert!(
+            !argv.iter().any(|arg| arg == "/cert:tofu"),
+            "the certificate question must reach the terminal: {:?}",
+            argv
+        );
         assert!(!argv.iter().any(|arg| arg.contains("s3cret")));
-        assert_eq!(stdin.as_deref(), Some("s3cret"));
-        assert!(delivered);
+        assert_eq!(prompt.as_deref(), Some("s3cret"));
     }
 
     #[test]
-    fn rdesktop_gets_the_password_on_stdin_only() {
+    fn rdesktop_asks_for_the_password_on_its_terminal() {
         let connection = Connection {
             name: "win".into(),
             protocol: Protocol::Rdp,
@@ -747,19 +744,18 @@ mod tests {
             ..Connection::default()
         };
         let mut argv = Vec::new();
-        let mut stdin = None;
-        let mut delivered = false;
+        let mut prompt = None;
         rdesktop_args(
             &connection,
             "h",
             3389,
             &mut argv,
-            &mut stdin,
+            &mut prompt,
             Some("s3cret".into()),
-            &mut delivered,
         );
-        assert!(argv.windows(2).any(|pair| pair == ["-p", "-"]));
+        assert!(!argv.windows(2).any(|pair| pair == ["-p", "-"]));
         assert!(!argv.iter().any(|arg| arg.contains("s3cret")));
+        assert_eq!(prompt.as_deref(), Some("s3cret"));
         assert_eq!(argv.last().map(String::as_str), Some("h:3389"));
     }
 
@@ -769,6 +765,17 @@ mod tests {
         let first = one_time_password();
         assert_eq!(first.len(), 8);
         assert_ne!(first, one_time_password());
+    }
+
+    #[test]
+    fn the_password_prompt_is_answered_but_a_gateway_prompt_is_not() {
+        let prompt = regex::Regex::new(PASSWORD_PROMPT).unwrap();
+        assert!(prompt.is_match("connecting\nPassword:        "));
+        assert!(prompt.is_match("Password: "));
+        assert!(
+            !prompt.is_match("GatewayPassword:        "),
+            "the gateway has its own password"
+        );
     }
 
     #[test]

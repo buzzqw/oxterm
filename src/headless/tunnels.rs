@@ -63,7 +63,7 @@ pub struct Spec {
     pub argv: Vec<String>,
     pub env: Vec<(String, String)>,
     pub probe: Option<String>,
-    /// Written to standard input: how a viewer receives a password.
+    /// Written to standard input: a secret the program reads without a terminal.
     pub stdin: Option<String>,
 }
 

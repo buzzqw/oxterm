@@ -2,6 +2,7 @@
 //! flow and tunnel control. Kept out of `window.rs`, which only hosts the slot
 //! and forwards a few calls here.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -318,10 +319,11 @@ impl MainWindow {
                 open_tabs: open.get(&connection.id).copied().unwrap_or(0),
                 ..RowDecoration::default()
             };
-            match states.get(&desktop_key(connection)) {
-                Some(status) if status.is_active() => decoration.open_tabs += 1,
-                Some(tunnels::Status::Failed(_)) => decoration.failed_tunnels += 1,
-                _ => {}
+            if matches!(
+                states.get(&desktop_key(connection)),
+                Some(tunnels::Status::Failed(_))
+            ) {
+                decoration.failed_tunnels += 1;
             }
             for tunnel in &connection.tunnels {
                 match states.get(&tunnel_key(connection, tunnel)) {
@@ -983,16 +985,21 @@ impl MainWindow {
         crate::file_browser::open(&window, connection);
     }
 
-    /// Show a remote desktop. Without a tunnel the viewer starts directly; with one
-    /// a tab carries the ssh, and the viewer starts once the service answers.
+    /// Show a remote desktop. Its viewer runs in a tab, like ssh, so its logs and
+    /// questions (a changed certificate, a password) stay visible and answerable.
+    /// With a tunnel a first tab carries the ssh, and the viewer starts once the
+    /// service answers.
     pub fn start_desktop(&self, connection: Connection) {
-        if desktop::uses_tunnel(&connection) {
-            self.start_tunnelled_desktop(connection);
+        if self
+            .open_connection_counts()
+            .get(&connection.id)
+            .is_some_and(|count| *count > 0)
+        {
+            self.status_message(&format!("{} is already open", connection.name), false);
             return;
         }
-        let key = desktop_key(&connection);
-        if tunnels::status(&key).is_active() {
-            self.status_message(&format!("{} is already open", connection.name), false);
+        if desktop::uses_tunnel(&connection) {
+            self.start_tunnelled_desktop(connection);
             return;
         }
         let weak = crate::SendWeak::new(self);
@@ -1001,21 +1008,20 @@ impl MainWindow {
             let password = stored_password(&connection);
             let port = desktop::remote_port(&connection);
             let viewer = desktop::viewer(&connection, &connection.host, port, password);
-            let error = match viewer {
-                Ok((spec, _)) => {
-                    tunnels::start(&key, spec);
-                    None
-                }
-                Err(error) => Some(error),
-            };
             crate::run_on_main(move || {
-                if let Some(window) = weak.upgrade() {
-                    for problem in problems.iter().chain(error.iter()) {
-                        window.status_message(problem, true);
-                    }
-                    window.watch_tunnels();
-                    window.reload_connections_panel();
+                let Some(window) = weak.upgrade() else {
+                    return;
+                };
+                for problem in &problems {
+                    window.status_message(problem, true);
                 }
+                match viewer {
+                    Ok(viewer) => {
+                        window.open_viewer_tab(&connection, viewer, None);
+                    }
+                    Err(error) => window.status_message(&error, true),
+                }
+                window.reload_connections_panel();
             });
         });
     }
@@ -1057,21 +1063,26 @@ impl MainWindow {
         // The tab has its own lifetime: dropping the connection must not reconnect
         // behind a viewer that is gone.
         attached.auto_reconnect = false;
+        // The viewer gets its own tab, so the two are told apart by name.
+        attached.name = format!("{} (tunnel)", connection.name);
         let argv = desktop::tunnel_argv(&connection, local_port);
-        let title = connection.name.clone();
+        let title = attached.name.clone();
         let term = self.add_new_tab(None, None, Some(&title), Some(&title), Some(&argv));
         self.attach_connection(&term, &attached, true);
 
         let key = desktop_key(&connection);
         let started = Arc::new(AtomicBool::new(false));
         let cancelled = Arc::new(AtomicBool::new(false));
-        let weak = crate::SendWeak::new(self);
-        let weak_term = crate::SendWeak::new(&term);
+        // The viewer's tab is created on the main thread once the service answers.
+        let viewer_term = ViewerTab::new();
+        let viewer_term_from_thread = viewer_term.clone();
         {
             let started = started.clone();
             let cancelled = cancelled.clone();
             let key = key.clone();
             let connection = connection.clone();
+            let one_time = one_time.clone();
+            let weak = crate::SendWeak::new(self);
             std::thread::spawn(move || {
                 let deadline = Instant::now() + DESKTOP_WAIT;
                 while !desktop::service_is_ready(connection.protocol, local_port) {
@@ -1079,6 +1090,7 @@ impl MainWindow {
                         return;
                     }
                     if Instant::now() >= deadline {
+                        tunnels::stop(&key);
                         crate::run_on_main(move || {
                             if let Some(window) = weak.upgrade() {
                                 window.status_message(
@@ -1093,59 +1105,109 @@ impl MainWindow {
                 }
                 let password = one_time.clone().or_else(|| stored_password(&connection));
                 match desktop::viewer(&connection, "127.0.0.1", local_port, password) {
-                    Ok((spec, delivered)) => {
-                        tunnels::start(&key, spec);
+                    Ok(viewer) => crate::run_on_main(move || {
+                        if cancelled.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        let Some(window) = weak.upgrade() else {
+                            return;
+                        };
+                        let term = window.open_viewer_tab(&connection, viewer, one_time.as_deref());
+                        viewer_term_from_thread.set(term);
                         started.store(true, Ordering::SeqCst);
-                        // A viewer that takes no password from a program: the person
-                        // types it, so it has to be shown, here on their own screen.
-                        if let (false, Some(password)) = (delivered, one_time) {
-                            crate::run_on_main(move || {
-                                if let Some(term) = weak_term.upgrade() {
-                                    term.vte().feed(
-                                        format!("\r\n[Oxterm] VNC password: {}\r\n", password)
-                                            .as_bytes(),
-                                    );
-                                }
-                            });
-                        }
-                    }
-                    Err(error) => crate::run_on_main(move || {
-                        if let Some(window) = weak.upgrade() {
-                            window.status_message(&error, true);
-                        }
                     }),
+                    Err(error) => {
+                        tunnels::stop(&key);
+                        crate::run_on_main(move || {
+                            if let Some(window) = weak.upgrade() {
+                                window.status_message(&error, true);
+                            }
+                        })
+                    }
                 }
             });
         }
-        // The tab and the viewer are one session: closing either ends the other.
+        // The two tabs and the processes are one session: closing either end ends
+        // the other, and a failed tunnel takes the viewer down with it.
         let weak = crate::SendWeak::new(self);
         let weak_term = crate::SendWeak::new(&term);
         glib::timeout_add_seconds_local(1, move || {
-            let term = weak_term.upgrade().filter(|term| term.parent().is_some());
-            let Some(term) = term else {
+            let ssh_term = weak_term.upgrade().filter(|term| term.parent().is_some());
+            let Some(ssh_term) = ssh_term else {
                 cancelled.store(true, Ordering::SeqCst);
                 tunnels::stop(&key);
+                if let Some(window) = weak.upgrade() {
+                    viewer_term.close(&window);
+                }
                 return glib::ControlFlow::Break;
             };
             if !started.load(Ordering::SeqCst) {
                 return glib::ControlFlow::Continue;
+            }
+            if !viewer_term.is_open() {
+                // The person closed the viewer: the tunnel has nothing left to carry.
+                cancelled.store(true, Ordering::SeqCst);
+                tunnels::stop(&key);
+                if let Some(window) = weak.upgrade() {
+                    window.close_tab_signal(Some(&ssh_term));
+                }
+                return glib::ControlFlow::Break;
             }
             let status = tunnels::status(&key);
             if status.is_active() {
                 return glib::ControlFlow::Continue;
             }
             if let Some(window) = weak.upgrade() {
+                viewer_term.close(&window);
                 match status {
                     // Keep the tab: what went wrong may be written there.
                     tunnels::Status::Failed(reason) => {
                         window.status_message(&format!("Viewer: {}", reason), true);
                     }
-                    _ => window.close_tab_signal(Some(&term)),
+                    _ => window.close_tab_signal(Some(&ssh_term)),
                 }
                 window.reload_connections_panel();
             }
             glib::ControlFlow::Break
         });
+    }
+
+    /// Run a desktop viewer in its own tab. A password from the keyring is typed
+    /// at the viewer's prompt, with echo off, rather than piped: piping it also
+    /// makes FreeRDP answer a certificate question with "no" without showing it.
+    fn open_viewer_tab(
+        &self,
+        connection: &Connection,
+        viewer: desktop::Viewer,
+        one_time: Option<&str>,
+    ) -> TerminalBox {
+        let mut attached = connection.clone();
+        attached.auto_reconnect = false;
+        if let Some(password) = viewer.prompt_password {
+            attached.expect.push(ExpectRule {
+                pattern: desktop::PASSWORD_PROMPT.to_string(),
+                command: password,
+                max_trigger: 1,
+                delay_ms: 0,
+            });
+        }
+        let title = connection.name.clone();
+        let term = self.add_new_tab_with_env(
+            None,
+            None,
+            Some(&title),
+            Some(&title),
+            Some(&viewer.argv),
+            &viewer.env,
+        );
+        self.attach_connection(&term, &attached, true);
+        // A viewer that takes no password from a program: the person types it,
+        // so it has to be shown, here on their own screen.
+        if let (false, Some(password)) = (viewer.delivered, one_time) {
+            term.vte()
+                .feed(format!("\r\n[Oxterm] VNC password: {}\r\n", password).as_bytes());
+        }
+        term
     }
 
     fn copy_key_to_server(&self, connection: &Connection) {
@@ -1442,6 +1504,40 @@ pub fn offer_reconnect(window: &MainWindow, tabs: Vec<(String, bool)>, vertical:
 fn desktop_key(connection: &Connection) -> String {
     tunnels::key(&connection.id, "desktop")
 }
+
+/// The viewer tab of a tunnelled desktop. Created and used on the main thread;
+/// the thread that waits for the service only hands the tab over through
+/// `run_on_main`, so the `Rc` never crosses a thread on its own.
+#[derive(Clone)]
+struct ViewerTab(Rc<RefCell<Option<TerminalBox>>>);
+
+impl ViewerTab {
+    fn new() -> ViewerTab {
+        ViewerTab(Rc::new(RefCell::new(None)))
+    }
+
+    fn set(&self, term: TerminalBox) {
+        *self.0.borrow_mut() = Some(term);
+    }
+
+    fn is_open(&self) -> bool {
+        self.0
+            .borrow()
+            .as_ref()
+            .is_some_and(|term| term.parent().is_some())
+    }
+
+    fn close(&self, window: &MainWindow) {
+        if let Some(term) = self.0.borrow_mut().take() {
+            if term.parent().is_some() {
+                window.close_tab_signal(Some(&term));
+            }
+        }
+    }
+}
+
+unsafe impl Send for ViewerTab {}
+unsafe impl Sync for ViewerTab {}
 
 /// Reads the keyring, which may wait for an unlock: not on the GUI thread.
 fn stored_password(connection: &Connection) -> Option<String> {

@@ -88,7 +88,11 @@ e `headless/remote_files.rs` con `src/file_browser.rs`. Scelte da mantenere:
   domande; il `-t` fa morire il server con il terminale. Pronto significa banner `RFB`, non porta aperta.
 - **Password monouso:** generata qui, digitata con echo spento tramite una regola expect sul
   prompt `OXTERM-VNC-PASSWORD:`, al viewer TigerVNC con `VNC_PASSWORD` nell'ambiente (TigerVNC
-  1.16 non ha `-autopass`), ai client RDP su stdin. Mai negli argomenti.
+  1.16 non ha `-autopass`), ai client RDP al loro prompt `Password:` nel tab. Mai negli argomenti.
+- **Anche il viewer gira in un tab,** come l'ssh: così un certificato cambiato o una password
+  mancante sono domande visibili e componibili, non stdin muto. Niente `/cert:tofu` né
+  `/from-stdin`: il primo deciderebbe da solo, il secondo risponderebbe `no` alle domande
+  senza mostrarle.
 - **wayvnc senza password:** limite noto, documentato nel manuale.
 - **Import:** comando libero, comando server personalizzato e cartella condivisa chiedono consenso.
 
@@ -267,6 +271,7 @@ il `post-merge` installa la nuova versione, compreso `oxterm-askpass` accanto a
 
 | Data | Lavoro |
 | --- | --- |
+| 2026-11-02 | I viewer RDP/VNC/SPICE girano in un tab, anche senza tunnel: log, password e domande sui certificati sono visibili e componibili. Tolti `/from-stdin` e `/cert:tofu`; la password salvata viene digitata al prompt con una regola expect. |
 | 2026-11-01 | Aggiunto `scripts/import-pcm.py`: converte le voci di PCM in una rubrica Oxterm, chiede la password master per decifrare nomi utente e password, importa con `oxterm connections import` e, con `--with-passwords`, salva i segreti nel Secret Service. Migrate 40 voci (16 SSH, 12 VNC, 11 RDP, 1 SFTP) e 23 password. |
 | 2026-11-01 | Completati colori, palette, `/ssh`, conteggi, spostamento tra processi e ripristino. Corretti i comandi `/...` al prompt. Aggiunti `smoke-connections.sh` e `e2e/password-login.sh`. Unione in `master`. |
 | 2026-11-01 | Fasi 0-5, tranne i colori per connessione. Correzione dei test `remote_attach` e del controllo AUR. Prova su `debminis`. [PR #2](https://github.com/buzzqw/oxterm/pull/2). |

@@ -697,9 +697,9 @@ file from a newer Oxterm opens read-only.
 | Docker, Kubernetes, AWS Session Manager | `docker exec`, `kubectl exec`, `aws ssm start-session` | Tab |
 | Any command | The command you enter, without a shell | Tab |
 | SFTP, FTP | `sftp`, `lftp` | File browser |
-| RDP | FreeRDP or `rdesktop` | Its own window |
-| VNC | TigerVNC's `vncviewer`, or `remote-viewer` | Its own window |
-| SPICE | `remote-viewer` | Its own window |
+| RDP | FreeRDP or `rdesktop` | A tab, and its own window |
+| VNC | TigerVNC's `vncviewer`, or `remote-viewer` | A tab, and its own window |
+| SPICE | `remote-viewer` | A tab, and its own window |
 
 Tab connections keep macros, automation, logs and colors. A missing program is
 reported by name. A desktop entry with **ProxyJump** goes through that host in an
@@ -718,14 +718,18 @@ you, so you only need ssh access:
 | None | None started | A direct connection to `host:port`, without ssh |
 
 The server listens on the remote loopback only and is reached through an ssh tunnel,
-so nothing is exposed on the network. The ssh runs in a tab, where you can answer a
-password or host-key question and read the server's messages. Closing the viewer
-stops a shared screen and closes the tab, and closing the tab closes the viewer.
+so nothing is exposed on the network. Both the ssh and the viewer run in tabs: you
+can answer a password, host-key or certificate question there, and read what the
+server or viewer has to say. Closing the viewer stops a shared screen and closes
+the tab, and closing the tab closes the viewer.
 
 - **Sharing a screen** uses a password made up for that session. It is typed into the
   tab with echo off and given to the viewer in its private environment, so it never
   appears on a command line. With a viewer other than TigerVNC's, the tab shows it for you to
   type.
+- **RDP passwords** from the keyring are typed at the viewer's own `Password:` prompt,
+  with echo off; a changed certificate is shown in the tab and waits for your answer,
+  as it would from a shell.
 - **wayvnc** has no password in this mode: it relies on the loopback and the tunnel,
   so other accounts on that server could reach it while it runs.
 - **A virtual desktop** outlives the connection and uses the password you set with

@@ -3708,11 +3708,32 @@ impl MainWindow {
         display_title: Option<&str>,
         command: Option<&Vec<String>>,
     ) -> TerminalBox {
+        self.add_new_tab_with_env(
+            cwd,
+            target_notebook,
+            base_title,
+            display_title,
+            command,
+            &[],
+        )
+    }
+
+    /// The same tab, with variables set for the child only. A desktop viewer
+    /// receives its password this way, never on a command line.
+    pub fn add_new_tab_with_env(
+        &self,
+        cwd: Option<&str>,
+        target_notebook: Option<&gtk::Notebook>,
+        base_title: Option<&str>,
+        display_title: Option<&str>,
+        command: Option<&Vec<String>>,
+        env: &[(String, String)],
+    ) -> TerminalBox {
         let term = TerminalBox::new(self);
         // Start the shell before the tab is wired into the notebook. The
         // bookkeeping below (page, label, tab menu, realize) costs tens of
         // milliseconds, and the shell can boot meanwhile.
-        term.launch(cwd, command);
+        term.launch_with(cwd, command, env);
         self.attach_tab(term, target_notebook, base_title, display_title)
     }
 

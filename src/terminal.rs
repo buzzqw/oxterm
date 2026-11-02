@@ -1883,6 +1883,17 @@ impl TerminalBox {
     }
 
     pub fn launch(&self, cwd: Option<&str>, command: Option<&Vec<String>>) {
+        self.launch_with(cwd, command, &[]);
+    }
+
+    /// The same, with variables for this child only. A viewer's password can
+    /// travel here instead of on a command line.
+    pub fn launch_with(
+        &self,
+        cwd: Option<&str>,
+        command: Option<&Vec<String>>,
+        extra_env: &[(String, String)],
+    ) {
         let s = settings();
         *self.imp().interactive_shell.borrow_mut() = command.is_none();
         // Shell integration (and therefore the gutter markers) only exists for
@@ -1956,6 +1967,9 @@ impl TerminalBox {
                 )
             };
             *self.imp().osc133_rfd.borrow_mut() = fd;
+        }
+        for (key, value) in extra_env {
+            env.push((key.clone(), value.clone()));
         }
 
         let wd = if let Some(c) = cwd {

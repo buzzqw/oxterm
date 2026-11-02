@@ -44,7 +44,7 @@ memory footprint and the memory-safety guarantees of Rust.
 - Searchable session switcher across local windows, foreign panes, and detached
   broker sessions, with attach/focus actions
 - Connection manager in the **Connections** menu: a searchable panel with groups, tags, favorites and saved tunnels; a form that shows the exact `ssh` command, with X11, keepalive, old algorithms, Wake-on-LAN, a pre-connect command, automatic reconnection, session logs, macros, automation rules, per-connection colors and fonts, and keyring passwords and one-time codes; and `oxterm connect`. It runs your OpenSSH and never edits `~/.ssh/config`
-- More connection types from the same menu: Mosh, Telnet, serial, Docker, Kubernetes, AWS Session Manager and any command in a tab; RDP, VNC and SPICE through their own viewers
+- More connection types from the same menu: Mosh, Telnet, serial, Docker, Kubernetes, AWS Session Manager and any command in a tab; RDP, VNC and SPICE through their own viewers, in a tab so their questions stay visible
 - VNC that starts its own server over ssh: x11vnc, TigerVNC, TurboVNC, TightVNC, wayvnc or your own command, on the remote loopback only, with a one-time password
 - Two-pane SFTP and FTP file browser with drag and drop
 - SSH host picker from saved connections and `~/.ssh/config`, plus an explicit copy-on-demand

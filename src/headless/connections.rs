@@ -815,7 +815,7 @@ impl Connection {
             }
             let port = desktop::remote_port(self);
             return match desktop::viewer(self, &self.host, port, None) {
-                Ok((spec, _)) => shell_words::join(spec.argv),
+                Ok(viewer) => shell_words::join(viewer.argv),
                 Err(message) => message,
             };
         }
