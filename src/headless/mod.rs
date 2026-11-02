@@ -24,7 +24,6 @@ pub mod notify;
 pub mod osc133;
 pub mod paths;
 pub mod persistence;
-pub mod plugins;
 pub mod preconnect;
 pub mod remote_files;
 pub mod settings;

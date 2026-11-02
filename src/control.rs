@@ -23,9 +23,7 @@ use gtk::prelude::*;
 use zoha_vte::traits::TerminalExt;
 
 use crate::headless::connections::{self, Kind};
-use crate::headless::control_cli::{
-    ActionCommand, CaptureScope, CliMode, PluginAction, TunnelAction,
-};
+use crate::headless::control_cli::{ActionCommand, CaptureScope, CliMode, TunnelAction};
 use crate::headless::framing;
 use crate::headless::ssh_config;
 use crate::headless::tunnels;
@@ -187,10 +185,8 @@ pub fn run_cli(mode: CliMode) -> i32 {
             new_window,
             replace,
         } => run_workspace(&file, new_window, replace),
-        CliMode::Plugin { action } => run_plugin(action),
         CliMode::Mcp => run_mcp(),
         CliMode::Browse { name } => run_browse(&name),
-        CliMode::PluginsUi => run_plugins_ui(),
     }
 }
 
@@ -225,7 +221,6 @@ fn run_events(path: &Path, names: &[String], output: bool, _json: bool) -> i32 {
         "op": "subscribe",
         "events": if names.is_empty() { Value::Null } else { json!(names) },
         "include_output": output,
-        "plugin_id": std::env::var("OXTERM_PLUGIN_ID").ok(),
     });
     if let Err(error) = write_json(&mut stream, &request) {
         return fail(1, "events", &error);
@@ -415,103 +410,6 @@ fn wait_for_window_ready(socket: &Path) {
             }
         }
         std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-fn run_plugin(action: PluginAction) -> i32 {
-    use crate::headless::plugins::Store;
-    let store = Store::default_store();
-    match action {
-        PluginAction::List => match store.list() {
-            Ok(plugins) => {
-                if plugins.is_empty() {
-                    println!("No plugins installed.");
-                    return 0;
-                }
-                println!(
-                    "{:<28} {:<12} {:<9} {:<32} SOURCE",
-                    "ID", "VERSION", "STATUS", "PERMISSIONS"
-                );
-                for plugin in plugins {
-                    let manifest = &plugin.manifest;
-                    let permissions = if manifest.permissions.is_empty() {
-                        "-".to_string()
-                    } else {
-                        manifest.permissions.join(",")
-                    };
-                    let source = if plugin.source.is_empty() {
-                        "-".to_string()
-                    } else {
-                        plugin.source.clone()
-                    };
-                    println!(
-                        "{:<28} {:<12} {:<9} {:<32} {}",
-                        manifest.id,
-                        manifest.version,
-                        if manifest.enabled {
-                            "enabled"
-                        } else {
-                            "disabled"
-                        },
-                        permissions,
-                        source
-                    );
-                }
-                0
-            }
-            Err(error) => fail(1, "plugin", &error),
-        },
-        PluginAction::Install { source, force } => match store.install(&source, force) {
-            Ok(plugin) => {
-                println!(
-                    "installed {} {}",
-                    plugin.manifest.id, plugin.manifest.version
-                );
-                println!(
-                    "permissions: {}",
-                    if plugin.manifest.permissions.is_empty() {
-                        "none".to_string()
-                    } else {
-                        plugin.manifest.permissions.join(", ")
-                    }
-                );
-                println!("source: {}", plugin.source);
-                println!("restart Oxterm to start it");
-                0
-            }
-            Err(error) => fail(1, "plugin", &error),
-        },
-        PluginAction::Remove { id, purge } => match store.remove(&id, purge) {
-            Ok(()) => {
-                println!("removed {}", id);
-                0
-            }
-            Err(error) => fail(1, "plugin", &error),
-        },
-        PluginAction::Update { id } => match store.update(id.as_deref()) {
-            Ok(messages) => {
-                if messages.is_empty() {
-                    println!("Nothing to update.");
-                } else {
-                    for message in messages {
-                        println!("{}", message);
-                    }
-                }
-                0
-            }
-            Err(error) => fail(1, "plugin", &error),
-        },
-        PluginAction::Permissions { id } => match store.find(&id) {
-            Ok(plugin) => {
-                if plugin.manifest.permissions.is_empty() {
-                    println!("{}: none", id);
-                } else {
-                    println!("{}: {}", id, plugin.manifest.permissions.join(", "));
-                }
-                0
-            }
-            Err(error) => fail(1, "plugin", &error),
-        },
     }
 }
 
@@ -752,16 +650,6 @@ fn client_entries() -> Result<Vec<connections::Entry>, (i32, String)> {
     Ok(connections::merge(&book, &ssh_config::load_hosts()))
 }
 
-fn run_plugins_ui() -> i32 {
-    let Some(socket) = live_sockets().into_iter().next() else {
-        return fail(4, "plugins", "no running Oxterm window");
-    };
-    match request_at(&socket, &json!({ "op": "plugins" })) {
-        Ok(_) => 0,
-        Err(error) => fail(error.0, "plugins", &error.1),
-    }
-}
-
 fn run_browse(name: &str) -> i32 {
     let entries = match client_entries() {
         Ok(entries) => entries,
@@ -777,7 +665,7 @@ fn run_browse(name: &str) -> i32 {
         }
         json!({ "op": "browse", "id": entry.connection.id })
     } else if connections::from_destination(name).is_some() {
-        // `ssh user@host` from a plugin or a script needs no saved entry.
+        // `ssh user@host` from a script needs no saved entry.
         json!({ "op": "browse", "destination": name })
     } else {
         return fail(3, "browse", &format!("no connection named {}", name));
@@ -1189,16 +1077,6 @@ fn request_at_with_timeout(
     request: &Value,
     timeout: Duration,
 ) -> Result<Value, (i32, String)> {
-    // A request made by a plugin carries its identity, so the server can check
-    // the permissions declared in its manifest. User scripts leave it unset.
-    let mut request = request.clone();
-    if request.is_object() && request.get("plugin_id").is_none() {
-        if let Ok(id) = std::env::var("OXTERM_PLUGIN_ID") {
-            if !id.is_empty() {
-                request["plugin_id"] = json!(id);
-            }
-        }
-    }
     let mut stream = std::os::unix::net::UnixStream::connect(path)
         .map_err(|e| (4, format!("cannot reach the Oxterm control socket: {}", e)))?;
     stream
@@ -1372,36 +1250,6 @@ fn error_reply(message: &str, code: i32) -> Value {
     json!({ "ok": false, "error": message, "code": code })
 }
 
-/// Check the manifest permissions of a request that identifies a plugin.
-///
-/// This is not a sandbox: a plugin runs with the user's privileges and can omit
-/// `OXTERM_PLUGIN_ID`. It keeps a well-behaved plugin honest and makes a denied
-/// action explain itself instead of silently succeeding.
-fn plugin_allows(request: &Value, permission: &str) -> Result<(), String> {
-    let Some(id) = request
-        .get("plugin_id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-    else {
-        return Ok(());
-    };
-    let store = crate::headless::plugins::Store::default_store();
-    let plugin = store
-        .find(id)
-        .map_err(|error| format!("unknown plugin {}: {}", id, error))?;
-    if plugin.manifest.has_permission(permission) {
-        Ok(())
-    } else {
-        Err(format!("plugin {} lacks the {} permission", id, permission))
-    }
-}
-
-fn plugin_denied(request: &Value, permission: &str) -> Option<Value> {
-    plugin_allows(request, permission)
-        .err()
-        .map(|error| error_reply(&error, 1))
-}
-
 /// Keep a control connection open and stream events until the peer goes away.
 ///
 /// A heartbeat every 30 seconds both proves liveness and notices a client that
@@ -1409,15 +1257,6 @@ fn plugin_denied(request: &Value, permission: &str) -> Option<Value> {
 fn serve_events(stream: &mut std::os::unix::net::UnixStream, request: &Value) {
     use crate::headless::events::{self, EventFilter};
     let include_output = request["include_output"].as_bool().unwrap_or(false);
-    let permission = if include_output {
-        "read-screen"
-    } else {
-        "events"
-    };
-    if let Err(error) = plugin_allows(request, permission) {
-        let _ = write_json(stream, &error_reply(&error, 1));
-        return;
-    }
     let filter = EventFilter {
         pane: request["pane"].as_str().map(str::to_string),
         events: request["events"].as_array().map(|rows| {
@@ -1493,9 +1332,6 @@ fn dispatch(request: &Value) -> Value {
             json!({ "ok": true })
         }
         "new" => {
-            if let Some(reply) = plugin_denied(request, "spawn") {
-                return reply;
-            }
             let Some(window) = target_window(&app) else {
                 return error_reply("no running Oxterm window", 4);
             };
@@ -1511,9 +1347,6 @@ fn dispatch(request: &Value) -> Value {
             json!({ "ok": true, "pane": term.remote_id() })
         }
         "split" => {
-            if let Some(reply) = plugin_denied(request, "spawn") {
-                return reply;
-            }
             let Some((window, _)) =
                 find_main_terminal(&app, request["pane"].as_str().unwrap_or(""))
             else {
@@ -1540,9 +1373,6 @@ fn dispatch(request: &Value) -> Value {
         "tunnel" => handle_tunnel(&app, request),
         "action" => handle_action(&app, request),
         "workspace" => {
-            if let Some(reply) = plugin_denied(request, "workspace") {
-                return reply;
-            }
             let Some(window) = target_window(&app) else {
                 return error_reply("no running Oxterm window", 4);
             };
@@ -1555,21 +1385,7 @@ fn dispatch(request: &Value) -> Value {
             window.apply_workspace(&workspace, request["replace"].as_bool().unwrap_or(false));
             json!({ "ok": true, "name": workspace.name })
         }
-        "plugins" => {
-            let Some(window) = target_window(&app) else {
-                return error_reply("no running Oxterm window", 4);
-            };
-            // The manager is modal and runs its own loop; answer the control
-            // request first, then open it from an idle callback.
-            glib::idle_add_local_once(move || {
-                crate::plugins_ui::show(window.upcast_ref::<gtk::Window>());
-            });
-            json!({ "ok": true })
-        }
         "browse" => {
-            if let Some(reply) = plugin_denied(request, "open-files") {
-                return reply;
-            }
             let Some(window) = target_window(&app) else {
                 return error_reply("no running Oxterm window", 4);
             };
@@ -1626,9 +1442,6 @@ fn dispatch(request: &Value) -> Value {
             json!({ "ok": true })
         }
         "send" => {
-            if let Some(reply) = plugin_denied(request, "send-input") {
-                return reply;
-            }
             let Some((_, term)) = find_terminal(&app, request["pane"].as_str().unwrap_or(""))
             else {
                 return error_reply("pane not found", 3);
@@ -1641,9 +1454,6 @@ fn dispatch(request: &Value) -> Value {
             json!({ "ok": true })
         }
         "capture" => {
-            if let Some(reply) = plugin_denied(request, "read-screen") {
-                return reply;
-            }
             let Some((_, term)) = find_terminal(&app, request["pane"].as_str().unwrap_or(""))
             else {
                 return error_reply("pane not found", 3);
@@ -1756,17 +1566,6 @@ pub(crate) fn focus_pane(socket: &Path, id: &str) -> Result<(), String> {
 
 fn handle_action(app: &gtk::Application, request: &Value) -> Value {
     let action = request["action"].as_str().unwrap_or("");
-    let needed = match action {
-        "notify" => "notify",
-        "open-url" => "open-files",
-        "insert-text" => "send-input",
-        "set-tab-color" | "set-tab-title" | "mark-failure" | "clear-failure"
-        | "clear-tab-color" => "workspace",
-        _ => "workspace",
-    };
-    if let Err(error) = plugin_allows(request, needed) {
-        return error_reply(&error, 1);
-    }
     if action == "notify" {
         crate::terminal::send_desktop_notification(
             request["title"].as_str().unwrap_or("Oxterm"),

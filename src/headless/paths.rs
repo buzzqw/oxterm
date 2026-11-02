@@ -13,7 +13,7 @@ pub fn config_dir() -> PathBuf {
     home.join(".config").join("oxterm")
 }
 
-/// The user's Oxterm data directory: plugins, locks and per-plugin state.
+/// The user's Oxterm data directory, reserved for extension state.
 pub fn data_dir() -> PathBuf {
     if let Some(path) = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
         return PathBuf::from(path).join("oxterm");

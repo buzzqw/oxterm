@@ -1394,7 +1394,7 @@ pub fn find_entry_by_id<'a>(entries: &'a [Entry], id: &str) -> Option<&'a Entry>
 /// Build a temporary SSH connection from `[user@]host[:port]`.
 ///
 /// Used when a file browser is opened for an `ssh` command that is not a saved
-/// connection, for example from the tab menu or the `remote-browser` plugin.
+/// connection, for example from the tab menu.
 pub fn from_destination(name: &str) -> Option<Connection> {
     let name = name.trim();
     if name.is_empty() {

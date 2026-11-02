@@ -1,4 +1,4 @@
-# Estensioni e plugin: progetto
+# Estensioni: progetto
 
 Documento di lavoro per l'estensibilità di Oxterm. Descrive il modello scelto,
 la specifica della Fase 1 e le fasi successive. Non è ancora codice: serve a
@@ -22,9 +22,9 @@ Ultimo aggiornamento: 2026-11-02.
 5. **La sicurezza è parte del formato.** Un trigger che scrive input o esegue
    comandi è disabilitato per default e richiede un consenso esplicito. Gli
    eventi non contengono contenuto dello schermo se non richiesto.
-6. **Il broker è un vantaggio, non un dettaglio.** Un plugin esterno deve poter
-   girare sull'host remoto e parlare con Oxterm attraverso il broker, come già
-   fanno i comandi di controllo.
+6. **Il broker è un vantaggio, non un dettaglio.** Un'estensione esterna deve
+   poter girare sull'host remoto e parlare con Oxterm attraverso il broker, come
+   già fanno i comandi di controllo.
 
 ## Fase 1 — Trigger, eventi, azioni
 
@@ -285,26 +285,13 @@ Implementata in `~/.config/oxterm/extensions.json` e nel comando
   creazione di più finestre da un solo file: un workspace vive in una finestra.
   `--new-window` avvia una finestra pulita e implica `--replace`.
 
-## Fase 3 — Pacchetti plugin
+## Fase 3 — Pacchetti plugin: rimossa
 
-Implementata:
-
-- Directory: `$XDG_DATA_HOME/oxterm/plugins/<id>/`; stato privato in
-  `$XDG_DATA_HOME/oxterm/state/<id>/`.
-- Manifest `plugin.json`: `id`, `name`, `version`, `api_version`, `permissions`,
-  `events`, `command` (argv), `enabled`. Non ci sono `settings` né
-  `entrypoints`: il comando è l'entrypoint e le impostazioni vivono nello state
-  directory del plugin.
-- Comandi: `oxterm plugin list|install|remove|update|permissions`, lockfile
-  `plugins.lock.json` con sorgente e commit. Installazione da directory locale o
-  URL git (`git clone --depth 1`).
-- Permessi: `events`, `read-screen`, `send-input`, `spawn`, `open-files`,
-  `network`, `clipboard`, `notify`, `workspace`, `status-bar`. Sono controllati
-  per le richieste che portano `OXTERM_PLUGIN_ID`; non sono una sandbox, perché
-  un processo esterno ha già i privilegi dell'utente.
-- Runtime: un processo per plugin, eventi JSON su stdin filtrati dal manifest,
-  `OXTERM_CONTROL`/`OXTERM_PLUGIN_*` nell'ambiente, riavvio fino a tre volte,
-  `PR_SET_PDEATHSIG` per non sopravvivere a Oxterm.
+La Fase 3 è stata implementata e poi **rimossa su richiesta**: il modello a
+processi esterni con eventi su stdin non offriva la videata e la configurazione
+che ci si aspettava da un plugin, e il menu dedicato confondeva più di quanto
+aiutasse. Il codice e gli esempi restano nella storia Git (`bceb0a2` e
+successivi) se serviranno come base per un futuro runtime WASM.
 
 ## Fase 4 — Pannelli WASM e MCP
 
@@ -314,23 +301,22 @@ Implementata:
   `terminal_workspace`. Usa il control socket esistente.
 - **WASM rinviato.** `wasmtime` aggiunge peso al binario e richiede un vero
   modello di capacità e un renderer di pannelli; senza un caso d'uso concreto
-  non vale la pena introdurlo ora. Resta il candidato per plugin che devono
-  disegnare UI o orchestrare il workspace in una sandbox reale. L'host esterno
-  della Fase 3 copre già automazioni, notifiche e pannelli esterni.
+  non vale la pena introdurlo ora. Resta il candidato per estensioni che devono
+  disegnare UI o orchestrare il workspace in una sandbox reale.
 
 ## Browser file: core, non plugin
 
 Il browser SFTP/FTP a due pannelli resta nel core (`src/file_browser.rs`), non
-diventa un plugin: l'API plugin è un processo esterno e non può disegnare una
-finestra dentro Oxterm. Le funzioni "alla WinSCP" — sincronizzazione ricorsiva,
-segnalibri e modifica remota con upload al salvataggio — sono state aggiunte lì.
-Un plugin può usare `oxterm browse NAME` per aprire il browser, oppure
-automatizzare i trasferimenti con i verbi del control socket.
+diventa un'estensione: un processo esterno non può disegnare una finestra
+dentro Oxterm. Le funzioni "alla WinSCP" — sincronizzazione ricorsiva,
+segnalibri, modifica remota con upload al salvataggio e prompt password — sono
+state aggiunte lì, e il browser si apre dal tasto destro sul tab SSH o dalla
+lista connessioni.
 
 ## Stato dell'implementazione (2026-11-02)
 
-Le Fasi 1, 2 e 3 sono implementate; della Fase 4 c'è MCP, mentre WASM è
-rinviato:
+Le Fasi 1 e 2 sono implementate; della Fase 4 c'è MCP, mentre WASM è rinviato.
+La Fase 3 (plugin) è stata rimossa:
 
 | Pezzo | File | Stato |
 | --- | --- | --- |
@@ -350,10 +336,6 @@ rinviato:
 | Status bar dei widget | `src/status_bar.rs`, `src/window.rs` | fatto |
 | Voci della palette da `extensions.json` | `src/extensions.rs`, `src/terminal.rs` | fatto |
 | Voci nel menu contestuale | — | rimandate |
-| Manifest, lock, install/update/remove dei plugin | `src/headless/plugins.rs` | fatto, con test |
-| Host dei plugin e inoltro eventi | `src/plugins.rs` | fatto, verificato con un plugin reale |
-| Gestore grafico dei plugin (menu **Plugins**, `oxterm plugins`) | `src/plugins_ui.rs`, `src/window.rs` | fatto |
-| Controllo permessi sulle richieste con `OXTERM_PLUGIN_ID` | `src/control.rs` | fatto |
 | Server MCP e tool | `src/headless/mcp.rs`, `src/control.rs` | fatto, con test e prova reale |
 | Pannelli WASM | — | rinviati |
 | Sync ricorsiva, segnalibri e modifica remota nel browser | `src/file_browser.rs`, `src/headless/bookmarks.rs`, `src/headless/remote_files.rs` | fatto, provato con un server SSH locale |
@@ -391,9 +373,9 @@ Deviazioni rispetto alla prima stesura:
   limiti di VTE 0.70.
 - 2026-11-02: Fase 2 implementata: `oxterm workspace`, status bar dei widget e
   contributi alla palette da `extensions.json`, con test headless e GUI.
-- 2026-11-02: Fase 3 implementata (manifest, install/update/remove, host dei
-  plugin, permessi) e `oxterm mcp` della Fase 4. WASM rinviato.
+- 2026-11-02: Fase 3 implementata e poi rimossa; `oxterm mcp` della Fase 4
+  resta. WASM rinviato.
 - 2026-11-02: browser file: sync ricorsiva, segnalibri per connessione, modifica
   remota con upload al salvataggio e `oxterm browse`.
-- 2026-11-02: gestore grafico dei plugin nel menu **Plugins** e con
-  `oxterm plugins`; stato `running`/`installed` e pulsante **Start Plugins**.
+- 2026-11-02: plugin disabilitati e menu **Plugins** rimosso; il browser file
+  resta la strada per WinSCP.

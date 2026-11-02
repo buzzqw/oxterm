@@ -13,8 +13,6 @@ mod notes;
 mod notes_index;
 mod notes_panel;
 mod notes_ui;
-mod plugins;
-mod plugins_ui;
 mod profiles;
 mod remote;
 mod session;
@@ -267,16 +265,13 @@ impl App {
                         win.shutdown();
                     }
                 }
-                plugins::stop_all();
                 app.quit();
                 glib::ControlFlow::Break
             });
         }
         control::init(app.clone());
         control::start_server();
-        plugins::start_all();
         let code = self.app.run_with_args(&args).value();
-        plugins::stop_all();
         #[cfg(debug_assertions)]
         if window::test_scenario::failed() {
             return 1;

@@ -80,23 +80,10 @@ pub enum CliMode {
         new_window: bool,
         replace: bool,
     },
-    Plugin {
-        action: PluginAction,
-    },
     Mcp,
     Browse {
         name: String,
     },
-    PluginsUi,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub enum PluginAction {
-    List,
-    Install { source: String, force: bool },
-    Remove { id: String, purge: bool },
-    Update { id: Option<String> },
-    Permissions { id: String },
 }
 
 /// The actions `oxterm action` can ask a running window to perform.
@@ -258,29 +245,6 @@ pub const VERBS: &[Verb] = &[
                running Oxterm. --new-window starts a fresh window first (and implies\n\
                --replace); --replace closes the window's existing tabs after the new\n\
                ones are open. Without a running window a new one is started.\n",
-    },
-    Verb {
-        name: "plugin",
-        synopsis: "plugin list|install|remove|update|permissions ...",
-        summary: "Manage installed plugins",
-        help: "Usage: oxterm plugin list\n\
-               \x20      oxterm plugin install SOURCE [--force]\n\
-               \x20      oxterm plugin remove ID [--purge]\n\
-               \x20      oxterm plugin update [ID]\n\
-               \x20      oxterm plugin permissions ID\n\n\
-               A plugin is a directory with a plugin.json manifest, installed under\n\
-               the user's data directory. SOURCE is a local directory or a git URL.\n\
-               --force replaces an installed plugin; --purge also deletes its state\n\
-               directory. None of these commands needs a running window.\n",
-    },
-    Verb {
-        name: "plugins",
-        synopsis: "plugins",
-        summary: "Open the plugin manager window",
-        help: "Usage: oxterm plugins\n\n\
-               Open the graphical plugin manager in the running Oxterm: the installed\n\
-               list, install from a folder or a git URL, logs, state and removal. It is\n\
-               the same dialog as the Plugins menu.\n",
     },
     Verb {
         name: "mcp",
@@ -628,96 +592,6 @@ fn parse_action(args: &[String], help: &'static str) -> Result<CliMode, String> 
     }
 }
 
-fn parse_plugin(args: &[String], help: &'static str) -> Result<CliMode, String> {
-    let Some(command) = args.first().map(String::as_str) else {
-        return Err(
-            "plugin requires a subcommand (list, install, remove, update, permissions)".to_string(),
-        );
-    };
-    if command == "-h" || command == "--help" {
-        return Ok(CliMode::Help(help));
-    }
-    let rest = &args[1..];
-    let action = match command {
-        "list" => {
-            if let Some(extra) = rest.first() {
-                return Err(format!("unexpected argument: {}", extra));
-            }
-            PluginAction::List
-        }
-        "install" => {
-            let mut source = None;
-            let mut force = false;
-            for arg in rest {
-                match arg.as_str() {
-                    "-h" | "--help" => return Ok(CliMode::Help(help)),
-                    "--force" => force = true,
-                    value if value.starts_with('-') => {
-                        return Err(format!("unknown option: {}", value));
-                    }
-                    value if source.is_none() => source = Some(value.to_string()),
-                    value => return Err(format!("unexpected argument: {}", value)),
-                }
-            }
-            PluginAction::Install {
-                source: source.ok_or("plugin install requires a directory or a git URL")?,
-                force,
-            }
-        }
-        "remove" => {
-            let mut id = None;
-            let mut purge = false;
-            for arg in rest {
-                match arg.as_str() {
-                    "-h" | "--help" => return Ok(CliMode::Help(help)),
-                    "--purge" => purge = true,
-                    value if value.starts_with('-') => {
-                        return Err(format!("unknown option: {}", value));
-                    }
-                    value if id.is_none() => id = Some(value.to_string()),
-                    value => return Err(format!("unexpected argument: {}", value)),
-                }
-            }
-            PluginAction::Remove {
-                id: id.ok_or("plugin remove requires an id")?,
-                purge,
-            }
-        }
-        "update" => {
-            let mut id = None;
-            for arg in rest {
-                match arg.as_str() {
-                    "-h" | "--help" => return Ok(CliMode::Help(help)),
-                    value if value.starts_with('-') => {
-                        return Err(format!("unknown option: {}", value));
-                    }
-                    value if id.is_none() => id = Some(value.to_string()),
-                    value => return Err(format!("unexpected argument: {}", value)),
-                }
-            }
-            PluginAction::Update { id }
-        }
-        "permissions" => {
-            let mut id = None;
-            for arg in rest {
-                match arg.as_str() {
-                    "-h" | "--help" => return Ok(CliMode::Help(help)),
-                    value if value.starts_with('-') => {
-                        return Err(format!("unknown option: {}", value));
-                    }
-                    value if id.is_none() => id = Some(value.to_string()),
-                    value => return Err(format!("unexpected argument: {}", value)),
-                }
-            }
-            PluginAction::Permissions {
-                id: id.ok_or("plugin permissions requires an id")?,
-            }
-        }
-        other => return Err(format!("unknown plugin subcommand: {}", other)),
-    };
-    Ok(CliMode::Plugin { action })
-}
-
 pub fn parse_verb(args: &[String]) -> Result<CliMode, String> {
     let name = args.first().map(String::as_str).unwrap_or("");
     let Some(entry) = verb(name) else {
@@ -731,16 +605,6 @@ pub fn parse_verb(args: &[String]) -> Result<CliMode, String> {
         "browse" => return parse_browse(&args[1..], entry.help),
         "action" => return parse_action(&args[1..], entry.help),
         "workspace" => return parse_workspace(&args[1..], entry.help),
-        "plugin" => return parse_plugin(&args[1..], entry.help),
-        "plugins" => {
-            if let Some(extra) = args.get(1) {
-                if extra == "-h" || extra == "--help" {
-                    return Ok(CliMode::Help(entry.help));
-                }
-                return Err(format!("unexpected argument: {}", extra));
-            }
-            return Ok(CliMode::PluginsUi);
-        }
         "mcp" => {
             if let Some(extra) = args.get(1) {
                 if extra == "-h" || extra == "--help" {
@@ -1195,54 +1059,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_plugin_commands() {
-        assert_eq!(
-            parse_verb(&args(&["plugin", "list"])).unwrap(),
-            CliMode::Plugin {
-                action: PluginAction::List
-            }
-        );
-        assert_eq!(
-            parse_verb(&args(&["plugin", "install", "https://x/y.git", "--force"])).unwrap(),
-            CliMode::Plugin {
-                action: PluginAction::Install {
-                    source: "https://x/y.git".to_string(),
-                    force: true,
-                }
-            }
-        );
-        assert_eq!(
-            parse_verb(&args(&["plugin", "remove", "a", "--purge"])).unwrap(),
-            CliMode::Plugin {
-                action: PluginAction::Remove {
-                    id: "a".to_string(),
-                    purge: true,
-                }
-            }
-        );
-        assert_eq!(
-            parse_verb(&args(&["plugin", "update"])).unwrap(),
-            CliMode::Plugin {
-                action: PluginAction::Update { id: None }
-            }
-        );
-        assert_eq!(
-            parse_verb(&args(&["plugin", "permissions", "a"])).unwrap(),
-            CliMode::Plugin {
-                action: PluginAction::Permissions {
-                    id: "a".to_string()
-                }
-            }
-        );
-        assert!(parse_verb(&args(&["plugin"])).is_err());
-        assert!(parse_verb(&args(&["plugin", "install"])).is_err());
-        assert!(parse_verb(&args(&["plugin", "remove"])).is_err());
-        assert!(parse_verb(&args(&["plugin", "nope"])).is_err());
-        assert!(parse_verb(&args(&["plugin", "list", "x"])).is_err());
+    fn parses_mcp_and_browse() {
         assert_eq!(parse_verb(&args(&["mcp"])).unwrap(), CliMode::Mcp);
         assert!(parse_verb(&args(&["mcp", "x"])).is_err());
-        assert_eq!(parse_verb(&args(&["plugins"])).unwrap(), CliMode::PluginsUi);
-        assert!(parse_verb(&args(&["plugins", "x"])).is_err());
         assert_eq!(
             parse_verb(&args(&["browse", "db"])).unwrap(),
             CliMode::Browse {

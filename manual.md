@@ -179,8 +179,6 @@ oxterm wait [--pane ID] [--timeout SECONDS]
 oxterm events [--pane ID] [--event NAME]... [--output] [--json]
 oxterm action set-tab-color|set-tab-title|notify|open-url|insert-text|...
 oxterm workspace [--new-window] [--replace] FILE
-oxterm plugin list|install|remove|update|permissions ...
-oxterm plugins
 oxterm mcp
 oxterm browse NAME
 ```
@@ -371,75 +369,6 @@ afterwards so the output stays visible.
 
 The file is read once at startup; restart Oxterm after changing it. Commands run
 as your user, so only add entries you trust.
-
-#### Plugins
-
-A plugin is a directory with a `plugin.json` manifest, installed under the
-user's data directory (`$XDG_DATA_HOME/oxterm`, or `~/.local/share/oxterm`):
-
-```json
-{
-  "id": "acme.git-status",
-  "name": "Git status",
-  "version": "1.0.0",
-  "api_version": 1,
-  "permissions": ["events", "notify", "workspace"],
-  "events": ["command_finished"],
-  "command": ["./run.sh"]
-}
-```
-
-```sh
-oxterm plugin install ./acme-git-status     # a local directory
-oxterm plugin install https://host/x.git    # or a git URL
-oxterm plugin list
-oxterm plugin permissions acme.git-status
-oxterm plugin update acme.git-status
-oxterm plugin remove acme.git-status --purge
-```
-
-`install` and `update` require `git` only for git sources. `--force` replaces an
-already installed plugin, `--purge` also deletes its state directory. A plugin
-is started when Oxterm starts; restart Oxterm after installing or updating one.
-Set `"enabled": false` in the manifest to keep it on disk without running it.
-
-Three working examples live in [`examples/plugins`](examples/plugins): `tab-status`
-(colours the tab while a command runs and after it ends), `command-log`
-(appends every event to a JSON Lines file) and `remote-browser` (opens the file
-browser automatically when an SSH or Mosh session starts).
-
-The same list is available in the window: **Plugins → Installed Plugins…** (or
-`oxterm plugins`) opens a manager that can install from a folder or a git URL,
-open the plugin and state folders, show a plugin's log, start newly installed
-plugins, and remove a plugin. The status column says `running` or `installed`.
-**Start Plugins** starts what is installed but not running, without restarting
-Oxterm; after updating or removing one, restart Oxterm.
-
-A plugin process receives:
-
-- `OXTERM_CONTROL`, the private control socket;
-- `OXTERM`, the Oxterm binary to call for actions;
-- `OXTERM_PLUGIN_ID`, `OXTERM_PLUGIN_DIR`, `OXTERM_PLUGIN_STATE`;
-- `OXTERM_PLUGIN_PERMISSIONS`, the comma-separated list from the manifest;
-- one JSON event per line on standard input, filtered by `events`;
-- a private state directory (`.../state/<id>`) for its own files.
-
-It can react by running the client verbs, for example:
-
-```sh
-printf '%s\n' "$event" >> "$OXTERM_PLUGIN_STATE/events.log"
-oxterm action notify --title Deploy --body "finished"
-```
-
-Standard output is discarded; write diagnostics to standard error (they go to
-`$OXTERM_PLUGIN_STATE/plugin.log`) or to a file of your own.
-
-The permissions in the manifest are checked for requests that carry
-`OXTERM_PLUGIN_ID`: `notify`, `open-files`, `send-input`, `spawn`, `workspace`,
-`events` and `read-screen` cover the operations that exist today. This is a
-safety rail, not a sandbox: an external process already runs with your
-privileges and can ignore the environment. Do not install plugins you do not
-trust. A plugin that exits is restarted up to three times.
 
 #### Model Context Protocol
 
