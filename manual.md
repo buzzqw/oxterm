@@ -233,8 +233,8 @@ oxterm events --event command_finished | jq .
 ```
 
 The event names are `command_started`, `command_finished`, `prompt`, `bell`,
-`title_changed`, `cwd_changed`, `tab_created`, `tab_closed`, `pane_focused`
-and `selection_changed`.
+`title_changed`, `cwd_changed`, `tab_created`, `tab_closed`, `pane_focused`,
+`selection_changed` and `output_line` (only with `--output`).
 `selection_changed` reports only the length, never the selected text. The
 heartbeat frames the server sends to notice a closed client are filtered out.
 `--output` also enables `output_line`, which contains terminal output and can

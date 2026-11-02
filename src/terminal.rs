@@ -1184,6 +1184,8 @@ mod imp {
         pub trigger_row: Cell<i64>,
         pub trigger_fired: RefCell<std::collections::HashSet<(i64, String)>>,
         pub trigger_disabled: RefCell<std::collections::HashSet<String>>,
+        /// Last row emitted as `output_line`, so each row is published once.
+        pub output_row: Cell<i64>,
         /// Lines collected by `capture` trigger actions.
         pub captured_lines: RefCell<Vec<String>>,
         /// Colour of this tab's label, set by `oxterm action set-tab-color`.
@@ -1291,6 +1293,7 @@ impl TerminalBox {
         // Negative means "the trigger scanner has not looked yet"; row 0 is a
         // valid position and must not be confused with the initial state.
         this.imp().trigger_row.set(-1);
+        this.imp().output_row.set(-1);
         this.set_orientation(gtk::Orientation::Vertical);
         this.set_hexpand(true);
         this.set_vexpand(true);
@@ -1643,8 +1646,10 @@ impl TerminalBox {
                 }
             });
         }
-        if !active_triggers().is_empty() {
+        {
             // Output arrives in bursts: look once it settles, not on every chunk.
+            // The handler is installed even without triggers because an
+            // `events --output` subscriber can connect later.
             let weak = crate::SendWeak::new(self);
             let pending = Rc::new(Cell::new(false));
             vte.connect_contents_changed(move |_| {
@@ -2719,7 +2724,8 @@ impl TerminalBox {
     fn check_triggers(&self) {
         use crate::headless::triggers::Context;
         let triggers = active_triggers();
-        if triggers.is_empty() {
+        let want_output = crate::headless::events::bus().wants_output();
+        if triggers.is_empty() && !want_output {
             return;
         }
         let vte = self.vte();
@@ -2732,6 +2738,7 @@ impl TerminalBox {
         let start = if last_row < 0 {
             (row - 200).max(0)
         } else if row < last_row {
+            self.imp().output_row.set(row - 1);
             row
         } else {
             last_row
@@ -2748,6 +2755,13 @@ impl TerminalBox {
                 continue;
             }
             let line_row = start + offset as i64;
+            if want_output && line_row > self.imp().output_row.get() {
+                self.publish_event("output_line", json!({"line": line, "row": line_row}));
+                self.imp().output_row.set(line_row);
+            }
+            if triggers.is_empty() {
+                continue;
+            }
             let hits = triggers.evaluate(
                 line,
                 Context {

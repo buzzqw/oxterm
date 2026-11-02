@@ -598,6 +598,42 @@ fn events_actions_and_triggers_work_end_to_end() {
         "no command_finished event: {stream:?}"
     );
 
+    // output_line is opt-in and carries the text that caused it.
+    let mut output_events = Command::new(binary())
+        .args([
+            "events",
+            "--pane",
+            &pane,
+            "--event",
+            "output_line",
+            "--output",
+            "--json",
+        ])
+        .env("HOME", fixture.home.path())
+        .env("NO_AT_BRIDGE", "1")
+        .env_remove("OXTERM_CONTROL")
+        .env_remove("OXTERM_PANE")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn oxterm events --output");
+    thread::sleep(Duration::from_millis(400));
+    cli(
+        fixture.home.path(),
+        &["send", "--pane", &pane, "--enter", "printf output-line-ok"],
+    );
+    thread::sleep(Duration::from_millis(1000));
+    let _ = output_events.kill();
+    let output = output_events
+        .wait_with_output()
+        .expect("wait for oxterm events --output");
+    let stream = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stream.contains("\"event\":\"output_line\"") && stream.contains("output-line-ok"),
+        "no output_line event: {stream:?}"
+    );
+
     // Actions reach the window; an invalid colour is a usage error.
     for args in [
         vec!["action", "set-tab-color", "--pane", &pane, "#00ff00"],

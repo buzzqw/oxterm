@@ -142,6 +142,22 @@ impl EventBus {
             .map(|state| state.subscribers.len())
             .unwrap_or(0)
     }
+
+    /// Whether any subscriber opted into `output_line`. Used to skip building
+    /// output events when nobody asked for them.
+    pub fn wants_output(&self) -> bool {
+        self.state
+            .lock()
+            .map(|state| {
+                state.subscribers.iter().any(|subscriber| {
+                    subscriber.filter.include_output
+                        && subscriber.filter.events.as_ref().map_or(true, |events| {
+                            events.iter().any(|event| event == "output_line")
+                        })
+                })
+            })
+            .unwrap_or(false)
+    }
 }
 
 impl Default for EventBus {
@@ -242,6 +258,24 @@ mod tests {
         }
         assert!(bus.subscribe(EventFilter::default()).is_none());
         assert_eq!(bus.subscriber_count(), MAX_SUBSCRIBERS);
+    }
+
+    #[test]
+    fn wants_output_only_when_opted_in() {
+        let bus = EventBus::new();
+        let (quiet_id, _quiet) = bus.subscribe(EventFilter::default()).unwrap();
+        assert!(!bus.wants_output());
+        let (loud_id, _loud) = bus
+            .subscribe(EventFilter {
+                include_output: true,
+                events: Some(vec!["output_line".to_string()]),
+                ..EventFilter::default()
+            })
+            .unwrap();
+        assert!(bus.wants_output());
+        bus.unsubscribe(loud_id);
+        bus.unsubscribe(quiet_id);
+        assert!(!bus.wants_output());
     }
 
     #[test]
