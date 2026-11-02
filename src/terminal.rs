@@ -1063,6 +1063,14 @@ mod security_tests {
         assert!(is_remote_client("mosh-client") && !is_remote_client("bash"));
     }
 
+    #[test]
+    fn recognises_terminal_multiplexers() {
+        assert!(is_multiplexer_client("tmux"));
+        assert!(is_multiplexer_client("screen"));
+        assert!(!is_multiplexer_client("ssh"));
+        assert!(!is_multiplexer_client("bash"));
+    }
+
     /// Manual check: OXTERM_TEST_SHELL_PID=<pid of a shell running ssh,
     /// autossh or mosh> cargo test remote_session_live -- --ignored --nocapture
     #[test]
@@ -2987,6 +2995,27 @@ impl TerminalBox {
         }
         std::fs::read_to_string(format!("/proc/{foreground}/comm"))
             .map(|name| is_remote_client(name.trim()))
+            .unwrap_or(false)
+    }
+
+    /// Whether the pane's foreground process is tmux or screen. The tmux-style
+    /// prefix belongs to the multiplexer in that case, not to Oxterm.
+    fn foreground_process_is_multiplexer(&self) -> bool {
+        // A multiplexer running on a remote host is hidden behind ssh, so only
+        // the local case can be detected here.
+        if self.imp().remote_handle.borrow().is_some() {
+            return false;
+        }
+        let fd = *self.imp().pty_fd.borrow();
+        if fd < 0 {
+            return false;
+        }
+        let foreground = unsafe { libc::tcgetpgrp(fd) };
+        if foreground <= 0 {
+            return false;
+        }
+        std::fs::read_to_string(format!("/proc/{foreground}/comm"))
+            .map(|name| is_multiplexer_client(name.trim()))
             .unwrap_or(false)
     }
 
@@ -4972,6 +5001,13 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             && (key == prefix_key || key == prefix_key.to_upper())
             && settings().get_bool("tmux_prefix_enabled")
         {
+            // tmux and screen use Ctrl+B by default too. When one of them owns
+            // the pane, the prefix must reach it: intercepting it here would
+            // open Oxterm's terminal list instead of the multiplexer's windows.
+            if self.foreground_process_is_multiplexer() {
+                self.vte().feed_child(&[settings::tmux_prefix_byte()]);
+                return glib::Propagation::Stop;
+            }
             *self.imp().tmux_prefix.borrow_mut() = true;
             return glib::Propagation::Stop;
         }
@@ -6159,6 +6195,12 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
 /// Process names that represent an interactive session on a remote host.
 pub(crate) fn is_remote_client(comm: &str) -> bool {
     matches!(comm, "ssh" | "autossh" | "mosh-client")
+}
+
+/// Terminal multiplexer clients that use their own Ctrl+B prefix while they
+/// hold the pane.
+pub(crate) fn is_multiplexer_client(comm: &str) -> bool {
+    matches!(comm, "tmux" | "screen")
 }
 
 fn proc_children(pid: impl std::fmt::Display) -> Vec<String> {

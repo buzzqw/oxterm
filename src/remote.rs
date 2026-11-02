@@ -1034,6 +1034,11 @@ fn relay_input(bytes: &[u8], prefix: &mut bool, prefix_byte: u8) -> RelayAction 
             // Pressing the prefix twice sends it literally, as tmux does.
             if *byte == prefix_byte || (prefix_byte == 0x02 && (*byte == b'b' || *byte == b'B')) {
                 forwarded.push(prefix_byte);
+            } else {
+                // Not one of the relay's own commands: hand the prefix and the
+                // key to the program, so a nested tmux keeps e.g. Ctrl+B, w.
+                forwarded.push(prefix_byte);
+                forwarded.push(*byte);
             }
         } else if *byte == prefix_byte {
             *prefix = true;
@@ -2526,6 +2531,13 @@ mod tests {
         assert!(matches!(
             relay_input(b"ls\x02d", &mut prefix, 0x02),
             RelayAction::PrefixDetach { upper: false, ref forwarded } if forwarded == b"ls"
+        ));
+
+        // A key the relay does not handle goes to the program together with
+        // the prefix, so a nested tmux still receives Ctrl+B, w.
+        assert!(matches!(
+            relay_input(b"\x02w", &mut prefix, 0x02),
+            RelayAction::Forward(ref v) if v == b"\x02w"
         ));
     }
 

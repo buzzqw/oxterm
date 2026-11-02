@@ -783,7 +783,7 @@ fn build_input(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, I
     tmux_prefix_key.set_max_width_chars(3);
     tmux_prefix_key.set_sensitive(tmux_prefix.is_active());
     tmux_prefix_key.set_tooltip_text(Some(
-        "Letter pressed with Ctrl as the prefix (default b). Change it to keep Ctrl+B for tmux.",
+        "Letter pressed with Ctrl as the prefix (default b). A local tmux or screen pane receives it automatically.",
     ));
     page.row_keyed(
         "Prefix key (Ctrl+)",

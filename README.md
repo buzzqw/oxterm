@@ -522,10 +522,12 @@ commands.
 | `F11` | Fullscreen |
 
 Any other key after the prefix is passed to the running program together with
-the prefix. The prefix defaults to `Ctrl+B` and can be changed under
-Preferences → Input → "tmux-style prefix keys" and the "Prefix key (Ctrl+)"
-field. Set it to `Ctrl+A` (or turn the prefix off) when you use tmux or screen
-inside Oxterm and need `Ctrl+B` to reach them.
+the prefix. When tmux or screen is the foreground process of a pane, the prefix
+is passed to it instead, so the multiplexer's own bindings keep working (for
+example `Ctrl+B`, then `w` lists its windows). The prefix defaults to `Ctrl+B`
+and can be changed under Preferences → Input → "tmux-style prefix keys" and the
+"Prefix key (Ctrl+)" field. Set it to `Ctrl+A` (or turn the prefix off) when you
+use a multiplexer on a remote host reached over ssh, which cannot be detected.
 
 ### Smart open, sessions and SSH
 

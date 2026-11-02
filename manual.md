@@ -1123,8 +1123,11 @@ remote tmux detaches instead of the local terminal.
 
 The tmux-style prefix defaults to `Ctrl+B`. Change it under Preferences →
 Input → "tmux-style prefix keys" and the "Prefix key (Ctrl+)" field, for
-example to `Ctrl+A` when you use tmux or screen inside Oxterm. Any other key
-after the prefix is passed to the running program together with the prefix.
+example to `Ctrl+A`. Any other key after the prefix is passed to the running
+program together with the prefix. When tmux or screen runs in the foreground of
+a pane, the prefix is passed to the multiplexer so its own bindings keep working
+(`Ctrl+B`, then `w` lists its windows); a multiplexer reached over ssh is not
+detected, so use a different prefix for those sessions.
 
 ## Configuration Files
 
