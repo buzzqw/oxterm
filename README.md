@@ -54,7 +54,11 @@ memory footprint and the memory-safety guarantees of Rust.
 - Global fuzzy command palette for actions and `/commands`, plus a hover
   decoder for Unix epochs, HTTP status codes and errno values
 - Smart command-finished notifications: only when the terminal is unfocused or a command runs long, with failures always reported, plus a red dot on tabs whose last command failed
-- Scriptable control API: `new`, `split`, `send`, `capture`, and `wait` against a running window
+- Scriptable control API: `new`, `split`, `send`, `capture`, `wait`, an
+  event stream and small actions (`set-tab-color`, `notify`, …) against a
+  running window
+- User-defined regex triggers on output (notify, capture, tab colour/title,
+  failure mark) from `~/.config/oxterm/triggers.json`
 - VI copy mode with motions, text objects, visual block selection, scrolloff, and bookmarks
 - Session restore, named sessions, profiles, command palette, quickmarks, and hints
 - Compact right-click menu with submenus for clipboard (text/HTML/all/last
@@ -279,6 +283,8 @@ Scriptable control (acts on a running Oxterm, opens no window):
   connect NAME [--split [--pane ID]] [--yes]                           Open a saved SSH connection
   connections [--json|export|import FILE]                              List, export or import saved connections
   tunnel list|start|stop [NAME [INDEX]]                                Control a connection's saved tunnels
+  events [--pane ID] [--event NAME]... [--output] [--json]             Subscribe to a pane's event stream
+  action set-tab-color|set-tab-title|notify|open-url|...               Ask a running Oxterm to perform an action
 
   These headless commands act on a running Oxterm terminal on the same
   host and open no window, so they are safe to use over SSH. Without a

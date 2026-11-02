@@ -215,6 +215,11 @@ pub trait TerminalWindow {
         let _ = term;
     }
     fn set_tab_title_from_terminal(&self, term: &TerminalBox, title: &str);
+    /// Set a tab title explicitly (control API and triggers). Detached windows
+    /// have no tab, so this is a no-op there.
+    fn pin_tab_title_signal(&self, _term: &TerminalBox, _title: &str) {}
+    /// Repaint a tab label after its colour override changed.
+    fn refresh_tab_color_signal(&self, _term: &TerminalBox) {}
     /// The shell changed the directory it reports through OSC 7. Display-only:
     /// the tooltip and the status bar follow it, nothing else does.
     fn refresh_cwd_display(&self, _term: &TerminalBox) {}
@@ -2479,11 +2484,13 @@ impl MainWindow {
 
     fn recolor_tab_label(&self, term: &TerminalBox, is_active: bool) {
         let s = settings();
-        let color = if is_active {
-            s.get_str("tab_active_title_color")
-        } else {
-            s.get_str("tab_title_color")
-        };
+        let color = term.tab_color_override().unwrap_or_else(|| {
+            if is_active {
+                s.get_str("tab_active_title_color")
+            } else {
+                s.get_str("tab_title_color")
+            }
+        });
         if let Some(tab) = self.imp().tab_labels.borrow().get(term) {
             let lbl = &tab.label;
             let text = lbl.text().to_string();
@@ -2636,7 +2643,14 @@ impl MainWindow {
         menubar.style_context().add_class("oxterm-menu-row");
         let mut buttons = Vec::new();
         for label in [
-            "File", "Edit", "View", "Terminal", "Tabs", "Notes", "Connections", "Help",
+            "File",
+            "Edit",
+            "View",
+            "Terminal",
+            "Tabs",
+            "Notes",
+            "Connections",
+            "Help",
         ] {
             let btn = gtk::MenuButton::new();
             btn.set_label(label);
@@ -3784,6 +3798,10 @@ impl MainWindow {
         nb.set_show_tabs(settings().get_bool("show_tabs"));
         nb.show_all();
         nb.set_current_page(Some(idx));
+        term.publish_event(
+            "tab_created",
+            serde_json::json!({"title": base, "cwd": term.get_cwd()}),
+        );
         self.update_tabs_menu();
 
         term.set_remote_info(&base, &term.get_cwd());
@@ -4011,6 +4029,10 @@ impl MainWindow {
             },
         };
         if let Some((nb, idx)) = self.find_terminal(&term) {
+            term.publish_event(
+                "tab_closed",
+                serde_json::json!({"title": term.vte().window_title().map(|title| title.to_string()).unwrap_or_default()}),
+            );
             term.terminate();
             self.imp().tab_labels.borrow_mut().remove(&term);
             self.imp().tab_base_titles.borrow_mut().remove(&term);
@@ -6142,6 +6164,11 @@ impl MainWindow {
         self.set_tab_text(term, title);
     }
 
+    pub fn refresh_tab_color_signal(&self, term: &TerminalBox) {
+        let active = self.current_terminal().as_ref() == Some(term);
+        self.recolor_tab_label(term, active);
+    }
+
     fn remember_restored_custom_title(&self, term: &TerminalBox, tab: &crate::session::TabEntry) {
         if tab.custom_title {
             self.imp()
@@ -6240,6 +6267,12 @@ impl TerminalWindow for MainWindow {
     }
     fn clear_tab_failure_signal(&self, term: &TerminalBox) {
         MainWindow::clear_tab_failure_signal(self, term);
+    }
+    fn pin_tab_title_signal(&self, term: &TerminalBox, title: &str) {
+        MainWindow::pin_tab_title(self, term, title);
+    }
+    fn refresh_tab_color_signal(&self, term: &TerminalBox) {
+        MainWindow::refresh_tab_color_signal(self, term);
     }
     fn prev_tab_signal(&self) {
         MainWindow::prev_tab_signal(self);

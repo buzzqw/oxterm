@@ -465,6 +465,170 @@ fn handover_keeps_the_moved_session_alive() {
     drop(reader);
 }
 
+#[test]
+fn events_actions_and_triggers_work_end_to_end() {
+    if !gui_tests_enabled() {
+        return;
+    }
+    let home = TempHome::new();
+    let config = home.path().join(".config/oxterm");
+    std::fs::create_dir_all(&config).expect("create config dir");
+    std::fs::write(
+        config.join("triggers.json"),
+        r##"{
+            "version": 1,
+            "triggers": [
+                {
+                    "id": "smoke",
+                    "match": "TRIGGERME",
+                    "actions": [
+                        { "type": "capture", "list": "smoke", "label": "seen {0}" },
+                        { "type": "set_tab_color", "color": "#00ff00" }
+                    ]
+                }
+            ]
+        }"##,
+    )
+    .expect("write triggers");
+    let log = std::fs::File::create(home.path().join("gui.log")).expect("create gui log");
+    let log_err = log.try_clone().expect("clone gui log");
+    let child = Command::new(binary())
+        .args([
+            "--no-restore",
+            "-o",
+            "osc133=true",
+            "-o",
+            "login_shell=false",
+            "-o",
+            "shell_command=/bin/bash",
+        ])
+        .env("HOME", home.path())
+        .env("XDG_RUNTIME_DIR", home.path())
+        .env("NO_AT_BRIDGE", "1")
+        .env_remove("OXTERM_CONTROL")
+        .env_remove("OXTERM_PANE")
+        .stdin(Stdio::null())
+        .stdout(log)
+        .stderr(log_err)
+        .spawn()
+        .expect("start Oxterm");
+    let mut fixture = Fixture { child, home };
+    wait_for_control_socket(fixture.home.path(), &mut fixture.child);
+    thread::sleep(Duration::from_millis(1000));
+    let pane = first_pane(fixture.home.path());
+
+    // Wait until the shell actually executes a command before sending the
+    // trigger line. A fresh bash can still be reading its startup files when
+    // the first `send` arrives, which would mangle the command.
+    let mut ready = false;
+    for _ in 0..20 {
+        let _ = run_cli(
+            fixture.home.path(),
+            &[
+                "send",
+                "--pane",
+                &pane,
+                "--enter",
+                "printf '\\162\\145\\141\\144\\171\\n'",
+            ],
+        );
+        thread::sleep(Duration::from_millis(250));
+        let screen = cli(
+            fixture.home.path(),
+            &["capture", "--pane", &pane, "--scrollback", "10"],
+        );
+        if screen.lines().any(|line| line.trim() == "ready") {
+            ready = true;
+            break;
+        }
+    }
+    assert!(ready, "the shell never executed the readiness marker");
+
+    // The command line contains only octal escapes; the output is the word.
+    cli(
+        fixture.home.path(),
+        &[
+            "send",
+            "--pane",
+            &pane,
+            "--enter",
+            "printf '\\124\\122\\111\\107\\107\\105\\122\\115\\105\\n'",
+        ],
+    );
+    thread::sleep(Duration::from_millis(500));
+    let captured = cli(
+        fixture.home.path(),
+        &["capture", "--pane", &pane, "--captured"],
+    );
+    assert!(
+        captured.contains("seen TRIGGERME"),
+        "trigger did not capture output: {captured:?}"
+    );
+
+    // The event stream reports a finished command.
+    let mut events = Command::new(binary())
+        .args([
+            "events",
+            "--pane",
+            &pane,
+            "--event",
+            "command_finished",
+            "--json",
+        ])
+        .env("HOME", fixture.home.path())
+        .env("NO_AT_BRIDGE", "1")
+        .env_remove("OXTERM_CONTROL")
+        .env_remove("OXTERM_PANE")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn oxterm events");
+    thread::sleep(Duration::from_millis(400));
+    cli(
+        fixture.home.path(),
+        &["send", "--pane", &pane, "--enter", "true"],
+    );
+    thread::sleep(Duration::from_millis(1000));
+    let _ = events.kill();
+    let output = events.wait_with_output().expect("wait for oxterm events");
+    let stream = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stream.contains("\"event\":\"command_finished\""),
+        "no command_finished event: {stream:?}"
+    );
+
+    // Actions reach the window; an invalid colour is a usage error.
+    for args in [
+        vec!["action", "set-tab-color", "--pane", &pane, "#00ff00"],
+        vec!["action", "set-tab-title", "--pane", &pane, "smoke"],
+        vec!["action", "mark-failure", "--pane", &pane],
+        vec!["action", "clear-failure", "--pane", &pane],
+        vec!["action", "insert-text", "--pane", &pane, "printf typed-ok"],
+    ] {
+        cli(fixture.home.path(), &args);
+    }
+    cli(
+        fixture.home.path(),
+        &["send", "--pane", &pane, "--enter", ""],
+    );
+    thread::sleep(Duration::from_millis(500));
+    let capture = cli(
+        fixture.home.path(),
+        &["capture", "--pane", &pane, "--scrollback", "50"],
+    );
+    assert!(
+        capture.contains("typed-ok"),
+        "insert-text did not reach the shell: {capture:?}"
+    );
+    assert!(!run_cli(
+        fixture.home.path(),
+        &["action", "set-tab-color", "--pane", &pane, "red"]
+    )
+    .status
+    .success());
+}
+
 fn control_call(socket: &Path, request: serde_json::Value) -> serde_json::Value {
     use std::os::unix::net::UnixStream;
     let mut stream = UnixStream::connect(socket).expect("connect to the control socket");

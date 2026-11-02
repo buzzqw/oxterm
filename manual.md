@@ -174,8 +174,10 @@ oxterm new [DIR] [--cwd DIR] [--title TITLE] [-- COMMAND...]
 oxterm split [--pane ID] [--vertical|--horizontal] [--cwd DIR] [--title TITLE]
              [-- COMMAND...]
 oxterm send [--pane ID] [--enter] TEXT...        # or: ... - (read stdin)
-oxterm capture [--pane ID] [--scrollback N | --all]
+oxterm capture [--pane ID] [--scrollback N | --all | --captured [--clear]]
 oxterm wait [--pane ID] [--timeout SECONDS]
+oxterm events [--pane ID] [--event NAME]... [--output] [--json]
+oxterm action set-tab-color|set-tab-title|notify|open-url|insert-text|...
 ```
 
 `new` prints the id of the new pane and `new DIR` is a shorthand for
@@ -212,6 +214,87 @@ error, `3` when the pane is not found and `4` when no running Oxterm window can
 be reached. The socket lives next to the broker sockets (`0700` directory,
 `0600` socket), accepts only peers with the same user id, and never listens on
 the network. `send` respects read-only mode.
+
+#### Events
+
+`oxterm events` keeps the connection open and prints one JSON object per line
+until the window closes or the command is interrupted:
+
+```sh
+oxterm events --event command_finished | jq .
+```
+
+```json
+{"event":"command_finished","pane":"12345-2","command":"make test",
+ "exit":1,"duration_ms":4213,"cwd":"/src/app","time":"2026-11-02T09:12:33Z"}
+```
+
+The event names are `command_started`, `command_finished`, `prompt`, `bell`,
+`title_changed`, `cwd_changed`, `tab_created`, `tab_closed`, `pane_focused`
+and `selection_changed`.
+`selection_changed` reports only the length, never the selected text. The
+heartbeat frames the server sends to notice a closed client are filtered out.
+`--output` also enables `output_line`, which contains terminal output and can
+therefore contain secrets; it is off by default. `--json` is accepted for
+symmetry because the stream is always JSON.
+
+#### Actions
+
+`oxterm action` asks the running window to do one small thing:
+
+```sh
+oxterm action set-tab-color --pane "$OXTERM_PANE" '#cc3333'
+oxterm action set-tab-title --pane "$OXTERM_PANE" 'build failed'
+oxterm action notify --title 'Deploy' --body 'Finished'
+oxterm action open-url https://example.com
+oxterm action insert-text 'git status'
+oxterm action mark-failure --pane "$OXTERM_PANE"
+```
+
+`open-url` only accepts `http` and `https`. `insert-text` types without pressing
+Enter and respects read-only mode. The target pane comes from `--pane`, then
+`$OXTERM_PANE`, then the only open pane.
+
+#### Triggers
+
+`~/.config/oxterm/triggers.json` holds regular expressions that act on output:
+
+```json
+{
+  "version": 1,
+  "triggers": [
+    {
+      "id": "compiler-errors",
+      "match": "^([^:/]+):(\\d+):(\\d+): (error|warning): (.*)$",
+      "actions": [
+        { "type": "highlight_line", "fg": "#ff5555" },
+        { "type": "capture", "list": "errors", "label": "{1}:{2}:{3}  {5}" },
+        { "type": "mark_failure" }
+      ]
+    },
+    {
+      "profiles": ["work"],
+      "scope": "command_output",
+      "match": "(?i)\\bdeploy(ed)?\\b",
+      "actions": [{ "type": "notify", "title": "Deploy", "body": "{0}" }]
+    }
+  ]
+}
+```
+
+Actions are `highlight_line`, `highlight_text`, `notify`, `capture`,
+`set_tab_color`, `set_tab_title`, `hyperlink` and `mark_failure`. `capture`
+adds the expanded label to a per-pane list, printed by
+`oxterm capture --captured` and emptied with `--clear`. `{0}` is the whole match
+and `{1}`…`{9}` are capture groups; `{{` and `}}` are literal braces. A trigger
+fires at most once per output line; `"once": true` disables it after its first
+match for the rest of the session. `scope` is `line` (default) or
+`command_output` (only while an OSC 133 command is running). A malformed file
+is reported in the log and ignored; it never stops Oxterm from starting.
+
+VTE 0.70 does not expose a way to restyle text that has already been printed,
+so this release parses `highlight_line`, `highlight_text` and `hyperlink` but
+does not apply them yet; they are reserved for a later release and logged once.
 
 ## The Interface
 

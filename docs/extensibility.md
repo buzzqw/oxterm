@@ -303,12 +303,38 @@ oxterm action set-tab-color --pane "$OXTERM_PANE" '#cc3333'
   `capture`, `wait` come tool MCP. Non richiede WASM e può arrivare prima della
   Fase 4: è il modo più economico per far pilotare Oxterm a un agente.
 
+## Stato dell'implementazione (2026-11-02)
+
+La Fase 1 è implementata in questo ramo:
+
+| Pezzo | File | Stato |
+| --- | --- | --- |
+| Parsing, validazione e matching dei trigger | `src/headless/triggers.rs` | fatto, con test |
+| Event bus e filtri | `src/headless/events.rs` | fatto, con test |
+| CLI `events` / `action` / `capture --captured` | `src/headless/control_cli.rs` | fatto, con test |
+| Client e server del control socket | `src/control.rs` | fatto |
+| Trigger su `contents_changed` | `src/terminal.rs` | fatto |
+| Eventi `command_started`, `command_finished`, `prompt`, `bell`, `title_changed`, `cwd_changed`, `tab_created`, `tab_closed`, `pane_focused`, `selection_changed` | `src/terminal.rs`, `src/window.rs` | fatto |
+| Azioni `set-tab-color`, `set-tab-title`, `notify`, `open-url`, `insert-text`, `mark-failure`, `clear-failure` | `src/control.rs`, `src/window.rs` | fatto |
+| `output_line` | — | previsto ma non ancora pubblicato |
+| `theme_changed` | — | nome riservato, non ancora emesso |
+| `highlight_line`, `highlight_text`, `hyperlink` | `src/headless/triggers.rs` | accettati e interpretati, non applicati: VTE 0.70 non consente di ristilare testo già stampato |
+
+Deviazioni rispetto alla prima stesura:
+
+- Il colore della tab è il colore del **testo** dell'etichetta, non lo sfondo:
+  il markup di GTK è l'unico punto che non richiede CSS per tab.
+- `capture` non ha un pannello dedicato: le righe finiscono in una lista per
+  pane, letta con `oxterm capture --captured` e svuotata con `--clear`. Un
+  pannello può arrivare nella Fase 2.
+- I trigger si leggono una volta per processo. Il ricaricamento a caldo resta
+  nella Fase 2, insieme ai widget.
+
 ## Decisioni aperte
 
-1. **Trigger in `settings.json` o file dedicato?** Raccomandato il file
-   dedicato, versionato e ricaricabile a caldo.
-2. **Evidenziazione con VTE 0.70.** Da verificare con un prototipo: overlay sul
-   widget o rinvio della feature.
+1. ~~Trigger in `settings.json` o file dedicato?~~ File dedicato, implementato.
+2. ~~Evidenziazione con VTE 0.70.~~ Rinviata: il testo già stampato non si può
+   ristilare. Resta da valutare un overlay sul widget.
 3. **Formato workspace.** JSON, per non aggiungere dipendenze.
 4. **Runtime WASM.** `wasmtime` o `extism`; decidere solo dopo aver misurato
    l'impatto sul binario.
@@ -319,3 +345,6 @@ oxterm action set-tab-color --pane "$OXTERM_PANE" '#cc3333'
 
 - 2026-11-02: prima stesura. Nessun codice scritto; Fase 1 pronta per
   l'implementazione.
+- 2026-11-02: Fase 1 implementata (trigger, eventi, azioni, `capture
+  --captured`) con test headless. Evidenziazione e hyperlink rinviati per i
+  limiti di VTE 0.70.

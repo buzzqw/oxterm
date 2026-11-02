@@ -197,6 +197,15 @@ impl App {
                                 return 2;
                             }
                         }
+                        // The profile is the session's active one: the menu
+                        // shows it checked and triggers can filter on it.
+                        if let Err(error) = settings::set_override(
+                            "active_profile",
+                            serde_json::Value::String(name.clone()),
+                        ) {
+                            eprintln!("{}: {}", window::APP_NAME, error);
+                            return 2;
+                        }
                     }
                     _ => eprintln!("{}: profile not found: {}", window::APP_NAME, name),
                 }

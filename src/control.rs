@@ -23,7 +23,7 @@ use gtk::prelude::*;
 use zoha_vte::traits::TerminalExt;
 
 use crate::headless::connections::{self, Kind};
-use crate::headless::control_cli::{CaptureScope, CliMode, TunnelAction};
+use crate::headless::control_cli::{ActionCommand, CaptureScope, CliMode, TunnelAction};
 use crate::headless::framing;
 use crate::headless::ssh_config;
 use crate::headless::tunnels;
@@ -139,16 +139,18 @@ pub fn run_cli(mode: CliMode) -> i32 {
                 Ok(target) => target,
                 Err(error) => return fail(error.0, "capture", &error.1),
             };
-            let (scope_name, lines) = match scope {
-                CaptureScope::Screen => ("screen", 0),
-                CaptureScope::Lines(count) => ("lines", count),
-                CaptureScope::All => ("all", 0),
+            let (scope_name, lines, clear) = match scope {
+                CaptureScope::Screen => ("screen", 0, false),
+                CaptureScope::Lines(count) => ("lines", count, false),
+                CaptureScope::All => ("all", 0, false),
+                CaptureScope::Captured { clear } => ("captured", 0, clear),
             };
             let request = json!({
                 "op": "capture",
                 "pane": target.id,
                 "scope": scope_name,
                 "lines": lines,
+                "clear": clear,
             });
             match request_at(&target.socket, &request) {
                 Ok(reply) => {
@@ -165,12 +167,157 @@ pub fn run_cli(mode: CliMode) -> i32 {
             };
             wait_for_command(&target, timeout)
         }
+        CliMode::Events {
+            pane,
+            events,
+            output,
+            json,
+        } => {
+            let socket = match events_socket(pane.as_deref()) {
+                Ok(socket) => socket,
+                Err(error) => return fail(error.0, "events", &error.1),
+            };
+            run_events(&socket, &events, output, json)
+        }
+        CliMode::Action { pane, command } => run_action(pane.as_deref(), command),
     }
 }
 
 fn fail(code: i32, verb: &str, message: &str) -> i32 {
     eprintln!("oxterm {}: {}", verb, message);
     code
+}
+
+fn events_socket(pane: Option<&str>) -> Result<PathBuf, (i32, String)> {
+    if pane.is_some() {
+        return resolve_pane(pane).map(|target| target.socket);
+    }
+    live_sockets()
+        .into_iter()
+        .next()
+        .ok_or((4, "no running Oxterm window".to_string()))
+}
+
+fn run_events(path: &Path, names: &[String], output: bool, _json: bool) -> i32 {
+    use std::os::unix::net::UnixStream;
+    let mut stream = match UnixStream::connect(path) {
+        Ok(stream) => stream,
+        Err(error) => {
+            return fail(
+                4,
+                "events",
+                &format!("cannot reach the Oxterm control socket: {}", error),
+            )
+        }
+    };
+    let request = json!({
+        "op": "subscribe",
+        "events": if names.is_empty() { Value::Null } else { json!(names) },
+        "include_output": output,
+    });
+    if let Err(error) = write_json(&mut stream, &request) {
+        return fail(1, "events", &error);
+    }
+    loop {
+        match read_json(&mut stream) {
+            Ok(reply) => {
+                if reply["ok"].as_bool() == Some(false) {
+                    let code = reply["code"].as_i64().unwrap_or(1) as i32;
+                    return fail(
+                        code,
+                        "events",
+                        reply["error"].as_str().unwrap_or("subscription refused"),
+                    );
+                }
+                // The first reply is the acknowledgement, not an event.
+                if reply.get("event").is_none() {
+                    continue;
+                }
+                if reply["event"].as_str() == Some("heartbeat") {
+                    continue;
+                }
+                // The stream is JSON Lines so `jq` works without a flag;
+                // `--json` is accepted only for symmetry with other verbs.
+                println!("{}", reply);
+            }
+            Err(error) => {
+                // A clean end of stream is not an error: the window closed.
+                if error.contains("failed to fill whole buffer")
+                    || error.contains("unexpected end of file")
+                    || error.contains("Connection reset by peer")
+                {
+                    return 0;
+                }
+                return fail(1, "events", &error);
+            }
+        }
+    }
+}
+
+fn run_action(pane: Option<&str>, command: ActionCommand) -> i32 {
+    let needs_pane = !matches!(
+        &command,
+        ActionCommand::Notify { .. } | ActionCommand::OpenUrl { .. }
+    );
+    let target = if needs_pane || pane.is_some() {
+        match resolve_pane(pane) {
+            Ok(target) => Some(target),
+            Err(error) => return fail(error.0, "action", &error.1),
+        }
+    } else {
+        None
+    };
+    let socket = match &target {
+        Some(target) => target.socket.clone(),
+        None => match live_sockets().into_iter().next() {
+            Some(socket) => socket,
+            None => return fail(4, "action", "no running Oxterm window"),
+        },
+    };
+    let pane_id = target.as_ref().map(|target| target.id.clone());
+    let request = match command {
+        ActionCommand::SetTabColor { color } => json!({
+            "op": "action", "action": "set-tab-color", "pane": pane_id, "color": color,
+        }),
+        ActionCommand::SetTabTitle { title } => json!({
+            "op": "action", "action": "set-tab-title", "pane": pane_id, "title": title,
+        }),
+        ActionCommand::Notify { title, body } => json!({
+            "op": "action", "action": "notify", "pane": pane_id, "title": title, "body": body,
+        }),
+        ActionCommand::OpenUrl { url } => json!({
+            "op": "action", "action": "open-url", "pane": pane_id, "url": url,
+        }),
+        ActionCommand::InsertText { text } => {
+            let text = match text {
+                Some(text) => text,
+                None => {
+                    let mut buffer = String::new();
+                    if let Err(error) = std::io::stdin().read_to_string(&mut buffer) {
+                        return fail(
+                            1,
+                            "action",
+                            &format!("cannot read standard input: {}", error),
+                        );
+                    }
+                    buffer
+                }
+            };
+            json!({
+                "op": "action", "action": "insert-text", "pane": pane_id, "text": text,
+            })
+        }
+        ActionCommand::MarkFailure => json!({
+            "op": "action", "action": "mark-failure", "pane": pane_id,
+        }),
+        ActionCommand::ClearFailure => json!({
+            "op": "action", "action": "clear-failure", "pane": pane_id,
+        }),
+    };
+    match request_at(&socket, &request) {
+        Ok(_) => 0,
+        Err(error) => fail(error.0, "action", &error.1),
+    }
 }
 
 struct Target {
@@ -732,6 +879,10 @@ fn handle_connection(mut stream: std::os::unix::net::UnixStream) {
                 let _ = write_json(&mut stream, &json!({ "ok": true }));
                 return;
             }
+            if request["op"].as_str() == Some("subscribe") {
+                serve_events(&mut stream, &request);
+                return;
+            }
             let (sender, receiver) = mpsc::channel();
             crate::run_on_main(move || {
                 let reply = dispatch(&request);
@@ -749,6 +900,49 @@ fn handle_connection(mut stream: std::os::unix::net::UnixStream) {
 
 fn error_reply(message: &str, code: i32) -> Value {
     json!({ "ok": false, "error": message, "code": code })
+}
+
+/// Keep a control connection open and stream events until the peer goes away.
+///
+/// A heartbeat every 30 seconds both proves liveness and notices a client that
+/// closed without reading: the write fails and the subscription is released.
+fn serve_events(stream: &mut std::os::unix::net::UnixStream, request: &Value) {
+    use crate::headless::events::{self, EventFilter};
+    let filter = EventFilter {
+        pane: request["pane"].as_str().map(str::to_string),
+        events: request["events"].as_array().map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.as_str().map(str::to_string))
+                .collect()
+        }),
+        include_output: request["include_output"].as_bool().unwrap_or(false),
+    };
+    let Some((id, receiver)) = events::bus().subscribe(filter) else {
+        let _ = write_json(stream, &error_reply("too many event subscribers", 1));
+        return;
+    };
+    if write_json(stream, &json!({ "ok": true, "subscription": id })).is_err() {
+        events::bus().unsubscribe(id);
+        return;
+    }
+    loop {
+        match receiver.recv_timeout(Duration::from_secs(30)) {
+            Ok(event) => {
+                if write_json(stream, &event).is_err() {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let heartbeat =
+                    json!({ "event": "heartbeat", "time": crate::logging::utc_iso_now() });
+                if write_json(stream, &heartbeat).is_err() {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    events::bus().unsubscribe(id);
 }
 
 fn dispatch(request: &Value) -> Value {
@@ -828,6 +1022,7 @@ fn dispatch(request: &Value) -> Value {
             json!({ "ok": true, "pane": term.remote_id() })
         }
         "tunnel" => handle_tunnel(&app, request),
+        "action" => handle_action(&app, request),
         "open_connection" => {
             let Some(window) = target_window(&app) else {
                 return error_reply("no running Oxterm window", 4);
@@ -875,7 +1070,11 @@ fn dispatch(request: &Value) -> Value {
             };
             let scope = request["scope"].as_str().unwrap_or("screen");
             let lines = request["lines"].as_u64().unwrap_or(0) as usize;
-            let text = term.capture_text(scope, lines);
+            let text = if scope == "captured" {
+                term.captured_text(request["clear"].as_bool().unwrap_or(false))
+            } else {
+                term.capture_text(scope, lines)
+            };
             json!({ "ok": true, "text": text })
         }
         "gen" => {
@@ -973,6 +1172,69 @@ pub(crate) fn focus_pane(socket: &Path, id: &str) -> Result<(), String> {
     request_at(socket, &json!({ "op": "focus", "pane": id }))
         .map(|_| ())
         .map_err(|(_, error)| error)
+}
+
+fn handle_action(app: &gtk::Application, request: &Value) -> Value {
+    let action = request["action"].as_str().unwrap_or("");
+    if action == "notify" {
+        crate::terminal::send_desktop_notification(
+            request["title"].as_str().unwrap_or("Oxterm"),
+            request["body"].as_str().unwrap_or(""),
+        );
+        return json!({ "ok": true });
+    }
+    if action == "open-url" {
+        let Some((_, term)) = terminals(app).into_iter().next() else {
+            return error_reply("no terminal is open", 3);
+        };
+        term.open_url(request["url"].as_str().unwrap_or(""));
+        return json!({ "ok": true });
+    }
+    let Some((_, term)) = find_terminal(app, request["pane"].as_str().unwrap_or("")) else {
+        return error_reply("pane not found", 3);
+    };
+    match action {
+        "set-tab-color" => {
+            let raw = request["color"].as_str().unwrap_or("");
+            match crate::headless::triggers::parse_color(raw) {
+                Ok(color) => {
+                    term.set_tab_color_override(Some(color));
+                    json!({ "ok": true })
+                }
+                Err(error) => error_reply(&error, 2),
+            }
+        }
+        "set-tab-title" => {
+            let title = request["title"].as_str().unwrap_or("").trim();
+            if title.is_empty() {
+                return error_reply("set-tab-title requires a title", 2);
+            }
+            let term2 = term.clone();
+            let title = title.to_string();
+            term.call_window(move |win| win.pin_tab_title_signal(&term2, &title));
+            json!({ "ok": true })
+        }
+        "insert-text" => {
+            if !term.vte().is_input_enabled() {
+                return error_reply("the terminal is read-only", 1);
+            }
+            term.control_send(request["text"].as_str().unwrap_or(""), false);
+            json!({ "ok": true })
+        }
+        "mark-failure" | "clear-failure" => {
+            let term2 = term.clone();
+            let failed = action == "mark-failure";
+            term.call_window(move |win| {
+                if failed {
+                    win.set_tab_failure_signal(&term2, true);
+                } else {
+                    win.clear_tab_failure_signal(&term2);
+                }
+            });
+            json!({ "ok": true })
+        }
+        other => error_reply(&format!("unknown action: {}", other), 2),
+    }
 }
 
 fn handle_tunnel(app: &gtk::Application, request: &Value) -> Value {

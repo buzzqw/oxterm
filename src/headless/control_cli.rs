@@ -1,5 +1,5 @@
 //! Parsing and help text for the scriptable control commands
-//! (`oxterm new|split|send|capture|wait|connect|connections|tunnel`).
+//! (`oxterm new|split|send|capture|wait|connect|connections|tunnel|events|action`).
 //!
 //! The execution side lives in `control.rs` and needs GTK; this half does not,
 //! so every verb, option and error message is unit tested without a window.
@@ -11,6 +11,10 @@ pub enum CaptureScope {
     Screen,
     Lines(usize),
     All,
+    /// Lines collected by `capture` trigger actions.
+    Captured {
+        clear: bool,
+    },
 }
 
 #[derive(Debug, PartialEq)]
@@ -61,6 +65,40 @@ pub enum CliMode {
         name: Option<String>,
         index: Option<usize>,
     },
+    Events {
+        pane: Option<String>,
+        events: Vec<String>,
+        output: bool,
+        json: bool,
+    },
+    Action {
+        pane: Option<String>,
+        command: ActionCommand,
+    },
+}
+
+/// The actions `oxterm action` can ask a running window to perform.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum ActionCommand {
+    SetTabColor {
+        color: String,
+    },
+    SetTabTitle {
+        title: String,
+    },
+    Notify {
+        title: String,
+        body: String,
+    },
+    OpenUrl {
+        url: String,
+    },
+    /// `None` means: read the text from standard input (`insert-text ... -`).
+    InsertText {
+        text: Option<String>,
+    },
+    MarkFailure,
+    ClearFailure,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -153,6 +191,31 @@ pub const VERBS: &[Verb] = &[
                Show or change the saved tunnels of a connection in the running Oxterm.\n\
                INDEX is the number 'tunnel list' prints; without it the command\n\
                applies to all of that connection's tunnels.\n",
+    },
+    Verb {
+        name: "events",
+        synopsis: "events [--pane ID] [--event NAME]... [--output] [--json]",
+        summary: "Subscribe to a pane's event stream",
+        help: "Usage: oxterm events [--pane ID] [--event NAME]... [--output] [--json]\n\n\
+               Subscribe to a running Oxterm and print one JSON object per line until\n\
+               the stream is closed. Without --event every event is delivered; repeat\n\
+               --event to choose. --output also enables output_line, which can contain\n\
+               secrets and is off by default. --json is accepted for symmetry.\n",
+    },
+    Verb {
+        name: "action",
+        synopsis: "action set-tab-color|set-tab-title|notify|open-url|...",
+        summary: "Ask a running Oxterm to perform an action",
+        help: "Usage: oxterm action set-tab-color [--pane ID] COLOR\n\
+               \x20      oxterm action set-tab-title [--pane ID] TITLE\n\
+               \x20      oxterm action notify [--title TITLE] [--body BODY]\n\
+               \x20      oxterm action open-url URL\n\
+               \x20      oxterm action insert-text [--pane ID] TEXT...|-\n\
+               \x20      oxterm action mark-failure|clear-failure [--pane ID]\n\n\
+               Ask the running Oxterm to change a tab, show a notification, open an\n\
+               http(s) URL, type without pressing Enter, or set and clear the failure\n\
+               mark. The target pane comes from --pane, then $OXTERM_PANE, then the\n\
+               only open pane.\n",
     },
 ];
 
@@ -288,6 +351,166 @@ fn parse_tunnel(args: &[String], help: &'static str) -> Result<CliMode, String> 
     })
 }
 
+fn parse_events(args: &[String], help: &'static str) -> Result<CliMode, String> {
+    let mut pane = None;
+    let mut events = Vec::new();
+    let mut output = false;
+    let mut json = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-h" | "--help" => return Ok(CliMode::Help(help)),
+            "--pane" => {
+                i += 1;
+                pane = Some(args.get(i).ok_or("--pane requires a session id")?.clone());
+            }
+            "--event" => {
+                i += 1;
+                let name = args.get(i).ok_or("--event requires a name")?;
+                if !super::events::EVENT_NAMES.contains(&name.as_str()) {
+                    return Err(format!(
+                        "unknown event: {} (see oxterm events --help)",
+                        name
+                    ));
+                }
+                events.push(name.clone());
+            }
+            "--output" => output = true,
+            "--json" => json = true,
+            other => return Err(format!("unknown option: {}", other)),
+        }
+        i += 1;
+    }
+    Ok(CliMode::Events {
+        pane,
+        events,
+        output,
+        json,
+    })
+}
+
+/// Split `--pane ID` from positional values for the simple action verbs.
+fn pane_and_values(args: &[String]) -> Result<(Option<String>, Vec<String>), String> {
+    let mut pane = None;
+    let mut values = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--pane" => {
+                i += 1;
+                pane = Some(args.get(i).ok_or("--pane requires a session id")?.clone());
+            }
+            value if value.starts_with('-') && value != "-" => {
+                return Err(format!("unknown option: {}", value));
+            }
+            value => values.push(value.to_string()),
+        }
+        i += 1;
+    }
+    Ok((pane, values))
+}
+
+fn parse_action(args: &[String], help: &'static str) -> Result<CliMode, String> {
+    let Some(name) = args.first().map(String::as_str) else {
+        return Err("action requires a subcommand (set-tab-color, set-tab-title, notify, open-url, insert-text, mark-failure, clear-failure)".to_string());
+    };
+    if name == "-h" || name == "--help" {
+        return Ok(CliMode::Help(help));
+    }
+    let rest = &args[1..];
+    match name {
+        "set-tab-color" => {
+            let (pane, values) = pane_and_values(rest)?;
+            let [color] = values.as_slice() else {
+                return Err("set-tab-color requires exactly one colour".to_string());
+            };
+            let color = crate::headless::triggers::parse_color(color)?;
+            Ok(CliMode::Action {
+                pane,
+                command: ActionCommand::SetTabColor { color },
+            })
+        }
+        "set-tab-title" => {
+            let (pane, values) = pane_and_values(rest)?;
+            if values.is_empty() {
+                return Err("set-tab-title requires a title".to_string());
+            }
+            Ok(CliMode::Action {
+                pane,
+                command: ActionCommand::SetTabTitle {
+                    title: values.join(" "),
+                },
+            })
+        }
+        "notify" => {
+            let mut title = "Oxterm".to_string();
+            let mut body = String::new();
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "-h" | "--help" => return Ok(CliMode::Help(help)),
+                    "--title" => {
+                        i += 1;
+                        title = rest.get(i).ok_or("--title requires a value")?.clone();
+                    }
+                    "--body" => {
+                        i += 1;
+                        body = rest.get(i).ok_or("--body requires a value")?.clone();
+                    }
+                    other => return Err(format!("unknown option: {}", other)),
+                }
+                i += 1;
+            }
+            Ok(CliMode::Action {
+                pane: None,
+                command: ActionCommand::Notify { title, body },
+            })
+        }
+        "open-url" => {
+            let (pane, values) = pane_and_values(rest)?;
+            let [url] = values.as_slice() else {
+                return Err("open-url requires exactly one URL".to_string());
+            };
+            if !(url.starts_with("http://") || url.starts_with("https://")) {
+                return Err("open-url only opens http and https URLs".to_string());
+            }
+            Ok(CliMode::Action {
+                pane,
+                command: ActionCommand::OpenUrl { url: url.clone() },
+            })
+        }
+        "insert-text" => {
+            let (pane, values) = pane_and_values(rest)?;
+            let text = if values.as_slice() == ["-"] {
+                None
+            } else if values.is_empty() {
+                return Err("insert-text requires text or -".to_string());
+            } else {
+                Some(values.join(" "))
+            };
+            Ok(CliMode::Action {
+                pane,
+                command: ActionCommand::InsertText { text },
+            })
+        }
+        "mark-failure" | "clear-failure" => {
+            let (pane, values) = pane_and_values(rest)?;
+            if !values.is_empty() {
+                return Err(format!("unexpected argument: {}", values[0]));
+            }
+            Ok(CliMode::Action {
+                pane,
+                command: if name == "mark-failure" {
+                    ActionCommand::MarkFailure
+                } else {
+                    ActionCommand::ClearFailure
+                },
+            })
+        }
+        other => Err(format!("unknown action: {}", other)),
+    }
+}
+
 pub fn parse_verb(args: &[String]) -> Result<CliMode, String> {
     let name = args.first().map(String::as_str).unwrap_or("");
     let Some(entry) = verb(name) else {
@@ -297,6 +520,8 @@ pub fn parse_verb(args: &[String]) -> Result<CliMode, String> {
         "connect" => return parse_connect(&args[1..], entry.help),
         "connections" => return parse_connections(&args[1..], entry.help),
         "tunnel" => return parse_tunnel(&args[1..], entry.help),
+        "events" => return parse_events(&args[1..], entry.help),
+        "action" => return parse_action(&args[1..], entry.help),
         _ => {}
     }
     let mut cwd: Option<String> = None;
@@ -309,6 +534,8 @@ pub fn parse_verb(args: &[String]) -> Result<CliMode, String> {
     let mut command: Vec<String> = Vec::new();
     let mut text_parts: Vec<String> = Vec::new();
     let mut read_stdin = false;
+    let mut captured = false;
+    let mut clear = false;
     let mut i = 1;
     while i < args.len() {
         let arg = &args[i];
@@ -331,6 +558,8 @@ pub fn parse_verb(args: &[String]) -> Result<CliMode, String> {
             "--horizontal" if name == "split" => vertical = false,
             "--enter" if name == "send" => enter = true,
             "--all" if name == "capture" => scope = CaptureScope::All,
+            "--captured" if name == "capture" => captured = true,
+            "--clear" if name == "capture" => clear = true,
             "--scrollback" if name == "capture" => {
                 i += 1;
                 let value = args.get(i).ok_or("--scrollback requires a line count")?;
@@ -377,6 +606,15 @@ pub fn parse_verb(args: &[String]) -> Result<CliMode, String> {
             _ => return Err(format!("unknown option: {}", arg)),
         }
         i += 1;
+    }
+
+    if captured {
+        if scope != CaptureScope::Screen {
+            return Err("--captured cannot be combined with --scrollback or --all".to_string());
+        }
+        scope = CaptureScope::Captured { clear };
+    } else if clear {
+        return Err("--clear only applies with --captured".to_string());
     }
 
     match name {
@@ -603,5 +841,90 @@ mod tests {
             assert!(entry.help.contains("Usage: oxterm"));
             assert!(summary().contains(entry.name));
         }
+    }
+
+    #[test]
+    fn parses_events_and_actions() {
+        assert_eq!(
+            parse_verb(&args(&[
+                "events", "--pane", "1", "--event", "bell", "--output"
+            ]))
+            .unwrap(),
+            CliMode::Events {
+                pane: Some("1".to_string()),
+                events: vec!["bell".to_string()],
+                output: true,
+                json: false,
+            }
+        );
+        assert!(parse_verb(&args(&["events", "--event", "nope"])).is_err());
+
+        assert_eq!(
+            parse_verb(&args(&["action", "set-tab-color", "--pane", "1", "#ABC"])).unwrap(),
+            CliMode::Action {
+                pane: Some("1".to_string()),
+                command: ActionCommand::SetTabColor {
+                    color: "#aabbcc".to_string(),
+                },
+            }
+        );
+        assert_eq!(
+            parse_verb(&args(&["action", "set-tab-title", "build", "failed"])).unwrap(),
+            CliMode::Action {
+                pane: None,
+                command: ActionCommand::SetTabTitle {
+                    title: "build failed".to_string(),
+                },
+            }
+        );
+        assert_eq!(
+            parse_verb(&args(&["action", "notify", "--title", "T", "--body", "B"])).unwrap(),
+            CliMode::Action {
+                pane: None,
+                command: ActionCommand::Notify {
+                    title: "T".to_string(),
+                    body: "B".to_string(),
+                },
+            }
+        );
+        assert_eq!(
+            parse_verb(&args(&["action", "open-url", "https://example.com"])).unwrap(),
+            CliMode::Action {
+                pane: None,
+                command: ActionCommand::OpenUrl {
+                    url: "https://example.com".to_string(),
+                },
+            }
+        );
+        assert!(parse_verb(&args(&["action", "open-url", "file:///etc/passwd"])).is_err());
+        assert_eq!(
+            parse_verb(&args(&["action", "insert-text", "-"])).unwrap(),
+            CliMode::Action {
+                pane: None,
+                command: ActionCommand::InsertText { text: None },
+            }
+        );
+        assert!(parse_verb(&args(&["action", "mark-failure", "x"])).is_err());
+        assert!(parse_verb(&args(&["action", "nope"])).is_err());
+    }
+
+    #[test]
+    fn parses_captured_output_and_clear() {
+        assert_eq!(
+            parse_verb(&args(&["capture", "--captured"])).unwrap(),
+            CliMode::Capture {
+                pane: None,
+                scope: CaptureScope::Captured { clear: false },
+            }
+        );
+        assert_eq!(
+            parse_verb(&args(&["capture", "--captured", "--clear"])).unwrap(),
+            CliMode::Capture {
+                pane: None,
+                scope: CaptureScope::Captured { clear: true },
+            }
+        );
+        assert!(parse_verb(&args(&["capture", "--clear"])).is_err());
+        assert!(parse_verb(&args(&["capture", "--captured", "--all"])).is_err());
     }
 }

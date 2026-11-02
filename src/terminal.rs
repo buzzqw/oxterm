@@ -25,6 +25,7 @@ mod K {
 }
 use gtk::prelude::*;
 use regex::Regex;
+use serde_json::json;
 use zoha_vte::traits::TerminalExt;
 use zoha_vte::{CursorBlinkMode, CursorShape, Format, PtyFlags, Regex as VteRegex};
 
@@ -40,6 +41,43 @@ use crate::window::MainWindow;
 /// reserved from the first allocation so the grid never changes size when the
 /// first prompt marker shows up.
 const OSC133_GUTTER_WIDTH: i32 = 6;
+
+/// Trigger rules are read once per process. A malformed file is reported in
+/// the log and ignored; it must never stop the terminal from starting.
+fn active_triggers() -> &'static crate::headless::triggers::TriggerSet {
+    static TRIGGERS: once_cell::sync::Lazy<crate::headless::triggers::TriggerSet> =
+        once_cell::sync::Lazy::new(|| {
+            let path = crate::headless::paths::config_dir().join("triggers.json");
+            match crate::headless::triggers::TriggerSet::load(&path) {
+                Ok(set) => {
+                    if !set.is_empty() {
+                        LOGGER.info(&format!("triggers_loaded count={}", set.len()));
+                    }
+                    set
+                }
+                Err(error) => {
+                    LOGGER.warning(&format!("triggers_failed error={}", error));
+                    crate::headless::triggers::TriggerSet::default()
+                }
+            }
+        });
+    &TRIGGERS
+}
+
+pub(crate) fn send_desktop_notification(title: &str, body: &str) {
+    if crate::notes::which("notify-send").is_none() {
+        return;
+    }
+    let title = if title.trim().is_empty() {
+        "Oxterm"
+    } else {
+        title
+    };
+    crate::notes::spawn_detached(
+        "notify-send",
+        &["-a", "Oxterm", "-i", "terminal", title, body],
+    );
+}
 
 /// Selection shape while VI copy mode is active.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -1139,6 +1177,15 @@ mod imp {
         /// Reconnect when ssh loses the connection: delay, attempts so far, start.
         pub reconnect: RefCell<Option<(u32, u32, std::time::Instant)>>,
         pub expect_handler: RefCell<Option<glib::SignalHandlerId>>,
+        /// Trigger scanner: last row inspected, the `(row, trigger id)` pairs
+        /// already fired, and triggers disabled by `"once": true`.
+        pub trigger_row: Cell<i64>,
+        pub trigger_fired: RefCell<std::collections::HashSet<(i64, String)>>,
+        pub trigger_disabled: RefCell<std::collections::HashSet<String>>,
+        /// Lines collected by `capture` trigger actions.
+        pub captured_lines: RefCell<Vec<String>>,
+        /// Colour of this tab's label, set by `oxterm action set-tab-color`.
+        pub tab_color_override: RefCell<Option<String>>,
         /// Saved connections offered by the palette, read once per opening.
         pub palette_connections: RefCell<Option<Vec<(String, String, String)>>>,
 
@@ -1239,6 +1286,9 @@ impl TerminalBox {
         // next PTY would land on that number and reach its child closed.
         *this.imp().osc133_rfd.borrow_mut() = -1;
         *this.imp().pty_fd.borrow_mut() = -1;
+        // Negative means "the trigger scanner has not looked yet"; row 0 is a
+        // valid position and must not be confused with the initial state.
+        this.imp().trigger_row.set(-1);
         this.set_orientation(gtk::Orientation::Vertical);
         this.set_hexpand(true);
         this.set_vexpand(true);
@@ -1553,6 +1603,7 @@ impl TerminalBox {
             let weak = crate::SendWeak::new(self);
             vte.connect_focus_in_event(move |_w, _ev| {
                 if let Some(t) = weak.upgrade() {
+                    t.publish_event("pane_focused", json!({}));
                     let term = t.clone();
                     t.call_window(move |win| win.clear_tab_failure_signal(&term));
                 }
@@ -1563,6 +1614,10 @@ impl TerminalBox {
             let weak = crate::SendWeak::new(self);
             vte.connect_window_title_changed(move |t| {
                 if let Some(t2) = weak.upgrade() {
+                    t2.publish_event(
+                        "title_changed",
+                        json!({"title": t.window_title().map(|title| title.to_string()).unwrap_or_default()}),
+                    );
                     t2.on_title_changed(t);
                 }
             });
@@ -1573,8 +1628,35 @@ impl TerminalBox {
             let weak = crate::SendWeak::new(self);
             vte.connect_current_directory_uri_changed(move |_t| {
                 if let Some(t2) = weak.upgrade() {
+                    t2.publish_event("cwd_changed", json!({"cwd": t2.display_cwd()}));
                     t2.refresh_cwd_display();
                 }
+            });
+        }
+        {
+            let weak = crate::SendWeak::new(self);
+            vte.connect_bell(move |_t| {
+                if let Some(t2) = weak.upgrade() {
+                    t2.publish_event("bell", json!({}));
+                }
+            });
+        }
+        if !active_triggers().is_empty() {
+            // Output arrives in bursts: look once it settles, not on every chunk.
+            let weak = crate::SendWeak::new(self);
+            let pending = Rc::new(Cell::new(false));
+            vte.connect_contents_changed(move |_| {
+                if pending.replace(true) {
+                    return;
+                }
+                let pending = pending.clone();
+                let weak = weak.clone();
+                glib::timeout_add_local_once(Duration::from_millis(80), move || {
+                    pending.set(false);
+                    if let Some(term) = weak.upgrade() {
+                        term.check_triggers();
+                    }
+                });
             });
         }
         vte.add_events(gdk::EventMask::SCROLL_MASK);
@@ -2613,6 +2695,165 @@ impl TerminalBox {
         }
     }
 
+    /// Publish one event on the process-wide bus. Only the GUI thread calls
+    /// this; the bus itself is thread-safe and never blocks on a subscriber.
+    pub(crate) fn publish_event(&self, name: &str, extra: serde_json::Value) {
+        let mut event = match extra {
+            serde_json::Value::Object(map) => map,
+            _ => serde_json::Map::new(),
+        };
+        event.insert("event".into(), serde_json::Value::String(name.to_string()));
+        let pane = self.remote_id();
+        if !pane.is_empty() {
+            event.insert("pane".into(), serde_json::Value::String(pane));
+        }
+        event.insert(
+            "time".into(),
+            serde_json::Value::String(crate::logging::utc_iso_now()),
+        );
+        crate::headless::events::bus().publish(&serde_json::Value::Object(event));
+    }
+
+    fn check_triggers(&self) {
+        use crate::headless::triggers::Context;
+        let triggers = active_triggers();
+        if triggers.is_empty() {
+            return;
+        }
+        let vte = self.vte();
+        let (column, row) = vte.cursor_position();
+        let last_row = self.imp().trigger_row.get();
+        // The first look rewinds a little to catch output that arrived before
+        // the first `contents_changed`. Later looks start where the previous
+        // one ended, and a cursor that moved backwards (clear, reset, trimmed
+        // scrollback) restarts from the current line.
+        let start = if last_row < 0 {
+            (row - 200).max(0)
+        } else if row < last_row {
+            row
+        } else {
+            last_row
+        };
+        let Some(text) = text::range(&vte, start, 0, row, column) else {
+            return;
+        };
+        let lines: Vec<&str> = text.split('\n').collect();
+        let in_command_output = self.command_running();
+        let profile = settings().get_str("active_profile");
+        let profile = profile.trim();
+        for (offset, line) in lines.iter().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let line_row = start + offset as i64;
+            let hits = triggers.evaluate(
+                line,
+                Context {
+                    profile: if profile.is_empty() {
+                        None
+                    } else {
+                        Some(profile)
+                    },
+                    in_command_output,
+                },
+            );
+            for hit in hits {
+                if self
+                    .imp()
+                    .trigger_disabled
+                    .borrow()
+                    .contains(hit.id.as_str())
+                {
+                    continue;
+                }
+                let key = (line_row, hit.id.clone());
+                if self.imp().trigger_fired.borrow().contains(&key) {
+                    continue;
+                }
+                self.imp().trigger_fired.borrow_mut().insert(key);
+                if hit.once {
+                    self.imp().trigger_disabled.borrow_mut().insert(hit.id);
+                }
+                self.apply_trigger_effects(&hit.effects);
+            }
+        }
+        self.imp().trigger_row.set(row);
+        // Keep the dedupe table small on a long-running session.
+        let cutoff = row - 200;
+        self.imp()
+            .trigger_fired
+            .borrow_mut()
+            .retain(|(fired_row, _)| *fired_row >= cutoff);
+    }
+
+    fn apply_trigger_effects(&self, effects: &[crate::headless::triggers::Effect]) {
+        use crate::headless::triggers::Effect;
+        static HIGHLIGHT_WARNED: std::sync::Once = std::sync::Once::new();
+        static HYPERLINK_WARNED: std::sync::Once = std::sync::Once::new();
+        for effect in effects {
+            match effect {
+                Effect::Notify { title, body } => {
+                    send_desktop_notification(title, body);
+                }
+                Effect::Capture { label, .. } => {
+                    self.imp().captured_lines.borrow_mut().push(label.clone());
+                }
+                Effect::SetTabColor { color } => {
+                    self.set_tab_color_override(Some(color.clone()));
+                }
+                Effect::SetTabTitle { title } => {
+                    let term = self.clone();
+                    let title = title.clone();
+                    self.call_window(move |win| win.pin_tab_title_signal(&term, &title));
+                }
+                Effect::MarkFailure => {
+                    let term = self.clone();
+                    self.call_window(move |win| win.set_tab_failure_signal(&term, true));
+                }
+                Effect::HighlightLine { .. } | Effect::HighlightText { .. } => {
+                    HIGHLIGHT_WARNED.call_once(|| {
+                        LOGGER.warning(
+                            "trigger_highlight_unsupported: VTE 0.70 cannot restyle printed text",
+                        );
+                    });
+                }
+                Effect::Hyperlink { url } => {
+                    // The match is already visible; opening it automatically
+                    // would be surprising and unsafe. Keep the rule parsed for
+                    // a later release that can register a VTE match.
+                    HYPERLINK_WARNED.call_once(|| {
+                        LOGGER.info(&format!("trigger_hyperlink_ignored url={}", url));
+                    });
+                }
+            }
+        }
+    }
+
+    /// Lines collected by `capture` trigger actions, newest last.
+    pub fn captured_text(&self, clear: bool) -> String {
+        let mut lines = self.imp().captured_lines.borrow_mut();
+        let mut text = lines.join("\n");
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        if clear {
+            lines.clear();
+        }
+        text
+    }
+
+    pub fn tab_color_override(&self) -> Option<String> {
+        self.imp().tab_color_override.borrow().clone()
+    }
+
+    pub fn set_tab_color_override(&self, color: Option<String>) {
+        let changed = *self.imp().tab_color_override.borrow() != color;
+        *self.imp().tab_color_override.borrow_mut() = color;
+        if changed {
+            self.call_window(|win| win.refresh_tab_color_signal(self));
+        }
+    }
+
     fn override_theme(&self) -> Option<&'static crate::headless::themes::Theme> {
         let name = self.imp().color_override.borrow();
         crate::headless::themes::get(name.as_ref()?)
@@ -3423,6 +3664,10 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                     *self.imp().osc133_last_history_id.borrow_mut() = ticket;
                     *self.imp().input_shadow.borrow_mut() = String::new();
                 }
+                self.publish_event(
+                    "command_started",
+                    json!({"command": command_text, "cwd": self.get_cwd()}),
+                );
             }
             osc133::Event::CommandEnd(status) => {
                 self.imp().pending_command_row.set(-1);
@@ -3473,6 +3718,15 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                     }
                     FailureMark::Leave => {}
                 }
+                self.publish_event(
+                    "command_finished",
+                    json!({
+                        "command": self.last_command(),
+                        "exit": status,
+                        "duration_ms": duration_ms,
+                        "cwd": self.get_cwd(),
+                    }),
+                );
             }
             osc133::Event::PromptStart => {
                 *self.imp().osc133_cmd_start_row.borrow_mut() = -1;
@@ -3492,6 +3746,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                     self.update_margin_visibility();
                 }
                 self.refresh_command_marks();
+                self.publish_event("prompt", json!({"cwd": self.get_cwd()}));
             }
         }
     }
@@ -3850,6 +4105,11 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         if settings().get_bool("auto_copy_selection") && term.has_selection() {
             term.copy_clipboard_format(Format::Text);
         }
+        let length = term
+            .text_selected(Format::Text)
+            .map(|text| text.chars().count())
+            .unwrap_or(0);
+        self.publish_event("selection_changed", json!({"length": length}));
     }
 
     fn on_title_changed(&self, term: &zoha_vte::Terminal) {
@@ -4185,7 +4445,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         }
     }
 
-    fn open_url(&self, url: &str) {
+    pub(crate) fn open_url(&self, url: &str) {
         let Some(url) = safe_web_url(url) else {
             self.vte().feed(
                 b"\r\n\x1b[31mCannot open URL: only HTTP and HTTPS links are allowed.\x1b[0m\r\n",
