@@ -1,0 +1,9 @@
+{
+  "id": "oxterm.remote-browser",
+  "name": "Automatic remote browser",
+  "version": "1.0.0",
+  "api_version": 1,
+  "permissions": ["events", "open-files"],
+  "events": ["command_started"],
+  "command": ["python3", "plugin.py"]
+}

@@ -1565,6 +1565,9 @@ fn dispatch(request: &Value) -> Value {
             json!({ "ok": true })
         }
         "browse" => {
+            if let Some(reply) = plugin_denied(request, "open-files") {
+                return reply;
+            }
             let Some(window) = target_window(&app) else {
                 return error_reply("no running Oxterm window", 4);
             };

@@ -7,10 +7,12 @@ with `oxterm plugin install <directory>` and start with the next Oxterm window.
 | --- | --- | --- | --- |
 | [`tab-status`](tab-status/) | Python 3 | `events`, `workspace` | Colour the tab amber/green/red from command events and clear it with `oxterm action clear-tab-color` |
 | [`command-log`](command-log/) | POSIX shell | `events` | Append every event as JSON Lines to the plugin's state directory |
+| [`remote-browser`](remote-browser/) | Python 3 | `events`, `open-files` | Open the WinSCP-like file browser automatically when an SSH or Mosh session starts |
 
 ```sh
 oxterm plugin install examples/plugins/tab-status
 oxterm plugin install examples/plugins/command-log
+oxterm plugin install examples/plugins/remote-browser
 oxterm plugin list
 ```
 

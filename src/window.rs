@@ -3519,6 +3519,43 @@ impl MainWindow {
         self.populate_connections_menu(&connections_menu, false);
         menus.push(("Connections".into(), connections_menu));
 
+        let plugins_menu = gtk::Menu::new();
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &plugins_menu,
+            "Installed Plugins...",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    crate::plugins_ui::show(w.upcast_ref::<gtk::Window>());
+                }
+            }),
+            None,
+            Some("List, install, remove and inspect plugins"),
+        );
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &plugins_menu,
+            "Open Plugins Folder",
+            Box::new(move || {
+                let _ = weak.upgrade();
+                crate::plugins_ui::open_folder();
+            }),
+            None,
+            Some("Open the folder that holds installed plugins"),
+        );
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &plugins_menu,
+            "Open Plugin State Folder",
+            Box::new(move || {
+                let _ = weak.upgrade();
+                crate::plugins_ui::open_state();
+            }),
+            None,
+            Some("Open the folder that holds plugin logs and private state"),
+        );
+        menus.push(("Plugins".into(), plugins_menu));
+
         // Help
         let help_menu = gtk::Menu::new();
         let weak = crate::SendWeak::new(self);

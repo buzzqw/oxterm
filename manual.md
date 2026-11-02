@@ -403,9 +403,10 @@ already installed plugin, `--purge` also deletes its state directory. A plugin
 is started when Oxterm starts; restart Oxterm after installing or updating one.
 Set `"enabled": false` in the manifest to keep it on disk without running it.
 
-Two working examples live in [`examples/plugins`](examples/plugins): `tab-status`
-(colours the tab while a command runs and after it ends) and `command-log`
-(appends every event to a JSON Lines file).
+Three working examples live in [`examples/plugins`](examples/plugins): `tab-status`
+(colours the tab while a command runs and after it ends), `command-log`
+(appends every event to a JSON Lines file) and `remote-browser` (opens the file
+browser automatically when an SSH or Mosh session starts).
 
 The same list is available in the window: **Plugins → Installed Plugins…** (or
 `oxterm plugins`) opens a manager that can install from a folder or a git URL,
