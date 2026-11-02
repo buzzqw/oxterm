@@ -180,6 +180,7 @@ oxterm events [--pane ID] [--event NAME]... [--output] [--json]
 oxterm action set-tab-color|set-tab-title|notify|open-url|insert-text|...
 oxterm workspace [--new-window] [--replace] FILE
 oxterm plugin list|install|remove|update|permissions ...
+oxterm plugins
 oxterm mcp
 oxterm browse NAME
 ```
@@ -405,6 +406,11 @@ Set `"enabled": false` in the manifest to keep it on disk without running it.
 Two working examples live in [`examples/plugins`](examples/plugins): `tab-status`
 (colours the tab while a command runs and after it ends) and `command-log`
 (appends every event to a JSON Lines file).
+
+The same list is available in the window: **Plugins → Installed Plugins…** (or
+`oxterm plugins`) opens a manager that can install from a folder or a git URL,
+open the plugin and state folders, show a plugin's log, and remove a plugin.
+Restart Oxterm after changing the list; the dialog says so.
 
 A plugin process receives:
 

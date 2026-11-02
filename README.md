@@ -65,6 +65,7 @@ memory footprint and the memory-safety guarantees of Rust.
   entries from `~/.config/oxterm/extensions.json`
 - Installable plugins (`oxterm plugin install|list|update|remove`) that receive
   events on stdin and act through the control API, with manifest permissions
+  and a graphical manager in the **Plugins** menu (`oxterm plugins`)
 - `oxterm mcp`: a Model Context Protocol server on stdin/stdout so coding
   agents can open tabs, type, capture output and wait for commands
 - VI copy mode with motions, text objects, visual block selection, scrolloff, and bookmarks
@@ -296,6 +297,7 @@ Scriptable control (acts on a running Oxterm, opens no window):
   action set-tab-color|set-tab-title|notify|open-url|...               Ask a running Oxterm to perform an action
   workspace [--new-window] [--replace] FILE                            Open tabs, splits and commands from a JSON file
   plugin list|install|remove|update|permissions ...                    Manage installed plugins
+  plugins                                                              Open the plugin manager window
   mcp                                                                  Serve the Model Context Protocol on stdin/stdout
 
   These headless commands act on a running Oxterm terminal on the same

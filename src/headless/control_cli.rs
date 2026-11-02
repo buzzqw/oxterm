@@ -87,6 +87,7 @@ pub enum CliMode {
     Browse {
         name: String,
     },
+    PluginsUi,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -271,6 +272,15 @@ pub const VERBS: &[Verb] = &[
                the user's data directory. SOURCE is a local directory or a git URL.\n\
                --force replaces an installed plugin; --purge also deletes its state\n\
                directory. None of these commands needs a running window.\n",
+    },
+    Verb {
+        name: "plugins",
+        synopsis: "plugins",
+        summary: "Open the plugin manager window",
+        help: "Usage: oxterm plugins\n\n\
+               Open the graphical plugin manager in the running Oxterm: the installed\n\
+               list, install from a folder or a git URL, logs, state and removal. It is\n\
+               the same dialog as the Plugins menu.\n",
     },
     Verb {
         name: "mcp",
@@ -722,6 +732,15 @@ pub fn parse_verb(args: &[String]) -> Result<CliMode, String> {
         "action" => return parse_action(&args[1..], entry.help),
         "workspace" => return parse_workspace(&args[1..], entry.help),
         "plugin" => return parse_plugin(&args[1..], entry.help),
+        "plugins" => {
+            if let Some(extra) = args.get(1) {
+                if extra == "-h" || extra == "--help" {
+                    return Ok(CliMode::Help(entry.help));
+                }
+                return Err(format!("unexpected argument: {}", extra));
+            }
+            return Ok(CliMode::PluginsUi);
+        }
         "mcp" => {
             if let Some(extra) = args.get(1) {
                 if extra == "-h" || extra == "--help" {
@@ -1222,6 +1241,8 @@ mod tests {
         assert!(parse_verb(&args(&["plugin", "list", "x"])).is_err());
         assert_eq!(parse_verb(&args(&["mcp"])).unwrap(), CliMode::Mcp);
         assert!(parse_verb(&args(&["mcp", "x"])).is_err());
+        assert_eq!(parse_verb(&args(&["plugins"])).unwrap(), CliMode::PluginsUi);
+        assert!(parse_verb(&args(&["plugins", "x"])).is_err());
         assert_eq!(
             parse_verb(&args(&["browse", "db"])).unwrap(),
             CliMode::Browse {

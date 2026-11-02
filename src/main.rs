@@ -14,6 +14,7 @@ mod notes_index;
 mod notes_panel;
 mod notes_ui;
 mod plugins;
+mod plugins_ui;
 mod profiles;
 mod remote;
 mod session;

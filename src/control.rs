@@ -190,6 +190,7 @@ pub fn run_cli(mode: CliMode) -> i32 {
         CliMode::Plugin { action } => run_plugin(action),
         CliMode::Mcp => run_mcp(),
         CliMode::Browse { name } => run_browse(&name),
+        CliMode::PluginsUi => run_plugins_ui(),
     }
 }
 
@@ -749,6 +750,16 @@ struct Target {
 fn client_entries() -> Result<Vec<connections::Entry>, (i32, String)> {
     let book = connections::load_book(&connections::book_path()).map_err(|error| (1, error))?;
     Ok(connections::merge(&book, &ssh_config::load_hosts()))
+}
+
+fn run_plugins_ui() -> i32 {
+    let Some(socket) = live_sockets().into_iter().next() else {
+        return fail(4, "plugins", "no running Oxterm window");
+    };
+    match request_at(&socket, &json!({ "op": "plugins" })) {
+        Ok(_) => 0,
+        Err(error) => fail(error.0, "plugins", &error.1),
+    }
 }
 
 fn run_browse(name: &str) -> i32 {
@@ -1541,6 +1552,17 @@ fn dispatch(request: &Value) -> Value {
                 };
             window.apply_workspace(&workspace, request["replace"].as_bool().unwrap_or(false));
             json!({ "ok": true, "name": workspace.name })
+        }
+        "plugins" => {
+            let Some(window) = target_window(&app) else {
+                return error_reply("no running Oxterm window", 4);
+            };
+            // The manager is modal and runs its own loop; answer the control
+            // request first, then open it from an idle callback.
+            glib::idle_add_local_once(move || {
+                crate::plugins_ui::show(window.upcast_ref::<gtk::Window>());
+            });
+            json!({ "ok": true })
         }
         "browse" => {
             let Some(window) = target_window(&app) else {

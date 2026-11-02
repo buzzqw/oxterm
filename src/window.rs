@@ -737,7 +737,9 @@ impl DetachedWindow {
         let menubar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         menubar.style_context().add_class("oxterm-menu-row");
         let mut buttons = Vec::new();
-        for label in ["File", "Edit", "View", "Terminal", "Notes", "Help"] {
+        for label in [
+            "File", "Edit", "View", "Terminal", "Notes", "Plugins", "Help",
+        ] {
             let btn = gtk::MenuButton::new();
             btn.set_label(label);
             btn.set_relief(gtk::ReliefStyle::None);
@@ -1254,6 +1256,43 @@ impl DetachedWindow {
             Some("Open the notes directory in the file manager"),
         );
         menus.push(("Notes".into(), notes_menu));
+
+        let plugins_menu = gtk::Menu::new();
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &plugins_menu,
+            "Installed Plugins...",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    crate::plugins_ui::show(w.upcast_ref::<gtk::Window>());
+                }
+            }),
+            None,
+            Some("List, install, remove and inspect plugins"),
+        );
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &plugins_menu,
+            "Open Plugins Folder",
+            Box::new(move || {
+                let _ = weak.upgrade();
+                crate::plugins_ui::open_folder();
+            }),
+            None,
+            Some("Open the folder that holds installed plugins"),
+        );
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &plugins_menu,
+            "Open Plugin State Folder",
+            Box::new(move || {
+                let _ = weak.upgrade();
+                crate::plugins_ui::open_state();
+            }),
+            None,
+            Some("Open the folder that holds plugin logs and private state"),
+        );
+        menus.push(("Plugins".into(), plugins_menu));
 
         let help_menu = gtk::Menu::new();
         let weak = crate::SendWeak::new(self);
@@ -2662,6 +2701,7 @@ impl MainWindow {
             "Tabs",
             "Notes",
             "Connections",
+            "Plugins",
             "Help",
         ] {
             let btn = gtk::MenuButton::new();

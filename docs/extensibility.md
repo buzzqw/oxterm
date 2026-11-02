@@ -352,6 +352,7 @@ rinviato:
 | Voci nel menu contestuale | — | rimandate |
 | Manifest, lock, install/update/remove dei plugin | `src/headless/plugins.rs` | fatto, con test |
 | Host dei plugin e inoltro eventi | `src/plugins.rs` | fatto, verificato con un plugin reale |
+| Gestore grafico dei plugin (menu **Plugins**, `oxterm plugins`) | `src/plugins_ui.rs`, `src/window.rs` | fatto |
 | Controllo permessi sulle richieste con `OXTERM_PLUGIN_ID` | `src/control.rs` | fatto |
 | Server MCP e tool | `src/headless/mcp.rs`, `src/control.rs` | fatto, con test e prova reale |
 | Pannelli WASM | — | rinviati |
@@ -394,3 +395,5 @@ Deviazioni rispetto alla prima stesura:
   plugin, permessi) e `oxterm mcp` della Fase 4. WASM rinviato.
 - 2026-11-02: browser file: sync ricorsiva, segnalibri per connessione, modifica
   remota con upload al salvataggio e `oxterm browse`.
+- 2026-11-02: gestore grafico dei plugin nel menu **Plugins** e con
+  `oxterm plugins`.
