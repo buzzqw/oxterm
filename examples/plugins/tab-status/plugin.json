@@ -1,0 +1,9 @@
+{
+  "id": "oxterm.tab-status",
+  "name": "Tab status colours",
+  "version": "1.0.0",
+  "api_version": 1,
+  "permissions": ["events", "workspace"],
+  "events": ["command_started", "command_finished", "prompt"],
+  "command": ["python3", "plugin.py"]
+}

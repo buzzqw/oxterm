@@ -1,0 +1,9 @@
+{
+  "id": "oxterm.command-log",
+  "name": "Command log",
+  "version": "1.0.0",
+  "api_version": 1,
+  "permissions": ["events"],
+  "events": ["command_started", "command_finished"],
+  "command": ["./run.sh"]
+}

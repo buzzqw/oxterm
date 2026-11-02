@@ -332,7 +332,7 @@ rinviato:
 | Trigger su `contents_changed` | `src/terminal.rs` | fatto |
 | Eventi `command_started`, `command_finished`, `prompt`, `bell`, `title_changed`, `cwd_changed`, `tab_created`, `tab_closed`, `pane_focused`, `selection_changed` | `src/terminal.rs`, `src/window.rs` | fatto |
 | `output_line` (solo con `--output`) | `src/terminal.rs` | fatto |
-| Azioni `set-tab-color`, `set-tab-title`, `notify`, `open-url`, `insert-text`, `mark-failure`, `clear-failure` | `src/control.rs`, `src/window.rs` | fatto |
+| Azioni `set-tab-color`, `clear-tab-color`, `set-tab-title`, `notify`, `open-url`, `insert-text`, `mark-failure`, `clear-failure` | `src/control.rs`, `src/window.rs` | fatto |
 | `theme_changed` | — | nome riservato, non ancora emesso |
 | `highlight_line`, `highlight_text`, `hyperlink` | `src/headless/triggers.rs` | accettati e interpretati, non applicati: VTE 0.70 non consente di ristilare testo già stampato |
 | Parsing e validazione dei workspace | `src/headless/workspace.rs` | fatto, con test |

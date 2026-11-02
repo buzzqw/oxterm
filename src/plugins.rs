@@ -183,6 +183,9 @@ fn spawn_once(
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::from(log_err));
+    if let Ok(executable) = std::env::current_exe() {
+        command.env("OXTERM", executable);
+    }
     unsafe {
         command.pre_exec(|| {
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);

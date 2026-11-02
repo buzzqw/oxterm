@@ -252,6 +252,8 @@ oxterm action notify --title 'Deploy' --body 'Finished'
 oxterm action open-url https://example.com
 oxterm action insert-text 'git status'
 oxterm action mark-failure --pane "$OXTERM_PANE"
+oxterm action clear-failure --pane "$OXTERM_PANE"
+oxterm action clear-tab-color --pane "$OXTERM_PANE"
 ```
 
 `open-url` only accepts `http` and `https`. `insert-text` types without pressing
@@ -397,9 +399,14 @@ already installed plugin, `--purge` also deletes its state directory. A plugin
 is started when Oxterm starts; restart Oxterm after installing or updating one.
 Set `"enabled": false` in the manifest to keep it on disk without running it.
 
+Two working examples live in [`examples/plugins`](examples/plugins): `tab-status`
+(colours the tab while a command runs and after it ends) and `command-log`
+(appends every event to a JSON Lines file).
+
 A plugin process receives:
 
 - `OXTERM_CONTROL`, the private control socket;
+- `OXTERM`, the Oxterm binary to call for actions;
 - `OXTERM_PLUGIN_ID`, `OXTERM_PLUGIN_DIR`, `OXTERM_PLUGIN_STATE`;
 - `OXTERM_PLUGIN_PERMISSIONS`, the comma-separated list from the manifest;
 - one JSON event per line on standard input, filtered by `events`;

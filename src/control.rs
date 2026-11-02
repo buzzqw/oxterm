@@ -323,6 +323,9 @@ fn run_action(pane: Option<&str>, command: ActionCommand) -> i32 {
         ActionCommand::ClearFailure => json!({
             "op": "action", "action": "clear-failure", "pane": pane_id,
         }),
+        ActionCommand::ClearTabColor => json!({
+            "op": "action", "action": "clear-tab-color", "pane": pane_id,
+        }),
     };
     match request_at(&socket, &request) {
         Ok(_) => 0,
@@ -1674,7 +1677,8 @@ fn handle_action(app: &gtk::Application, request: &Value) -> Value {
         "notify" => "notify",
         "open-url" => "open-files",
         "insert-text" => "send-input",
-        "set-tab-color" | "set-tab-title" | "mark-failure" | "clear-failure" => "workspace",
+        "set-tab-color" | "set-tab-title" | "mark-failure" | "clear-failure"
+        | "clear-tab-color" => "workspace",
         _ => "workspace",
     };
     if let Err(error) = plugin_allows(request, needed) {
@@ -1735,6 +1739,10 @@ fn handle_action(app: &gtk::Application, request: &Value) -> Value {
                     win.clear_tab_failure_signal(&term2);
                 }
             });
+            json!({ "ok": true })
+        }
+        "clear-tab-color" => {
+            term.set_tab_color_override(None);
             json!({ "ok": true })
         }
         other => error_reply(&format!("unknown action: {}", other), 2),

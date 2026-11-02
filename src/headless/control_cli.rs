@@ -117,6 +117,7 @@ pub enum ActionCommand {
     },
     MarkFailure,
     ClearFailure,
+    ClearTabColor,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -229,7 +230,7 @@ pub const VERBS: &[Verb] = &[
                \x20      oxterm action notify [--title TITLE] [--body BODY]\n\
                \x20      oxterm action open-url URL\n\
                \x20      oxterm action insert-text [--pane ID] TEXT...|-\n\
-               \x20      oxterm action mark-failure|clear-failure [--pane ID]\n\n\
+               \x20      oxterm action mark-failure|clear-failure|clear-tab-color [--pane ID]\n\n\
                Ask the running Oxterm to change a tab, show a notification, open an\n\
                http(s) URL, type without pressing Enter, or set and clear the failure\n\
                mark. The target pane comes from --pane, then $OXTERM_PANE, then the\n\
@@ -489,7 +490,7 @@ fn parse_workspace(args: &[String], help: &'static str) -> Result<CliMode, Strin
 
 fn parse_action(args: &[String], help: &'static str) -> Result<CliMode, String> {
     let Some(name) = args.first().map(String::as_str) else {
-        return Err("action requires a subcommand (set-tab-color, set-tab-title, notify, open-url, insert-text, mark-failure, clear-failure)".to_string());
+        return Err("action requires a subcommand (set-tab-color, clear-tab-color, set-tab-title, notify, open-url, insert-text, mark-failure, clear-failure)".to_string());
     };
     if name == "-h" || name == "--help" {
         return Ok(CliMode::Help(help));
@@ -570,17 +571,17 @@ fn parse_action(args: &[String], help: &'static str) -> Result<CliMode, String> 
                 command: ActionCommand::InsertText { text },
             })
         }
-        "mark-failure" | "clear-failure" => {
+        "mark-failure" | "clear-failure" | "clear-tab-color" => {
             let (pane, values) = pane_and_values(rest)?;
             if !values.is_empty() {
                 return Err(format!("unexpected argument: {}", values[0]));
             }
             Ok(CliMode::Action {
                 pane,
-                command: if name == "mark-failure" {
-                    ActionCommand::MarkFailure
-                } else {
-                    ActionCommand::ClearFailure
+                command: match name {
+                    "mark-failure" => ActionCommand::MarkFailure,
+                    "clear-failure" => ActionCommand::ClearFailure,
+                    _ => ActionCommand::ClearTabColor,
                 },
             })
         }
@@ -1083,6 +1084,13 @@ mod tests {
             }
         );
         assert!(parse_verb(&args(&["action", "mark-failure", "x"])).is_err());
+        assert_eq!(
+            parse_verb(&args(&["action", "clear-tab-color", "--pane", "1"])).unwrap(),
+            CliMode::Action {
+                pane: Some("1".to_string()),
+                command: ActionCommand::ClearTabColor,
+            }
+        );
         assert!(parse_verb(&args(&["action", "nope"])).is_err());
     }
 
