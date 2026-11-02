@@ -116,6 +116,8 @@ pub enum PaletteRow {
     Action(String),
     /// A saved connection, by id.
     Connection(String),
+    /// An entry from `extensions.json`, by id.
+    External(String),
 }
 
 struct PaletteAction {
@@ -5668,6 +5670,23 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 order += 1;
             }
         }
+        for entry in &crate::extensions::config().palette {
+            if slash_only {
+                continue;
+            }
+            let haystack = format!("{} {}", entry.label, entry.detail);
+            if let Some(score) = crate::headless::text::fuzzy_score(&q, &haystack) {
+                entries.push((
+                    score,
+                    0,
+                    order,
+                    entry.label.clone(),
+                    entry.detail.clone(),
+                    PaletteRow::External(entry.id.clone()),
+                ));
+                order += 1;
+            }
+        }
         // Only once something is typed: an empty palette lists actions, and most
         // openings should not read the book and ~/.ssh/config at all.
         if !slash_only && !q.is_empty() {
@@ -5738,6 +5757,10 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 self.hide_command_bar();
                 self.call_window(|window| window.connect_saved_signal(&id));
             }
+            Some(PaletteRow::External(id)) => {
+                self.hide_command_bar();
+                self.run_external_command(&id);
+            }
             Some(PaletteRow::Command(command)) => {
                 let entry = self.imp().cmd_entry.borrow().clone().unwrap();
                 entry.set_text(&format!("{} ", command));
@@ -5796,6 +5819,11 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 Some(PaletteRow::Connection(id)) => {
                     self.hide_command_bar();
                     self.call_window(|window| window.connect_saved_signal(&id));
+                    return;
+                }
+                Some(PaletteRow::External(id)) => {
+                    self.hide_command_bar();
+                    self.run_external_command(&id);
                     return;
                 }
                 Some(PaletteRow::Command(command)) => {
@@ -5901,6 +5929,16 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         }
     }
 
+    fn run_external_command(&self, id: &str) {
+        let config = crate::extensions::config();
+        let Some(entry) = config.palette.iter().find(|entry| entry.id == id) else {
+            return;
+        };
+        let label = entry.label.clone();
+        let command = entry.command.clone();
+        self.call_window(move |window| window.run_external_command_signal(&label, &command));
+    }
+
     fn toggle_broadcast_setting(&self) {
         let current = settings().get_bool("broadcast_input");
         let s = settings();
@@ -5967,6 +6005,17 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                         entry.set_position(-1);
                     }
                     Some(PaletteRow::Connection(_)) => {}
+                    Some(PaletteRow::External(id)) => {
+                        if let Some(entry) = crate::extensions::config()
+                            .palette
+                            .iter()
+                            .find(|entry| entry.id == id)
+                        {
+                            let field = self.imp().cmd_entry.borrow().clone().unwrap();
+                            field.set_text(&entry.label);
+                            field.set_position(-1);
+                        }
+                    }
                     Some(PaletteRow::Action(id)) => {
                         if let Some(action) = PALETTE_ACTIONS.iter().find(|action| action.id == id)
                         {

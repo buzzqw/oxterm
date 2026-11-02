@@ -220,6 +220,8 @@ pub trait TerminalWindow {
     fn pin_tab_title_signal(&self, _term: &TerminalBox, _title: &str) {}
     /// Repaint a tab label after its colour override changed.
     fn refresh_tab_color_signal(&self, _term: &TerminalBox) {}
+    /// Run a palette contribution in a new tab.
+    fn run_external_command_signal(&self, _label: &str, _command: &str) {}
     /// The shell changed the directory it reports through OSC 7. Display-only:
     /// the tooltip and the status bar follow it, nothing else does.
     fn refresh_cwd_display(&self, _term: &TerminalBox) {}
@@ -2006,6 +2008,16 @@ impl MainWindow {
         *self.imp().notes_slot.borrow_mut() = Some(notes_slot);
         vbox.pack_start(&content_row, true, true, 0);
         vbox.pack_end(&stats_box, false, false, 0);
+        let weak = self.downgrade();
+        let cwd = std::rc::Rc::new(move || {
+            weak.upgrade()
+                .and_then(|window| window.current_terminal())
+                .map(|term| term.display_cwd())
+                .unwrap_or_default()
+        });
+        if let Some(bar) = crate::status_bar::StatusBar::new(crate::extensions::config(), cwd) {
+            vbox.pack_end(bar.widget(), false, false, 0);
+        }
         self.add(&vbox);
 
         let weak = crate::SendWeak::new(self);
@@ -3651,6 +3663,73 @@ impl MainWindow {
             return None;
         }
         self.set_split_with(mode, true, cwd, command, title)
+    }
+
+    /// Open a declarative workspace in this window: one or two panes, each with
+    /// one or more tabs. With `replace`, the tabs that existed before are closed
+    /// after the new ones are open.
+    pub fn apply_workspace(
+        &self,
+        workspace: &crate::headless::workspace::Workspace,
+        replace: bool,
+    ) {
+        use crate::headless::workspace::Layout;
+        let nb = self.imp().notebook.borrow().clone().unwrap();
+        let nb2 = self.imp().notebook2.borrow().clone().unwrap();
+        let old: Vec<TerminalBox> = [nb.clone(), nb2.clone()]
+            .into_iter()
+            .flat_map(|book| {
+                (0..book.n_pages())
+                    .filter_map(move |index| {
+                        book.nth_page(Some(index))
+                            .and_then(|page| page.downcast::<TerminalBox>().ok())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        if workspace.layout == Layout::Single {
+            self.set_split("single", false);
+        } else {
+            self.set_split_with(workspace.layout.as_str(), false, None, None, None);
+        }
+
+        let nb = self.imp().notebook.borrow().clone().unwrap();
+        let nb2 = self.imp().notebook2.borrow().clone().unwrap();
+        let mut first = None;
+        for (index, pane) in workspace.panes.iter().enumerate() {
+            let target = if index == 0 { nb.clone() } else { nb2.clone() };
+            for tab in &pane.tabs {
+                let command = tab.command.as_ref().map(|command| {
+                    vec![
+                        "/bin/sh".to_string(),
+                        "-c".to_string(),
+                        format!("{}\nexec ${{SHELL:-/bin/sh}}", command),
+                    ]
+                });
+                let term = self.add_new_tab(
+                    tab.cwd.as_deref(),
+                    Some(&target),
+                    tab.title.as_deref(),
+                    tab.title.as_deref(),
+                    command.as_ref(),
+                );
+                if let Some(color) = &tab.color {
+                    term.set_tab_color_override(Some(color.clone()));
+                }
+                if first.is_none() {
+                    first = Some(term);
+                }
+            }
+        }
+        if replace {
+            for term in old {
+                self.close_tab(Some(&term));
+            }
+        }
+        if let Some(term) = first {
+            self.focus_terminal(&term);
+        }
     }
 
     fn move_tab_between(&self, src: &gtk::Notebook, dst: &gtk::Notebook, idx: u32) {
@@ -6273,6 +6352,12 @@ impl TerminalWindow for MainWindow {
     }
     fn refresh_tab_color_signal(&self, term: &TerminalBox) {
         MainWindow::refresh_tab_color_signal(self, term);
+    }
+    fn run_external_command_signal(&self, label: &str, command: &str) {
+        let shell = format!("{}\nexec ${{SHELL:-/bin/sh}}", command);
+        let argv = vec!["/bin/sh".to_string(), "-c".to_string(), shell];
+        let cwd = self.current_terminal().map(|term| term.get_cwd());
+        self.add_new_tab(cwd.as_deref(), None, Some(label), Some(label), Some(&argv));
     }
     fn prev_tab_signal(&self) {
         MainWindow::prev_tab_signal(self);

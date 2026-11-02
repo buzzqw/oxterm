@@ -268,17 +268,22 @@ oxterm action set-tab-color --pane "$OXTERM_PANE" '#cc3333'
 
 ## Fase 2 — Widget, contributi, workspace
 
-- **Status widget.** `~/.config/oxterm/widgets.json`: un comando, un intervallo,
-  un renderer (`text`, `git`, `graph`), un'azione al click. Esecuzione in un
-  processo figlio con timeout (2 s), cache dell'ultimo valore, nessun blocco
-  della GUI.
-- **Contributi.** Lo stesso file (o il manifest della Fase 3) dichiara voci per
-  la command palette e per il menu contestuale: `id`, `label`, `command`,
-  `keys`, `when`.
-- **Workspace.** `oxterm workspace FILE` con JSON, non YAML: il progetto non ha
-  una dipendenza YAML e non vale la pena aggiungerne una. Struttura: finestre →
-  tab → pane, con `cwd`, `title`, `color`, `command`, `profile`. Riusa `new` e
-  `split`.
+Implementata in `~/.config/oxterm/extensions.json` e nel comando
+`oxterm workspace`:
+
+- **Status widget.** Ogni widget esegue un comando shell nella directory del
+  terminale attivo, con timeout di 2 s e intervallo configurabile (1–3600 s).
+  Mostra la prima riga non vuota di stdout; un errore mostra `—`. Il renderer è
+  testo semplice con colore opzionale: niente grafici o azioni al click in
+  questa versione.
+- **Contributi.** Lo stesso file dichiara voci per la command palette
+  (`label`, `detail`, `command`). Il comando gira in una nuova tab, che poi
+  entra in `$SHELL`. Le voci per il menu contestuale sono rimandate.
+- **Workspace.** `oxterm workspace [--new-window] [--replace] FILE` con JSON,
+  non YAML. Struttura: layout `single|vertical|horizontal`, una o due pane, tab
+  con `title`, `cwd`, `command`, `color`. Nessun `profile` per tab e nessuna
+  creazione di più finestre da un solo file: un workspace vive in una finestra.
+  `--new-window` avvia una finestra pulita e implica `--replace`.
 
 ## Fase 3 — Pacchetti plugin
 
@@ -305,7 +310,7 @@ oxterm action set-tab-color --pane "$OXTERM_PANE" '#cc3333'
 
 ## Stato dell'implementazione (2026-11-02)
 
-La Fase 1 è implementata in questo ramo:
+La Fase 1 e la Fase 2 sono implementate in questo ramo:
 
 | Pezzo | File | Stato |
 | --- | --- | --- |
@@ -319,6 +324,12 @@ La Fase 1 è implementata in questo ramo:
 | `output_line` | — | previsto ma non ancora pubblicato |
 | `theme_changed` | — | nome riservato, non ancora emesso |
 | `highlight_line`, `highlight_text`, `hyperlink` | `src/headless/triggers.rs` | accettati e interpretati, non applicati: VTE 0.70 non consente di ristilare testo già stampato |
+| Parsing e validazione dei workspace | `src/headless/workspace.rs` | fatto, con test |
+| `oxterm workspace` e applicazione nella finestra | `src/control.rs`, `src/window.rs` | fatto, con test GUI |
+| Parsing e timeout dei comandi per widget e palette | `src/headless/extensions.rs` | fatto, con test |
+| Status bar dei widget | `src/status_bar.rs`, `src/window.rs` | fatto |
+| Voci della palette da `extensions.json` | `src/extensions.rs`, `src/terminal.rs` | fatto |
+| Voci nel menu contestuale | — | rimandate |
 
 Deviazioni rispetto alla prima stesura:
 
@@ -326,16 +337,17 @@ Deviazioni rispetto alla prima stesura:
   il markup di GTK è l'unico punto che non richiede CSS per tab.
 - `capture` non ha un pannello dedicato: le righe finiscono in una lista per
   pane, letta con `oxterm capture --captured` e svuotata con `--clear`. Un
-  pannello può arrivare nella Fase 2.
-- I trigger si leggono una volta per processo. Il ricaricamento a caldo resta
-  nella Fase 2, insieme ai widget.
+  pannello può arrivare in una fase successiva.
+- Trigger e `extensions.json` si leggono una volta per processo. Il
+  ricaricamento a caldo resta da fare.
 
 ## Decisioni aperte
 
 1. ~~Trigger in `settings.json` o file dedicato?~~ File dedicato, implementato.
 2. ~~Evidenziazione con VTE 0.70.~~ Rinviata: il testo già stampato non si può
    ristilare. Resta da valutare un overlay sul widget.
-3. **Formato workspace.** JSON, per non aggiungere dipendenze.
+3. ~~Formato workspace.~~ JSON, implementato: layout, una o due pane, tab con
+   `title`, `cwd`, `command`, `color`.
 4. **Runtime WASM.** `wasmtime` o `extism`; decidere solo dopo aver misurato
    l'impatto sul binario.
 5. **Eventi come JSON Lines o frame?** Sul socket restano frame come oggi; la
@@ -348,3 +360,5 @@ Deviazioni rispetto alla prima stesura:
 - 2026-11-02: Fase 1 implementata (trigger, eventi, azioni, `capture
   --captured`) con test headless. Evidenziazione e hyperlink rinviati per i
   limiti di VTE 0.70.
+- 2026-11-02: Fase 2 implementata: `oxterm workspace`, status bar dei widget e
+  contributi alla palette da `extensions.json`, con test headless e GUI.

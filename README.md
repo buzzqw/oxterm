@@ -59,6 +59,9 @@ memory footprint and the memory-safety guarantees of Rust.
   running window
 - User-defined regex triggers on output (notify, capture, tab colour/title,
   failure mark) from `~/.config/oxterm/triggers.json`
+- Declarative workspaces (`oxterm workspace FILE`) with tabs, splits, colours
+  and commands, plus a status bar of external widgets and extra command-palette
+  entries from `~/.config/oxterm/extensions.json`
 - VI copy mode with motions, text objects, visual block selection, scrolloff, and bookmarks
 - Session restore, named sessions, profiles, command palette, quickmarks, and hints
 - Compact right-click menu with submenus for clipboard (text/HTML/all/last
@@ -285,6 +288,7 @@ Scriptable control (acts on a running Oxterm, opens no window):
   tunnel list|start|stop [NAME [INDEX]]                                Control a connection's saved tunnels
   events [--pane ID] [--event NAME]... [--output] [--json]             Subscribe to a pane's event stream
   action set-tab-color|set-tab-title|notify|open-url|...               Ask a running Oxterm to perform an action
+  workspace [--new-window] [--replace] FILE                            Open tabs, splits and commands from a JSON file
 
   These headless commands act on a running Oxterm terminal on the same
   host and open no window, so they are safe to use over SSH. Without a

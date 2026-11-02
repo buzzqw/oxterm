@@ -4,6 +4,7 @@ mod connections_form;
 mod connections_panel;
 mod connections_ui;
 mod control;
+mod extensions;
 mod file_browser;
 mod history;
 mod icons;
@@ -17,6 +18,7 @@ mod remote;
 mod session;
 mod settings;
 mod settings_dialog;
+mod status_bar;
 mod system_stats;
 mod terminal;
 mod window;
@@ -129,6 +131,8 @@ impl App {
                 .oxterm-sticky-run { color: #c9971f; }
                 .oxterm-sticky-unknown { color: #8a949e; }
                 .oxterm-tab-failure { color: #e01b24; font-size: 0.85em; }
+                .oxterm-status-bar { font-size: 0.85em; font-family: Monospace; color: alpha(@theme_fg_color, 0.75); background: alpha(@theme_bg_color, 0.45); padding: 2px 8px; }
+                .oxterm-status-widget { padding: 0 6px; }
             ";
             let _ = css_provider.load_from_data(css);
             if let Some(screen) = gdk::Screen::default() {

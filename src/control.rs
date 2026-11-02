@@ -180,6 +180,11 @@ pub fn run_cli(mode: CliMode) -> i32 {
             run_events(&socket, &events, output, json)
         }
         CliMode::Action { pane, command } => run_action(pane.as_deref(), command),
+        CliMode::Workspace {
+            file,
+            new_window,
+            replace,
+        } => run_workspace(&file, new_window, replace),
     }
 }
 
@@ -317,6 +322,89 @@ fn run_action(pane: Option<&str>, command: ActionCommand) -> i32 {
     match request_at(&socket, &request) {
         Ok(_) => 0,
         Err(error) => fail(error.0, "action", &error.1),
+    }
+}
+
+fn run_workspace(file: &str, new_window: bool, replace: bool) -> i32 {
+    let path = PathBuf::from(file);
+    let raw = match crate::headless::workspace::read(&path) {
+        Ok(raw) => raw,
+        Err(error) => return fail(2, "workspace", &error),
+    };
+    if let Err(error) = crate::headless::workspace::parse(&raw) {
+        return fail(2, "workspace", &error);
+    }
+    let socket = if new_window || live_sockets().is_empty() {
+        match spawn_workspace_window() {
+            Ok(socket) => {
+                // The new window creates its first terminal from an idle
+                // callback. Wait for it, so `replace` can close it after the
+                // workspace tabs are open.
+                wait_for_window_ready(&socket);
+                socket
+            }
+            Err(error) => return fail(error.0, "workspace", &error.1),
+        }
+    } else {
+        match live_sockets().into_iter().next() {
+            Some(socket) => socket,
+            None => return fail(4, "workspace", "no running Oxterm window"),
+        }
+    };
+    let request = json!({
+        "op": "workspace",
+        "document": raw,
+        "replace": replace,
+    });
+    match request_at_with_timeout(&socket, &request, Duration::from_secs(60)) {
+        Ok(_) => 0,
+        Err(error) => fail(error.0, "workspace", &error.1),
+    }
+}
+
+/// Start a clean Oxterm window and wait for its private control socket.
+fn spawn_workspace_window() -> Result<PathBuf, (i32, String)> {
+    let executable = std::env::current_exe()
+        .map_err(|error| (1, format!("cannot find the oxterm binary: {}", error)))?;
+    let child = std::process::Command::new(executable)
+        .args(["--new-window", "--no-restore"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|error| (1, format!("cannot start a new Oxterm window: {}", error)))?;
+    let pid = child.id() as i32;
+    let wanted = format!("control-{}.sock", pid);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        if let Some(socket) = live_sockets()
+            .into_iter()
+            .find(|path| path.file_name().and_then(|name| name.to_str()) == Some(wanted.as_str()))
+        {
+            return Ok(socket);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Err((
+        4,
+        "the new Oxterm window did not publish a control socket in time".to_string(),
+    ))
+}
+
+fn wait_for_window_ready(socket: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if let Ok(reply) =
+            request_at_with_timeout(socket, &json!({ "op": "list" }), Duration::from_secs(2))
+        {
+            if reply["panes"]
+                .as_array()
+                .is_some_and(|panes| !panes.is_empty())
+            {
+                return;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -1023,6 +1111,19 @@ fn dispatch(request: &Value) -> Value {
         }
         "tunnel" => handle_tunnel(&app, request),
         "action" => handle_action(&app, request),
+        "workspace" => {
+            let Some(window) = target_window(&app) else {
+                return error_reply("no running Oxterm window", 4);
+            };
+            let workspace =
+                match crate::headless::workspace::parse(request["document"].as_str().unwrap_or(""))
+                {
+                    Ok(workspace) => workspace,
+                    Err(error) => return error_reply(&error, 2),
+                };
+            window.apply_workspace(&workspace, request["replace"].as_bool().unwrap_or(false));
+            json!({ "ok": true, "name": workspace.name })
+        }
         "open_connection" => {
             let Some(window) = target_window(&app) else {
                 return error_reply("no running Oxterm window", 4);

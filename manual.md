@@ -178,6 +178,7 @@ oxterm capture [--pane ID] [--scrollback N | --all | --captured [--clear]]
 oxterm wait [--pane ID] [--timeout SECONDS]
 oxterm events [--pane ID] [--event NAME]... [--output] [--json]
 oxterm action set-tab-color|set-tab-title|notify|open-url|insert-text|...
+oxterm workspace [--new-window] [--replace] FILE
 ```
 
 `new` prints the id of the new pane and `new DIR` is a shorthand for
@@ -295,6 +296,73 @@ is reported in the log and ignored; it never stops Oxterm from starting.
 VTE 0.70 does not expose a way to restyle text that has already been printed,
 so this release parses `highlight_line`, `highlight_text` and `hyperlink` but
 does not apply them yet; they are reserved for a later release and logged once.
+
+#### Workspaces
+
+A workspace is a JSON file that opens a set of tabs, splits and commands:
+
+```json
+{
+  "version": 1,
+  "name": "backend",
+  "layout": "vertical",
+  "panes": [
+    { "tabs": [
+        { "title": "api", "cwd": "~/src/api", "command": "cargo watch -x run" },
+        { "title": "tests", "cwd": "~/src/api", "command": "cargo test --watch" }
+    ] },
+    { "tabs": [
+        { "title": "logs", "command": "tail -f /var/log/app.log" }
+    ] }
+  ]
+}
+```
+
+`layout` is `single` (one pane, the default), `vertical` or `horizontal`.
+`vertical` and `horizontal` need exactly two `panes`; a pane has one or more
+`tabs`. Each tab accepts `title`, `cwd`, `command` (a shell line, run through
+`/bin/sh -c`) and `color` (`#rrggbb`).
+
+```sh
+oxterm workspace backend.json                 # add to the running window
+oxterm workspace --replace backend.json       # close the old tabs afterwards
+oxterm workspace --new-window backend.json    # start a clean window first
+```
+
+Without a running window, `--new-window` is implied. Commands keep the tab open
+by dropping into `$SHELL` when they finish.
+
+#### Status widgets and palette entries
+
+`~/.config/oxterm/extensions.json` adds a thin status bar and extra command
+palette entries:
+
+```json
+{
+  "version": 1,
+  "widgets": [
+    { "id": "git", "label": "git", "command": "git branch --show-current",
+      "interval": 5, "color": "#8be9fd" },
+    { "id": "load", "label": "load", "command": "cut -d' ' -f1 /proc/loadavg",
+      "interval": 10 }
+  ],
+  "palette": [
+    { "label": "Open in VS Code", "detail": "Open this directory",
+      "command": "code ." }
+  ]
+}
+```
+
+Widgets run their command in the active terminal's directory at most once every
+`interval` seconds (1–3600), with a two-second timeout; the first non-empty line
+of standard output is shown. A failing or timed-out command shows `—`. Widgets
+run locally: on an SSH tab the remote directory does not exist locally, so the
+command falls back to Oxterm's own working directory. Palette entries appear in
+`Ctrl+Shift+P` and run their command in a new tab, which drops into `$SHELL`
+afterwards so the output stays visible.
+
+The file is read once at startup; restart Oxterm after changing it. Commands run
+as your user, so only add entries you trust.
 
 ## The Interface
 

@@ -629,6 +629,106 @@ fn events_actions_and_triggers_work_end_to_end() {
     .success());
 }
 
+#[test]
+fn workspace_opens_tabs_and_splits() {
+    if !gui_tests_enabled() {
+        return;
+    }
+    let home = TempHome::new();
+    let workspace = home.path().join("workspace.json");
+    let log = std::fs::File::create(home.path().join("gui.log")).expect("create gui log");
+    let log_err = log.try_clone().expect("clone gui log");
+    let child = Command::new(binary())
+        .args([
+            "--no-restore",
+            "-o",
+            "osc133=true",
+            "-o",
+            "login_shell=false",
+            "-o",
+            "shell_command=/bin/bash",
+        ])
+        .env("HOME", home.path())
+        .env("XDG_RUNTIME_DIR", home.path())
+        .env("NO_AT_BRIDGE", "1")
+        .env_remove("OXTERM_CONTROL")
+        .env_remove("OXTERM_PANE")
+        .stdin(Stdio::null())
+        .stdout(log)
+        .stderr(log_err)
+        .spawn()
+        .expect("start Oxterm");
+    let mut fixture = Fixture { child, home };
+    wait_for_control_socket(fixture.home.path(), &mut fixture.child);
+    thread::sleep(Duration::from_millis(1000));
+
+    let cwd = fixture.home.path().to_string_lossy().to_string();
+    let single = serde_json::json!({
+        "version": 1,
+        "name": "single",
+        "panes": [{ "tabs": [
+            { "title": "one", "cwd": cwd.clone(), "command": "printf one-ok; sleep 30" },
+            { "title": "two", "cwd": cwd.clone(), "command": "printf two-ok; sleep 30" }
+        ] }]
+    });
+    std::fs::write(&workspace, single.to_string()).expect("write workspace");
+    cli(
+        fixture.home.path(),
+        &["workspace", "--replace", workspace.to_str().unwrap()],
+    );
+    let listing = cli(fixture.home.path(), &["--list"]);
+    for (title, marker) in [("one", "one-ok"), ("two", "two-ok")] {
+        let pane = listing
+            .lines()
+            .skip(1)
+            .find(|line| line.contains(title))
+            .and_then(|line| line.split('\t').next())
+            .unwrap_or_else(|| panic!("tab {title} is missing: {listing}"));
+        wait_for_capture(fixture.home.path(), pane, marker);
+    }
+
+    // A split workspace puts one tab in each notebook.
+    let split = serde_json::json!({
+        "version": 1,
+        "name": "split",
+        "layout": "vertical",
+        "panes": [
+            { "tabs": [{ "title": "left", "cwd": cwd.clone(), "command": "printf left-ok; sleep 30" }] },
+            { "tabs": [{ "title": "right", "cwd": cwd.clone(), "command": "printf right-ok; sleep 30" }] }
+        ]
+    });
+    std::fs::write(&workspace, split.to_string()).expect("write split workspace");
+    cli(
+        fixture.home.path(),
+        &["workspace", "--replace", workspace.to_str().unwrap()],
+    );
+    let listing = cli(fixture.home.path(), &["--list"]);
+    for (title, marker) in [("left", "left-ok"), ("right", "right-ok")] {
+        let pane = listing
+            .lines()
+            .skip(1)
+            .find(|line| line.contains(title))
+            .and_then(|line| line.split('\t').next())
+            .unwrap_or_else(|| panic!("split tab {title} is missing: {listing}"));
+        wait_for_capture(fixture.home.path(), pane, marker);
+    }
+}
+
+fn wait_for_capture(home: &Path, pane: &str, needle: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let text = cli(home, &["capture", "--pane", pane, "--scrollback", "50"]);
+        if text.contains(needle) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "pane {pane} never printed {needle:?}: {text:?}"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
 fn control_call(socket: &Path, request: serde_json::Value) -> serde_json::Value {
     use std::os::unix::net::UnixStream;
     let mut stream = UnixStream::connect(socket).expect("connect to the control socket");

@@ -75,6 +75,11 @@ pub enum CliMode {
         pane: Option<String>,
         command: ActionCommand,
     },
+    Workspace {
+        file: String,
+        new_window: bool,
+        replace: bool,
+    },
 }
 
 /// The actions `oxterm action` can ask a running window to perform.
@@ -216,6 +221,16 @@ pub const VERBS: &[Verb] = &[
                http(s) URL, type without pressing Enter, or set and clear the failure\n\
                mark. The target pane comes from --pane, then $OXTERM_PANE, then the\n\
                only open pane.\n",
+    },
+    Verb {
+        name: "workspace",
+        synopsis: "workspace [--new-window] [--replace] FILE",
+        summary: "Open tabs, splits and commands from a JSON file",
+        help: "Usage: oxterm workspace [--new-window] [--replace] FILE\n\n\
+               Read a workspace file and open its tabs, splits and commands in a\n\
+               running Oxterm. --new-window starts a fresh window first (and implies\n\
+               --replace); --replace closes the window's existing tabs after the new\n\
+               ones are open. Without a running window a new one is started.\n",
     },
 ];
 
@@ -410,6 +425,31 @@ fn pane_and_values(args: &[String]) -> Result<(Option<String>, Vec<String>), Str
     Ok((pane, values))
 }
 
+fn parse_workspace(args: &[String], help: &'static str) -> Result<CliMode, String> {
+    let mut file: Option<String> = None;
+    let mut new_window = false;
+    let mut replace = false;
+    for arg in args {
+        match arg.as_str() {
+            "-h" | "--help" => return Ok(CliMode::Help(help)),
+            "--new-window" => new_window = true,
+            "--replace" => replace = true,
+            value if value.starts_with('-') => {
+                return Err(format!("unknown option: {}", value));
+            }
+            value if file.is_none() => file = Some(value.to_string()),
+            value => return Err(format!("unexpected argument: {}", value)),
+        }
+    }
+    let file = file.ok_or("workspace requires a file")?;
+    Ok(CliMode::Workspace {
+        file,
+        new_window,
+        // A fresh window has nothing worth keeping.
+        replace: replace || new_window,
+    })
+}
+
 fn parse_action(args: &[String], help: &'static str) -> Result<CliMode, String> {
     let Some(name) = args.first().map(String::as_str) else {
         return Err("action requires a subcommand (set-tab-color, set-tab-title, notify, open-url, insert-text, mark-failure, clear-failure)".to_string());
@@ -522,6 +562,7 @@ pub fn parse_verb(args: &[String]) -> Result<CliMode, String> {
         "tunnel" => return parse_tunnel(&args[1..], entry.help),
         "events" => return parse_events(&args[1..], entry.help),
         "action" => return parse_action(&args[1..], entry.help),
+        "workspace" => return parse_workspace(&args[1..], entry.help),
         _ => {}
     }
     let mut cwd: Option<String> = None;
@@ -926,5 +967,36 @@ mod tests {
         );
         assert!(parse_verb(&args(&["capture", "--clear"])).is_err());
         assert!(parse_verb(&args(&["capture", "--captured", "--all"])).is_err());
+    }
+
+    #[test]
+    fn parses_workspace_options() {
+        assert_eq!(
+            parse_verb(&args(&["workspace", "project.json"])).unwrap(),
+            CliMode::Workspace {
+                file: "project.json".to_string(),
+                new_window: false,
+                replace: false,
+            }
+        );
+        assert_eq!(
+            parse_verb(&args(&["workspace", "--new-window", "project.json"])).unwrap(),
+            CliMode::Workspace {
+                file: "project.json".to_string(),
+                new_window: true,
+                replace: true,
+            }
+        );
+        assert_eq!(
+            parse_verb(&args(&["workspace", "--replace", "p.json"])).unwrap(),
+            CliMode::Workspace {
+                file: "p.json".to_string(),
+                new_window: false,
+                replace: true,
+            }
+        );
+        assert!(parse_verb(&args(&["workspace"])).is_err());
+        assert!(parse_verb(&args(&["workspace", "a", "b"])).is_err());
+        assert!(parse_verb(&args(&["workspace", "--nope", "a"])).is_err());
     }
 }
