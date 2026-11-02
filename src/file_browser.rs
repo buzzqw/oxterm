@@ -15,8 +15,9 @@ use std::time::Duration;
 use gtk::gdk;
 use gtk::prelude::*;
 
+use crate::headless::askpass;
 use crate::headless::bookmarks::{self, Bookmark, Side};
-use crate::headless::connections::Connection;
+use crate::headless::connections::{Auth, Connection};
 use crate::headless::remote_files::{self, human_size, Operation, RemoteEntry};
 
 const COLUMN_DISPLAY: u32 = 0;
@@ -62,6 +63,8 @@ enum Job {
         from: String,
         to: String,
     },
+    /// Switch the worker's copy of the connection to the keyring helper.
+    UseKeyring,
 }
 
 enum Outcome {
@@ -90,15 +93,24 @@ enum Outcome {
         to: String,
         result: Result<(), String>,
     },
+    AuthStored,
 }
 
-fn worker(connection: Connection, jobs: mpsc::Receiver<Job>, results: mpsc::Sender<Outcome>) {
+fn worker(mut connection: Connection, jobs: mpsc::Receiver<Job>, results: mpsc::Sender<Outcome>) {
     let protocol = connection.protocol;
-    let simple = |operation: Operation| -> Result<(), String> {
+    let simple = |connection: &Connection, operation: Operation| -> Result<(), String> {
         let text = remote_files::script(protocol, &operation)?;
-        remote_files::run(&connection, &text).map(|_| ())
+        remote_files::run(connection, &text).map(|_| ())
     };
     for job in jobs {
+        let job = match job {
+            Job::UseKeyring => {
+                connection.auth = Auth::SecretService;
+                let _ = results.send(Outcome::AuthStored);
+                continue;
+            }
+            other => other,
+        };
         let outcome = match job {
             Job::Home => Outcome::Home(remote_files::home_directory(&connection)),
             Job::List(path) => {
@@ -116,8 +128,10 @@ fn worker(connection: Connection, jobs: mpsc::Receiver<Job>, results: mpsc::Send
                 label,
                 result: remote_files::transfer(&connection, upload, is_dir, &from, &to),
             },
-            Job::MakeDir(path) => Outcome::Changed(simple(Operation::MakeDir(path))),
-            Job::Rename { from, to } => Outcome::Changed(simple(Operation::Rename { from, to })),
+            Job::MakeDir(path) => Outcome::Changed(simple(&connection, Operation::MakeDir(path))),
+            Job::Rename { from, to } => {
+                Outcome::Changed(simple(&connection, Operation::Rename { from, to }))
+            }
             Job::Delete { path, is_dir } => {
                 Outcome::Changed(remote_files::delete(&connection, &path, is_dir))
             }
@@ -146,6 +160,7 @@ fn worker(connection: Connection, jobs: mpsc::Receiver<Job>, results: mpsc::Send
                 from,
                 to,
             },
+            Job::UseKeyring => unreachable!("handled before the job match"),
         };
         if results.send(outcome).is_err() {
             return;
@@ -780,6 +795,54 @@ impl Browser {
         });
     }
 
+    /// Ask for this host's password, put it in the keyring, and reconnect.
+    /// Useful for hosts that do not accept a key: sftp cannot prompt by itself.
+    fn prompt_password(self: &Rc<Self>) {
+        let dialog = gtk::Dialog::with_buttons(
+            Some("Connect with a password"),
+            Some(&self.window),
+            gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+            &[
+                ("Cancel", gtk::ResponseType::Cancel),
+                ("Connect", gtk::ResponseType::Accept),
+            ],
+        );
+        dialog.set_default_response(gtk::ResponseType::Accept);
+        let content = dialog.content_area();
+        let label = gtk::Label::new(Some(&format!(
+            "Store a password for {} in the system keyring.\n\n\
+             It is used by sftp and is never written to the connection file.",
+            self.connection.name
+        )));
+        label.set_xalign(0.0);
+        label.set_line_wrap(true);
+        let entry = gtk::Entry::new();
+        entry.set_visibility(false);
+        entry.set_activates_default(true);
+        entry.set_margin_top(8);
+        content.pack_start(&label, false, false, 0);
+        content.pack_start(&entry, false, false, 0);
+        dialog.show_all();
+        let answer = dialog.run();
+        let password = entry.text().to_string();
+        unsafe { dialog.destroy() };
+        if answer != gtk::ResponseType::Accept {
+            return;
+        }
+        if password.is_empty() {
+            self.say("The password is empty");
+            return;
+        }
+        match askpass::store_secret(&self.connection.id, &self.connection.name, &password) {
+            Ok(()) => {
+                self.submit(Job::UseKeyring);
+                self.submit(Job::Home);
+                self.say("Password stored. Reconnecting...");
+            }
+            Err(error) => self.say(&format!("Cannot store the password: {}", error)),
+        }
+    }
+
     fn open_editor(&self, local: &Path) {
         if crate::notes::which("xdg-open").is_none() {
             self.say("Cannot open the editor: xdg-open is not installed");
@@ -981,11 +1044,12 @@ impl Browser {
     fn apply(self: &Rc<Self>, outcome: Outcome) {
         self.finished();
         match outcome {
+            Outcome::AuthStored => {}
             Outcome::Home(Ok(path)) => self.load_remote(&path),
             Outcome::Home(Err(error)) => {
                 self.say(&format!(
-                    "Could not connect: {}. A key, an agent, a password in the keyring or an \
-                     open tab to this host is needed.",
+                    "Could not connect: {}. A key, an agent, a shared connection or a \
+                     password in the keyring is needed; use Password... for a password.",
                     error
                 ));
             }
@@ -1340,8 +1404,13 @@ pub fn open(parent: &gtk::Window, connection: Connection) {
     let status = gtk::Label::new(Some("Connecting..."));
     status.set_xalign(0.0);
     status.set_line_wrap(true);
+    let password = gtk::Button::with_label("Password...");
+    password.set_tooltip_text(Some(
+        "Store this host's password in the keyring and reconnect",
+    ));
     footer.pack_start(&spinner, false, false, 0);
     footer.pack_start(&status, true, true, 0);
+    footer.pack_end(&password, false, false, 0);
     content.pack_start(&footer, false, false, 0);
     window.add(&content);
 
@@ -1374,6 +1443,12 @@ pub fn open(parent: &gtk::Window, connection: Connection) {
         download.connect_clicked(move |_| {
             if let Some(browser) = weak.upgrade() {
                 browser.transfer_selected(false);
+            }
+        });
+        let weak = Rc::downgrade(&browser);
+        password.connect_clicked(move |_| {
+            if let Some(browser) = weak.upgrade() {
+                browser.prompt_password();
             }
         });
     }

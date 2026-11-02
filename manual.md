@@ -1005,6 +1005,10 @@ session works too, without a saved entry.
 - **Edit** on a remote file downloads it to a private cache copy, opens it with
   the desktop editor (`xdg-open`), and uploads it back every time it is saved.
   The temporary copy stays in `~/.cache/oxterm/remote-edit/`.
+- **Password...** stores a password for this host in the system keyring and
+  reconnects. The browser itself cannot ask questions, so a host that only
+  accepts a password needs this button (or a key, an agent, or an already open
+  shared connection).
 - Copies run one at a time in the background, folders included. Oxterm asks before
   replacing an existing name; a sync asks once for the whole folder.
 - **New Folder**, **Rename** (`F2`), **Delete** (`Delete`), **Refresh** (`F5`) and
