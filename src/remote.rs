@@ -400,7 +400,7 @@ pub fn spawn_broker(
     let child_dup_for_child = child_dup;
     let gui_dup_for_child = gui_dup;
     let child = unsafe {
-        std::process::Command::new(exe)
+        std::process::Command::new(&exe)
             .arg("--broker")
             .arg(&path)
             .arg(session_id)
@@ -432,7 +432,7 @@ pub fn spawn_broker(
                 Ok(())
             })
             .spawn()
-            .map_err(|e| format!("cannot start PTY broker: {}", e))
+            .map_err(|e| format!("cannot start PTY broker {}: {}", exe.display(), e))
     };
     close_fd(child_dup);
     close_fd(gui_dup);
@@ -501,13 +501,33 @@ fn broker_executable() -> Result<PathBuf, String> {
     }
     let current =
         std::env::current_exe().map_err(|e| format!("cannot find oxterm executable: {}", e))?;
-    for name in broker_sibling_names(&current) {
+    Ok(broker_path(&current))
+}
+
+/// Path that always refers to the running image.
+const LIVE_EXE: &str = "/proc/self/exe";
+
+/// Pick the broker to run, given the path of the GUI executable.
+///
+/// A rebuild or a package upgrade replaces the file on disk while Oxterm keeps
+/// running. Linux then keeps the old inode alive but reports the old path as
+/// deleted, so spawning it fails with `ENOENT`, which the terminal shows as
+/// "Failed to start shell: cannot start PTY broker: File o directory non
+/// esistente". Running the broker through `/proc/self/exe` starts the live
+/// image instead: it is the same version as the GUI, understands `--broker`,
+/// and costs more memory than the display-free `oxterm-broker`, but only in
+/// this rare case.
+fn broker_path(current: &Path) -> PathBuf {
+    if !current.is_file() {
+        return PathBuf::from(LIVE_EXE);
+    }
+    for name in broker_sibling_names(current) {
         let candidate = current.with_file_name(name);
         if candidate.is_file() {
-            return Ok(candidate);
+            return candidate;
         }
     }
-    Ok(current)
+    current.to_path_buf()
 }
 
 /// Names to look for next to the GUI binary.
@@ -2518,6 +2538,37 @@ mod tests {
         assert!(names.contains(&std::ffi::OsString::from(
             "oxterm-broker-1.2.3-linux-x86_64"
         )));
+    }
+
+    #[test]
+    fn a_replaced_gui_binary_runs_the_broker_from_the_live_image() {
+        let missing = std::env::temp_dir().join(format!(
+            "oxterm-remote-test-{}-{}/oxterm-linux-x86-64 (deleted)",
+            std::process::id(),
+            monotonic_id()
+        ));
+        assert!(!missing.exists());
+        assert_eq!(broker_path(&missing), PathBuf::from("/proc/self/exe"));
+    }
+
+    #[test]
+    fn an_installed_broker_sibling_is_preferred_over_the_gui_binary() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxterm-remote-test-{}-{}",
+            std::process::id(),
+            monotonic_id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let gui = dir.join("oxterm-1.2.3-linux-x86_64");
+        std::fs::write(&gui, b"gui").unwrap();
+        // Without a sibling, the GUI binary itself runs the broker.
+        assert_eq!(broker_path(&gui), gui);
+
+        let broker = dir.join("oxterm-broker-1.2.3-linux-x86_64");
+        std::fs::write(&broker, b"broker").unwrap();
+        assert_eq!(broker_path(&gui), broker);
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
