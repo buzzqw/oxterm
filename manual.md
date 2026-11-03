@@ -177,6 +177,9 @@ oxterm split [--pane ID] [--vertical|--horizontal] [--cwd DIR] [--title TITLE]
 oxterm send [--pane ID] [--enter] TEXT...        # or: ... - (read stdin)
 oxterm capture [--pane ID] [--scrollback N | --all | --captured [--clear]]
 oxterm wait [--pane ID] [--timeout SECONDS]
+oxterm connect NAME [--split [--pane ID]] [--yes]
+oxterm connections [--json | export | import FILE]
+oxterm tunnel list|start|stop [NAME [INDEX]]
 oxterm events [--pane ID] [--event NAME]... [--output] [--json]
 oxterm action set-tab-color|set-tab-title|notify|open-url|insert-text|...
 oxterm workspace [--new-window] [--replace] FILE
@@ -1166,10 +1169,17 @@ detected, so use a different prefix for those sessions.
 ~/.config/oxterm/settings.json
 ~/.config/oxterm/settings.json.bak
 ~/.config/oxterm/history.db
+~/.config/oxterm/notes.db
 ~/.config/oxterm/sessions/
 ~/.config/oxterm/profiles/
+~/.config/oxterm/connections.json
+~/.config/oxterm/connections-state.json
+~/.config/oxterm/file_bookmarks.json
+~/.config/oxterm/triggers.json
+~/.config/oxterm/extensions.json
 ~/.config/oxterm/remote/
 ~/.config/oxterm/themes/
+~/.local/share/oxterm/notes/
 ```
 
 Broker sockets move to `/tmp/oxterm-<uid>/remote/` when the configured path is

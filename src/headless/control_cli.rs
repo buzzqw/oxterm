@@ -128,7 +128,7 @@ pub struct Verb {
 pub const VERBS: &[Verb] = &[
     Verb {
         name: "new",
-        synopsis: "new [--cwd DIR] [--title TITLE] [-- CMD...]",
+        synopsis: "new [DIR] [--cwd DIR] [--title TITLE] [-- CMD...]",
         summary: "Open a tab, print its pane id",
         help: "Usage: oxterm new [DIR] [--cwd DIR] [--title TITLE] [-- COMMAND...]\n\n\
                Open a new tab in the running Oxterm and print its pane id. DIR is a\n\
@@ -136,7 +136,8 @@ pub const VERBS: &[Verb] = &[
     },
     Verb {
         name: "split",
-        synopsis: "split [--pane ID] [--vertical|--horizontal] [--cwd DIR] [-- CMD...]",
+        synopsis:
+            "split [--pane ID] [--vertical|--horizontal] [--cwd DIR] [--title TITLE] [-- CMD...]",
         summary: "Split a single-pane window",
         help: "Usage: oxterm split [--pane ID] [--vertical|--horizontal] [--cwd DIR]\n\
                \x20            [--title TITLE] [-- COMMAND...]\n\n\
@@ -154,11 +155,14 @@ pub const VERBS: &[Verb] = &[
     },
     Verb {
         name: "capture",
-        synopsis: "capture [--pane ID] [--scrollback N|--all]",
+        synopsis: "capture [--pane ID] [--scrollback N|--all|--captured [--clear]]",
         summary: "Print a pane's text",
-        help: "Usage: oxterm capture [--pane ID] [--scrollback N | --all]\n\n\
+        help: "Usage: oxterm capture [--pane ID]\n\
+               \x20            [--scrollback N | --all | --captured [--clear]]\n\n\
                Print the target pane's text: the visible screen by default, N lines\n\
-               of history with --scrollback, or the whole buffer with --all.\n",
+               of history with --scrollback, or the whole buffer with --all.\n\
+               --captured prints the lines collected by triggers, and --clear\n\
+               empties that list.\n",
     },
     Verb {
         name: "wait",
@@ -172,7 +176,7 @@ pub const VERBS: &[Verb] = &[
     Verb {
         name: "connect",
         synopsis: "connect NAME [--split [--pane ID]] [--yes]",
-        summary: "Open a saved SSH connection",
+        summary: "Open a saved connection or host",
         help: "Usage: oxterm connect NAME [--split [--pane ID]] [--yes]\n\n\
                Open a saved connection, or a host from ~/.ssh/config, in the running\n\
                Oxterm and print its pane id. --split opens it in a split of the target\n\
@@ -180,7 +184,7 @@ pub const VERBS: &[Verb] = &[
     },
     Verb {
         name: "connections",
-        synopsis: "connections [--json|export|import FILE]",
+        synopsis: "connections [--json|export|import FILE [--allow-local-commands]]",
         summary: "List, export or import saved connections",
         help: "Usage: oxterm connections [--json]\n\
                \x20      oxterm connections export\n\
@@ -205,7 +209,7 @@ pub const VERBS: &[Verb] = &[
     Verb {
         name: "browse",
         synopsis: "browse NAME",
-        summary: "Open the two-pane file browser for a connection",
+        summary: "Open the file browser for a connection or host",
         help: "Usage: oxterm browse NAME\n\n\
                Open the SFTP/FTP file browser for a saved connection, a host from\n\
                ~/.ssh/config, or a [user@]host[:port] destination. The browser window\n\

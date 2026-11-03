@@ -6,10 +6,11 @@ must pass a release build. The repository hook `.githooks/pre-commit` runs
 build fails.
 
 Run `./setup.sh` once after cloning to configure Git to use the repository
-hooks. The `post-commit` hook then rebuilds the release executable, refreshes
-`oxterm-linux-x86-64`, and updates the copy that `oxterm` in `PATH` resolves to,
-so the next launch runs this build instead of an older installed binary.
-`post-merge`/`post-rewrite` do the same after a `git pull`. The refresh never
+hooks. The `post-commit` hook then rebuilds the release executables, refreshes
+`oxterm-linux-x86-64`, `oxterm-broker-linux-x86-64` and
+`oxterm-askpass-linux-x86-64`, and updates the copies that `oxterm` in `PATH`
+resolves to, so the next launch runs this build instead of an older installed
+binary. `post-merge`/`post-rewrite` do the same after a `git pull`. The refresh never
 prompts: an existing `~/.local/bin/oxterm` is updated first, and when
 `/usr/bin/oxterm` needs a password and `~/.local/bin` is in `PATH`, a user copy
 is installed there so it shadows the system one. `scripts/refresh-installed.sh`
@@ -45,9 +46,11 @@ re-exports the core as `crate::headless` for those modules.
 
 ## Generated documentation
 
-`--help`, the OPTIONS section of `packaging/oxterm.1`, the bash/fish/zsh
-completions and `docs/settings.md` are generated from `src/headless/spec.rs`.
-After changing a command line option, a setting or its description, run:
+`--help`, the command line block in `README.md`, the OPTIONS section of
+`packaging/oxterm.1`, the bash/fish/zsh completions, `docs/settings.md` and the
+shortcut table in `manual.md` are generated from `src/headless/spec.rs`.
+After changing a command line option, a control command, a key binding, a
+setting or a description, run:
 
 ```bash
 cargo run --bin oxterm-docgen

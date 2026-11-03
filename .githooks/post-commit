@@ -21,8 +21,14 @@ fi
 
 install -m 0755 "$ROOT_DIR/target/release/oxterm" "$ROOT_DIR/oxterm-linux-x86-64"
 install -m 0755 "$ROOT_DIR/target/release/oxterm-broker" "$ROOT_DIR/oxterm-broker-linux-x86-64"
+if [[ -x "$ROOT_DIR/target/release/oxterm-askpass" ]]; then
+    install -m 0755 "$ROOT_DIR/target/release/oxterm-askpass" "$ROOT_DIR/oxterm-askpass-linux-x86-64"
+fi
 printf '%s\n' "Oxterm post-commit: created $ROOT_DIR/oxterm-linux-x86-64"
 printf '%s\n' "Oxterm post-commit: created $ROOT_DIR/oxterm-broker-linux-x86-64"
+if [[ -x "$ROOT_DIR/oxterm-askpass-linux-x86-64" ]]; then
+    printf '%s\n' "Oxterm post-commit: created $ROOT_DIR/oxterm-askpass-linux-x86-64"
+fi
 
 # Keep `oxterm` in PATH on the build that was just made; otherwise a launch
 # starts the old installed version while this checkout is current.

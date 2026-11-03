@@ -25,6 +25,9 @@ fi
 BUILT="$ROOT_DIR/target/release/oxterm"
 install -m 0755 "$BUILT" "$ROOT_DIR/oxterm-linux-x86-64"
 install -m 0755 "$ROOT_DIR/target/release/oxterm-broker" "$ROOT_DIR/oxterm-broker-linux-x86-64"
+if [[ -x "$ROOT_DIR/target/release/oxterm-askpass" ]]; then
+    install -m 0755 "$ROOT_DIR/target/release/oxterm-askpass" "$ROOT_DIR/oxterm-askpass-linux-x86-64"
+fi
 
 # Refresh the copies `oxterm` in PATH resolves to, so the next launch runs this
 # build instead of whichever version was installed last.

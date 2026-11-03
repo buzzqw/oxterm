@@ -16,9 +16,10 @@ history, notes, shell integration, profiles, and sessions — all with a small
 memory footprint and the memory-safety guarantees of Rust.
 
 > **Quick start:** prebuilt Linux executables are already available on the
-> [GitHub Releases page](https://github.com/buzzqw/oxterm/releases/latest). This
-> is the easiest way to use Oxterm; you do not need Rust or development packages
-> if you download a release binary.
+> [GitHub Releases page](https://github.com/buzzqw/oxterm/releases/latest).
+> Download the release tarball and keep `oxterm`, `oxterm-broker` and
+> `oxterm-askpass` together; this is the easiest way to use Oxterm, and you do
+> not need Rust or development packages.
 
 - **[English user manual](manual.md)**
 - **[Terminal compatibility](docs/compatibility.md)**
@@ -48,7 +49,8 @@ memory footprint and the memory-safety guarantees of Rust.
 - More connection types from the same menu: Mosh, Telnet, serial, Docker, Kubernetes, AWS Session Manager and any command in a tab; RDP, VNC and SPICE through their own viewers, in a tab so their questions stay visible
 - VNC that starts its own server over ssh: x11vnc, TigerVNC, TurboVNC, TightVNC, wayvnc or your own command, on the remote loopback only, with a one-time password
 - Two-pane SFTP and FTP file browser with drag and drop, recursive folder
-  sync, bookmarks and remote editing that uploads on save
+  sync, bookmarks, remote editing that uploads on save, and keyring password
+  prompts; it opens from a saved connection or an SSH tab
 - SSH host picker from saved connections and `~/.ssh/config`, plus an explicit copy-on-demand
   shell-integration installer for remote bash/zsh sessions
 - Production-host tab highlighting, tunnel inspection, and a ForwardAgent
@@ -96,9 +98,12 @@ needs (Xvnc, xdotool, ImageMagick, xfwm4).
 ### Using a release binary
 
 You only need a Linux system with GTK3 and VTE 2.91 runtime libraries. Download
-the latest executable from the [GitHub Releases
-page](https://github.com/buzzqw/oxterm/releases/latest), make it executable, and
-run it.
+the latest tarball from the [GitHub Releases
+page](https://github.com/buzzqw/oxterm/releases/latest), extract it, and run the
+`oxterm-*-linux-x86_64` executable it contains. Keep the `oxterm-broker-*` file
+next to it for the low-memory PTY broker and the `oxterm-askpass-*` file next to
+it for stored passwords; without them Oxterm still works, but falls back to
+`oxterm --broker` and prompts for passwords in the tab.
 
 ### Building from source
 
@@ -137,7 +142,7 @@ yay -S oxterm        # or: paru -S oxterm
 ```
 
 The `PKGBUILD` lives in [`packaging/aur`](packaging/aur) and is validated by CI
-on every change.
+when the package, the version or its workflow changes.
 
 ## Build and Run
 
@@ -150,11 +155,12 @@ cargo build --release --locked --bins
 ./target/release/oxterm
 ```
 
-`--bins` also builds `oxterm-broker`, the display-free PTY broker. Keep it next
-to the GUI binary: each session then maps it instead of re-executing the GTK
-binary, which cuts the broker's resident memory from about 20 MB to under 3 MB.
-If the sibling is missing, Oxterm falls back to `oxterm --broker` and still
-works.
+`--bins` also builds `oxterm-broker`, the display-free PTY broker, and
+`oxterm-askpass`, the keyring helper. Keep both next to the GUI binary: each
+session then maps the broker instead of re-executing the GTK binary, which cuts
+its resident memory from about 20 MB to under 3 MB, and stored passwords work.
+If a sibling is missing, Oxterm falls back to `oxterm --broker` or asks `ssh` in
+the tab, and still works.
 
 To create the definitive release binaries in the project root, run:
 
@@ -177,8 +183,9 @@ binary:
 The repository includes local build hooks. Configure them with
 `git config core.hooksPath .githooks`; `./setup.sh` also configures them as part
 of its per-user installation. After each commit, the hook builds
-`oxterm-linux-x86-64` and `oxterm-broker-linux-x86-64` in the project root. The
-generated files are ignored by Git. The displayed Oxterm version uses the
+`oxterm-linux-x86-64`, `oxterm-broker-linux-x86-64` and
+`oxterm-askpass-linux-x86-64` in the project root. The generated files are
+ignored by Git. The displayed Oxterm version uses the
 Cargo version plus the total Git commit count as SemVer build metadata, for
 example `MAJOR.MINOR.PATCH+<commit-count>`. Builds without Git metadata show
 the plain release version.
@@ -281,24 +288,26 @@ Utilities (no window is opened):
       --edit-config             Open the settings file in the configured editor
       --list-fonts              List installed font families for font_name
 
-Scriptable control (acts on a running Oxterm, opens no window):
-  new [--cwd DIR] [--title TITLE] [-- CMD...]                          Open a tab, print its pane id
-  split [--pane ID] [--vertical|--horizontal] [--cwd DIR] [-- CMD...]  Split a single-pane window
-  send [--pane ID] [--enter] TEXT...|-                                 Type into a pane
-  capture [--pane ID] [--scrollback N|--all]                           Print a pane's text
-  wait [--pane ID] [--timeout SECONDS]                                 Wait for the next command to finish
-  connect NAME [--split [--pane ID]] [--yes]                           Open a saved SSH connection
-  connections [--json|export|import FILE]                              List, export or import saved connections
-  tunnel list|start|stop [NAME [INDEX]]                                Control a connection's saved tunnels
-  browse NAME                                                          Open the two-pane file browser for a connection
-  events [--pane ID] [--event NAME]... [--output] [--json]             Subscribe to a pane's event stream
-  action set-tab-color|set-tab-title|notify|open-url|...               Ask a running Oxterm to perform an action
-  workspace [--new-window] [--replace] FILE                            Open tabs, splits and commands from a JSON file
-  mcp                                                                  Serve the Model Context Protocol on stdin/stdout
+Scriptable control (no window unless noted):
+  new [DIR] [--cwd DIR] [--title TITLE] [-- CMD...]                                    Open a tab, print its pane id
+  split [--pane ID] [--vertical|--horizontal] [--cwd DIR] [--title TITLE] [-- CMD...]  Split a single-pane window
+  send [--pane ID] [--enter] TEXT...|-                                                 Type into a pane
+  capture [--pane ID] [--scrollback N|--all|--captured [--clear]]                      Print a pane's text
+  wait [--pane ID] [--timeout SECONDS]                                                 Wait for the next command to finish
+  connect NAME [--split [--pane ID]] [--yes]                                           Open a saved connection or host
+  connections [--json|export|import FILE [--allow-local-commands]]                     List, export or import saved connections
+  tunnel list|start|stop [NAME [INDEX]]                                                Control a connection's saved tunnels
+  browse NAME                                                                          Open the file browser for a connection or host
+  events [--pane ID] [--event NAME]... [--output] [--json]                             Subscribe to a pane's event stream
+  action set-tab-color|set-tab-title|notify|open-url|...                               Ask a running Oxterm to perform an action
+  workspace [--new-window] [--replace] FILE                                            Open tabs, splits and commands from a JSON file
+  mcp                                                                                  Serve the Model Context Protocol on stdin/stdout
 
-  These headless commands act on a running Oxterm terminal on the same
-  host and open no window, so they are safe to use over SSH. Without a
-  SESSION_ID, -a and -M use the only session or show a list to choose from.
+  Most of these headless commands act on a running Oxterm terminal on the
+  same host and open no window, so they are safe to use over SSH;
+  `workspace --new-window` starts a new window, and `connections` and
+  `mcp` need no running terminal. Without a SESSION_ID, -a and -M use
+  the only session or show a list to choose from.
 
   attach  Adds this terminal as another view of the session, repainting
           its current screen. The shell keeps running and its original
@@ -344,8 +353,16 @@ oxterm new [DIR] [--cwd DIR] [--title TITLE] [-- COMMAND...]
 oxterm split [--pane ID] [--vertical|--horizontal] [--cwd DIR] [--title TITLE]
              [-- COMMAND...]
 oxterm send [--pane ID] [--enter] TEXT...        # or: ... - (read stdin)
-oxterm capture [--pane ID] [--scrollback N | --all]
+oxterm capture [--pane ID] [--scrollback N | --all | --captured [--clear]]
 oxterm wait [--pane ID] [--timeout SECONDS]
+oxterm connect NAME [--split [--pane ID]] [--yes]
+oxterm connections [--json | export | import FILE]
+oxterm tunnel list|start|stop [NAME [INDEX]]
+oxterm browse NAME
+oxterm events [--pane ID] [--event NAME]... [--output] [--json]
+oxterm action set-tab-color|set-tab-title|notify|open-url|insert-text|...
+oxterm workspace [--new-window] [--replace] FILE
+oxterm mcp
 ```
 
 `new` and `split` print the id of the new pane; `split` refuses a window that
@@ -431,8 +448,9 @@ invoked manually. The dedicated binary is display-free and does not map GTK or
 VTE, so a session costs under 3 MB instead of about 20 MB.
 
 Its framed Unix-socket protocol supports
-`LIST`, `INFO`, `ATTACH`, `MOVE`, `DETACH`, `RENAME`, `COMMAND`, `LOCAL_ON`,
-`LOCAL_OFF`, `KILL`, `IS_SSH`, `ECHO`, and `IS_ACTIVE`. Attached clients exchange
+`LIST`, `INFO`, `ATTACH`, `MOVE`, `DETACH`, `RENAME`, `UPDATE`, `COMMAND`,
+`LOG`, `LOCAL_ON`, `LOCAL_OFF`, `SIGNAL`, `KILL`, `IS_SSH`, `ECHO`, and
+`IS_ACTIVE`. Attached clients exchange
 length-prefixed frames containing terminal input/output, and can detach without
 stopping the broker. On attach the broker replays the most recent child output
 (bounded to a fixed size) so the program's screen is repainted instead of
@@ -582,14 +600,21 @@ produce tooltips.
 Oxterm intentionally uses the existing shared data directory:
 
 ```text
-~/.config/oxterm/settings.json   Preferences
-~/.config/oxterm/settings.json.bak Previous valid Preferences snapshot
-~/.config/oxterm/history.db      SQLite command history
-~/.config/oxterm/sessions/       Saved sessions
-~/.config/oxterm/profiles/       Named profiles
-~/.config/oxterm/remote/         Private broker sockets
-~/.config/oxterm/themes/         Drop-in Ghostty and iTerm2 theme files
-/tmp/oxterm-<uid>/remote/        Fallback broker sockets when that path is too long
+~/.config/oxterm/settings.json          Preferences
+~/.config/oxterm/settings.json.bak      Previous valid Preferences snapshot
+~/.config/oxterm/history.db             SQLite command history
+~/.config/oxterm/notes.db               SQLite full-text notes index
+~/.config/oxterm/sessions/              Saved sessions
+~/.config/oxterm/profiles/              Named profiles
+~/.config/oxterm/connections.json       Saved connections and tunnels (mode 0600)
+~/.config/oxterm/connections-state.json Recent connections and favorites
+~/.config/oxterm/file_bookmarks.json    File-browser bookmarks
+~/.config/oxterm/triggers.json          Output triggers
+~/.config/oxterm/extensions.json        Status widgets and palette entries
+~/.config/oxterm/remote/                Private broker sockets
+~/.config/oxterm/themes/                Drop-in Ghostty and iTerm2 theme files
+~/.local/share/oxterm/notes/            Markdown notes
+/tmp/oxterm-<uid>/remote/               Fallback broker sockets when that path is too long
 ```
 
 ### Themes
@@ -631,7 +656,7 @@ useful:
   gets your attention.
 
 The body names the command, its exit code, the duration and the directory. The
-three knobs are `bell_notification`, `notify_only_unfocused`,
+four knobs are `bell_notification`, `notify_only_unfocused`,
 `notify_min_seconds` and `notify_on_failure`.
 
 A tab whose last command failed gets a red dot; it disappears when you select
@@ -653,8 +678,9 @@ Links using other schemes are not passed to desktop URL handlers.
 
 The `master` branch also publishes a rolling prerelease after every successful
 push: [Oxterm latest](https://github.com/buzzqw/oxterm/releases/tag/latest).
-It contains the Linux executable and `SHA256SUMS`. The release is intended for
-testing and is replaced by the next successful master build.
+It contains `oxterm`, `oxterm-broker` and `oxterm-askpass`, a tarball with all
+three, and a `SHA256SUMS` file. The release is intended for testing and is
+replaced by the next successful master build.
 
 ## Development
 
@@ -726,7 +752,7 @@ values depend on the machine and are only meant to show the order of magnitude):
 | `--version` / `--list-settings` | ~21 ms |
 | Window ready, including the first shell | ~60 ms |
 | Five new tabs through the control API | ~210 ms |
-| RSS with the idle window / after five tabs | ~52 MB / ~64 MB |
+| RSS with the idle window / after five tabs | ~51 MiB / ~62 MiB |
 
 RSS counts every mapped page of GTK and VTE, which other programs share. The
 memory Oxterm itself accounts for is smaller: 18.7 MB PSS for the idle window and

@@ -395,13 +395,15 @@ pub fn usage() -> String {
         }
         out.push('\n');
     }
-    out.push_str("Scriptable control (acts on a running Oxterm, opens no window):\n");
+    out.push_str("Scriptable control (no window unless noted):\n");
     out.push_str(&super::control_cli::summary());
     out.push('\n');
     out.push_str(
-        "  These headless commands act on a running Oxterm terminal on the same\n\
-         \x20 host and open no window, so they are safe to use over SSH. Without a\n\
-         \x20 SESSION_ID, -a and -M use the only session or show a list to choose from.\n\
+        "  Most of these headless commands act on a running Oxterm terminal on the\n\
+         \x20 same host and open no window, so they are safe to use over SSH;\n\
+         \x20 `workspace --new-window` starts a new window, and `connections` and\n\
+         \x20 `mcp` need no running terminal. Without a SESSION_ID, -a and -M use\n\
+         \x20 the only session or show a list to choose from.\n\
          \n\
          \x20 attach  Adds this terminal as another view of the session, repainting\n\
          \x20         its current screen. The shell keeps running and its original\n\

@@ -1,10 +1,10 @@
 # Extensions: design
 
-Working document for Oxterm's extensibility. It describes the chosen model, the
-Phase 1 specification and the later phases. It is not code yet: it exists to fix
-formats, protocol, boundaries and tests before touching the terminal.
+Design document for Oxterm's extensibility. It describes the chosen model and
+the status of each phase; most of it is implemented, and the tables below mark
+what remains.
 
-Last updated: 2026-11-02.
+Last updated: 2026-11-03.
 
 ## Principles
 
@@ -155,7 +155,7 @@ v1 events:
 | `selection_changed` | `pane`, `length`, `time` (never the text) |
 | `theme_changed` | `light`, `time` |
 
-`output_line` is planned but **opt-in** per subscription
+`output_line` is implemented but **opt-in** per subscription
 (`"include_output":true`) and rate-limited per second, because it can contain
 secrets. Default: off.
 
@@ -190,12 +190,12 @@ It prints one JSON object per line and exits when the socket closes. Without
 A new operation on the socket:
 
 ```text
-→ {"op":"action","action":"set_tab_color","pane":"12345-2","color":"#cc3333"}
+→ {"op":"action","action":"set-tab-color","pane":"12345-2","color":"#cc3333"}
 ← {"ok":true}
 ```
 
-v1 actions: `set-tab-title`, `set-tab-color`, `notify`, `open-url`,
-`open-path`, `insert-text`, `send`, `new-tab`, `split`, `set-status`.
+v1 actions: `set-tab-color`, `clear-tab-color`, `set-tab-title`, `notify`,
+`open-url`, `insert-text`, `mark-failure`, `clear-failure`.
 
 Matching CLI:
 
@@ -204,12 +204,14 @@ oxterm action set-tab-color --pane ID COLOR
 oxterm action set-tab-title --pane ID TITLE
 oxterm action notify --title T --body B
 oxterm action open-url URL
-oxterm action set-status --pane ID TEXT
+oxterm action insert-text --pane ID TEXT
 ```
 
-`send` and `insert-text` reuse the `oxterm send` implementation; `new-tab` and
-`split` reuse the existing operations. No action accepts arbitrary shell
-commands: `-- COMMAND` in `new`/`split` already covers that.
+`insert-text` reuses the `oxterm send` implementation. The draft also proposed
+`open-path`, `send`, `new-tab`, `split` and `set-status` as socket actions; they
+were dropped because the `send`, `new` and `split` commands cover them and
+`set-status` has no consumer. No action accepts arbitrary shell commands:
+`-- COMMAND` in `new`/`split` already covers that.
 
 ### 1.4 Files and responsibilities
 
