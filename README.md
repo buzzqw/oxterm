@@ -23,7 +23,7 @@ memory footprint and the memory-safety guarantees of Rust.
 
 - **[English user manual](manual.md)**
 - **[Terminal compatibility](docs/compatibility.md)**
-- **[Extensibility](docs/extensibility.md)**
+- **[Automation and extensibility](docs/extensibility.md)**
 - **[Report an issue](https://github.com/buzzqw/oxterm/issues)**
 
 ## Highlights
