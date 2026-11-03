@@ -21,6 +21,7 @@ mod settings_dialog;
 mod status_bar;
 mod system_stats;
 mod terminal;
+mod tunnel_manager;
 mod window;
 
 // The headless core lives in the library target so the docgen tool, the tests

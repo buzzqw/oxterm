@@ -1760,9 +1760,218 @@ pub fn tunnel_argv(connection: &Connection, tunnel: &Tunnel, batch: bool) -> Vec
     argv
 }
 
+/// One line of the tunnel manager: a saved tunnel, or a tunnel Oxterm runs for
+/// a connection without saving it (the one behind a remote desktop).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TunnelRow {
+    pub key: String,
+    pub connection_id: String,
+    pub connection_name: String,
+    /// Position in the connection's `tunnels`; `None` for an unsaved tunnel.
+    pub index: Option<usize>,
+    pub tunnel: Option<Tunnel>,
+    pub status: tunnels::Status,
+}
+
+impl TunnelRow {
+    /// "Local", "Remote", "SOCKS", or what an unsaved tunnel is for.
+    pub fn kind_label(&self) -> String {
+        match &self.tunnel {
+            Some(tunnel) => match tunnel.kind {
+                TunnelKind::Local => "Local".to_string(),
+                TunnelKind::Remote => "Remote".to_string(),
+                TunnelKind::Dynamic => "SOCKS".to_string(),
+            },
+            None => self
+                .key
+                .split_once('\n')
+                .map(|(_, what)| what.to_string())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Whether the row matches a search: connection name, addresses or type.
+    pub fn matches(&self, query: &str) -> bool {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return true;
+        }
+        let mut haystack = format!("{} {}", self.connection_name, self.kind_label());
+        if let Some(tunnel) = &self.tunnel {
+            haystack.push(' ');
+            haystack.push_str(&tunnel.listen);
+            haystack.push(' ');
+            haystack.push_str(&tunnel.target);
+        }
+        haystack.to_lowercase().contains(&query)
+    }
+}
+
+/// Every saved tunnel, sorted by connection name, followed by the unsaved
+/// tunnels that are running or failed. `states` comes from `tunnels::snapshot`.
+pub fn tunnel_rows(
+    entries: &[Entry],
+    states: &BTreeMap<String, tunnels::Status>,
+) -> Vec<TunnelRow> {
+    let mut sorted: Vec<&Entry> = entries
+        .iter()
+        .filter(|entry| !entry.connection.tunnels.is_empty())
+        .collect();
+    sorted.sort_by_key(|entry| entry.connection.name.to_lowercase());
+    let mut rows = Vec::new();
+    for entry in sorted {
+        let connection = &entry.connection;
+        for (index, tunnel) in connection.tunnels.iter().enumerate() {
+            let key = tunnel_key(connection, tunnel);
+            rows.push(TunnelRow {
+                status: states
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or(tunnels::Status::Stopped),
+                key,
+                connection_id: connection.id.clone(),
+                connection_name: connection.name.clone(),
+                index: Some(index),
+                tunnel: Some(tunnel.clone()),
+            });
+        }
+    }
+    for (key, status) in states {
+        if *status == tunnels::Status::Stopped || rows.iter().any(|row| row.key == *key) {
+            continue;
+        }
+        let id = key.split_once('\n').map(|(id, _)| id).unwrap_or(key);
+        let name = find_entry_by_id(entries, id)
+            .map(|entry| entry.connection.name.clone())
+            .unwrap_or_else(|| id.to_string());
+        rows.push(TunnelRow {
+            key: key.clone(),
+            connection_id: id.to_string(),
+            connection_name: name,
+            index: None,
+            tunnel: None,
+            status: status.clone(),
+        });
+    }
+    rows
+}
+
+/// The local port a tunnel listens on, when it listens here.
+pub fn local_port(tunnel: &Tunnel) -> Option<u16> {
+    if tunnel.kind == TunnelKind::Remote {
+        return None;
+    }
+    split_listen(&tunnel.listen).map(|(_, port)| port)
+}
+
+/// A listen address like `listen` on the next port that no saved tunnel uses
+/// and `is_free` accepts. Keeps the bind address. `None` when the address has
+/// no port to count up from.
+pub fn next_listen(listen: &str, used: &[u16], is_free: impl Fn(u16) -> bool) -> Option<String> {
+    let (bind, port) = split_listen(listen)?;
+    let mut candidate = port;
+    loop {
+        candidate = candidate.checked_add(1)?;
+        if !used.contains(&candidate) && is_free(candidate) {
+            return Some(if bind.is_empty() {
+                candidate.to_string()
+            } else {
+                format!("{}:{}", bind, candidate)
+            });
+        }
+    }
+}
+
+/// Whether nothing listens on `port` on the loopback interface.
+pub fn port_is_free(port: u16) -> bool {
+    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tunnel_rows_list_saved_tunnels_then_unsaved_running_ones() {
+        let mut web = Connection::new_manual();
+        web.name = "web".into();
+        web.host = "web.example".into();
+        web.tunnels = vec![
+            Tunnel {
+                kind: TunnelKind::Local,
+                listen: "8080".into(),
+                target: "localhost:80".into(),
+                ..Tunnel::default()
+            },
+            Tunnel {
+                kind: TunnelKind::Dynamic,
+                listen: "1080".into(),
+                ..Tunnel::default()
+            },
+        ];
+        let mut alpha = Connection::new_manual();
+        alpha.name = "Alpha".into();
+        alpha.host = "alpha.example".into();
+        alpha.tunnels = vec![Tunnel {
+            kind: TunnelKind::Remote,
+            listen: "9000".into(),
+            target: "localhost:22".into(),
+            ..Tunnel::default()
+        }];
+        let mut desk = Connection::new_manual();
+        desk.name = "desk".into();
+        let entries: Vec<Entry> = [web.clone(), alpha.clone(), desk.clone()]
+            .into_iter()
+            .map(|connection| Entry {
+                connection,
+                origin: Origin::Manual,
+            })
+            .collect();
+        let mut states = BTreeMap::new();
+        states.insert(tunnel_key(&web, &web.tunnels[1]), tunnels::Status::Up);
+        states.insert(tunnels::key(&desk.id, "desktop"), tunnels::Status::Running);
+        states.insert(tunnels::key(&desk.id, "old"), tunnels::Status::Stopped);
+        let rows = tunnel_rows(&entries, &states);
+        let names: Vec<(&str, String)> = rows
+            .iter()
+            .map(|row| (row.connection_name.as_str(), row.kind_label()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("Alpha", "Remote".to_string()),
+                ("web", "Local".to_string()),
+                ("web", "SOCKS".to_string()),
+                ("desk", "desktop".to_string()),
+            ]
+        );
+        assert_eq!(rows[2].status, tunnels::Status::Up);
+        assert_eq!(rows[1].status, tunnels::Status::Stopped);
+        assert_eq!(rows[3].index, None);
+        assert!(rows[1].matches("8080"));
+        assert!(rows[1].matches("WEB"));
+        assert!(!rows[1].matches("alpha"));
+    }
+
+    #[test]
+    fn next_listen_skips_used_and_busy_ports_and_keeps_the_bind() {
+        assert_eq!(
+            next_listen("8080", &[8081], |port| port != 8082).as_deref(),
+            Some("8083")
+        );
+        assert_eq!(
+            next_listen("127.0.0.1:1080", &[], |_| true).as_deref(),
+            Some("127.0.0.1:1081")
+        );
+        assert_eq!(next_listen("65535", &[], |_| true), None);
+        assert_eq!(next_listen("nope", &[], |_| true), None);
+        let remote = Tunnel {
+            kind: TunnelKind::Remote,
+            listen: "9000".into(),
+            ..Tunnel::default()
+        };
+        assert_eq!(local_port(&remote), None);
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

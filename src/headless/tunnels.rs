@@ -17,7 +17,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 const POLL: Duration = Duration::from_millis(100);
 /// Once settled a tunnel or viewer can run for days: a stop request or an exit
@@ -27,6 +27,8 @@ const PROBE_EVERY: Duration = Duration::from_millis(250);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(200);
 const STOP_GRACE: Duration = Duration::from_secs(2);
 const ERROR_LINES: usize = 3;
+/// Lines kept for the tunnel manager's log, across every tunnel.
+const LOG_LINES: usize = 500;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -70,6 +72,75 @@ pub struct Spec {
 struct Slot {
     status: Arc<Mutex<Status>>,
     stop: Arc<AtomicBool>,
+    started: SystemTime,
+}
+
+/// One line of the shared tunnel log: what was started, what `ssh` printed and
+/// how it ended. Never holds the environment, where a secret could be.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LogLine {
+    pub seq: u64,
+    pub key: String,
+    pub at: SystemTime,
+    pub text: String,
+}
+
+fn log_store() -> &'static Mutex<(u64, VecDeque<LogLine>)> {
+    static LOG: OnceLock<Mutex<(u64, VecDeque<LogLine>)>> = OnceLock::new();
+    LOG.get_or_init(|| Mutex::new((0, VecDeque::new())))
+}
+
+fn log(key: &str, text: impl Into<String>) {
+    if let Ok(mut store) = log_store().lock() {
+        store.0 += 1;
+        let seq = store.0;
+        if store.1.len() == LOG_LINES {
+            store.1.pop_front();
+        }
+        store.1.push_back(LogLine {
+            seq,
+            key: key.to_string(),
+            at: SystemTime::now(),
+            text: text.into(),
+        });
+    }
+}
+
+/// Log lines newer than `seq`; pass 0 for everything still kept.
+pub fn log_since(seq: u64) -> Vec<LogLine> {
+    log_store()
+        .lock()
+        .map(|store| {
+            store
+                .1
+                .iter()
+                .filter(|line| line.seq > seq)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// When the tunnel at `key` was last started, while it is active.
+pub fn started_at(key: &str) -> Option<SystemTime> {
+    let slots = registry().lock().ok()?;
+    let slot = slots.get(key)?;
+    slot.status
+        .lock()
+        .ok()
+        .filter(|status| status.is_active())
+        .map(|_| slot.started)
+}
+
+/// "45s", "12m", "3h 05m", "2d 04h": how long a tunnel has been up.
+pub fn format_uptime(elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs();
+    match seconds {
+        0..=59 => format!("{}s", seconds),
+        60..=3599 => format!("{}m", seconds / 60),
+        3600..=86399 => format!("{}h {:02}m", seconds / 3600, seconds % 3600 / 60),
+        _ => format!("{}d {:02}h", seconds / 86400, seconds % 86400 / 3600),
+    }
 }
 
 fn registry() -> &'static Mutex<BTreeMap<String, Slot>> {
@@ -106,15 +177,18 @@ pub fn start(key: &str, spec: Spec) {
         Slot {
             status: Arc::clone(&status),
             stop: Arc::clone(&stop),
+            started: SystemTime::now(),
         },
     );
     let spawned = thread::Builder::new()
         .name("oxterm-tunnel".to_string())
         .spawn({
             let status = Arc::clone(&status);
-            move || supervise(spec, &status, &stop)
+            let key = key.to_string();
+            move || supervise(&key, spec, &status, &stop)
         });
     if let Err(error) = spawned {
+        log(key, format!("failed: {}", error));
         set(&status, Status::Failed(error.to_string()));
     }
 }
@@ -190,20 +264,22 @@ fn port_answers(address: &str) -> bool {
     addresses.any(|socket| TcpStream::connect_timeout(&socket, PROBE_TIMEOUT).is_ok())
 }
 
-fn supervise(spec: Spec, status: &Mutex<Status>, stop: &AtomicBool) {
+fn supervise(key: &str, spec: Spec, status: &Mutex<Status>, stop: &AtomicBool) {
+    let outcome = run(key, spec, status, stop);
+    log(key, outcome.label());
+    set(status, outcome);
+}
+
+fn run(key: &str, spec: Spec, status: &Mutex<Status>, stop: &AtomicBool) -> Status {
     let Some((program, args)) = spec.argv.split_first() else {
-        set(status, Status::Failed("empty command".to_string()));
-        return;
+        return Status::Failed("empty command".to_string());
     };
+    log(key, format!("start: {}", shell_words::join(&spec.argv)));
     // A port already in use would make a stale listener look like our tunnel.
     // Refuse early, with a clearer message than ExitOnForwardFailure's.
     if let Some(address) = spec.probe.as_deref() {
         if port_answers(address) {
-            set(
-                status,
-                Status::Failed(format!("{} is already in use", address)),
-            );
-            return;
+            return Status::Failed(format!("{} is already in use", address));
         }
     }
     let mut command = Command::new(program);
@@ -229,13 +305,7 @@ fn supervise(spec: Spec, status: &Mutex<Status>, stop: &AtomicBool) {
     }
     let mut child = match command.spawn() {
         Ok(child) => child,
-        Err(error) => {
-            set(
-                status,
-                Status::Failed(format!("cannot run {}: {}", program, error)),
-            );
-            return;
-        }
+        Err(error) => return Status::Failed(format!("cannot run {}: {}", program, error)),
     };
     if let (Some(text), Some(mut stdin)) = (spec.stdin.as_deref(), child.stdin.take()) {
         // A viewer that exits without reading must not take this thread down;
@@ -245,8 +315,10 @@ fn supervise(spec: Spec, status: &Mutex<Status>, stop: &AtomicBool) {
     let errors = Arc::new(Mutex::new(VecDeque::<String>::new()));
     let reader = child.stderr.take().map(|stderr| {
         let errors = Arc::clone(&errors);
+        let key = key.to_string();
         thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                log(&key, line.clone());
                 if let Ok(mut errors) = errors.lock() {
                     if errors.len() == ERROR_LINES {
                         errors.pop_front();
@@ -294,14 +366,19 @@ fn supervise(spec: Spec, status: &Mutex<Status>, stop: &AtomicBool) {
         // exit when the network is gone.
         if !up && last_probe.is_none_or(|at| at.elapsed() >= PROBE_EVERY) {
             last_probe = Some(Instant::now());
-            if spec.probe.as_deref().is_some_and(port_answers) {
+            if let Some(address) = spec
+                .probe
+                .as_deref()
+                .filter(|address| port_answers(address))
+            {
                 up = true;
+                log(key, format!("listening on {}", address));
                 set(status, Status::Up);
             }
         }
         thread::sleep(if up { SETTLED_POLL } else { POLL });
     };
-    set(status, outcome);
+    outcome
 }
 
 fn terminate(child: &mut std::process::Child) {
@@ -448,6 +525,39 @@ mod tests {
         wait_for(&key, |status| *status == Status::Stopped);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "secret\n");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_log_follows_a_tunnel_from_start_to_failure() {
+        let key = key("t", "log");
+        start(&key, sh("echo 'Permission denied' >&2; exit 255", None));
+        wait_for(&key, |status| matches!(status, Status::Failed(_)));
+        let lines: Vec<String> = log_since(0)
+            .into_iter()
+            .filter(|line| line.key == key)
+            .map(|line| line.text)
+            .collect();
+        assert!(lines[0].starts_with("start: sh -c"), "{:?}", lines);
+        assert!(
+            lines.contains(&"Permission denied".to_string()),
+            "{:?}",
+            lines
+        );
+        assert!(lines.last().unwrap().starts_with("failed:"), "{:?}", lines);
+        let last = log_since(0).last().unwrap().seq;
+        assert!(log_since(last).is_empty());
+        assert_eq!(started_at(&key), None, "a failed tunnel has no uptime");
+    }
+
+    #[test]
+    fn uptime_is_short_and_readable() {
+        assert_eq!(format_uptime(Duration::from_secs(45)), "45s");
+        assert_eq!(format_uptime(Duration::from_secs(720)), "12m");
+        assert_eq!(format_uptime(Duration::from_secs(3 * 3600 + 300)), "3h 05m");
+        assert_eq!(
+            format_uptime(Duration::from_secs(2 * 86400 + 4 * 3600)),
+            "2d 04h"
+        );
     }
 
     #[test]

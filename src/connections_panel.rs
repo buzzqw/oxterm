@@ -23,13 +23,87 @@ pub struct PanelData {
     pub status: Option<String>,
 }
 
+/// Colours of the state marks. Saturated enough to read on light and dark
+/// themes; the badges carry white text on them.
+pub(crate) const OPEN_COLOR: &str = "#2e9d4f";
+pub(crate) const TUNNEL_UP_COLOR: &str = "#1d6fb8";
+pub(crate) const TUNNEL_STARTING_COLOR: &str = "#b26a00";
+pub(crate) const FAILED_COLOR: &str = "#c62828";
+
 /// What a row shows besides the entry itself.
 #[derive(Clone, Debug, Default)]
 pub struct RowDecoration {
     pub open_tabs: usize,
+    /// Tunnels that listen or run.
     pub active_tunnels: usize,
+    /// Tunnels whose `ssh` runs but whose port does not answer yet.
+    pub starting_tunnels: usize,
     pub failed_tunnels: usize,
     pub alert_color: Option<String>,
+    /// One line per tunnel with its state, for the tooltip.
+    pub tunnel_lines: Vec<String>,
+}
+
+impl RowDecoration {
+    /// Whether the connection has something running, or something that failed.
+    pub fn is_live(&self) -> bool {
+        self.open_tabs > 0
+            || self.active_tunnels > 0
+            || self.starting_tunnels > 0
+            || self.failed_tunnels > 0
+    }
+}
+
+/// Counts over a group, so a folded group still shows what runs inside.
+#[derive(Clone, Copy, Debug, Default)]
+struct GroupActivity {
+    open: usize,
+    tunnels: usize,
+    starting: usize,
+    failed: usize,
+}
+
+impl GroupActivity {
+    fn add(&mut self, other: GroupActivity) {
+        self.open += other.open;
+        self.tunnels += other.tunnels;
+        self.starting += other.starting;
+        self.failed += other.failed;
+    }
+}
+
+/// A coloured pill: visible at a glance, also in a long list.
+fn badge(color: &str, text: &str) -> String {
+    format!(
+        "<span background=\"{}\" foreground=\"#ffffff\"><small><b>\u{2009}{}\u{2009}</b></small></span>",
+        color, text
+    )
+}
+
+fn activity_badges(open: usize, tunnels: usize, starting: usize, failed: usize) -> String {
+    let mut markup = String::new();
+    if open > 0 {
+        markup.push_str(&format!(
+            "  <span foreground=\"{}\"><small><b>\u{25CF} {}</b></small></span>",
+            OPEN_COLOR, open
+        ));
+    }
+    if tunnels > 0 {
+        markup.push_str("  ");
+        markup.push_str(&badge(TUNNEL_UP_COLOR, &format!("\u{21C4} {}", tunnels)));
+    }
+    if starting > 0 {
+        markup.push_str("  ");
+        markup.push_str(&badge(
+            TUNNEL_STARTING_COLOR,
+            &format!("\u{21C4} {}\u{2026}", starting),
+        ));
+    }
+    if failed > 0 {
+        markup.push_str("  ");
+        markup.push_str(&badge(FAILED_COLOR, &format!("\u{26A0} {}", failed)));
+    }
+    markup
 }
 
 pub struct ConnectionsPanel {
@@ -38,6 +112,10 @@ pub struct ConnectionsPanel {
     pub tree: gtk::TreeView,
     pub add: gtk::Button,
     pub close: gtk::Button,
+    /// Opens the tunnel manager.
+    pub tunnels: gtk::Button,
+    /// Shows only connections with open tabs or tunnels.
+    pub live_only: gtk::ToggleButton,
     pub status: gtk::Label,
     pub data: RefCell<Option<PanelData>>,
     store: gtk::TreeStore,
@@ -69,14 +147,22 @@ impl ConnectionsPanel {
         let add = gtk::Button::with_label("New");
         add.set_tooltip_text(Some("Create a new connection"));
         header.pack_end(&add, false, false, 0);
+        let tunnels = gtk::Button::with_label("Tunnels");
+        tunnels.set_tooltip_text(Some("Open the tunnel manager"));
+        header.pack_end(&tunnels, false, false, 0);
         root.pack_start(&header, false, false, 0);
 
+        let search_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        search_row.set_margin_start(8);
+        search_row.set_margin_end(8);
+        search_row.set_margin_bottom(6);
         let search = gtk::SearchEntry::new();
         search.set_placeholder_text(Some("Search name, host, group, tag, notes"));
-        search.set_margin_start(8);
-        search.set_margin_end(8);
-        search.set_margin_bottom(6);
-        root.pack_start(&search, false, false, 0);
+        search_row.pack_start(&search, true, true, 0);
+        let live_only = gtk::ToggleButton::with_label("Active");
+        live_only.set_tooltip_text(Some("Show only connections with open tabs or tunnels"));
+        search_row.pack_start(&live_only, false, false, 0);
+        root.pack_start(&search_row, false, false, 0);
 
         let store =
             gtk::TreeStore::new(&[glib::Type::STRING, glib::Type::STRING, glib::Type::STRING]);
@@ -113,6 +199,8 @@ impl ConnectionsPanel {
             tree,
             add,
             close,
+            tunnels,
+            live_only,
             status,
             data: RefCell::new(None),
             store,
@@ -204,14 +292,24 @@ impl ConnectionsPanel {
         node: &Node,
         entries: &[Entry],
         decorate: &dyn Fn(&Entry) -> RowDecoration,
-    ) {
+    ) -> GroupActivity {
         match node {
             Node::Group { title, children } => {
                 let iter = self.store.append(parent);
+                let mut activity = GroupActivity::default();
+                for child in children {
+                    activity.add(self.append(Some(&iter), child, entries, decorate));
+                }
                 let markup = format!(
-                    "<b>{}</b> <small>({})</small>",
+                    "<b>{}</b> <small>({})</small>{}",
                     glib::markup_escape_text(title),
-                    leaf_count(children)
+                    leaf_count(children),
+                    activity_badges(
+                        activity.open,
+                        activity.tunnels,
+                        activity.starting,
+                        activity.failed
+                    )
                 );
                 self.store.set(
                     &iter,
@@ -222,23 +320,28 @@ impl ConnectionsPanel {
                         (COLUMN_TOOLTIP, &glib::markup_escape_text(title).to_string()),
                     ],
                 );
-                for child in children {
-                    self.append(Some(&iter), child, entries, decorate);
-                }
+                activity
             }
             Node::Leaf(index) => {
                 let Some(entry) = entries.get(*index) else {
-                    return;
+                    return GroupActivity::default();
                 };
+                let decoration = decorate(entry);
                 let iter = self.store.append(parent);
                 self.store.set(
                     &iter,
                     &[
-                        (COLUMN_MARKUP, &row_markup(entry, &decorate(entry))),
+                        (COLUMN_MARKUP, &row_markup(entry, &decoration)),
                         (COLUMN_ID, &entry.connection.id),
-                        (COLUMN_TOOLTIP, &row_tooltip(entry)),
+                        (COLUMN_TOOLTIP, &row_tooltip(entry, &decoration)),
                     ],
                 );
+                GroupActivity {
+                    open: usize::from(decoration.open_tabs > 0),
+                    tunnels: decoration.active_tunnels,
+                    starting: decoration.starting_tunnels,
+                    failed: decoration.failed_tunnels,
+                }
             }
         }
     }
@@ -344,28 +447,42 @@ fn leaf_count(nodes: &[Node]) -> usize {
 fn row_markup(entry: &Entry, decoration: &RowDecoration) -> String {
     use crate::headless::connections::Origin;
     let name = glib::markup_escape_text(&entry.connection.name);
-    let mut markup = match &decoration.alert_color {
-        Some(color) => format!("<span foreground=\"{}\"><b>{}</b></span>", color, name),
-        None => name.to_string(),
+    let open = decoration.open_tabs > 0;
+    // A dot in front of every row, filled and green when the connection is open:
+    // the state reads down one column, whatever the length of the names.
+    let mut markup = if open {
+        format!("<span foreground=\"{}\">\u{25CF}</span> ", OPEN_COLOR)
+    } else {
+        "<span alpha=\"35%\">\u{25CB}</span> ".to_string()
     };
+    let name = if open {
+        format!("<b>{}</b>", name)
+    } else {
+        name.to_string()
+    };
+    match &decoration.alert_color {
+        Some(color) => markup.push_str(&format!(
+            "<span foreground=\"{}\"><b>{}</b></span>",
+            color, name
+        )),
+        None => markup.push_str(&name),
+    }
     let tag = entry.connection.protocol.tag();
     if !tag.is_empty() {
         markup.push_str(&format!("  <small><b>{}</b></small>", tag));
     }
     // State first: the narrow panel ellipsizes the end of the row, and the
     // address is also in the tooltip.
-    if decoration.open_tabs > 0 {
-        markup.push_str(&format!("  <small>● {}</small>", decoration.open_tabs));
-    }
-    if decoration.active_tunnels > 0 {
-        markup.push_str(&format!("  <small>⇄ {}</small>", decoration.active_tunnels));
-    }
-    if decoration.failed_tunnels > 0 {
-        markup.push_str(&format!(
-            "  <small><span foreground=\"#d9534f\">{} failed</span></small>",
-            decoration.failed_tunnels
-        ));
-    }
+    markup.push_str(&activity_badges(
+        if decoration.open_tabs > 1 {
+            decoration.open_tabs
+        } else {
+            0
+        },
+        decoration.active_tunnels,
+        decoration.starting_tunnels,
+        decoration.failed_tunnels,
+    ));
     if entry.origin == Origin::Orphan {
         markup.push_str(" <small><i>(not in ~/.ssh/config)</i></small>");
     } else if entry.connection.kind == crate::headless::connections::Kind::Manual {
@@ -377,7 +494,7 @@ fn row_markup(entry: &Entry, decoration: &RowDecoration) -> String {
     markup
 }
 
-fn row_tooltip(entry: &Entry) -> String {
+fn row_tooltip(entry: &Entry, decoration: &RowDecoration) -> String {
     let connection = &entry.connection;
     // A desktop's preview looks for its viewer on the PATH: too much for every row
     // of a list redrawn on each key press.
@@ -394,6 +511,20 @@ fn row_tooltip(entry: &Entry) -> String {
     }
     if !connection.notes.is_empty() {
         lines.push(connection.notes.clone());
+    }
+    match decoration.open_tabs {
+        0 => {}
+        1 => lines.push("Open in 1 tab".to_string()),
+        count => lines.push(format!("Open in {} tabs", count)),
+    }
+    if !decoration.tunnel_lines.is_empty() {
+        lines.push("Tunnels:".to_string());
+        lines.extend(
+            decoration
+                .tunnel_lines
+                .iter()
+                .map(|line| format!("  {}", line)),
+        );
     }
     glib::markup_escape_text(&lines.join("\n")).to_string()
 }

@@ -79,6 +79,18 @@ impl MainWindow {
             }
         });
         let weak = crate::SendWeak::new(self);
+        panel.tunnels.connect_clicked(move |_| {
+            if let Some(window) = weak.upgrade() {
+                window.show_tunnel_manager(None);
+            }
+        });
+        let weak = crate::SendWeak::new(self);
+        panel.live_only.connect_toggled(move |_| {
+            if let Some(window) = weak.upgrade() {
+                window.refilter_connections_panel();
+            }
+        });
+        let weak = crate::SendWeak::new(self);
         panel.search.connect_search_changed(move |_| {
             if let Some(window) = weak.upgrade() {
                 // Each key press only filters: no files to read again.
@@ -308,43 +320,102 @@ impl MainWindow {
             return;
         };
         let query = panel.search.text().to_string();
-        let tree = connections::build_tree(entries, usage, &query);
         let open = self.open_connection_counts();
         let patterns = settings().get_str("ssh_alert_patterns");
         let alert = settings().get_str("ssh_alert_color");
         let states = tunnels::snapshot();
-        panel.populate(&tree, entries, &|entry| {
-            let connection = &entry.connection;
-            let mut decoration = RowDecoration {
-                open_tabs: open.get(&connection.id).copied().unwrap_or(0),
-                ..RowDecoration::default()
-            };
-            if matches!(
-                states.get(&desktop_key(connection)),
-                Some(tunnels::Status::Failed(_))
-            ) {
-                decoration.failed_tunnels += 1;
-            }
-            for tunnel in &connection.tunnels {
-                match states.get(&tunnel_key(connection, tunnel)) {
-                    Some(status) if status.is_active() => decoration.active_tunnels += 1,
-                    Some(tunnels::Status::Failed(_)) => decoration.failed_tunnels += 1,
-                    _ => {}
+        let decorations: std::collections::HashMap<String, RowDecoration> = entries
+            .iter()
+            .map(|entry| {
+                let connection = &entry.connection;
+                let mut decoration = RowDecoration {
+                    open_tabs: open.get(&connection.id).copied().unwrap_or(0),
+                    ..RowDecoration::default()
+                };
+                let mut count = |status: &tunnels::Status, label: String| {
+                    match status {
+                        tunnels::Status::Starting => decoration.starting_tunnels += 1,
+                        tunnels::Status::Up | tunnels::Status::Running => {
+                            decoration.active_tunnels += 1
+                        }
+                        tunnels::Status::Failed(_) => decoration.failed_tunnels += 1,
+                        tunnels::Status::Stopped => {}
+                    }
+                    decoration
+                        .tunnel_lines
+                        .push(format!("{}: {}", label, status.label()));
+                };
+                if let Some(status) = states.get(&desktop_key(connection)) {
+                    if *status != tunnels::Status::Stopped {
+                        count(status, "desktop".to_string());
+                    }
                 }
-            }
-            if ssh_config::alert_host(&patterns, connection.destination())
-                || ssh_config::alert_host(&patterns, &connection.name)
-            {
-                decoration.alert_color = Some(alert.clone());
-            }
-            decoration
-        });
-        let empty_hint = (entries.is_empty() && query.is_empty()).then_some(
-            "No connections yet. Click New to add one. Hosts in ~/.ssh/config appear here by themselves.",
-        );
-        panel
-            .status
-            .set_text(status.as_deref().or(empty_hint).unwrap_or(""));
+                for tunnel in &connection.tunnels {
+                    let status = states
+                        .get(&tunnel_key(connection, tunnel))
+                        .cloned()
+                        .unwrap_or(tunnels::Status::Stopped);
+                    count(&status, tunnel.describe());
+                }
+                if ssh_config::alert_host(&patterns, connection.destination())
+                    || ssh_config::alert_host(&patterns, &connection.name)
+                {
+                    decoration.alert_color = Some(alert.clone());
+                }
+                (connection.id.clone(), decoration)
+            })
+            .collect();
+        let decorate = |entry: &Entry| {
+            decorations
+                .get(&entry.connection.id)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let live_only = panel.live_only.is_active();
+        let live: Vec<Entry>;
+        let shown: &[Entry] = if live_only {
+            live = entries
+                .iter()
+                .filter(|entry| decorate(entry).is_live())
+                .cloned()
+                .collect();
+            &live
+        } else {
+            entries
+        };
+        let tree = connections::build_tree(shown, usage, &query);
+        panel.populate(&tree, shown, &decorate);
+        let connected = decorations.values().filter(|d| d.open_tabs > 0).count();
+        let up: usize = decorations.values().map(|d| d.active_tunnels).sum();
+        let starting: usize = decorations.values().map(|d| d.starting_tunnels).sum();
+        let failed: usize = decorations.values().map(|d| d.failed_tunnels).sum();
+        let mut summary = Vec::new();
+        if connected > 0 {
+            summary.push(format!("{} connected", connected));
+        }
+        if up > 0 {
+            summary.push(format!(
+                "{} tunnel{} up",
+                up,
+                if up == 1 { "" } else { "s" }
+            ));
+        }
+        if starting > 0 {
+            summary.push(format!("{} starting", starting));
+        }
+        if failed > 0 {
+            summary.push(format!("{} failed", failed));
+        }
+        let summary = summary.join(" \u{00B7} ");
+        let empty_hint = if entries.is_empty() && query.is_empty() {
+            Some("No connections yet. Click New to add one. Hosts in ~/.ssh/config appear here by themselves.")
+        } else if live_only && shown.is_empty() {
+            Some("No open connections or tunnels.")
+        } else {
+            None
+        };
+        let text = status.as_deref().or(empty_hint).unwrap_or(summary.as_str());
+        panel.status.set_text(text);
     }
 
     fn open_connection_counts(&self) -> std::collections::HashMap<String, usize> {
@@ -458,7 +529,7 @@ impl MainWindow {
             );
         }
         menu.append(&gtk::SeparatorMenuItem::new());
-        if !entry.connection.tunnels.is_empty() {
+        if protocol == Protocol::Ssh || !entry.connection.tunnels.is_empty() {
             let submenu = gtk::Menu::new();
             for tunnel in &entry.connection.tunnels {
                 let key = tunnel_key(&entry.connection, tunnel);
@@ -486,6 +557,30 @@ impl MainWindow {
                 });
                 submenu.append(&item);
             }
+            if !entry.connection.tunnels.is_empty() {
+                submenu.append(&gtk::SeparatorMenuItem::new());
+            }
+            if protocol == Protocol::Ssh {
+                let item = gtk::MenuItem::with_label("Add Tunnel...");
+                let id = id.to_string();
+                let weak = crate::SendWeak::new(self);
+                item.connect_activate(move |_| {
+                    if let Some(window) = weak.upgrade() {
+                        window.show_tunnel_manager(None);
+                        crate::tunnel_manager::add_tunnel_for(&window, &id);
+                    }
+                });
+                submenu.append(&item);
+            }
+            let item = gtk::MenuItem::with_label("Tunnel Manager...");
+            let id = id.to_string();
+            let weak = crate::SendWeak::new(self);
+            item.connect_activate(move |_| {
+                if let Some(window) = weak.upgrade() {
+                    window.show_tunnel_manager(Some(&id));
+                }
+            });
+            submenu.append(&item);
             let tunnels_item = gtk::MenuItem::with_label("Tunnels");
             tunnels_item.set_submenu(Some(&submenu));
             menu.append(&tunnels_item);
@@ -550,7 +645,7 @@ impl MainWindow {
         self.run_form("New Connection", Connection::new_manual());
     }
 
-    fn edit_connection(&self, id: &str) {
+    pub(crate) fn edit_connection(&self, id: &str) {
         let Ok(entries) = load_entries() else {
             self.status_message("Could not read the connection book", true);
             return;
@@ -1264,6 +1359,11 @@ impl MainWindow {
         );
         add(
             menu,
+            "Tunnel Manager...",
+            Box::new(|window| window.show_tunnel_manager(None)),
+        );
+        add(
+            menu,
             "Quick Connect...\tCtrl+Shift+K",
             Box::new(|window| window.ssh_picker_signal()),
         );
@@ -1390,13 +1490,14 @@ impl MainWindow {
 
     // ── Tunnels ──────────────────────────────────────────────
 
+    /// Open the tunnel manager, or bring it forward; `connection_id` filters it
+    /// to one connection.
+    pub fn show_tunnel_manager(&self, connection_id: Option<&str>) {
+        crate::tunnel_manager::show(self, connection_id);
+    }
+
     pub fn start_tunnel(&self, connection: &Connection, tunnel: &Tunnel) {
-        let connection = connection.clone();
-        let tunnel = tunnel.clone();
-        std::thread::spawn(move || {
-            let spec = connections::tunnel_spec(&connection, &tunnel);
-            tunnels::start(&tunnel_key(&connection, &tunnel), spec);
-        });
+        spawn_tunnel(connection, tunnel);
     }
 
     /// Follow tunnel states while any is active: refresh the rows on a change
@@ -1513,6 +1614,17 @@ pub fn offer_reconnect(window: &MainWindow, tabs: Vec<(String, bool)>, vertical:
                 window.finish_connect(connection, plan, placement);
             }
         });
+    });
+}
+
+/// Start a saved tunnel. Preparing it may read the keyring and run `ssh -G`, so
+/// that happens on a thread of its own.
+pub fn spawn_tunnel(connection: &Connection, tunnel: &Tunnel) {
+    let connection = connection.clone();
+    let tunnel = tunnel.clone();
+    std::thread::spawn(move || {
+        let spec = connections::tunnel_spec(&connection, &tunnel);
+        tunnels::start(&tunnel_key(&connection, &tunnel), spec);
     });
 }
 

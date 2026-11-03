@@ -192,6 +192,7 @@ pub trait TerminalWindow {
     /// Pick a host from ~/.ssh/config and open an SSH tab.
     fn ssh_picker_signal(&self) {}
     fn connections_panel_signal(&self) {}
+    fn tunnel_manager_signal(&self) {}
     fn is_detached(&self) -> bool {
         false
     }
@@ -6401,6 +6402,9 @@ impl TerminalWindow for MainWindow {
     }
     fn connections_panel_signal(&self) {
         self.toggle_connections_panel();
+    }
+    fn tunnel_manager_signal(&self) {
+        self.show_tunnel_manager(None);
     }
     fn reconnect_signal(&self, term: &TerminalBox) {
         self.reconnect_terminal(term);

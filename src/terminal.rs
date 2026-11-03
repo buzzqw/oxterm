@@ -314,6 +314,12 @@ const PALETTE_ACTIONS: &[PaletteAction] = &[
         detail: "Browse, edit and open saved SSH connections",
         keys: "Ctrl+Shift+J",
     },
+    PaletteAction {
+        id: "tunnel-manager",
+        title: "Tunnel manager",
+        detail: "Start, stop and edit the SSH tunnels of every connection",
+        keys: "",
+    },
 ];
 
 const HINT_CHARS: &str = "asdfghjklqwertyuiopzxcvbnm";
@@ -5987,6 +5993,9 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             }
             "connections-panel" => {
                 self.call_window(|window| window.connections_panel_signal());
+            }
+            "tunnel-manager" => {
+                self.call_window(|window| window.tunnel_manager_signal());
             }
             _ => {}
         }

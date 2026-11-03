@@ -846,8 +846,14 @@ connections, and the current connection's macros.
   a `~/.ssh/config` host, **Edit** only adds a group, tags, notes, tunnels and the
   like. Oxterm never writes `~/.ssh/config`, so OpenSSH stays in charge of it.
 - The form always shows the exact `ssh` command the entry produces.
-- `●` counts the tabs open on an entry in all of this Oxterm's windows. `⇄` counts
-  active tunnels.
+- Every row starts with a dot: green `●` and a bold name when the connection is
+  open in a tab of any of this Oxterm's windows (with the count when there are
+  several), a faint `○` otherwise. A blue `⇄ N` badge counts the tunnels that
+  listen or run, an amber `⇄ N…` those still starting, a red `⚠ N` those that
+  failed. Groups add up their connections, so a folded group still shows what
+  runs inside, and the tooltip lists every tunnel with its state. **Active** next
+  to the search box keeps only open connections and those with tunnels, and the
+  line at the bottom sums it all up ("2 connected · 3 tunnels up · 1 failed").
 - A connection's tab keeps its name even when the remote shell sets a title, and
   the production highlight also looks at that name, since an address rarely says
   `prod`.
@@ -996,6 +1002,17 @@ shown: *listening* only once the local port answers, *running* for a remote
 forward, and *failed* with `ssh`'s own error. It cannot prompt, so it needs a key,
 an agent, or a stored password, and a host already in `known_hosts`. Tunnels stop
 with the application, even if it crashes.
+
+**Tunnel manager.** **Tunnels** in the connections panel, **Tunnel Manager...** in
+the **Connections** menu or in a connection's **Tunnels** submenu, or *Tunnel
+manager* in the command palette opens a window with the tunnels of every
+connection: state, connection, type, listen address, target, autostart and how
+long each has been up. **Add**, **Edit**, **Duplicate** (on the next free local
+port) and **Delete** change the tunnels saved in the connection, **Start**,
+**Stop**, a double click or `Enter` control one, **Start All** and **Stop All**
+everything the filter shows. The log below shows each `ssh` command, what it
+printed and how it ended. A remote desktop's own tunnel is listed too while it
+runs. Closing the window leaves the tunnels running.
 
 **From the command line** (no `DISPLAY` needed to list, export, or import):
 
