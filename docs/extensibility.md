@@ -1,45 +1,43 @@
-# Estensioni: progetto
+# Extensions: design
 
-Documento di lavoro per l'estensibilità di Oxterm. Descrive il modello scelto,
-la specifica della Fase 1 e le fasi successive. Non è ancora codice: serve a
-fissare formato, protocollo, confini e test prima di toccare il terminale.
+Working document for Oxterm's extensibility. It describes the chosen model, the
+Phase 1 specification and the later phases. It is not code yet: it exists to fix
+formats, protocol, boundaries and tests before touching the terminal.
 
-Ultimo aggiornamento: 2026-11-02.
+Last updated: 2026-11-02.
 
-## Principi
+## Principles
 
-1. **La logica senza display sta in `src/headless/`.** Parsing, validazione,
-   matching dei trigger e serializzazione degli eventi non usano GTK/VTE e sono
-   coperti da test normali. Solo il collegamento ai widget resta in `src/`.
-2. **Nessuna dipendenza nuova per la Fase 1.** Trigger, eventi e azioni usano
-   `serde_json`, il control socket e i moduli già presenti.
-3. **Tre livelli, introdotti nell'ordine.** Dichiarativo (JSON), processi
-   esterni sul control socket, WASM opzionale. Ogni livello deve essere utile da
-   solo.
-4. **Il binario resta piccolo.** Niente runtime sempre linkati: WASM vivrà
-   dietro una feature Cargo o in un helper separato, coerente con LTO, `strip`,
-   `codegen-units = 1` e `panic = "abort"`.
-5. **La sicurezza è parte del formato.** Un trigger che scrive input o esegue
-   comandi è disabilitato per default e richiede un consenso esplicito. Gli
-   eventi non contengono contenuto dello schermo se non richiesto.
-6. **Il broker è un vantaggio, non un dettaglio.** Un'estensione esterna deve
-   poter girare sull'host remoto e parlare con Oxterm attraverso il broker, come
-   già fanno i comandi di controllo.
+1. **Display-free logic lives in `src/headless/`.** Parsing, validation, trigger
+   matching and event serialisation use no GTK/VTE and are covered by ordinary
+   tests. Only the wiring to widgets stays in `src/`.
+2. **No new dependency for Phase 1.** Triggers, events and actions use
+   `serde_json`, the control socket and the modules that already exist.
+3. **Three layers, introduced in order.** Declarative (JSON), external processes
+   on the control socket, optional WASM. Each layer must be useful on its own.
+4. **The binary stays small.** No always-linked runtime: WASM will live behind a
+   Cargo feature or in a separate helper, consistent with LTO, `strip`,
+   `codegen-units = 1` and `panic = "abort"`.
+5. **Security is part of the format.** A trigger that writes input or runs
+   commands is disabled by default and requires explicit consent. Events never
+   contain screen contents unless requested.
+6. **The broker is an advantage, not a detail.** An external extension must be
+   able to run on the remote host and talk to Oxterm through the broker, as the
+   control commands already do.
 
-## Fase 1 — Trigger, eventi, azioni
+## Phase 1 — Triggers, events, actions
 
-Tutti e tre i pezzi sono necessari: i trigger da soli sanno fare solo azioni
-fisse, gli eventi da soli non possono reagire all'output, le azioni da sole non
-hanno chi le invoca.
+All three pieces are necessary: triggers alone can only perform fixed actions,
+events alone cannot react to output, actions alone have no caller.
 
-### 1.1 File dei trigger
+### 1.1 Trigger file
 
-File dedicato, non una chiave di `settings.json`: i trigger sono una lista di
-oggetti, non un valore scalare, e `src/headless/spec.rs` descrive solo valori
-scalari. Il file vive accanto alla configurazione:
+A dedicated file, not a key in `settings.json`: triggers are a list of objects,
+not a scalar value, and `src/headless/spec.rs` describes only scalar values. The
+file lives next to the configuration:
 
 ```text
-~/.config/oxterm/triggers.json          (o $XDG_CONFIG_HOME/oxterm/)
+~/.config/oxterm/triggers.json          (or $XDG_CONFIG_HOME/oxterm/)
 ```
 
 ```json
@@ -64,7 +62,7 @@ scalari. Il file vive accanto alla configurazione:
       "id": "test-failures",
       "match": "^test .* \\.\\.\\. FAILED$",
       "actions": [
-        { "type": "notify", "title": "Test fallito", "body": "{0}" },
+        { "type": "notify", "title": "Test failed", "body": "{0}" },
         { "type": "set_tab_color", "color": "#cc3333" }
       ]
     }
@@ -72,67 +70,67 @@ scalari. Il file vive accanto alla configurazione:
 }
 ```
 
-Campi:
+Fields:
 
-| Campo | Tipo | Note |
+| Field | Type | Notes |
 | --- | --- | --- |
-| `version` | int | Obbligatorio, oggi `1`. Un file con versione maggiore si apre in sola lettura. |
-| `id` | string | Unico, usato nei log e per disabilitare un trigger. |
-| `enabled` | bool | Default `true`. |
-| `match` | string | Regex Rust (`regex` crate). Obbligatoria. |
-| `actions` | array | Almeno una azione. |
-| `profiles` | array | Facoltativo: applica il trigger solo ai profili elencati. |
-| `scope` | string | `line` (default) o `command_output` (solo tra OSC 133 prompt e fine comando). |
+| `version` | int | Required, currently `1`. A file with a higher version is opened read-only. |
+| `id` | string | Unique, used in logs and to disable a trigger. |
+| `enabled` | bool | Defaults to `true`. |
+| `match` | string | Rust regex (`regex` crate). Required. |
+| `actions` | array | At least one action. |
+| `profiles` | array | Optional: applies the trigger only to the listed profiles. |
+| `scope` | string | `line` (default) or `command_output` (only between the OSC 133 prompt and the end of the command). |
 
-Azioni della v1, tutte senza esecuzione di codice:
+v1 actions, all without code execution:
 
-| Tipo | Effetto | Parametri |
+| Type | Effect | Parameters |
 | --- | --- | --- |
-| `highlight_line` | Colora l'intera riga | `fg`, `bg` |
-| `highlight_text` | Colora solo il match | `fg`, `bg` |
-| `notify` | Notifica desktop | `title`, `body` |
-| `capture` | Aggiunge a una lista "Captured output" | `list`, `label`, `open` |
-| `set_tab_color` | Colora la tab | `color` |
-| `set_tab_title` | Cambia il titolo della tab | `title` |
-| `hyperlink` | Rende il match cliccabile | `url` |
-| `mark_failure` | Segna la tab come fallita | nessuno |
+| `highlight_line` | Colours the whole line | `fg`, `bg` |
+| `highlight_text` | Colours only the match | `fg`, `bg` |
+| `notify` | Desktop notification | `title`, `body` |
+| `capture` | Appends to a "Captured output" list | `list`, `label`, `open` |
+| `set_tab_color` | Colours the tab | `color` |
+| `set_tab_title` | Changes the tab title | `title` |
+| `hyperlink` | Makes the match clickable | `url` |
+| `mark_failure` | Marks the tab as failed | none |
 
-Nei parametri `{0}` è il match completo, `{1}`..`{9}` i gruppi; `{{` e `}}`
-sono parentesi letterali.
+In parameters, `{0}` is the whole match, `{1}`..`{9}` the groups; `{{` and `}}`
+are literal braces.
 
-Azioni rinviate a una versione successiva, perché eseguono codice o scrivono
-input: `inject` (invia byte al PTY) e `run` (esegue un comando). Se arriveranno,
-richiederanno `"allow_exec": true` nel file e un avviso visibile.
+Actions deferred to a later version, because they execute code or write input:
+`inject` (sends bytes to the PTY) and `run` (runs a command). If they arrive they
+will require `"allow_exec": true` in the file and a visible warning.
 
-#### Come leggere l'output con VTE 0.70
+#### Reading the output with VTE 0.70
 
-VTE non espone un callback per riga. Il punto di aggancio è
-`contents_changed`, con queste regole:
+VTE exposes no per-line callback. The hook is `contents_changed`, with these
+rules:
 
-1. Un `TriggerScanner` in `src/headless/triggers.rs` conserva un cursore
-   monotono `(row, column)` nell'area di testo.
-2. Al segnale, il lato GTK chiama `vte_terminal_get_text_range` dal cursore alla
-   posizione corrente, divide in righe complete e passa solo quelle al modulo
-   headless.
-3. Gli eventi sono accorpati con un timer breve (50 ms) per non scansionare a
-   ogni byte.
-4. Se il cursore torna indietro (scrollback tagliato, reset, clear), lo scanner
-   si riallinea alla prima riga visibile e riparte.
-5. Il matching avviene su testo semplice, senza attributi. Il colore lo applica
-   il lato GTK con le API di selezione/attributi disponibili; per la v1 è
-   accettabile colorare la riga tramite un overlay o il margine, se VTE non
-   permette di modificare attributi già stampati.
+1. A `TriggerScanner` in `src/headless/triggers.rs` keeps a monotonic
+   `(row, column)` cursor in the text area.
+2. On the signal, the GTK side calls `vte_terminal_get_text_range` from the
+   cursor to the current position, splits it into complete lines and passes only
+   those to the headless module.
+3. Events are coalesced with a short timer (50 ms) so the scan does not run on
+   every byte.
+4. If the cursor moves backwards (scrollback trimmed, reset, clear), the scanner
+   realigns to the first visible line and starts over.
+5. Matching runs on plain text, without attributes. The GTK side applies colour
+   with the available selection/attribute APIs; for v1 it is acceptable to
+   colour the line through an overlay or the margin if VTE does not allow
+   changing attributes that were already printed.
 
-Il punto 5 è il rischio tecnico principale: VTE non consente di riscrivere gli
-attributi del testo già nel buffer. Prima di implementare `highlight_*` va
-verificato se basta un overlay disegnato sul widget; in alternativa la v1
-espone solo `capture`, `notify`, `set_tab_color`, `set_tab_title`, `mark_failure`
-e rimanda l'evidenziazione.
+Point 5 is the main technical risk: VTE does not allow rewriting the attributes
+of text already in the buffer. Before implementing `highlight_*` we must check
+whether an overlay drawn on the widget is enough; otherwise v1 exposes only
+`capture`, `notify`, `set_tab_color`, `set_tab_title` and `mark_failure`, and
+defers highlighting.
 
-### 1.2 Eventi
+### 1.2 Events
 
-Il control socket già usa frame JSON con prefisso di lunghezza
-(`src/headless/framing.rs`). Si aggiunge una connessione long-lived:
+The control socket already uses JSON frames with a length prefix
+(`src/headless/framing.rs`). A long-lived connection is added:
 
 ```text
 → {"op":"subscribe","events":["command_finished","bell"],"include_output":false}
@@ -142,9 +140,9 @@ Il control socket già usa frame JSON con prefisso di lunghezza
 ← {"event":"bell","pane":"12345-2","time":"..."}
 ```
 
-Eventi della v1:
+v1 events:
 
-| Evento | Payload |
+| Event | Payload |
 | --- | --- |
 | `command_started` | `pane`, `command`, `cwd`, `time` |
 | `command_finished` | `pane`, `exit`, `duration_ms`, `cwd`, `time` |
@@ -154,18 +152,18 @@ Eventi della v1:
 | `cwd_changed` | `pane`, `cwd`, `time` |
 | `tab_created` / `tab_closed` | `tab`, `pane`, `time` |
 | `pane_focused` | `pane`, `tab`, `time` |
-| `selection_changed` | `pane`, `length`, `time` (mai il testo) |
+| `selection_changed` | `pane`, `length`, `time` (never the text) |
 | `theme_changed` | `light`, `time` |
 
-`output_line` è previsto ma **opt-in** per sottoscrizione
-(`"include_output":true`) e con un limite di righe al secondo, perché può
-contenere segreti. Default: spento.
+`output_line` is planned but **opt-in** per subscription
+(`"include_output":true`) and rate-limited per second, because it can contain
+secrets. Default: off.
 
-Implementazione senza GTK per la parte testabile:
+GTK-free implementation for the testable part:
 
 ```rust
 pub struct EventHub {
-    subscribers: Vec<EventSubscriber>, // mpsc::Sender<Value> + filtro
+    subscribers: Vec<EventSubscriber>, // mpsc::Sender<Value> + filter
 }
 
 impl EventHub {
@@ -174,9 +172,9 @@ impl EventHub {
 }
 ```
 
-Il lato GUI possiede un solo `EventHub`; i punti che già conoscono OSC 133, il
-bell, il titolo e la directory pubblicano qui. Le code sono limitate: un
-sottoscrittore lento viene disconnesso, non blocca la GUI.
+The GUI side owns a single `EventHub`; the points that already know about
+OSC 133, the bell, the title and the directory publish here. Queues are
+bounded: a slow subscriber is disconnected, it does not block the GUI.
 
 CLI:
 
@@ -184,22 +182,22 @@ CLI:
 oxterm events [--pane ID] [--event NAME]... [--output] [--json]
 ```
 
-Stampa un oggetto JSON per riga e termina quando il socket si chiude. Senza
-`--json` stampa una forma leggibile, utile a mano.
+It prints one JSON object per line and exits when the socket closes. Without
+`--json` it prints a readable form, useful by hand.
 
-### 1.3 Azioni
+### 1.3 Actions
 
-Nuova operazione sul socket:
+A new operation on the socket:
 
 ```text
 → {"op":"action","action":"set_tab_color","pane":"12345-2","color":"#cc3333"}
 ← {"ok":true}
 ```
 
-Azioni della v1: `set-tab-title`, `set-tab-color`, `notify`, `open-url`,
+v1 actions: `set-tab-title`, `set-tab-color`, `notify`, `open-url`,
 `open-path`, `insert-text`, `send`, `new-tab`, `split`, `set-status`.
 
-CLI corrispondente:
+Matching CLI:
 
 ```text
 oxterm action set-tab-color --pane ID COLOR
@@ -209,173 +207,171 @@ oxterm action open-url URL
 oxterm action set-status --pane ID TEXT
 ```
 
-`send` e `insert-text` riusano l'implementazione di `oxterm send`; `new-tab` e
-`split` riusano le operazioni esistenti. Nessuna azione accetta comandi di shell
-arbitrari: per quello c'è già `-- COMMAND` in `new`/`split`.
+`send` and `insert-text` reuse the `oxterm send` implementation; `new-tab` and
+`split` reuse the existing operations. No action accepts arbitrary shell
+commands: `-- COMMAND` in `new`/`split` already covers that.
 
-### 1.4 File e responsabilità
+### 1.4 Files and responsibilities
 
-| File | Ruolo | GTK |
+| File | Role | GTK |
 | --- | --- | --- |
-| `src/headless/triggers.rs` | Parsing, validazione, matching, effetti, test | No |
-| `src/headless/events.rs` | Schema eventi, filtri, `EventHub` | No |
-| `src/headless/control_cli.rs` | Parsing di `events` e `action` | No |
-| `src/control.rs` | Client e server delle nuove operazioni | Sì |
-| `src/terminal.rs` | `contents_changed` → scanner → effetti | Sì |
-| `src/window.rs` | Colore/titolo tab, notifiche, liste catturate | Sì |
-| `manual.md` | Documentazione utente | — |
+| `src/headless/triggers.rs` | Parsing, validation, matching, effects, tests | No |
+| `src/headless/events.rs` | Event schema, filters, `EventHub` | No |
+| `src/headless/control_cli.rs` | Parsing of `events` and `action` | No |
+| `src/control.rs` | Client and server for the new operations | Yes |
+| `src/terminal.rs` | `contents_changed` → scanner → effects | Yes |
+| `src/window.rs` | Tab colour/title, notifications, captured lists | Yes |
+| `manual.md` | User documentation | — |
 
-`docs/settings.md` non cambia: i trigger non sono impostazioni scalari. Il
-manuale spiega il file e i comandi.
+`docs/settings.md` does not change: triggers are not scalar settings. The manual
+explains the file and the commands.
 
-### 1.5 Sicurezza
+### 1.5 Security
 
-- Il socket resta privato dell'utente, con controllo `SO_PEERCRED` come oggi.
-- Al massimo 16 sottoscrizioni contemporanee, code limitate, disconnessione dei
-  client lenti.
-- `output_line` è spento per default e limitato per frequenza.
-- Nessun trigger può leggere o modificare la riga di input corrente, per non
-  intercettare password.
-- `inject` e `run` non esistono nella v1. Se arriveranno, solo con consenso
-  esplicito e indicatore visibile nella tab.
-- Le notifiche non includono mai il testo dello schermo se non richiesto
-  esplicitamente dal trigger.
+- The socket remains private to the user, with the `SO_PEERCRED` check as today.
+- At most 16 concurrent subscriptions, bounded queues, slow clients
+  disconnected.
+- `output_line` is off by default and rate-limited.
+- No trigger can read or modify the current input line, so it cannot intercept
+  passwords.
+- `inject` and `run` do not exist in v1. If they arrive, only with explicit
+  consent and a visible indicator in the tab.
+- Notifications never include screen text unless the trigger explicitly asks for
+  it.
 
-### 1.6 Piano di test
+### 1.6 Test plan
 
-Test headless (`src/headless/triggers.rs`, `events.rs`):
+Headless tests (`src/headless/triggers.rs`, `events.rs`):
 
-- parsing di un file valido, versioni future, campi sconosciuti, regex invalida;
-- `{0}`/`{n}` con gruppi mancanti, `{{`/`}}`;
-- ordine delle azioni e stop al primo match se `"once": true` (campo previsto);
-- serializzazione degli eventi e filtri per pane/evento;
-- `EventHub`: sottoscrittore lento, limite, disconnessione.
+- parsing of a valid file, future versions, unknown fields, invalid regex;
+- `{0}`/`{n}` with missing groups, `{{`/`}}`;
+- action order and stop at the first match with `"once": true` (planned field);
+- event serialisation and filters by pane/event;
+- `EventHub`: slow subscriber, limit, disconnection.
 
-Test del control API (`tests/control_api.rs`):
+Control API tests (`tests/control_api.rs`):
 
-- `subscribe` riceve `command_started`/`command_finished` dopo un comando vero;
-- `action set-tab-color` cambia lo stato e `--info` lo riporta;
-- azione su pane inesistente → codice 3;
-- nessuna risposta a peer non autorizzato (se il test lo consente).
+- `subscribe` receives `command_started`/`command_finished` after a real command;
+- `action set-tab-color` changes the state and `--info` reports it;
+- action on a nonexistent pane → exit code 3;
+- no reply to an unauthorised peer (if the test allows it).
 
-Test manuali:
+Manual tests:
 
 ```bash
-printf 'error: boom\n'          # trigger highlight/capture
-oxterm events | jq .            # eventi in diretta
+printf 'error: boom\n'          # highlight/capture trigger
+oxterm events | jq .            # live events
 oxterm action set-tab-color --pane "$OXTERM_PANE" '#cc3333'
 ```
 
-## Fase 2 — Widget, contributi, workspace
+## Phase 2 — Widgets, contributions, workspaces
 
-Implementata in `~/.config/oxterm/extensions.json` e nel comando
-`oxterm workspace`:
+Implemented in `~/.config/oxterm/extensions.json` and in the
+`oxterm workspace` command:
 
-- **Status widget.** Ogni widget esegue un comando shell nella directory del
-  terminale attivo, con timeout di 2 s e intervallo configurabile (1–3600 s).
-  Mostra la prima riga non vuota di stdout; un errore mostra `—`. Il renderer è
-  testo semplice con colore opzionale: niente grafici o azioni al click in
-  questa versione.
-- **Contributi.** Lo stesso file dichiara voci per la command palette
-  (`label`, `detail`, `command`). Il comando gira in una nuova tab, che poi
-  entra in `$SHELL`. Le voci per il menu contestuale sono rimandate.
-- **Workspace.** `oxterm workspace [--new-window] [--replace] FILE` con JSON,
-  non YAML. Struttura: layout `single|vertical|horizontal`, una o due pane, tab
-  con `title`, `cwd`, `command`, `color`. Nessun `profile` per tab e nessuna
-  creazione di più finestre da un solo file: un workspace vive in una finestra.
-  `--new-window` avvia una finestra pulita e implica `--replace`.
+- **Status widget.** Each widget runs a shell command in the active terminal's
+  directory, with a 2 s timeout and a configurable interval (1–3600 s). It shows
+  the first non-empty line of stdout; an error shows `—`. The renderer is plain
+  text with an optional colour: no charts or click actions in this version.
+- **Contributions.** The same file declares entries for the command palette
+  (`label`, `detail`, `command`). The command runs in a new tab, which then
+  enters `$SHELL`. Context-menu entries are deferred.
+- **Workspace.** `oxterm workspace [--new-window] [--replace] FILE` with JSON,
+  not YAML. Structure: layout `single|vertical|horizontal`, one or two panes,
+  tabs with `title`, `cwd`, `command`, `color`. No per-tab `profile` and no
+  creation of multiple windows from a single file: a workspace lives in one
+  window. `--new-window` starts a clean window and implies `--replace`.
 
-## Fase 3 — Pacchetti plugin: rimossa
+## Phase 3 — Plugin packages: removed
 
-La Fase 3 è stata implementata e poi **rimossa su richiesta**: il modello a
-processi esterni con eventi su stdin non offriva la videata e la configurazione
-che ci si aspettava da un plugin, e il menu dedicato confondeva più di quanto
-aiutasse. Il codice e gli esempi restano nella storia Git (`bceb0a2` e
-successivi) se serviranno come base per un futuro runtime WASM.
+Phase 3 was implemented and then **removed on request**: the external-process
+model with events on stdin did not offer the screen and configuration one
+expects from a plugin, and the dedicated menu confused more than it helped. The
+code and examples remain in Git history (`bceb0a2` and later) in case they serve
+as a basis for a future WASM runtime.
 
-## Fase 4 — Pannelli WASM e MCP
+## Phase 4 — WASM panels and MCP
 
-- **MCP implementato** come `oxterm mcp` (nello stesso binario, non un helper
-  separato): JSON-RPC su stdin/stdout, tool `terminal_list`, `terminal_new`,
+- **MCP implemented** as `oxterm mcp` (in the same binary, not a separate
+  helper): JSON-RPC on stdin/stdout, tools `terminal_list`, `terminal_new`,
   `terminal_split`, `terminal_send`, `terminal_capture`, `terminal_wait`,
-  `terminal_workspace`. Usa il control socket esistente.
-- **WASM rinviato.** `wasmtime` aggiunge peso al binario e richiede un vero
-  modello di capacità e un renderer di pannelli; senza un caso d'uso concreto
-  non vale la pena introdurlo ora. Resta il candidato per estensioni che devono
-  disegnare UI o orchestrare il workspace in una sandbox reale.
+  `terminal_workspace`. It uses the existing control socket.
+- **WASM deferred.** `wasmtime` adds weight to the binary and requires a real
+  capability model and a panel renderer; without a concrete use case it is not
+  worth introducing now. It remains the candidate for extensions that must draw
+  UI or orchestrate the workspace in a real sandbox.
 
-## Browser file: core, non plugin
+## File browser: core, not a plugin
 
-Il browser SFTP/FTP a due pannelli resta nel core (`src/file_browser.rs`), non
-diventa un'estensione: un processo esterno non può disegnare una finestra
-dentro Oxterm. Le funzioni "alla WinSCP" — sincronizzazione ricorsiva,
-segnalibri, modifica remota con upload al salvataggio e prompt password — sono
-state aggiunte lì, e il browser si apre dal tasto destro sul tab SSH o dalla
-lista connessioni.
+The two-pane SFTP/FTP browser stays in the core (`src/file_browser.rs`) and does
+not become an extension: an external process cannot draw a window inside Oxterm.
+The "WinSCP-style" features — recursive sync, bookmarks, remote editing with
+upload on save and password prompts — were added there, and the browser opens
+from the right-click menu on an SSH tab or from the connection list.
 
-## Stato dell'implementazione (2026-11-02)
+## Implementation status (2026-11-02)
 
-Le Fasi 1 e 2 sono implementate; della Fase 4 c'è MCP, mentre WASM è rinviato.
-La Fase 3 (plugin) è stata rimossa:
+Phases 1 and 2 are implemented; of Phase 4 there is MCP, while WASM is deferred.
+Phase 3 (plugins) was removed:
 
-| Pezzo | File | Stato |
+| Piece | File | Status |
 | --- | --- | --- |
-| Parsing, validazione e matching dei trigger | `src/headless/triggers.rs` | fatto, con test |
-| Event bus e filtri | `src/headless/events.rs` | fatto, con test |
-| CLI `events` / `action` / `capture --captured` | `src/headless/control_cli.rs` | fatto, con test |
-| Client e server del control socket | `src/control.rs` | fatto |
-| Trigger su `contents_changed` | `src/terminal.rs` | fatto |
-| Eventi `command_started`, `command_finished`, `prompt`, `bell`, `title_changed`, `cwd_changed`, `tab_created`, `tab_closed`, `pane_focused`, `selection_changed` | `src/terminal.rs`, `src/window.rs` | fatto |
-| `output_line` (solo con `--output`) | `src/terminal.rs` | fatto |
-| Azioni `set-tab-color`, `clear-tab-color`, `set-tab-title`, `notify`, `open-url`, `insert-text`, `mark-failure`, `clear-failure` | `src/control.rs`, `src/window.rs` | fatto |
-| `theme_changed` | — | nome riservato, non ancora emesso |
-| `highlight_line`, `highlight_text`, `hyperlink` | `src/headless/triggers.rs` | accettati e interpretati, non applicati: VTE 0.70 non consente di ristilare testo già stampato |
-| Parsing e validazione dei workspace | `src/headless/workspace.rs` | fatto, con test |
-| `oxterm workspace` e applicazione nella finestra | `src/control.rs`, `src/window.rs` | fatto, con test GUI |
-| Parsing e timeout dei comandi per widget e palette | `src/headless/extensions.rs` | fatto, con test |
-| Status bar dei widget | `src/status_bar.rs`, `src/window.rs` | fatto |
-| Voci della palette da `extensions.json` | `src/extensions.rs`, `src/terminal.rs` | fatto |
-| Voci nel menu contestuale | — | rimandate |
-| Server MCP e tool | `src/headless/mcp.rs`, `src/control.rs` | fatto, con test e prova reale |
-| Pannelli WASM | — | rinviati |
-| Sync ricorsiva, segnalibri e modifica remota nel browser | `src/file_browser.rs`, `src/headless/bookmarks.rs`, `src/headless/remote_files.rs` | fatto, provato con un server SSH locale |
-| `oxterm browse NAME` | `src/control.rs`, `src/headless/control_cli.rs` | fatto |
+| Trigger parsing, validation and matching | `src/headless/triggers.rs` | done, with tests |
+| Event bus and filters | `src/headless/events.rs` | done, with tests |
+| `events` / `action` / `capture --captured` CLI | `src/headless/control_cli.rs` | done, with tests |
+| Control socket client and server | `src/control.rs` | done |
+| Triggers on `contents_changed` | `src/terminal.rs` | done |
+| Events `command_started`, `command_finished`, `prompt`, `bell`, `title_changed`, `cwd_changed`, `tab_created`, `tab_closed`, `pane_focused`, `selection_changed` | `src/terminal.rs`, `src/window.rs` | done |
+| `output_line` (only with `--output`) | `src/terminal.rs` | done |
+| Actions `set-tab-color`, `clear-tab-color`, `set-tab-title`, `notify`, `open-url`, `insert-text`, `mark-failure`, `clear-failure` | `src/control.rs`, `src/window.rs` | done |
+| `theme_changed` | — | reserved name, not emitted yet |
+| `highlight_line`, `highlight_text`, `hyperlink` | `src/headless/triggers.rs` | accepted and interpreted, not applied: VTE 0.70 does not allow restyling text already printed |
+| Workspace parsing and validation | `src/headless/workspace.rs` | done, with tests |
+| `oxterm workspace` and applying it in the window | `src/control.rs`, `src/window.rs` | done, with GUI tests |
+| Widget and palette command parsing and timeouts | `src/headless/extensions.rs` | done, with tests |
+| Widget status bar | `src/status_bar.rs`, `src/window.rs` | done |
+| Palette entries from `extensions.json` | `src/extensions.rs`, `src/terminal.rs` | done |
+| Context-menu entries | — | deferred |
+| MCP server and tools | `src/headless/mcp.rs`, `src/control.rs` | done, with tests and a real run |
+| WASM panels | — | deferred |
+| Recursive sync, bookmarks and remote editing in the browser | `src/file_browser.rs`, `src/headless/bookmarks.rs`, `src/headless/remote_files.rs` | done, tested against a local SSH server |
+| `oxterm browse NAME` | `src/control.rs`, `src/headless/control_cli.rs` | done |
 
-Deviazioni rispetto alla prima stesura:
+Deviations from the first draft:
 
-- Il colore della tab è il colore del **testo** dell'etichetta, non lo sfondo:
-  il markup di GTK è l'unico punto che non richiede CSS per tab.
-- `capture` non ha un pannello dedicato: le righe finiscono in una lista per
-  pane, letta con `oxterm capture --captured` e svuotata con `--clear`. Un
-  pannello può arrivare in una fase successiva.
-- Trigger e `extensions.json` si leggono una volta per processo. Il
-  ricaricamento a caldo resta da fare.
+- The tab colour is the **text** colour of the label, not the background: GTK
+  markup is the only per-tab mechanism that needs no CSS.
+- `capture` has no dedicated panel: lines end up in a per-pane list, read with
+  `oxterm capture --captured` and cleared with `--clear`. A panel may arrive in a
+  later phase.
+- Triggers and `extensions.json` are read once per process. Hot reload is still
+  to be done.
 
-## Decisioni aperte
+## Open decisions
 
-1. ~~Trigger in `settings.json` o file dedicato?~~ File dedicato, implementato.
-2. ~~Evidenziazione con VTE 0.70.~~ Rinviata: il testo già stampato non si può
-   ristilare. Resta da valutare un overlay sul widget.
-3. ~~Formato workspace.~~ JSON, implementato: layout, una o due pane, tab con
+1. ~~Triggers in `settings.json` or a dedicated file?~~ Dedicated file,
+   implemented.
+2. ~~Highlighting with VTE 0.70.~~ Deferred: text already printed cannot be
+   restyled. An overlay on the widget remains to be evaluated.
+3. ~~Workspace format.~~ JSON, implemented: layout, one or two panes, tabs with
    `title`, `cwd`, `command`, `color`.
-4. **Runtime WASM.** `wasmtime` o `extism`; **rinviato**: nessun caso d'uso che
-   giustifichi peso e complessità finché l'host esterno basta. Da riprendere se
-   serviranno pannelli che disegnano dentro Oxterm.
-5. **Eventi come JSON Lines o frame?** Sul socket restano frame come oggi; la
-   CLI stampa JSON Lines per comodità di `jq`.
+4. **WASM runtime.** `wasmtime` or `extism`; **deferred**: no use case justifies
+   the weight and complexity while the external host is enough. To be revisited
+   if panels that draw inside Oxterm are needed.
+5. **Events as JSON Lines or frames?** On the socket they stay frames as today;
+   the CLI prints JSON Lines for convenience with `jq`.
 
-## Registro
+## Log
 
-- 2026-11-02: prima stesura. Nessun codice scritto; Fase 1 pronta per
-  l'implementazione.
-- 2026-11-02: Fase 1 implementata (trigger, eventi, azioni, `capture
-  --captured`) con test headless. Evidenziazione e hyperlink rinviati per i
-  limiti di VTE 0.70.
-- 2026-11-02: Fase 2 implementata: `oxterm workspace`, status bar dei widget e
-  contributi alla palette da `extensions.json`, con test headless e GUI.
-- 2026-11-02: Fase 3 implementata e poi rimossa; `oxterm mcp` della Fase 4
-  resta. WASM rinviato.
-- 2026-11-02: browser file: sync ricorsiva, segnalibri per connessione, modifica
-  remota con upload al salvataggio e `oxterm browse`.
-- 2026-11-02: plugin disabilitati e menu **Plugins** rimosso; il browser file
-  resta la strada per WinSCP.
+- 2026-11-02: first draft. No code written; Phase 1 ready for implementation.
+- 2026-11-02: Phase 1 implemented (triggers, events, actions, `capture
+  --captured`) with headless tests. Highlighting and hyperlinks deferred because
+  of VTE 0.70 limits.
+- 2026-11-02: Phase 2 implemented: `oxterm workspace`, widget status bar and
+  palette contributions from `extensions.json`, with headless and GUI tests.
+- 2026-11-02: Phase 3 implemented and then removed; `oxterm mcp` from Phase 4
+  stays. WASM deferred.
+- 2026-11-02: file browser: recursive sync, per-connection bookmarks, remote
+  editing with upload on save and `oxterm browse`.
+- 2026-11-02: plugins disabled and the **Plugins** menu removed; the file
+  browser remains the WinSCP path.

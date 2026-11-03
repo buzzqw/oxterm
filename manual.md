@@ -8,11 +8,12 @@
 4. [Built-in commands](#built-in-commands)
 5. [History](#history)
 6. [Notes](#notes)
-7. [Preferences](#preferences)
-8. [Shell integration](#shell-integration)
-9. [Keyboard shortcuts](#keyboard-shortcuts)
-10. [Configuration files](#configuration-files)
-11. [Troubleshooting](#troubleshooting)
+7. [Latest development package](#latest-development-package)
+8. [Preferences](#preferences)
+9. [Shell integration](#shell-integration)
+10. [Keyboard shortcuts](#keyboard-shortcuts)
+11. [Configuration files](#configuration-files)
+12. [Troubleshooting](#troubleshooting)
 
 ## Starting Oxterm
 
@@ -401,6 +402,9 @@ standard error.
 - **View** controls tabs, panes, toolbar, menu bar, scrollbar, statistics, zoom, and fullscreen.
 - **Terminal** controls encoding, signals, reset, read-only mode, tab navigation, and detaching.
 - **Tabs** lists open tabs and lets you switch between them.
+- **Notes** opens the notes panel and the note actions.
+- **Connections** opens the connections panel and the tunnel manager, and starts
+  saved connections.
 - **Help** opens the About dialog.
 
 ### Toolbar
@@ -658,6 +662,15 @@ of lines to avoid treating pasted output as commands.
 Runs SQLite maintenance in the background. It keeps the most recent entry for
 each command/directory pair, checkpoints the WAL, updates query statistics, and
 vacuums the database. The terminal remains usable while it runs.
+
+### `/ssh`
+
+Opens a saved connection or a host from `~/.ssh/config`. Without a name it opens
+the host picker. See [Saved connections](#saved-connections).
+
+### `/clear` and `/cls`
+
+Clear the visible screen; the scrollback is left intact.
 
 ## History
 

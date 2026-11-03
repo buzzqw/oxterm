@@ -471,6 +471,7 @@ Commands beginning with `/` are handled by Oxterm:
 | `/snippet NAME [ARGS...]` | Expand a snippet into the prompt without executing it |
 | `/snippet list` | List saved snippets |
 | `/snippet delete NAME` | Remove a saved snippet |
+| `/ssh [NAME]` | Open a saved connection or an SSH host; no name shows the picker |
 | `/clear` / `/cls` | Clear the terminal screen |
 
 The **Notes** menu also provides the integrated Notes panel (full-text search,
@@ -718,14 +719,14 @@ values depend on the machine and are only meant to show the order of magnitude):
 | Measurement | Reference |
 | --- | --- |
 | CLI parse (one invocation) | ~0.1 µs |
-| Effective defaults / validate all settings | ~10 µs / ~1.3 µs |
-| Load and validate a settings document | ~13 µs |
-| VI word motion (8 hops, long line) | ~0.4 µs |
-| JSON frame round trip | ~0.4 µs |
+| Effective defaults / validate all settings | ~6 µs / ~0.8 µs |
+| Load and validate a settings document | ~8 µs |
+| VI word motion (8 hops, long line) | ~0.3 µs |
+| JSON frame round trip | ~0.2 µs |
 | `--version` / `--list-settings` | ~21 ms |
 | Window ready, including the first shell | ~60 ms |
-| Five new tabs through the control API | ~300 ms |
-| RSS with the idle window / after five tabs | ~51 MB / ~67 MB |
+| Five new tabs through the control API | ~210 ms |
+| RSS with the idle window / after five tabs | ~52 MB / ~64 MB |
 
 RSS counts every mapped page of GTK and VTE, which other programs share. The
 memory Oxterm itself accounts for is smaller: 18.7 MB PSS for the idle window and
@@ -753,31 +754,30 @@ BENCH_OPPONENTS="ghostty xfce4-terminal" ./scripts/bench-compare.sh
 XFCE4_TERMINAL_BIN=/path/to/xfce4-terminal ./scripts/bench-compare.sh
 ```
 
-Measured on a desktop with an AMD Ryzen 7 5800H (8 cores, 16 threads, Radeon
-Vega integrated graphics) running CachyOS with kernel 7.3.0-4 in an X11 session
-at 1920x1080, default configuration, font size 12, release build, minimum of
+Measured on a laptop with an Intel Core i7-1355U (10 cores, 12 threads, Intel
+UHD Graphics) running CachyOS with kernel 7.2.7-1 in an X11 session at
+1920x1080, default configuration, font size 12, release build, minimum of
 three runs; absolute values depend on the machine and on its load:
 
 | Measurement | Oxterm | Ghostty 1.3.1 | Alacritty 0.17.0 | xfce4-terminal 1.2.0 |
 | --- | --- | --- | --- | --- |
-| Spawn to first visible window | 594 ms | 694 ms | **551 ms** | 584 ms |
-| Idle CPU over 5 s, no payload | 7.6 ms | 20.9 ms | **0.0 ms** | 0.1 ms |
-| Spawn to the command inside the terminal | **127 ms** | 448 ms | 274 ms | 276 ms |
-| Drain 100 000 ANSI-coloured lines (8.8 MB) | **73 ms** | 332 ms | 247 ms | 211 ms |
-| Drain 100 000 plain lines (8.0 MB) | **73 ms** | 217 ms | 238 ms | 178 ms |
-| Drain the plain payload in 80-byte writes (8.0 MB) | 299 ms | 295 ms | **293 ms** | 373 ms |
-| CPU to drain ANSI, terminal only | 302.5 ms | 534.7 ms | 250.3 ms | **175.1 ms** |
-| CPU to drain ANSI, GUI process | 237.6 ms | 490.3 ms | 212.8 ms | **162.8 ms** |
-| CPU to drain plain, terminal only | 290.0 ms | 360.0 ms | 242.4 ms | **122.9 ms** |
-| CPU to drain 80-byte writes, terminal only | 392.5 ms | 543.9 ms | **237.4 ms** | 257.8 ms |
-| 20 window resizes | 250 ms | **112 ms** | 298 ms | 354 ms |
-| CPU for the 20 resizes | 33.0 ms | 43.2 ms | 21.4 ms | **14.1 ms** |
-| Close window to process exit | 25 ms | 44 ms | 22 ms | **21 ms** |
-| Total tree RSS when idle | 99.7 MiB | 189.6 MiB | 137.4 MiB | **80.4 MiB** |
-| Peak tree RSS under the ANSI payload | 102.9 MiB | 196.5 MiB | 152.0 MiB | **77.4 MiB** |
+| Spawn to first visible window | 186 ms | 215 ms | 650 ms | **143 ms** |
+| Idle CPU over 5 s, no payload | 2.6 ms | 15.2 ms | **0.0 ms** | 0.1 ms |
+| Spawn to the command inside the terminal | **57 ms** | 330 ms | 992 ms | 131 ms |
+| Drain 100 000 ANSI-coloured lines (8.8 MB) | **129 ms** | 196 ms | 143 ms | 171 ms |
+| Drain 100 000 plain lines (8.0 MB) | **59 ms** | 140 ms | 131 ms | 162 ms |
+| Drain the plain payload in 80-byte writes (8.0 MB) | 198 ms | 174 ms | **154 ms** | 253 ms |
+| CPU to drain ANSI, terminal only | 283.9 ms | 371.3 ms | **136.3 ms** | 152.5 ms |
+| CPU to drain ANSI, GUI process | 177.6 ms | 327.3 ms | **111.6 ms** | 141.1 ms |
+| CPU to drain plain, terminal only | 234.3 ms | 251.6 ms | 124.5 ms | **119.7 ms** |
+| CPU to drain 80-byte writes, terminal only | 316.3 ms | 306.5 ms | **146.9 ms** | 165.8 ms |
+| 20 window resizes | 72 ms | **58 ms** | 188 ms | 140 ms |
+| CPU for the 20 resizes | 18.3 ms | **1.6 ms** | 34.8 ms | 8.7 ms |
+| Close window to process exit | 21 ms | 260 ms | 17 ms | **9 ms** |
+| Total tree RSS when idle | 94.2 MiB | 143.4 MiB | 111.6 MiB | **76.4 MiB** |
+| Peak tree RSS under the ANSI payload | 98.8 MiB | 171.9 MiB | 126.9 MiB | **75.5 MiB** |
 
-Bold marks the best value in each row. Oxterm's two idle and resize CPU values
-come from a run of Oxterm alone straight after the others, for the reason below.
+Bold marks the best value in each row.
 
 These numbers replace a table whose CPU rows were too kind to Oxterm: after the
 broker became a separate executable, the script no longer counted it. It does now,
@@ -798,18 +798,17 @@ Five of those rows are separate experiments, all on the same defaults:
   empty window. It counts cursor blink, timers and helper wakeups. Alacritty's
   and xfce4-terminal's default cursors do not blink and neither arms a periodic
   timer, so both measure about zero; Oxterm's blinking cursor and periodic timers
-  cost 7.6 ms, Ghostty's 20.9 ms.
+  cost 2.6 ms, Ghostty's 15.2 ms.
 - **Plain lines** are the same workload without the SGR sequences, so comparing
   the two drain rows shows what the colour handling and the extra 0.8 MB cost:
-  nothing measurable for Oxterm and Alacritty, 115 ms for Ghostty and 33 ms for
+  70 ms for Oxterm, 56 ms for Ghostty, 12 ms for Alacritty and 9 ms for
   xfce4-terminal.
 - **80-byte writes** feed the plain payload through `dd bs=80`, one write per
   line, to measure per-write overhead rather than bulk throughput. Wall time
-  collapses to roughly the same 293-299 ms for Alacritty, Ghostty and Oxterm
-  (373 ms for xfce4-terminal) because the writer now paces them; the CPU row
-  shows what the extra wakeups cost each terminal: 392.5 ms for Oxterm, above
-  Alacritty's 237.4 ms and xfce4-terminal's 257.8 ms because of the broker hop,
-  while Ghostty pays the most (543.9 ms).
+  is 154-253 ms because the writer now paces the terminals; the CPU row shows
+  what the extra wakeups cost each: 316.3 ms for Oxterm and 306.5 ms for
+  Ghostty, well above Alacritty's 146.9 ms and xfce4-terminal's 165.8 ms.
+  Oxterm's extra cost is the broker hop.
 - **20 resizes** alternate a window between two sizes with `xdotool` on an empty
   pane. The wall time includes xdotool, X11 and window-manager latency, the CPU
   count includes a 200 ms settle so the last resize is applied.
@@ -817,23 +816,24 @@ Five of those rows are separate experiments, all on the same defaults:
   process to leave the process table, which covers shutdown and cleanup rather
   than a signal.
 
-Oxterm reaches the command inside the terminal first: 127 ms, against 274 ms for
-Alacritty, 276 ms for xfce4-terminal and 448 ms for Ghostty. It also finishes both
-drain payloads first, at 73 ms against 178-332 ms, but read that with the CPU rows.
-The command returns once the broker has taken its bytes, and the GUI goes on
-working after that: its 237.6 ms of CPU cannot fit in 73 ms of wall time. The drain
-figure shows how little a command is held back, not how fast the text is drawn.
-Ghostty wins the resize storm's wall time (112 ms against 250 ms), and Alacritty
-maps its window first (551 ms against 594 ms for Oxterm).
+Oxterm reaches the command inside the terminal first: 57 ms, against 131 ms for
+xfce4-terminal, 330 ms for Ghostty and 992 ms for Alacritty. It also finishes both
+drain payloads first, at 129 ms and 59 ms against 143-196 ms and 131-162 ms, but
+read that with the CPU rows. The command returns once the broker has taken its
+bytes, and the GUI goes on working after that: its 177.6 ms of CPU cannot fit in
+129 ms of wall time. The drain figure shows how little a command is held back,
+not how fast the text is drawn. Ghostty wins the resize storm's wall time (58 ms
+against 72 ms), and xfce4-terminal maps its window first (143 ms against 186 ms
+for Oxterm and 650 ms for Alacritty).
 
 xfce4-terminal is the closest peer: it uses the same VTE parser, grid and renderer
 without Oxterm's broker, and it sets the efficiency floor. It spends the least CPU
-on the ANSI and plain payloads (175.1 ms and 122.9 ms against 302.5 ms and 290.0 ms
-for Oxterm) and the least memory (80.4 MiB idle against 99.7 MiB for Oxterm and
-137.4 MiB for Alacritty). Of Oxterm's 302.5 ms, 64.9 ms is its PTY broker: the
+on the ANSI and plain payloads (152.5 ms and 119.7 ms against 283.9 ms and 234.3 ms
+for Oxterm) and the least memory (76.4 MiB idle against 94.2 MiB for Oxterm and
+111.6 MiB for Alacritty). Of Oxterm's 283.9 ms, 106.3 ms is its PTY broker: the
 difference between the terminal-only and GUI-process rows. That is the price of
 sessions that survive their window. Alacritty beats Oxterm on CPU in every drain
-row too, and only Ghostty uses more.
+row too, and Ghostty spends more on the first three.
 
 Read the wall figures as order-of-magnitude results: they move between sessions
 with the machine's load. What the script cannot see is the smoothness, frame
@@ -896,8 +896,8 @@ exactly where GPU terminals like Ghostty and Alacritty are expected to win.
 #### What the PTY broker costs
 
 The broker relays every byte between two PTYs. In the table above it accounts for
-about a fifth of the CPU Oxterm spends draining the 8.8 MB payload (64.9 of
-302.5 ms); VTE and the GUI take the rest. Two experiments shaped the conclusion:
+more than a third of the CPU Oxterm spends draining the 8.8 MB payload (106.3 of
+283.9 ms); VTE and the GUI take the rest. Two experiments shaped the conclusion:
 
 - Moving the two relay directions from 8 KiB to 64 KiB reads changed neither
   drain time nor CPU beyond run-to-run noise (±17% across rounds, both
@@ -956,7 +956,7 @@ Three smaller fixes from the same review:
 The connection manager got the same treatment. The production-host check compiled
 its regular expression for every panel row and title change (191 µs each) and now
 keeps it (0.3 µs). Searching the panel filters what was already read instead of
-rereading three files per key press, the SSH menu reads them when it opens rather
+rereading three files per key press, the Connections menu reads them when it opens rather
 than at every start, an idle file browser no longer wakes up, and a settled tunnel
 wakes twice a second instead of ten times. The common path barely moved, which was
 the expected result: 19.5 MB to 18.7 MB PSS for the idle window, with no measurable
