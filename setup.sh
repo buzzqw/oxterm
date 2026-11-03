@@ -75,6 +75,9 @@ sed "s|^Exec=oxterm|Exec=${PREFIX}/bin/oxterm|" \
 chmod 0644 "${desktop_dir}/oxterm.desktop"
 
 install -Dm644 "${ROOT_DIR}/manual.md" "${PREFIX}/share/doc/oxterm/manual.md"
+install -Dm644 "${ROOT_DIR}/docs/settings.md" "${PREFIX}/share/doc/oxterm/settings.md"
+install -Dm644 "${ROOT_DIR}/docs/compatibility.md" "${PREFIX}/share/doc/oxterm/compatibility.md"
+install -Dm644 "${ROOT_DIR}/themes/licenses.md" "${PREFIX}/share/doc/oxterm/themes-licenses.md"
 
 install -Dm644 "${ROOT_DIR}/packaging/oxterm.1" "${PREFIX}/share/man/man1/oxterm.1"
 gzip -nf "${PREFIX}/share/man/man1/oxterm.1"
