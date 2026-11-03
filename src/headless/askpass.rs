@@ -13,6 +13,7 @@
 //! receives the connection id and the expected prompt, and the keyring is read
 //! through `secret-tool`, with the password crossing stdin and stdout only.
 
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -254,9 +255,36 @@ pub fn ssh_environment(helper: &Path, id: &str, target: &str) -> Vec<(String, St
 }
 
 /// The helper installed next to `oxterm`, as the broker is.
+///
+/// Packages install it as `oxterm-askpass`; release archives carry versioned
+/// names such as `oxterm-1.2.3-linux-x86_64` and
+/// `oxterm-askpass-1.2.3-linux-x86_64`, so the suffix is derived like the
+/// broker's.
 pub fn helper_path() -> Option<PathBuf> {
-    let path = std::env::current_exe().ok()?.with_file_name(HELPER_NAME);
-    path.is_file().then_some(path)
+    helper_path_for(&std::env::current_exe().ok()?)
+}
+
+fn helper_path_for(current: &Path) -> Option<PathBuf> {
+    for name in helper_sibling_names(current) {
+        let candidate = current.with_file_name(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Names to look for next to the GUI binary.
+fn helper_sibling_names(current: &Path) -> Vec<OsString> {
+    let mut names = vec![OsString::from(HELPER_NAME)];
+    if let Some(name) = current.file_name().and_then(|name| name.to_str()) {
+        if let Some(rest) = name.strip_prefix("oxterm") {
+            if !rest.is_empty() {
+                names.push(OsString::from(format!("{HELPER_NAME}{rest}")));
+            }
+        }
+    }
+    names
 }
 
 #[cfg(test)]
@@ -392,5 +420,35 @@ mod tests {
             .any(|(k, v)| k == "SSH_ASKPASS_REQUIRE" && v == "force"));
         assert!(env.iter().any(|(k, v)| k == ENV_TARGET && v == TARGET));
         assert_eq!(env.len(), 4);
+    }
+
+    #[test]
+    fn a_versioned_helper_is_found_next_to_a_versioned_gui() {
+        let dir = std::env::temp_dir().join(format!("oxterm-askpass-path-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let gui = dir.join("oxterm-linux-x86-64");
+        fs::write(&gui, b"gui").unwrap();
+        assert_eq!(helper_path_for(&gui), None);
+
+        let helper = dir.join("oxterm-askpass-linux-x86-64");
+        fs::write(&helper, b"helper").unwrap();
+        assert_eq!(helper_path_for(&gui), Some(helper));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn helper_sibling_names_cover_installed_and_versioned_binaries() {
+        assert_eq!(
+            helper_sibling_names(Path::new("/usr/bin/oxterm")),
+            vec![OsString::from("oxterm-askpass")]
+        );
+        assert_eq!(
+            helper_sibling_names(Path::new("/tmp/oxterm-1.2.3-linux-x86_64")),
+            vec![
+                OsString::from("oxterm-askpass"),
+                OsString::from("oxterm-askpass-1.2.3-linux-x86_64"),
+            ]
+        );
     }
 }
