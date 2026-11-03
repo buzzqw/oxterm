@@ -728,7 +728,8 @@ Every successful push to the `master` branch publishes a rolling prerelease:
 
 <https://github.com/buzzqw/oxterm/releases/tag/latest>
 
-It contains the current Linux executable, an AppImage, and a `SHA256SUMS` file.
+It contains the current Linux executables (`oxterm`, `oxterm-broker` and
+`oxterm-askpass`), a tarball with all three, and a `SHA256SUMS` file.
 This package is for testing and is replaced by the next successful build. Use a
 versioned release for a stable installation.
 

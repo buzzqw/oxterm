@@ -22,6 +22,7 @@ memory footprint and the memory-safety guarantees of Rust.
 
 - **[English user manual](manual.md)**
 - **[Terminal compatibility](docs/compatibility.md)**
+- **[Extensibility](docs/extensibility.md)**
 - **[Report an issue](https://github.com/buzzqw/oxterm/issues)**
 
 ## Highlights
@@ -163,8 +164,8 @@ To create the definitive release binaries in the project root, run:
 ```
 
 `build.sh` runs the locked release build and copies the results to
-`oxterm-linux-x86-64` and `oxterm-broker-linux-x86-64`. The generated root
-binaries are ignored by Git.
+`oxterm-linux-x86-64`, `oxterm-broker-linux-x86-64` and
+`oxterm-askpass-linux-x86-64`. The generated root binaries are ignored by Git.
 
 The launcher uses the release binary when available and falls back to the debug
 binary:

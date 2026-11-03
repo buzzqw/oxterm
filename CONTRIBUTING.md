@@ -76,3 +76,16 @@ same name. To update the pack:
 ```bash
 python3 scripts/update-themes.py /path/to/iTerm2-Color-Schemes
 ```
+
+## Packaging
+
+`packaging/aur/` holds the Arch package, and `packaging/appimage/` a portable
+AppImage recipe. The AppImage is not built by CI; create one by hand when
+needed:
+
+```bash
+./packaging/appimage/build-appimage.sh [version]
+```
+
+It needs `appimagetool` in `PATH`, builds the three release binaries and writes
+`target/oxterm-<version>-<arch>.AppImage`.

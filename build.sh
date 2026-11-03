@@ -12,3 +12,4 @@ install -m 0755 "${ROOT_DIR}/target/release/oxterm-askpass" "${ROOT_DIR}/oxterm-
 
 printf '%s\n' "Oxterm: copied definitive build to ${ROOT_DIR}/oxterm-linux-x86-64"
 printf '%s\n' "Oxterm: copied broker build to ${ROOT_DIR}/oxterm-broker-linux-x86-64"
+printf '%s\n' "Oxterm: copied askpass build to ${ROOT_DIR}/oxterm-askpass-linux-x86-64"
