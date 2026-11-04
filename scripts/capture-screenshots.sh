@@ -5,7 +5,8 @@
 # The script runs a throwaway Oxterm instance on a private X display with its
 # own HOME, so the user's settings, history and notes are never touched. It
 # drives the window through the control API, captures it with ImageMagick and
-# writes the PNG files under docs/screenshots/.
+# writes the PNG files under docs/screenshots/, plus an animated demo.gif when
+# ffmpeg is installed.
 #
 # Requirements: a built binary (cargo build --release), Xvnc (tigervnc),
 # xdotool, ImageMagick (import) and xfwm4. On Debian/Ubuntu:
@@ -58,9 +59,10 @@ printf 'Host staging\n  HostName staging.example.net\nHost backup\n  HostName ba
 GUI_PID=""
 XVNC_PID=""
 WM_PID=""
+FFMPEG_PID=""
 
 cleanup() {
-    for pid in "$GUI_PID" "$WM_PID" "$XVNC_PID"; do
+    for pid in "$GUI_PID" "$WM_PID" "$XVNC_PID" "$FFMPEG_PID"; do
         [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
     done
     wait 2>/dev/null || true
@@ -209,5 +211,52 @@ fi
 sleep 2
 import -window "$WINDOW" "$OUT_DIR/splits.png"
 
+# Animated tour for the README: record the split layout while typing a command
+# and opening the command palette. ffmpeg is optional so the PNG captures still
+# work without it.
+if command -v ffmpeg >/dev/null 2>&1; then
+    WIN_X=0
+    WIN_Y=0
+    WIN_W=0
+    WIN_H=0
+    while IFS='=' read -r key value; do
+        case "$key" in
+            X) WIN_X="$value" ;;
+            Y) WIN_Y="$value" ;;
+            WIDTH) WIN_W="$value" ;;
+            HEIGHT) WIN_H="$value" ;;
+        esac
+    done <<<"$(xdotool getwindowgeometry --shell "$WINDOW")"
+
+    ffmpeg -y -loglevel error -f x11grab -framerate 12 \
+        -video_size "${WIN_W}x${WIN_H}" -i "${DISPLAY}+${WIN_X},${WIN_Y}" \
+        "$TMP_DIR/demo.mp4" &
+    FFMPEG_PID=$!
+    sleep 0.5
+
+    # The split focused the right pane, so type the command there first.
+    xdotool windowactivate --sync "$WINDOW" 2>/dev/null || true
+    xdotool type --delay 45 -- 'git --no-pager log --oneline -3'
+    xdotool key Return
+    sleep 2
+    xdotool key --clearmodifiers ctrl+shift+p
+    sleep 1
+    xdotool type --delay 45 -- 'split'
+    sleep 1
+    xdotool key --clearmodifiers Escape
+    sleep 1
+
+    kill -INT "$FFMPEG_PID" 2>/dev/null || true
+    wait "$FFMPEG_PID" 2>/dev/null || true
+    FFMPEG_PID=""
+
+    ffmpeg -y -loglevel error -i "$TMP_DIR/demo.mp4" -filter_complex \
+        "[0:v]fps=10,scale=1000:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5" \
+        -loop 0 "$OUT_DIR/demo.gif"
+fi
+
 printf 'wrote %s\n' "$OUT_DIR/main.png" "$OUT_DIR/command-bar.png" "$OUT_DIR/splits.png" \
     "$OUT_DIR/connections.png"
+if [ -f "$OUT_DIR/demo.gif" ]; then
+    printf 'wrote %s\n' "$OUT_DIR/demo.gif"
+fi
