@@ -7,7 +7,7 @@ source_changed=false
 
 while IFS= read -r path; do
     case "$path" in
-        src/*|build.rs|build.sh|Cargo.toml|Cargo.lock|setup.sh)
+        src/*|tests/*|examples/*|build.rs|build.sh|Cargo.toml|Cargo.lock|setup.sh)
             source_changed=true
             break
             ;;
@@ -20,6 +20,14 @@ fi
 
 if ! command -v cargo >/dev/null 2>&1; then
     printf '%s\n' 'Oxterm pre-commit: cargo not found; commit aborted' >&2
+    exit 1
+fi
+
+# Keep this in step with CI: an unformatted push fails every workflow, and a
+# release commit that fails the check leaves the version tag without binaries.
+printf '%s\n' 'Oxterm pre-commit: checking formatting...'
+if ! cargo fmt --manifest-path "$ROOT_DIR/Cargo.toml" --check; then
+    printf '%s\n' 'Oxterm pre-commit: run cargo fmt and commit again' >&2
     exit 1
 fi
 
