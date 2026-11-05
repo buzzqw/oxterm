@@ -46,7 +46,7 @@ jobs:
             oxterm-latest-linux-x86_64 oxterm-broker-latest-linux-x86_64 oxterm-askpass-latest-linux-x86_64 THEME-LICENSES.md
 
       - name: Create checksums
-        run: sha256sum oxterm-*-linux-x86_64 > SHA256SUMS
+        run: sha256sum oxterm-* > SHA256SUMS
 
       - name: Update rolling tag
         env:
