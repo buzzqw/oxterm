@@ -106,7 +106,9 @@ page](https://github.com/buzzqw/oxterm/releases/latest), extract it, and run the
 `oxterm-*-linux-x86_64` executable it contains. Keep the `oxterm-broker-*` file
 next to it for the low-memory PTY broker and the `oxterm-askpass-*` file next to
 it for stored passwords; without them Oxterm still works, but falls back to
-`oxterm --broker` and prompts for passwords in the tab.
+`oxterm --broker` and prompts for passwords in the tab. The archive also
+contains `README.md`, the full `manual.md`, the `LICENSE`, the theme licences
+and a `SHA256SUMS` file covering everything extracted from it.
 
 ### Building from source
 

@@ -68,8 +68,15 @@ jobs:
           install -m 0755 target/release/oxterm-broker "oxterm-broker-${VERSION}-linux-x86_64"
           install -m 0755 target/release/oxterm-askpass "oxterm-askpass-${VERSION}-linux-x86_64"
           install -m 0644 themes/licenses.md THEME-LICENSES.md
+          # Older tags do not ship packaging/README-release.md yet, so keep the
+          # project README as the fallback and never leave the bundle without one.
+          if [[ -f packaging/README-release.md ]]; then
+            install -m 0644 packaging/README-release.md README.md
+          fi
+          sha256sum oxterm-*-linux-x86_64 README.md manual.md LICENSE THEME-LICENSES.md > SHA256SUMS
           tar -czf "oxterm-${VERSION}-linux-x86_64.tar.gz" \
-            "oxterm-${VERSION}-linux-x86_64" "oxterm-broker-${VERSION}-linux-x86_64" "oxterm-askpass-${VERSION}-linux-x86_64" THEME-LICENSES.md
+            "oxterm-${VERSION}-linux-x86_64" "oxterm-broker-${VERSION}-linux-x86_64" "oxterm-askpass-${VERSION}-linux-x86_64" \
+            README.md manual.md LICENSE THEME-LICENSES.md SHA256SUMS
           sha256sum oxterm-* > SHA256SUMS
 
       - name: Create or update GitHub release
