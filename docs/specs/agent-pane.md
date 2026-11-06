@@ -79,7 +79,9 @@ session kills only that process.
    the session and its transcript.
 
 Hiding the pane is a stash, not a destroy. `Ctrl+Shift+.` toggles it,
-`Ctrl+Shift+I` focuses it, `Ctrl+Alt+.` sends the last failure.
+`Ctrl+Shift+I` focuses it, `Ctrl+Alt+.` sends the last failure. The process is
+owned by the window: closing the window (or the whole application) ends every
+session, and tabs of different windows do not share one.
 
 ## Policy
 
@@ -172,6 +174,10 @@ wants; configure the remote command for remote work.
 - Only text prompts are sent. Images and resources are not advertised.
 - `agent_remote_command` uses the running `ssh` arguments; if the tab is not an
   SSH client it is ignored.
+- There is no shared agent broker yet: sessions survive tab switches and hiding
+  the pane, not the window. A broker that outlives the window and multiplexes
+  sessions across windows is the next step if the feature is used enough to
+  justify it.
 
 ## Status event
 
