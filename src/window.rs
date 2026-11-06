@@ -1707,11 +1707,17 @@ mod main_imp {
         /// Set when the dock still has to be positioned, which can only happen
         /// once it has an allocation.
         pub agent_dock_pending: RefCell<bool>,
+        /// One deferred position at a time, so a burst of allocations does not
+        /// queue a dozen callbacks.
+        pub agent_position_queued: Cell<bool>,
         /// Set while the dock position is written by code, so the drag handler
         /// does not store a value the user did not choose.
         pub agent_positioning: Cell<bool>,
-        /// Pending save of the share chosen by dragging the handle.
-        pub agent_share_save: RefCell<Option<glib::SourceId>>,
+        /// Bumped for every share the user drags to; only the newest pending
+        /// save is written. The one-shot timeout cannot be removed afterwards
+        /// (SourceId::remove panics on a source that already fired), so a stale
+        /// timer simply finds a newer generation and does nothing.
+        pub agent_share_generation: Cell<u64>,
         pub connections_panel:
             RefCell<Option<std::rc::Rc<crate::connections_panel::ConnectionsPanel>>>,
         pub connections_slot: RefCell<Option<gtk::Box>>,
@@ -5979,7 +5985,7 @@ impl MainWindow {
         if visible {
             slot.show();
             *self.imp().agent_dock_pending.borrow_mut() = true;
-            self.position_agent_dock(&dock);
+            self.queue_agent_dock_position(&dock);
         } else {
             slot.hide();
             *self.imp().agent_dock_pending.borrow_mut() = false;
@@ -6009,7 +6015,29 @@ impl MainWindow {
         if !*self.imp().agent_dock_pending.borrow() || !self.imp().agent_dock_visible.get() {
             return;
         }
-        self.position_agent_dock(dock);
+        self.queue_agent_dock_position(dock);
+    }
+
+    /// Move the splitter from an idle callback rather than from the allocation
+    /// that reported the need: `set_position` queues another allocation, and
+    /// doing that inside one invites a loop.
+    fn queue_agent_dock_position(&self, dock: &gtk::Paned) {
+        if self.imp().agent_position_queued.replace(true) {
+            return;
+        }
+        let dock = dock.clone();
+        let weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            window.imp().agent_position_queued.set(false);
+            if !*window.imp().agent_dock_pending.borrow() || !window.imp().agent_dock_visible.get()
+            {
+                return;
+            }
+            window.position_agent_dock(&dock);
+        });
     }
 
     fn position_agent_dock(&self, dock: &gtk::Paned) {
@@ -6017,6 +6045,7 @@ impl MainWindow {
         if extent <= 1 {
             return;
         }
+        *self.imp().agent_dock_pending.borrow_mut() = false;
         let share = settings().get_i64("agent_pane_share").clamp(10, 70) as f64 / 100.0;
         let pane = ((extent as f64 * share).round() as i32).clamp(1, extent - 1);
         self.imp().agent_positioning.set(true);
@@ -6026,7 +6055,6 @@ impl MainWindow {
             extent - pane
         });
         self.imp().agent_positioning.set(false);
-        *self.imp().agent_dock_pending.borrow_mut() = false;
     }
 
     /// Remember the share the user dragged to, once the handle stops moving.
@@ -6045,13 +6073,18 @@ impl MainWindow {
         };
         let share = ((pane as f64 / extent as f64) * 100.0).round() as i64;
         let share = share.clamp(10, 70);
-        if let Some(signal) = self.imp().agent_share_save.borrow_mut().take() {
-            signal.remove();
-        }
-        let save = glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+        let generation = self.imp().agent_share_generation.get().wrapping_add(1);
+        self.imp().agent_share_generation.set(generation);
+        let weak = self.downgrade();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            if window.imp().agent_share_generation.get() != generation {
+                return;
+            }
             settings().set_i64("agent_pane_share", share);
         });
-        *self.imp().agent_share_save.borrow_mut() = Some(save);
     }
 
     pub fn agent_toggle(&self) {
