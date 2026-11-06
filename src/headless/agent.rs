@@ -514,6 +514,19 @@ pub struct KnownAgent {
     pub command: &'static str,
 }
 
+impl KnownAgent {
+    /// The suggested command with the discovered binary path substituted, so a
+    /// GUI started from the desktop does not depend on its own `PATH`.
+    pub fn command_with_path(&self, path: &Path) -> String {
+        let mut argv = command_argv(self.command).unwrap_or_default();
+        if argv.is_empty() {
+            return path.to_string_lossy().to_string();
+        }
+        argv[0] = path.to_string_lossy().to_string();
+        shell_words::join(&argv)
+    }
+}
+
 pub const KNOWN_AGENTS: &[KnownAgent] = &[
     KnownAgent {
         program: "opencode",
@@ -558,12 +571,68 @@ pub fn find_in_path(path_var: &str, program: &str) -> Option<std::path::PathBuf>
     None
 }
 
+/// Directories searched after `PATH`.
+///
+/// A terminal started from the desktop menu inherits a much smaller `PATH` than
+/// an interactive shell: per-user tool directories are often missing. Looking
+/// in the usual install locations keeps `opencode acp` working without asking
+/// the user to hard-code a path.
+pub fn fallback_dirs() -> Vec<std::path::PathBuf> {
+    let mut directories = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        for relative in [
+            ".opencode/bin",
+            ".local/bin",
+            ".bun/bin",
+            ".cargo/bin",
+            ".npm-global/bin",
+        ] {
+            directories.push(home.join(relative));
+        }
+    }
+    directories.push(std::path::PathBuf::from("/usr/local/bin"));
+    directories.push(std::path::PathBuf::from("/opt/homebrew/bin"));
+    directories
+}
+
+fn find_in_dirs(directories: &[std::path::PathBuf], program: &str) -> Option<std::path::PathBuf> {
+    directories
+        .iter()
+        .map(|directory| directory.join(program))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Testable form of the lookup: `PATH` first, then `extra`.
+pub fn find_in_path_with(
+    path_var: &str,
+    extra: &[std::path::PathBuf],
+    program: &str,
+) -> Option<std::path::PathBuf> {
+    find_in_path(path_var, program).or_else(|| find_in_dirs(extra, program))
+}
+
+/// `PATH`, then [`fallback_dirs`].
+pub fn find_program(program: &str) -> Option<std::path::PathBuf> {
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    find_in_path_with(&path_var, &fallback_dirs(), program)
+}
+
+/// Absolute path for `program`, or the name unchanged when it cannot be found.
+/// `PATH` and the common per-user bin directories are both searched.
+pub fn resolve_program(program: &str) -> String {
+    if program.contains('/') {
+        return program.to_string();
+    }
+    find_program(program)
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|| program.to_string())
+}
+
 /// Known agent CLIs installed on this machine, in the order of [`KNOWN_AGENTS`].
 pub fn detected_agents() -> Vec<(&'static KnownAgent, std::path::PathBuf)> {
-    let path_var = std::env::var("PATH").unwrap_or_default();
     KNOWN_AGENTS
         .iter()
-        .filter_map(|agent| find_in_path(&path_var, agent.program).map(|path| (agent, path)))
+        .filter_map(|agent| find_program(agent.program).map(|path| (agent, path)))
         .collect()
 }
 
@@ -805,9 +874,27 @@ mod tests {
         let program = directory.join("opencode");
         std::fs::write(&program, b"#!/bin/sh\n").unwrap();
         let path_var = format!("{}:/nonexistent", directory.display());
-        assert_eq!(find_in_path(&path_var, "opencode"), Some(program));
+        assert_eq!(find_in_path(&path_var, "opencode"), Some(program.clone()));
         assert_eq!(find_in_path(&path_var, "definitely-not-here"), None);
         assert_eq!(find_in_path("", "opencode"), None);
+
+        // Fallback directories cover the minimal PATH of a desktop launcher.
+        let empty_path = "";
+        assert_eq!(
+            find_in_path(empty_path, "opencode"),
+            None,
+            "the temporary program is not in the fallback directories"
+        );
+        let extra = vec![directory.clone()];
+        assert_eq!(
+            find_in_path_with(empty_path, &extra, "opencode"),
+            Some(program.clone())
+        );
+        assert_eq!(
+            KNOWN_AGENTS[0].command_with_path(&program),
+            format!("{} acp", program.display())
+        );
+        assert_eq!(resolve_program("/already/absolute"), "/already/absolute");
         std::fs::remove_dir_all(&directory).unwrap();
     }
 

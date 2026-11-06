@@ -31,6 +31,7 @@ enum UiEvent {
     Ready {
         pane: String,
         agent: String,
+        model: Option<String>,
         session: String,
     },
     Update {
@@ -62,6 +63,7 @@ struct Session {
     writer: Sender<Value>,
     session_id: Option<String>,
     agent_name: String,
+    model: Option<String>,
     transcript: String,
     ready: bool,
     busy: bool,
@@ -644,7 +646,12 @@ impl AgentPanel {
                 self.update_header();
             }
             Err(error) => {
-                self.append_text(&format!("\nCannot start the agent: {}\n", error));
+                self.append_text(&format!(
+                    "\nCannot start the agent: {}\n\
+                     If the command works in your shell but not here, use the absolute path \
+                     printed by `oxterm agent --list`.\n",
+                    error
+                ));
                 self.update_header();
             }
         }
@@ -690,6 +697,7 @@ impl AgentPanel {
                 UiEvent::Ready {
                     pane,
                     agent,
+                    model,
                     session,
                 } => {
                     let mut sessions = self.sessions.borrow_mut();
@@ -697,6 +705,7 @@ impl AgentPanel {
                         state.ready = true;
                         state.status = "ready";
                         state.agent_name = agent;
+                        state.model = model;
                         state.session_id = Some(session);
                     }
                     let queued: Vec<String> = sessions
@@ -949,22 +958,27 @@ impl AgentPanel {
     }
 
     fn update_header(&self) {
-        let (name, status, usage) = self
+        let (name, model, status, usage) = self
             .active_pane()
             .and_then(|pane| {
                 self.sessions.borrow().get(&pane).map(|session| {
                     (
                         session.agent_name.clone(),
+                        session.model.clone(),
                         session.status,
                         session.usage.clone(),
                     )
                 })
             })
-            .unwrap_or_else(|| ("not started".to_string(), "", String::new()));
+            .unwrap_or_else(|| ("not started".to_string(), None, "", String::new()));
         let mut text = String::from("Agent");
         if !name.is_empty() {
             text.push_str(" · ");
             text.push_str(&name);
+        }
+        if let Some(model) = model.filter(|model| !model.is_empty()) {
+            text.push_str(" · ");
+            text.push_str(&model);
         }
         if !status.is_empty() {
             text.push_str(" · ");
@@ -987,8 +1001,8 @@ fn spawn_session(
     servers: Vec<acp::McpServer>,
     events: Sender<UiEvent>,
 ) -> Result<Session, String> {
-    let program = argv.first().ok_or("no agent command")?;
-    let mut child = Command::new(program)
+    let program = agent::resolve_program(argv.first().ok_or("no agent command")?);
+    let mut child = Command::new(&program)
         .args(&argv[1..])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1025,6 +1039,7 @@ fn spawn_session(
         writer,
         session_id: None,
         agent_name: String::new(),
+        model: None,
         transcript: String::new(),
         ready: false,
         busy: false,
@@ -1105,6 +1120,7 @@ fn read_agent(
                         let _ = events.send(UiEvent::Ready {
                             pane: pane.clone(),
                             agent: agent_name.clone(),
+                            model: acp::session_model(&result),
                             session,
                         });
                     }

@@ -26,8 +26,10 @@ Two settings must both be true before anything can start:
 }
 ```
 
-`oxterm agent --list` reports the known ACP CLIs already on `PATH` and the
-command to configure for each; `oxterm agent --show` prints the effective
+`oxterm agent --list` reports the known ACP CLIs already installed and the
+absolute command to configure for each (`PATH` plus the usual per-user bin
+directories, because a desktop-launched GUI has a smaller `PATH` than a shell);
+`oxterm agent --show` prints the effective
 configuration and the policies. The same settings are on the **Agents** page of
 the preferences window, including a "Detect installed agents" button. Oxterm
 never installs an agent.

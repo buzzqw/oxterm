@@ -373,6 +373,20 @@ fn tool_update_text(update: &Value) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+/// Model selected for the session, when the agent reports it in the
+/// `configOptions` of `session/new`. Display metadata only.
+pub fn session_model(result: &Value) -> Option<String> {
+    result
+        .get("configOptions")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|option| option.get("id").and_then(Value::as_str) == Some("model"))
+        .and_then(|option| option.get("currentValue"))
+        .and_then(Value::as_str)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string)
+}
+
 /// Stop reason of a completed `session/prompt` response.
 pub fn stop_reason(result: &Value) -> String {
     result
@@ -594,6 +608,20 @@ mod tests {
             Some("reject-once")
         );
         assert_eq!(permission_title(&json!({})), "run a tool");
+    }
+
+    #[test]
+    fn reads_the_session_model_when_reported() {
+        let result = json!({"sessionId": "s", "configOptions": [
+            {"id": "model", "currentValue": "deepseek/deepseek-v4-pro"},
+            {"id": "mode", "currentValue": "agent"},
+        ]});
+        assert_eq!(
+            session_model(&result),
+            Some("deepseek/deepseek-v4-pro".to_string())
+        );
+        assert_eq!(session_model(&json!({"sessionId": "s"})), None);
+        assert_eq!(session_model(&json!({"configOptions": []})), None);
     }
 
     #[test]

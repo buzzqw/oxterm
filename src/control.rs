@@ -810,12 +810,7 @@ fn run_agent(pane: Option<&str>, action: AgentAction) -> i32 {
             } else {
                 println!("\nFound on PATH:");
                 for (agent, path) in detected {
-                    println!(
-                        "  {:<22} {:<40} command: {}",
-                        agent.label,
-                        path.display(),
-                        agent.command
-                    );
+                    println!("  {:<22} {}", agent.label, agent.command_with_path(&path));
                 }
             }
             println!(

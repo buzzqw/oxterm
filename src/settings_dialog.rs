@@ -1569,8 +1569,8 @@ fn build_agents(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, 
                 .collect();
             found.set_text(&format!("Found: {}", labels.join("   ·   ")));
             if command.text().trim().is_empty() {
-                if let Some((agent, _)) = detected.first() {
-                    command.set_text(agent.command);
+                if let Some((agent, path)) = detected.first() {
+                    command.set_text(&agent.command_with_path(path));
                 }
             }
         });
