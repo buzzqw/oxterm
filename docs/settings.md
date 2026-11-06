@@ -112,6 +112,7 @@ never written back to disk.
 | `agent_audit` | bool | `true` | Append every agent decision to ~/.local/state/oxterm/agent-audit.log (no typed text). |
 | `agent_pane_position` | string | `bottom` | Where the agent pane opens; read when the window is built. |
 |  |  | Values: `bottom`, `top`, `left`, `right` |  |
+| `agent_pane_share` | int (10..70) | `35` | Percentage of the window the agent pane takes; dragging its handle updates it. |
 | `agent_show_usage` | bool | `true` | Show the token usage and cost the agent reports in the agent pane header. |
 | `ssh_alert_patterns` | string | `(?i)(^|[-_.])(prod|production|prd|live)([-_.]|$)` | Regex for production SSH hosts; matching tabs are highlighted. Empty disables the badge. |
 | `ssh_alert_color` | color (#rrggbb) | `#cc0000` | Colour used for the production SSH tab badge. |

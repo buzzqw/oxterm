@@ -111,7 +111,9 @@ are only the representation:
 
 With it enabled, `Ctrl+Shift+.` toggles a docked agent pane, `Ctrl+Shift+I`
 focuses it and `Ctrl+Alt+.` sends the last failed command with its directory,
-exit status and output. The same context is available as `oxterm fix [HINT]`,
+exit status and output. The pane's handle can be dragged to give it more or
+less room, and the share is remembered in `agent_pane_share`. The same context
+is available as `oxterm fix [HINT]`,
 `/fix` in the command bar and `?prompt` typed at the shell prompt (or in the
 command bar): a line that starts with `?` is sent to the agent as a question
 instead of being run by the shell. Since a command the shell cannot find

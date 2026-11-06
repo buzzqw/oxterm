@@ -356,6 +356,9 @@ impl AgentPanel {
     pub fn set_visible(&self, visible: bool) {
         if visible {
             self.root.show();
+            if let Some(window) = self.window.upgrade() {
+                window.set_agent_dock_visible(true);
+            }
             self.root.set_reveal_child(true);
             if agent::configured(&settings().raw_data()) {
                 self.setup.hide();
@@ -369,9 +372,13 @@ impl AgentPanel {
             // below it. Hiding the widget after the slide-out gives the space
             // back; showing it again before this runs keeps the pane open.
             let root = self.root.clone();
+            let window = self.window.clone();
             glib::timeout_add_local_once(Duration::from_millis(220), move || {
                 if !root.reveals_child() {
                     root.hide();
+                    if let Some(window) = window.upgrade() {
+                        window.set_agent_dock_visible(false);
+                    }
                 }
             });
         }

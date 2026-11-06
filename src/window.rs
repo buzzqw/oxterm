@@ -1698,6 +1698,20 @@ mod main_imp {
         /// startup path means a terminal without agent features pays nothing.
         pub agent_panel: RefCell<Option<std::rc::Rc<crate::agent_panel::AgentPanel>>>,
         pub agent_slot: RefCell<Option<gtk::Box>>,
+        /// Splitter between the terminal area and the agent pane: a vertical
+        /// one for the top and bottom positions, a horizontal one otherwise.
+        pub agent_dock: RefCell<Option<gtk::Paned>>,
+        /// True while the agent pane is open, so the dock only positions
+        /// itself when it has to be seen.
+        pub agent_dock_visible: Cell<bool>,
+        /// Set when the dock still has to be positioned, which can only happen
+        /// once it has an allocation.
+        pub agent_dock_pending: RefCell<bool>,
+        /// Set while the dock position is written by code, so the drag handler
+        /// does not store a value the user did not choose.
+        pub agent_positioning: Cell<bool>,
+        /// Pending save of the share chosen by dragging the handle.
+        pub agent_share_save: RefCell<Option<glib::SourceId>>,
         pub connections_panel:
             RefCell<Option<std::rc::Rc<crate::connections_panel::ConnectionsPanel>>>,
         pub connections_slot: RefCell<Option<gtk::Box>>,
@@ -2016,32 +2030,57 @@ impl MainWindow {
         // handshake until the user asks for it. Its position is read once, when
         // the window is built.
         let agent_slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        agent_slot.set_no_show_all(true);
+        agent_slot.hide();
         *self.imp().agent_slot.borrow_mut() = Some(agent_slot.clone());
         let agent_position = settings().get_str("agent_pane_position");
-        if agent_position == "top" {
-            vbox.pack_start(&agent_slot, false, false, 0);
+        // Terminal and agent pane share one splitter, so the pane gets a real
+        // share of the window instead of its natural height, and the user can
+        // drag the handle. A hidden pane gives the whole area to the terminal.
+        let horizontal_dock = matches!(agent_position.as_str(), "left" | "right");
+        let dock = gtk::Paned::new(if horizontal_dock {
+            gtk::Orientation::Horizontal
+        } else {
+            gtk::Orientation::Vertical
+        });
+        dock.set_wide_handle(true);
+        if matches!(agent_position.as_str(), "top" | "left") {
+            dock.pack1(&agent_slot, false, false);
+            dock.pack2(&paned, true, true);
+        } else {
+            dock.pack1(&paned, true, true);
+            dock.pack2(&agent_slot, false, false);
+        }
+        dock.show();
+        *self.imp().agent_dock.borrow_mut() = Some(dock.clone());
+        {
+            // The share the user drags to is remembered; the values written
+            // while opening the pane are not.
+            let weak = crate::SendWeak::new(self);
+            dock.connect_notify_local(Some("position"), move |dock, _| {
+                if let Some(window) = weak.upgrade() {
+                    window.remember_agent_share(dock);
+                }
+            });
+            let weak = crate::SendWeak::new(self);
+            dock.connect_size_allocate(move |dock, _| {
+                if let Some(window) = weak.upgrade() {
+                    window.position_pending_agent_dock(dock);
+                }
+            });
         }
         // The notes panel is lazy: its (fairly large) widget tree is created
         // the first time it is shown. The empty slot keeps its place in the
         // layout so the paned terminal area keeps the same size.
         let content_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let connections_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        if agent_position == "left" {
-            content_row.pack_start(&agent_slot, false, true, 0);
-        }
         content_row.pack_start(&connections_slot, false, true, 0);
         *self.imp().connections_slot.borrow_mut() = Some(connections_slot);
-        content_row.pack_start(&paned, true, true, 0);
-        if agent_position == "right" {
-            content_row.pack_end(&agent_slot, false, true, 0);
-        }
+        content_row.pack_start(&dock, true, true, 0);
         let notes_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         content_row.pack_start(&notes_slot, false, true, 0);
         *self.imp().notes_slot.borrow_mut() = Some(notes_slot);
         vbox.pack_start(&content_row, true, true, 0);
-        if !matches!(agent_position.as_str(), "top" | "left" | "right") {
-            vbox.pack_start(&agent_slot, false, false, 0);
-        }
         vbox.pack_end(&stats_box, false, false, 0);
         let weak = self.downgrade();
         let cwd = std::rc::Rc::new(move || {
@@ -5918,14 +5957,101 @@ impl MainWindow {
         let slot = self.imp().agent_slot.borrow().clone()?;
         let panel = crate::agent_panel::AgentPanel::new(self);
         slot.pack_start(panel.widget(), true, true, 0);
-        // Only the slot: the pane itself stays hidden until it is opened, so an
-        // unused agent pane does not eat the terminal's height.
-        slot.show();
+        // The slot stays hidden until the pane is opened, so an unused agent
+        // pane does not eat any of the terminal's room.
         if let Some(term) = self.current_terminal() {
             panel.set_active_pane(Some(term.remote_id()));
         }
         *self.imp().agent_panel.borrow_mut() = Some(panel.clone());
         Some(panel)
+    }
+
+    /// Give the agent pane its share of the window, or take it back. The pane
+    /// keeps its own revealer animation; the splitter only decides the room.
+    pub fn set_agent_dock_visible(&self, visible: bool) {
+        let Some(slot) = self.imp().agent_slot.borrow().clone() else {
+            return;
+        };
+        let Some(dock) = self.imp().agent_dock.borrow().clone() else {
+            return;
+        };
+        self.imp().agent_dock_visible.set(visible);
+        if visible {
+            slot.show();
+            *self.imp().agent_dock_pending.borrow_mut() = true;
+            self.position_agent_dock(&dock);
+        } else {
+            slot.hide();
+            *self.imp().agent_dock_pending.borrow_mut() = false;
+        }
+    }
+
+    /// Whether the agent pane is the first child of its splitter, which is the
+    /// case for the top and left positions.
+    fn agent_dock_first(&self, dock: &gtk::Paned) -> bool {
+        match (self.imp().agent_slot.borrow().clone(), dock.child1()) {
+            (Some(slot), Some(child)) => child == slot.upcast::<gtk::Widget>(),
+            _ => false,
+        }
+    }
+
+    fn agent_dock_extent(&self, dock: &gtk::Paned) -> i32 {
+        if dock.orientation() == gtk::Orientation::Horizontal {
+            dock.allocated_width()
+        } else {
+            dock.allocated_height()
+        }
+    }
+
+    /// Put the splitter where `agent_pane_share` wants it once the dock has a
+    /// size. Opening the pane before the window is realized hits this path.
+    fn position_pending_agent_dock(&self, dock: &gtk::Paned) {
+        if !*self.imp().agent_dock_pending.borrow() || !self.imp().agent_dock_visible.get() {
+            return;
+        }
+        self.position_agent_dock(dock);
+    }
+
+    fn position_agent_dock(&self, dock: &gtk::Paned) {
+        let extent = self.agent_dock_extent(dock);
+        if extent <= 1 {
+            return;
+        }
+        let share = settings().get_i64("agent_pane_share").clamp(10, 70) as f64 / 100.0;
+        let pane = ((extent as f64 * share).round() as i32).clamp(1, extent - 1);
+        self.imp().agent_positioning.set(true);
+        dock.set_position(if self.agent_dock_first(dock) {
+            pane
+        } else {
+            extent - pane
+        });
+        self.imp().agent_positioning.set(false);
+        *self.imp().agent_dock_pending.borrow_mut() = false;
+    }
+
+    /// Remember the share the user dragged to, once the handle stops moving.
+    fn remember_agent_share(&self, dock: &gtk::Paned) {
+        if !self.imp().agent_dock_visible.get() || self.imp().agent_positioning.get() {
+            return;
+        }
+        let extent = self.agent_dock_extent(dock);
+        if extent <= 1 {
+            return;
+        }
+        let pane = if self.agent_dock_first(dock) {
+            dock.position()
+        } else {
+            extent - dock.position()
+        };
+        let share = ((pane as f64 / extent as f64) * 100.0).round() as i64;
+        let share = share.clamp(10, 70);
+        if let Some(signal) = self.imp().agent_share_save.borrow_mut().take() {
+            signal.remove();
+        }
+        let save = glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+            settings().set_i64("agent_pane_share", share);
+        });
+        *self.imp().agent_share_save.borrow_mut() = Some(save);
     }
 
     pub fn agent_toggle(&self) {

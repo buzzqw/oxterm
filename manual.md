@@ -416,8 +416,11 @@ is the interface:
 
 Pressing `Ctrl+Shift+.` on a fresh configuration opens the pane with the same
 choice inline: pick an agent, press Enable, and a pending prompt is sent
-immediately. Nothing is installed or started before the user confirms. The
-settings file is only the stored representation; editing it is never required:
+immediately. Nothing is installed or started before the user confirms. The pane
+is docked against the terminal and its handle can be dragged to give it more or
+less room; the chosen share is stored as `agent_pane_share` and the side it
+opens on as `agent_pane_position`. The settings file is only the stored
+representation; editing it is never required:
 
 ```jsonc
 {

@@ -1071,6 +1071,12 @@ pub const SETTINGS: &[Setting] = &[
         choices: &["bottom", "top", "left", "right"],
     },
     setting(
+        "agent_pane_share",
+        Kind::Int { min: 10, max: 70 },
+        Default::Int(35),
+        "Percentage of the window the agent pane takes; dragging its handle updates it.",
+    ),
+    setting(
         "agent_show_usage",
         Kind::Bool,
         Default::Bool(true),
