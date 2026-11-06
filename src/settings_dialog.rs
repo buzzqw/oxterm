@@ -1536,27 +1536,33 @@ fn set_model_text(combo: &gtk::ComboBoxText, text: &str) {
     if let Some(entry) = model_entry(combo) {
         entry.set_text(text);
     }
-    combo.set_active(None);
 }
 
 /// Fill the model picker with what an agent reported, keeping the current value
-/// selectable even when the agent did not list it.
+/// selectable even when the agent did not list it. The entry always holds the
+/// model id, never the display name, because that is what gets saved and sent.
 fn fill_models(
     combo: &gtk::ComboBoxText,
+    syncing: &Cell<bool>,
     current: &str,
     choices: &[crate::headless::acp::ConfigChoice],
 ) {
+    let current = crate::headless::acp::resolve_model(choices, current);
+    syncing.set(true);
     combo.remove_all();
     for choice in choices {
         combo.append(Some(&choice.value), &choice.name);
     }
-    let current = current.trim();
     if !current.is_empty() {
         if !choices.iter().any(|choice| choice.value == current) {
-            combo.append(Some(current), current);
+            combo.append(Some(&current), &current);
         }
-        set_model_text(combo, current);
+        combo.set_active_id(Some(&current));
+    } else {
+        combo.set_active(None);
     }
+    set_model_text(combo, &current);
+    syncing.set(false);
 }
 
 /// Ask the agent for its handshake and model list, then fill the picker.
@@ -1566,6 +1572,7 @@ fn probe_agent(
     combo: gtk::ComboBoxText,
     status: gtk::Label,
     generation: Rc<Cell<u64>>,
+    syncing: Rc<Cell<bool>>,
     keep: String,
 ) {
     let raw = raw.trim().to_string();
@@ -1601,7 +1608,7 @@ fn probe_agent(
                 if generation.get() == run {
                     match report {
                         Ok(report) => {
-                            fill_models(&combo, &keep, &report.models);
+                            fill_models(&combo, &syncing, &keep, &report.models);
                             let current = report
                                 .model
                                 .map(|model| format!(", using {model}"))
@@ -1700,6 +1707,28 @@ fn build_agents(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, 
          is filled from what that agent reports; the agent pane header has the same picker.",
     ));
     page.row_keyed("Model", &model, Some("agent_model"));
+    let model_syncing = Rc::new(Cell::new(false));
+    fill_models(&model, &model_syncing, &s.get_str("agent_model"), &[]);
+    {
+        // A pick from the dropdown fills the entry with the display name; put
+        // the id back, so the saved value is always the one the agent uses.
+        let syncing = model_syncing.clone();
+        model.connect_changed(move |combo| {
+            if syncing.get() {
+                return;
+            }
+            let Some(id) = combo.active_id() else {
+                return;
+            };
+            if let Some(entry) = model_entry(combo) {
+                if entry.text() != id {
+                    syncing.set(true);
+                    entry.set_text(&id);
+                    syncing.set(false);
+                }
+            }
+        });
+    }
     let probe_generation = Rc::new(Cell::new(0u64));
 
     if detected.is_empty() {
@@ -1723,12 +1752,14 @@ fn build_agents(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, 
         let model = model.clone();
         let check_result = check_result.clone();
         let generation = probe_generation.clone();
+        let syncing = model_syncing.clone();
         check.connect_clicked(move |_| {
             probe_agent(
                 command.text().to_string(),
                 model.clone(),
                 check_result.clone(),
                 generation.clone(),
+                syncing.clone(),
                 model_text(&model),
             );
         });
@@ -1739,6 +1770,7 @@ fn build_agents(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, 
         let model = model.clone();
         let check_result = check_result.clone();
         let generation = probe_generation.clone();
+        let syncing = model_syncing.clone();
         installed.connect_changed(move |combo| {
             let index = combo.active().unwrap_or(0) as usize;
             if index == 0 {
@@ -1750,12 +1782,13 @@ fn build_agents(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, 
                     command.set_text(&text);
                 }
                 // The previous choice belongs to the previous agent.
-                fill_models(&model, "", &[]);
+                fill_models(&model, &syncing, "", &[]);
                 probe_agent(
                     text,
                     model.clone(),
                     check_result.clone(),
                     generation.clone(),
+                    syncing.clone(),
                     String::new(),
                 );
             }
@@ -1766,12 +1799,14 @@ fn build_agents(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, 
         let model = model.clone();
         let check_result = check_result.clone();
         let generation = probe_generation.clone();
+        let syncing = model_syncing.clone();
         command.connect_activate(move |entry| {
             probe_agent(
                 entry.text().to_string(),
                 model.clone(),
                 check_result.clone(),
                 generation.clone(),
+                syncing.clone(),
                 String::new(),
             );
         });
@@ -2849,7 +2884,12 @@ impl DialogState {
             .enabled
             .set_active(default_bool("agent_enabled"));
         self.agents.command.set_text(&default_str("agent_command"));
-        fill_models(&self.agents.model, &default_str("agent_model"), &[]);
+        fill_models(
+            &self.agents.model,
+            &Cell::new(false),
+            &default_str("agent_model"),
+            &[],
+        );
         self.agents
             .remote
             .set_text(&default_str("agent_remote_command"));

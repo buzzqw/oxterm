@@ -173,6 +173,20 @@ pub fn session_models(result: &Value) -> Option<Models> {
     })
 }
 
+/// Map a configured model to the value the agent actually uses.
+///
+/// The setting stores the model id, but a display name is accepted too: someone
+/// who typed the label from the agent's own list still gets the right model.
+pub fn resolve_model(choices: &[ConfigChoice], preferred: &str) -> String {
+    let preferred = preferred.trim();
+    choices
+        .iter()
+        .find(|choice| choice.value == preferred)
+        .or_else(|| choices.iter().find(|choice| choice.name == preferred))
+        .map(|choice| choice.value.clone())
+        .unwrap_or_else(|| preferred.to_string())
+}
+
 /// `session/set_model` request, the older way to choose a model.
 pub fn set_model(id: u64, session_id: &str, model_id: &str) -> Value {
     json!({
@@ -1055,6 +1069,32 @@ for line in sys.stdin:
         assert_eq!(request["method"], "session/set_model");
         assert_eq!(request["params"]["modelId"], "c/d");
         assert!(request["id"].as_u64().unwrap() >= CONFIG_ID_BASE);
+    }
+
+    #[test]
+    fn resolves_a_model_by_id_then_by_display_name() {
+        let choices = vec![
+            ConfigChoice {
+                value: "gemini-3.8-flash-high".to_string(),
+                name: "Gemini 3.8 Flash (High)".to_string(),
+            },
+            ConfigChoice {
+                value: "deepseek/deepseek-flash".to_string(),
+                name: "DeepSeek V4.1 Flash".to_string(),
+            },
+        ];
+        assert_eq!(
+            resolve_model(&choices, "deepseek/deepseek-flash"),
+            "deepseek/deepseek-flash"
+        );
+        // A label typed into the setting still selects the right model.
+        assert_eq!(
+            resolve_model(&choices, "Gemini 3.8 Flash (High)"),
+            "gemini-3.8-flash-high"
+        );
+        // Unknown values are left alone and handled by the caller's guard.
+        assert_eq!(resolve_model(&choices, "other/model"), "other/model");
+        assert_eq!(resolve_model(&[], "m/one"), "m/one");
     }
 
     #[test]
