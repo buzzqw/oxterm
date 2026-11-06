@@ -240,7 +240,9 @@ oxterm events --event command_finished | jq .
 
 The event names are `command_started`, `command_finished`, `prompt`, `bell`,
 `title_changed`, `cwd_changed`, `tab_created`, `tab_closed`, `pane_focused`,
-`selection_changed` and `output_line` (only with `--output`).
+`selection_changed`, `agent_status` and `output_line` (only with `--output`).
+`agent_status` reports `ready`, `working`, `error` and
+`closed` for the agent session of a pane and never carries conversation text.
 `selection_changed` reports only the length, never the selected text. The
 heartbeat frames the server sends to notice a closed client are filtered out.
 `--output` also enables `output_line`, which contains terminal output and can
@@ -395,6 +397,75 @@ The tools are `terminal_list`, `terminal_new`, `terminal_split`,
 They use the same control socket as the `oxterm` commands, so a window must be
 running. Standard output carries only protocol messages; diagnostics go to
 standard error.
+
+Agent features are opt-in. With `agent_enabled` false the server still answers
+the handshake but exposes no tools and explains why in `instructions`.
+
+#### Agent pane and fix context
+
+The agent pane speaks the Agent Client Protocol (ACP) with any agent CLI the
+user has installed. It is disabled by default:
+
+```jsonc
+{
+    "agent_enabled": true,
+    "agent_command": "opencode acp"
+}
+```
+
+`oxterm agent --list` reports the known ACP CLIs found on `PATH` and the command
+to configure for each; `oxterm agent --show` prints the effective configuration
+and the permission policies. Oxterm never installs an agent.
+
+| Action | Shortcut |
+| --- | --- |
+| Show or hide the agent pane | `Ctrl+Shift+.` |
+| Focus the agent pane | `Ctrl+Shift+I` |
+| Send the last failed command | `Ctrl+Alt+.` |
+| Ask with the active pane as context | `?prompt` in the command bar |
+| Diagnose the last failure | `/fix [hint]` or `oxterm fix [HINT]` |
+
+Each tab owns one session, keyed by pane id. Hiding the pane or switching tabs
+keeps the session and its transcript; closing the tab ends it. A prompt sent
+from `oxterm fix --pane ID` or `?prompt` starts the session on demand.
+
+`oxterm fix` builds the prompt from the last command reported by the shell
+integration: command line, reported directory, exit status, duration and up to
+500 rows of output (the last 8,000 characters are kept). `--print` prints the
+prompt instead of sending it. Without OSC 133 there is no context to send.
+
+An SSH tab can run the agent on the remote host instead of locally:
+
+```jsonc
+{
+    "agent_remote_command": "opencode acp"
+}
+```
+
+The agent is started over the running `ssh` connection (`ssh -T ...`), with the
+remote directory reported by OSC 7 as its working directory. Oxterm's MCP server
+is passed only to a local agent.
+
+#### Permissions and audit
+
+What an agent may do is decided per class of action, for both the MCP server and
+the agent's own tool permission requests:
+
+| Setting | Class | Default |
+| --- | --- | --- |
+| `agent_policy_read` | read the terminal (`terminal_list`, `terminal_capture`, `terminal_wait`) | `auto` |
+| `agent_policy_create` | open a tab or split, load a workspace | `ask` |
+| `agent_policy_input` | type into a shell, start a command | `ask` |
+
+The values are `auto`, `ask` and `deny`. `ask` opens a modal dialog in the
+running window; with no window, no answer or a timeout the request is denied.
+A tab or split that carries a command, and any workspace (which may contain
+commands), counts as input, not create.
+
+When `agent_audit` is true (default), every decision is appended as one JSON
+line to `~/.local/state/oxterm/agent-audit.log`. Typed text is not written to the
+log, only its length. Oxterm only transports prompts and context to the agent the
+user selected: it calls no model or cloud API itself.
 
 ## The Interface
 
@@ -1151,6 +1222,8 @@ remote tmux detaches instead of the local terminal.
 | `Ctrl+B, then d` | Detach the local terminal PTY; passed through when ssh is foreground |
 | `Ctrl+B, then x` | Close tab |
 | `Alt+1 ... Alt+9` | Replay history entry |
+| `Ctrl+Shift+. / Ctrl+Shift+I` | Show or hide the agent pane / focus it (when agent_enabled is on) |
+| `Ctrl+Alt+.` | Ask the agent to fix the last failed command (when agent_enabled is on) |
 | `F11` | Fullscreen |
 | `Click` | Open a detected URL |
 <!-- END GENERATED KEYBINDS -->

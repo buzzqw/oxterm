@@ -67,7 +67,11 @@ memory footprint and the memory-safety guarantees of Rust.
   and commands, plus a status bar of external widgets and extra command-palette
   entries from `~/.config/oxterm/extensions.json`
 - `oxterm mcp`: a Model Context Protocol server on stdin/stdout so coding
-  agents can open tabs, type, capture output and wait for commands
+  agents can open tabs, type, capture output and wait for commands, behind a
+  per-class permission policy and an audit log
+- Optional agent integration, off by default and configured by the user: an ACP
+  agent pane with one session per tab, `oxterm fix` with shell context from
+  OSC 133, `?prompt` and `/fix` in the command bar
 - VI copy mode with motions, text objects, visual block selection, scrolloff, and bookmarks
 - Session restore, named sessions, profiles, command palette, quickmarks, and hints
 - Compact right-click menu with submenus for clipboard (text/HTML/all/last
@@ -77,6 +81,43 @@ memory footprint and the memory-safety guarantees of Rust.
 - Parameterized snippets and JSON export for saved sessions
 - System statistics for the local and remote host (CPU, memory, disk), SSH connection sharing with keepalives, `autossh` support, and `mosh` recognition
 - Optional close confirmation only when a terminal has an active foreground process
+
+## Optional agent integration
+
+Oxterm does not start, install, or call an agent unless the user asks for it.
+The feature is off by default and needs an ACP-compatible agent CLI that the
+user already has:
+
+```jsonc
+{
+    "agent_enabled": true,
+    "agent_command": "opencode acp"   // any ACP agent you installed
+}
+```
+
+`oxterm agent --list` shows the known ACP CLIs found on `PATH` and the command to
+configure; `oxterm agent --show` prints the effective configuration. Oxterm never
+installs anything.
+
+With it enabled, `Ctrl+Shift+.` toggles a docked agent pane, `Ctrl+Shift+I`
+focuses it and `Ctrl+Alt+.` sends the last failed command with its directory,
+exit status and output. The same context is available as `oxterm fix [HINT]`,
+`/fix` and `?prompt` in the command bar. Each tab keeps its own session while
+the pane is hidden, and an SSH tab can run the agent on the remote host with
+`agent_remote_command` instead of locally.
+
+What the agent may do is a setting per class of action: reading the terminal
+(`agent_policy_read`, default `auto`), opening tabs (`agent_policy_create`,
+`ask`) and typing into a shell (`agent_policy_input`, `ask`). An `ask` decision
+opens a dialog in the running window; no answer means no. Every decision is
+appended to `~/.local/state/oxterm/agent-audit.log` without the text typed into
+the shell. The MCP server (`oxterm mcp`) follows the same policy, and with
+`agent_enabled` off it exposes no tools at all.
+
+Oxterm is only the transport: prompts and terminal context go to the agent CLI
+the user chose, over stdio, and nowhere else. See
+[docs/specs/agent-pane.md](docs/specs/agent-pane.md) for the lifecycle, the
+policy table and the limitations.
 
 ## Screenshots
 
@@ -307,6 +348,8 @@ Scriptable control (no window unless noted):
   action set-tab-color|set-tab-title|notify|open-url|...                               Ask a running Oxterm to perform an action
   workspace [--new-window] [--replace] FILE                                            Open tabs, splits and commands from a JSON file
   mcp                                                                                  Serve the Model Context Protocol on stdin/stdout
+  fix [--pane ID] [--print] [HINT...]                                                  Ask the agent to diagnose the last failed command
+  agent [--pane ID] [--list|--show] [PROMPT...]                                        Open the agent pane or send it a prompt
 
   Most of these headless commands act on a running Oxterm terminal on the
   same host and open no window, so they are safe to use over SSH;

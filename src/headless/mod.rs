@@ -6,6 +6,8 @@
 //! `gtk`, `gdk`, `glib` or `zoha_vte` imports are allowed under `headless/`.
 //! `tests/headless.rs` enforces the boundary.
 
+pub mod acp;
+pub mod agent;
 pub mod askpass;
 pub mod bookmarks;
 pub mod cli;

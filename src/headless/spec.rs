@@ -997,6 +997,73 @@ pub const SETTINGS: &[Setting] = &[
         Default::Bool(true),
         "Share SSH connections and enable keepalives through the bundled wrapper.",
     ),
+    // ── Optional agent integration ───────────────────────────
+    // Off by default. The user enables it and names the agents they have; no
+    // agent command is guessed or installed for them.
+    setting(
+        "agent_enabled",
+        Kind::Bool,
+        Default::Bool(false),
+        "Enable the optional agent features (agent pane, oxterm fix, MCP tools). Off by default.",
+    ),
+    setting(
+        "agent_command",
+        Kind::Text,
+        Default::Text(""),
+        "ACP agent CLI to run in the agent pane, e.g. \"opencode acp\" or \"claude-code-acp\".",
+    ),
+    setting(
+        "agent_remote_command",
+        Kind::Text,
+        Default::Text(""),
+        "ACP agent CLI to run on an SSH host instead, e.g. \"opencode acp\"; empty keeps it local.",
+    ),
+    setting(
+        "agent_mcp",
+        Kind::Bool,
+        Default::Bool(true),
+        "Hand the agent Oxterm's own MCP server, so it can drive tabs after your approval.",
+    ),
+    Setting {
+        key: "agent_policy_read",
+        kind: Kind::Text,
+        default: Default::Text("auto"),
+        description: "Allow agents to read terminal contents without asking.",
+        choices: &["auto", "ask", "deny"],
+    },
+    Setting {
+        key: "agent_policy_create",
+        kind: Kind::Text,
+        default: Default::Text("ask"),
+        description: "Allow agents to open tabs, split panes and load workspaces.",
+        choices: &["auto", "ask", "deny"],
+    },
+    Setting {
+        key: "agent_policy_input",
+        kind: Kind::Text,
+        default: Default::Text("ask"),
+        description: "Allow agents to type into a shell or start commands (code execution).",
+        choices: &["auto", "ask", "deny"],
+    },
+    setting(
+        "agent_audit",
+        Kind::Bool,
+        Default::Bool(true),
+        "Append every agent decision to ~/.local/state/oxterm/agent-audit.log (no typed text).",
+    ),
+    Setting {
+        key: "agent_pane_position",
+        kind: Kind::Text,
+        default: Default::Text("bottom"),
+        description: "Where the agent pane opens; read when the window is built.",
+        choices: &["bottom", "top", "left", "right"],
+    },
+    setting(
+        "agent_show_usage",
+        Kind::Bool,
+        Default::Bool(true),
+        "Show the token usage and cost the agent reports in the agent pane header.",
+    ),
     setting(
         "ssh_alert_patterns",
         Kind::Text,
@@ -1473,6 +1540,14 @@ pub const KEYBINDS: &[Keybind] = &[
     Keybind {
         keys: "Alt+1 ... Alt+9",
         description: "Replay history entry",
+    },
+    Keybind {
+        keys: "Ctrl+Shift+. / Ctrl+Shift+I",
+        description: "Show or hide the agent pane / focus it (when agent_enabled is on)",
+    },
+    Keybind {
+        keys: "Ctrl+Alt+.",
+        description: "Ask the agent to fix the last failed command (when agent_enabled is on)",
     },
     Keybind {
         keys: "F11",

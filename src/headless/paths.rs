@@ -22,6 +22,16 @@ pub fn data_dir() -> PathBuf {
     home.join(".local").join("share").join("oxterm")
 }
 
+/// The user's Oxterm state directory (logs and the agent audit trail).
+/// Respects `XDG_STATE_HOME`, like other desktop applications.
+pub fn state_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("XDG_STATE_HOME").filter(|value| !value.is_empty()) {
+        return PathBuf::from(path).join("oxterm");
+    }
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    home.join(".local").join("state").join("oxterm")
+}
+
 /// The control byte sent by the tmux-style prefix, read from the stored
 /// settings. A separate `oxterm attach` process does not inherit the GUI's
 /// in-memory overrides, so the on-disk document is the right source.

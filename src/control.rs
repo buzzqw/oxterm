@@ -22,8 +22,11 @@ use serde_json::{json, Value};
 use gtk::prelude::*;
 use zoha_vte::traits::TerminalExt;
 
+use crate::headless::agent;
 use crate::headless::connections::{self, Kind};
-use crate::headless::control_cli::{ActionCommand, CaptureScope, CliMode, TunnelAction};
+use crate::headless::control_cli::{
+    ActionCommand, AgentAction, CaptureScope, CliMode, TunnelAction,
+};
 use crate::headless::framing;
 use crate::headless::ssh_config;
 use crate::headless::tunnels;
@@ -187,6 +190,12 @@ pub fn run_cli(mode: CliMode) -> i32 {
         } => run_workspace(&file, new_window, replace),
         CliMode::Mcp => run_mcp(),
         CliMode::Browse { name } => run_browse(&name),
+        CliMode::Fix {
+            pane,
+            print_only,
+            hint,
+        } => run_fix(pane.as_deref(), print_only, hint.as_deref()),
+        CliMode::Agent { pane, action } => run_agent(pane.as_deref(), action),
     }
 }
 
@@ -438,11 +447,27 @@ fn run_mcp() -> i32 {
         let Some(id) = request.get("id").cloned() else {
             continue;
         };
+        let settings = crate::settings::settings().raw_data();
+        let enabled = agent::mcp_available(&settings);
         let response = match mcp::classify(&request) {
-            mcp::Request::Initialize => mcp::result(&id, mcp::initialize_result()),
-            mcp::Request::ToolsList => mcp::result(&id, json!({ "tools": mcp::tools() })),
+            mcp::Request::Initialize => mcp::result(
+                &id,
+                mcp::initialize_result_with((!enabled).then_some(agent::mcp_disabled_message())),
+            ),
+            mcp::Request::ToolsList => {
+                // With the master switch off the server looks like a server
+                // with no tools, rather than advertising capabilities the user
+                // has explicitly not enabled.
+                let tools = if enabled { mcp::tools() } else { json!([]) };
+                mcp::result(&id, json!({ "tools": tools }))
+            }
             mcp::Request::ToolsCall { name, arguments } => {
-                mcp::result(&id, mcp_tool(&name, &arguments))
+                let result = if enabled {
+                    mcp_tool(&name, &arguments, &settings)
+                } else {
+                    mcp::tool_error(agent::mcp_disabled_message())
+                };
+                mcp::result(&id, result)
             }
             mcp::Request::Ping => mcp::result(&id, json!({})),
             mcp::Request::Notification => continue,
@@ -458,8 +483,39 @@ fn run_mcp() -> i32 {
     0
 }
 
-fn mcp_tool(name: &str, arguments: &Value) -> Value {
+fn mcp_tool(name: &str, arguments: &Value, settings: &Value) -> Value {
     use crate::headless::mcp;
+    let Some(class) = agent::tool_class(name, arguments) else {
+        return mcp::tool_error(format!("unknown tool: {}", name));
+    };
+    // The policy is applied here, in the process that owns the window, not in
+    // the stdio server: the user answers a dialog in the running terminal.
+    let decision = agent::Policies::from_settings(settings).decide(class);
+    let allowed = match decision {
+        agent::Decision::Allow => true,
+        agent::Decision::Deny => false,
+        agent::Decision::Ask => mcp_confirm(name, class, arguments),
+    };
+    agent::audit(
+        settings,
+        "mcp",
+        name,
+        class,
+        decision,
+        allowed,
+        arguments.get("pane").and_then(Value::as_str),
+        &agent::audit_details(name, arguments),
+    );
+    if !allowed {
+        return mcp::tool_error(match decision {
+            agent::Decision::Deny => format!(
+                "{} is disabled by the agent policy ({} is set to deny)",
+                name,
+                class.as_str()
+            ),
+            _ => "the user denied this request".to_string(),
+        });
+    }
     let result = match name {
         "terminal_list" => mcp_list(),
         "terminal_new" => mcp_new(arguments),
@@ -474,6 +530,23 @@ fn mcp_tool(name: &str, arguments: &Value) -> Value {
         Ok(text) => mcp::tool_ok(text),
         Err(error) => mcp::tool_error(error),
     }
+}
+
+/// Ask the user in the running window. Fails closed: no window, no answer, a
+/// timeout or a closed dialog all mean "no".
+fn mcp_confirm(name: &str, class: agent::ActionClass, arguments: &Value) -> bool {
+    let Some(socket) = live_sockets().into_iter().next() else {
+        return false;
+    };
+    let request = json!({
+        "op": "confirm",
+        "tool": name,
+        "class": class.as_str(),
+        "detail": agent::describe_tool(name, arguments),
+    });
+    request_at_with_timeout(&socket, &request, Duration::from_secs(300))
+        .map(|reply| reply["allow"].as_bool().unwrap_or(false))
+        .unwrap_or(false)
 }
 
 fn mcp_command(value: Option<&Value>) -> Result<Option<Vec<String>>, String> {
@@ -676,6 +749,159 @@ fn run_browse(name: &str) -> i32 {
     match request_at(&socket, &request) {
         Ok(_) => 0,
         Err(error) => fail(error.0, "browse", &error.1),
+    }
+}
+
+fn run_fix(pane: Option<&str>, print_only: bool, hint: Option<&str>) -> i32 {
+    let settings = crate::settings::settings().raw_data();
+    if !agent::enabled(&settings) {
+        return fail(1, "fix", agent::disabled_message());
+    }
+    let target = match resolve_pane(pane) {
+        Ok(target) => target,
+        Err(error) => return fail(error.0, "fix", &error.1),
+    };
+    let request = json!({
+        "op": "fix",
+        "pane": target.id,
+        "hint": hint,
+        "print": print_only,
+    });
+    match request_at_with_timeout(&target.socket, &request, Duration::from_secs(60)) {
+        Ok(reply) => {
+            if print_only {
+                print!("{}", reply["prompt"].as_str().unwrap_or(""));
+                if reply["prompt"].as_str().is_some_and(|p| !p.ends_with('\n')) {
+                    println!();
+                }
+            } else if reply["sent"].as_bool() != Some(true) {
+                return fail(1, "fix", "the agent pane did not accept the prompt");
+            }
+            0
+        }
+        Err(error) => fail(error.0, "fix", &error.1),
+    }
+}
+
+fn run_agent(pane: Option<&str>, action: AgentAction) -> i32 {
+    let settings = crate::settings::settings().raw_data();
+    match action {
+        AgentAction::List => {
+            let enabled = agent::enabled(&settings);
+            let command = settings
+                .get("agent_command")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            println!(
+                "Agent features: {}",
+                if enabled { "enabled" } else { "disabled" }
+            );
+            println!(
+                "Configured command: {}",
+                if command.trim().is_empty() {
+                    "(none)"
+                } else {
+                    command
+                }
+            );
+            let detected = agent::detected_agents();
+            if detected.is_empty() {
+                println!("\nNo known ACP agent CLI found on PATH.");
+            } else {
+                println!("\nFound on PATH:");
+                for (agent, path) in detected {
+                    println!(
+                        "  {:<22} {:<40} command: {}",
+                        agent.label,
+                        path.display(),
+                        agent.command
+                    );
+                }
+            }
+            println!(
+                "\nOxterm never installs an agent. To use one, set \"agent_enabled\": true \
+                 and \"agent_command\" to one of the commands above in {}.",
+                crate::settings::config_file().display()
+            );
+            0
+        }
+        AgentAction::Show => {
+            let command = settings
+                .get("agent_command")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let remote = settings
+                .get("agent_remote_command")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let policies = agent::Policies::from_settings(&settings);
+            println!("agent_enabled: {}", agent::enabled(&settings));
+            println!(
+                "agent_command: {}",
+                if command.trim().is_empty() {
+                    "(none)"
+                } else {
+                    command
+                }
+            );
+            println!(
+                "agent_remote_command: {}",
+                if remote.trim().is_empty() {
+                    "(none: local only)"
+                } else {
+                    remote
+                }
+            );
+            println!(
+                "agent_mcp: {}",
+                settings
+                    .get("agent_mcp")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true)
+            );
+            println!(
+                "policies: read={} create={} input={}",
+                policies.read.as_str(),
+                policies.create.as_str(),
+                policies.input.as_str()
+            );
+            println!(
+                "audit log: {}",
+                if settings
+                    .get("agent_audit")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true)
+                {
+                    agent::audit_file().display().to_string()
+                } else {
+                    "(disabled)".to_string()
+                }
+            );
+            0
+        }
+        AgentAction::Prompt(prompt) => {
+            if !agent::enabled(&settings) {
+                return fail(1, "agent", agent::disabled_message());
+            }
+            let target = match resolve_pane(pane) {
+                Ok(target) => target,
+                Err(error) => return fail(error.0, "agent", &error.1),
+            };
+            let request = json!({
+                "op": "agent",
+                "pane": target.id,
+                "prompt": prompt,
+            });
+            match request_at_with_timeout(&target.socket, &request, Duration::from_secs(60)) {
+                Ok(reply) if reply["ok"].as_bool() == Some(true) => 0,
+                Ok(reply) => fail(
+                    1,
+                    "agent",
+                    reply["error"].as_str().unwrap_or("the agent pane refused"),
+                ),
+                Err(error) => fail(error.0, "agent", &error.1),
+            }
+        }
     }
 }
 
@@ -1231,12 +1457,19 @@ fn handle_connection(mut stream: std::os::unix::net::UnixStream) {
                 serve_events(&mut stream, &request);
                 return;
             }
+            // A confirmation waits for a human: give it the same generous
+            // timeout as the inner control request, not the 30 s liveness one.
+            let timeout = if request["op"].as_str() == Some("confirm") {
+                Duration::from_secs(300)
+            } else {
+                CLIENT_TIMEOUT
+            };
             let (sender, receiver) = mpsc::channel();
             crate::run_on_main(move || {
                 let reply = dispatch(&request);
                 let _ = sender.send(reply);
             });
-            match receiver.recv_timeout(CLIENT_TIMEOUT) {
+            match receiver.recv_timeout(timeout) {
                 Ok(reply) => reply,
                 Err(_) => error_reply("the GUI did not answer in time", 1),
             }
@@ -1248,6 +1481,44 @@ fn handle_connection(mut stream: std::os::unix::net::UnixStream) {
 
 fn error_reply(message: &str, code: i32) -> Value {
     json!({ "ok": false, "error": message, "code": code })
+}
+
+/// Modal yes/no for an agent request that the policy marks as `ask`.
+///
+/// The detail is agent-authored text, shown in full inside a selectable label so
+/// a command cannot hide in an ellipsis. "No" is the default, so Enter or Escape
+/// cannot accidentally approve a command.
+fn confirm_dialog(app: &gtk::Application, request: &Value) -> bool {
+    let tool = request["tool"].as_str().unwrap_or("the agent");
+    let class = request["class"].as_str().unwrap_or("action");
+    let detail = request["detail"].as_str().unwrap_or("");
+    let dialog = gtk::MessageDialog::new(
+        app.active_window().as_ref(),
+        gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+        gtk::MessageType::Question,
+        gtk::ButtonsType::YesNo,
+        &format!("Allow the agent to {}?", confirmation_headline(class, tool)),
+    );
+    dialog.set_title("Agent permission");
+    if !detail.is_empty() {
+        dialog.set_secondary_text(Some(detail));
+    }
+    dialog.set_default_response(gtk::ResponseType::No);
+    let response = dialog.run();
+    let allowed = response == gtk::ResponseType::Yes;
+    // SAFETY of the GTK contract: `run` has returned and nothing else owns it.
+    unsafe { dialog.destroy() };
+    allowed
+}
+
+fn confirmation_headline(class: &str, tool: &str) -> String {
+    match (class, tool) {
+        ("input", "terminal_send") => "type into this shell".to_string(),
+        ("input", _) => "run a command".to_string(),
+        ("create", _) => "change the window".to_string(),
+        ("read", _) => "read the terminal".to_string(),
+        _ => "perform this action".to_string(),
+    }
 }
 
 /// Keep a control connection open and stream events until the peer goes away.
@@ -1302,6 +1573,10 @@ fn dispatch(request: &Value) -> Value {
     match request["op"].as_str().unwrap_or("") {
         // Answered on the control thread, see `handle_connection`.
         "ping" => json!({ "ok": true }),
+        "confirm" => {
+            let allow = confirm_dialog(&app, request);
+            json!({ "ok": true, "allow": allow })
+        }
         "list" => {
             let panes: Vec<Value> = terminals(&app)
                 .iter()
@@ -1384,6 +1659,36 @@ fn dispatch(request: &Value) -> Value {
                 };
             window.apply_workspace(&workspace, request["replace"].as_bool().unwrap_or(false));
             json!({ "ok": true, "name": workspace.name })
+        }
+        "fix" => {
+            let Some((window, term)) =
+                find_main_terminal(&app, request["pane"].as_str().unwrap_or(""))
+            else {
+                return error_reply("pane not found in a main window", 3);
+            };
+            let hint = request["hint"].as_str();
+            if request["print"].as_bool().unwrap_or(false) {
+                let prompt = agent::fix_prompt(&term.last_command_context(), hint);
+                return json!({ "ok": true, "prompt": prompt });
+            }
+            window.agent_fix_for(&term, hint);
+            json!({ "ok": true, "sent": true })
+        }
+        "agent" => {
+            let Some((window, term)) =
+                find_main_terminal(&app, request["pane"].as_str().unwrap_or(""))
+            else {
+                return error_reply("pane not found in a main window", 3);
+            };
+            match request["prompt"]
+                .as_str()
+                .map(str::trim)
+                .filter(|prompt| !prompt.is_empty())
+            {
+                Some(prompt) => window.agent_prompt_for(&term, prompt),
+                None => window.agent_toggle(),
+            }
+            json!({ "ok": true })
         }
         "browse" => {
             let Some(window) = target_window(&app) else {

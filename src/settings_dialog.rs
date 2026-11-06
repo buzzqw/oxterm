@@ -126,6 +126,19 @@ const DELETE_BINDING: Choices = &[
     ("control-h", "Control-H (8)"),
 ];
 
+const AGENT_POLICY: Choices = &[
+    ("auto", "Automatic (no prompt)"),
+    ("ask", "Ask before acting"),
+    ("deny", "Never"),
+];
+
+const AGENT_POSITION: Choices = &[
+    ("bottom", "Bottom"),
+    ("top", "Top"),
+    ("left", "Left"),
+    ("right", "Right"),
+];
+
 const ENCODINGS: &[&str] = &[
     "UTF-8",
     "ISO-8859-1",
@@ -1493,6 +1506,166 @@ fn build_notes(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, N
     (page.finish(), state)
 }
 
+struct AgentPage {
+    enabled: gtk::CheckButton,
+    command: gtk::Entry,
+    remote: gtk::Entry,
+    mcp: gtk::CheckButton,
+    read: gtk::ComboBoxText,
+    create: gtk::ComboBoxText,
+    input: gtk::ComboBoxText,
+    audit: gtk::CheckButton,
+    usage: gtk::CheckButton,
+    position: gtk::ComboBoxText,
+}
+
+fn build_agents(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, AgentPage) {
+    let page = Page::new("agents", "Agents", index.clone());
+
+    page.section("Agent");
+    page.note(
+        "Off by default. Oxterm never installs an agent or calls a model on its own: it starts \
+         the command you enter here, using the Agent Client Protocol over stdio.",
+    );
+
+    let enabled = gtk::CheckButton::new();
+    enabled.set_active(s.get_bool("agent_enabled"));
+    enabled.set_tooltip_text(Some(
+        "Master switch for the agent pane, oxterm fix and the MCP tools. Off by default.",
+    ));
+    page.row_keyed("Enable agent features", &enabled, Some("agent_enabled"));
+
+    let command = gtk::Entry::new();
+    command.set_text(&s.get_str("agent_command"));
+    command.set_placeholder_text(Some("e.g. opencode acp"));
+    command.set_tooltip_text(Some(
+        "ACP agent CLI to run in the agent pane. It must already be installed and on PATH.",
+    ));
+    page.row_keyed("Agent command", &command, Some("agent_command"));
+
+    let scan = gtk::Button::with_label("Detect installed agents");
+    scan.set_tooltip_text(Some(
+        "Look for known ACP agent CLIs on PATH; nothing is installed or started.",
+    ));
+    let found = gtk::Label::new(None);
+    found.set_xalign(0.0);
+    found.set_line_wrap(true);
+    found.set_max_width_chars(70);
+    found.style_context().add_class("dim-label");
+    {
+        let command = command.clone();
+        let found = found.clone();
+        scan.connect_clicked(move |_| {
+            let detected = crate::headless::agent::detected_agents();
+            if detected.is_empty() {
+                found.set_text("No known ACP agent CLI found on PATH.");
+                return;
+            }
+            let labels: Vec<String> = detected
+                .iter()
+                .map(|(agent, path)| {
+                    format!("{} ({}) — {}", agent.label, agent.command, path.display())
+                })
+                .collect();
+            found.set_text(&format!("Found: {}", labels.join("   ·   ")));
+            if command.text().trim().is_empty() {
+                if let Some((agent, _)) = detected.first() {
+                    command.set_text(agent.command);
+                }
+            }
+        });
+    }
+    page.row("Already installed", &scan);
+    page.full(&found);
+
+    let remote = gtk::Entry::new();
+    remote.set_text(&s.get_str("agent_remote_command"));
+    remote.set_placeholder_text(Some("empty: always run the agent locally"));
+    remote.set_tooltip_text(Some(
+        "Agent command to run on an SSH host instead of locally, over the same connection.",
+    ));
+    page.row_keyed("Remote command", &remote, Some("agent_remote_command"));
+
+    let mcp = gtk::CheckButton::new();
+    mcp.set_active(s.get_bool("agent_mcp"));
+    mcp.set_tooltip_text(Some(
+        "Let the local agent use Oxterm's own MCP server to drive tabs, under the permissions below.",
+    ));
+    page.row_keyed("Share Oxterm's MCP server", &mcp, Some("agent_mcp"));
+
+    page.section("Permissions");
+    page.note(
+        "Ask opens a dialog in the running window. With no window, no answer or a timeout, \
+         the request is denied. Every decision goes to the audit log.",
+    );
+    let read = combo_for(
+        AGENT_POLICY,
+        &s.get_str_default("agent_policy_read", "auto"),
+    );
+    read.set_tooltip_text(Some(
+        "Reading terminal contents: terminal_list, terminal_capture and terminal_wait.",
+    ));
+    page.row_keyed("Read the terminal", &read, Some("agent_policy_read"));
+
+    let create = combo_for(
+        AGENT_POLICY,
+        &s.get_str_default("agent_policy_create", "ask"),
+    );
+    create.set_tooltip_text(Some(
+        "Opening tabs or splits and loading workspaces. A command or a workspace counts as input.",
+    ));
+    page.row_keyed(
+        "Create tabs and panes",
+        &create,
+        Some("agent_policy_create"),
+    );
+
+    let input = combo_for(
+        AGENT_POLICY,
+        &s.get_str_default("agent_policy_input", "ask"),
+    );
+    input.set_tooltip_text(Some(
+        "Typing into a shell and starting commands: this runs code as you.",
+    ));
+    page.row_keyed("Type and run commands", &input, Some("agent_policy_input"));
+
+    let audit = gtk::CheckButton::new();
+    audit.set_active(s.get_bool("agent_audit"));
+    audit.set_tooltip_text(Some(
+        "Append every decision to ~/.local/state/oxterm/agent-audit.log, without the typed text.",
+    ));
+    page.row_keyed("Audit decisions", &audit, Some("agent_audit"));
+
+    page.section("Pane");
+    let position = combo_for(
+        AGENT_POSITION,
+        &s.get_str_default("agent_pane_position", "bottom"),
+    );
+    position.set_tooltip_text(Some("Where the agent pane opens; applied to new windows."));
+    page.row_keyed("Position", &position, Some("agent_pane_position"));
+
+    let usage = gtk::CheckButton::new();
+    usage.set_active(s.get_bool("agent_show_usage"));
+    usage.set_tooltip_text(Some(
+        "Show the token usage and cost the agent reports in the pane header.",
+    ));
+    page.row_keyed("Show token usage", &usage, Some("agent_show_usage"));
+
+    let state = AgentPage {
+        enabled,
+        command,
+        remote,
+        mcp,
+        read,
+        create,
+        input,
+        audit,
+        usage,
+        position,
+    };
+    (page.finish(), state)
+}
+
 // -- Dialog -----------------------------------------------------------------
 
 struct DialogState {
@@ -1503,6 +1676,7 @@ struct DialogState {
     appearance: AppearancePage,
     compatibility: CompatibilityPage,
     notes: NotesPage,
+    agents: AgentPage,
     palette_btns: PaletteButtons,
     fg_override: Rc<Cell<bool>>,
     bg_override: Rc<Cell<bool>>,
@@ -1534,6 +1708,7 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
     let (appearance_widget, appearance) = build_appearance(&s, &index, &palette_btns, &scheme_name);
     let (compat_widget, compatibility) = build_compatibility(&s, &index);
     let (notes_widget, notes) = build_notes(&s, &index);
+    let (agents_widget, agents) = build_agents(&s, &index);
 
     stack.add_titled(&general_widget, "general", "General");
     stack.add_titled(&appearance_widget, "appearance", "Appearance");
@@ -1543,6 +1718,7 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
     stack.add_titled(&notifications_widget, "notifications", "Notifications");
     stack.add_titled(&compat_widget, "compatibility", "Compatibility");
     stack.add_titled(&notes_widget, "notes", "Notes");
+    stack.add_titled(&agents_widget, "agents", "Agents");
 
     let sidebar = gtk::StackSidebar::new();
     sidebar.set_stack(&stack);
@@ -1727,6 +1903,7 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
         appearance,
         compatibility,
         notes,
+        agents,
         palette_btns,
         fg_override: Rc::new(Cell::new(!s.get_str("foreground_color").is_empty())),
         bg_override: Rc::new(Cell::new(!s.get_str("background_color").is_empty())),
@@ -2185,6 +2362,29 @@ impl DialogState {
         );
         s.set_str("notes_template", self.notes.template.text().trim());
 
+        s.set_bool("agent_enabled", self.agents.enabled.is_active());
+        s.set_str("agent_command", self.agents.command.text().trim());
+        s.set_str("agent_remote_command", self.agents.remote.text().trim());
+        s.set_bool("agent_mcp", self.agents.mcp.is_active());
+        s.set_str(
+            "agent_policy_read",
+            &combo_value(&self.agents.read, AGENT_POLICY, "auto"),
+        );
+        s.set_str(
+            "agent_policy_create",
+            &combo_value(&self.agents.create, AGENT_POLICY, "ask"),
+        );
+        s.set_str(
+            "agent_policy_input",
+            &combo_value(&self.agents.input, AGENT_POLICY, "ask"),
+        );
+        s.set_bool("agent_audit", self.agents.audit.is_active());
+        s.set_bool("agent_show_usage", self.agents.usage.is_active());
+        s.set_str(
+            "agent_pane_position",
+            &combo_value(&self.agents.position, AGENT_POSITION, "bottom"),
+        );
+
         s.end_batch();
         s.notify_changed();
         Vec::new()
@@ -2408,5 +2608,35 @@ impl DialogState {
             .record_context
             .set_active(default_bool("notes_record_context"));
         self.notes.template.set_text(&default_str("notes_template"));
+
+        // Agents
+        self.agents
+            .enabled
+            .set_active(default_bool("agent_enabled"));
+        self.agents.command.set_text(&default_str("agent_command"));
+        self.agents
+            .remote
+            .set_text(&default_str("agent_remote_command"));
+        self.agents.mcp.set_active(default_bool("agent_mcp"));
+        self.agents.read.set_active(Some(index_of(
+            AGENT_POLICY,
+            &default_str("agent_policy_read"),
+        )));
+        self.agents.create.set_active(Some(index_of(
+            AGENT_POLICY,
+            &default_str("agent_policy_create"),
+        )));
+        self.agents.input.set_active(Some(index_of(
+            AGENT_POLICY,
+            &default_str("agent_policy_input"),
+        )));
+        self.agents.audit.set_active(default_bool("agent_audit"));
+        self.agents
+            .usage
+            .set_active(default_bool("agent_show_usage"));
+        self.agents.position.set_active(Some(index_of(
+            AGENT_POSITION,
+            &default_str("agent_pane_position"),
+        )));
     }
 }

@@ -97,6 +97,20 @@ never written back to disk.
 | `tmux_prefix_enabled` | bool | `true` | Enable the tmux-style Ctrl+B prefix in panes. |
 | `tmux_prefix_key` | letter | `b` | Letter used with Ctrl as the tmux-style prefix. |
 | `ssh_connection_sharing` | bool | `true` | Share SSH connections and enable keepalives through the bundled wrapper. |
+| `agent_enabled` | bool | `false` | Enable the optional agent features (agent pane, oxterm fix, MCP tools). Off by default. |
+| `agent_command` | string | `""` | ACP agent CLI to run in the agent pane, e.g. "opencode acp" or "claude-code-acp". |
+| `agent_remote_command` | string | `""` | ACP agent CLI to run on an SSH host instead, e.g. "opencode acp"; empty keeps it local. |
+| `agent_mcp` | bool | `true` | Hand the agent Oxterm's own MCP server, so it can drive tabs after your approval. |
+| `agent_policy_read` | string | `auto` | Allow agents to read terminal contents without asking. |
+|  |  | Values: `auto`, `ask`, `deny` |  |
+| `agent_policy_create` | string | `ask` | Allow agents to open tabs, split panes and load workspaces. |
+|  |  | Values: `auto`, `ask`, `deny` |  |
+| `agent_policy_input` | string | `ask` | Allow agents to type into a shell or start commands (code execution). |
+|  |  | Values: `auto`, `ask`, `deny` |  |
+| `agent_audit` | bool | `true` | Append every agent decision to ~/.local/state/oxterm/agent-audit.log (no typed text). |
+| `agent_pane_position` | string | `bottom` | Where the agent pane opens; read when the window is built. |
+|  |  | Values: `bottom`, `top`, `left`, `right` |  |
+| `agent_show_usage` | bool | `true` | Show the token usage and cost the agent reports in the agent pane header. |
 | `ssh_alert_patterns` | string | `(?i)(^|[-_.])(prod|production|prd|live)([-_.]|$)` | Regex for production SSH hosts; matching tabs are highlighted. Empty disables the badge. |
 | `ssh_alert_color` | color (#rrggbb) | `#cc0000` | Colour used for the production SSH tab badge. |
 

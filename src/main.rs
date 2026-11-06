@@ -1,5 +1,6 @@
 #![recursion_limit = "256"]
 
+mod agent_panel;
 mod connections_form;
 mod connections_panel;
 mod connections_ui;
@@ -134,6 +135,13 @@ impl App {
                 .oxterm-tab-failure { color: #e01b24; font-size: 0.85em; }
                 .oxterm-status-bar { font-size: 0.85em; font-family: Monospace; color: alpha(@theme_fg_color, 0.75); background: alpha(@theme_bg_color, 0.45); padding: 2px 8px; }
                 .oxterm-status-widget { padding: 0 6px; }
+                .oxterm-agent-panel { background: alpha(@theme_bg_color, 0.97); border-top: 1px solid alpha(currentColor, 0.25); }
+                .oxterm-agent-panel textview text { background: transparent; }
+                .oxterm-agent-header { padding: 3px 8px; border-bottom: 1px solid alpha(currentColor, 0.15); }
+                .oxterm-agent-header label { font-size: 0.85em; }
+                .oxterm-agent-header button { padding: 2px 8px; min-height: 20px; }
+                .oxterm-agent-transcript { font-family: Monospace; font-size: 0.88em; }
+                .oxterm-agent-entry { font-family: Monospace; }
             ";
             let _ = css_provider.load_from_data(css);
             if let Some(screen) = gdk::Screen::default() {

@@ -39,7 +39,8 @@ text that was already printed, so `highlight_line`, `highlight_text` and
 
 **Events.** `oxterm events` streams `command_started`, `command_finished`,
 `prompt`, `bell`, `title_changed`, `cwd_changed`, `tab_created`, `tab_closed`,
-`pane_focused` and `selection_changed`. `output_line` is opt-in with `--output`
+`pane_focused`, `selection_changed` and `agent_status`.
+`output_line` is opt-in with `--output`
 and can contain secrets. `selection_changed` carries only the length, never the
 selected text.
 

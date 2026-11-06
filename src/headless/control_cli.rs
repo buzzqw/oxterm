@@ -84,6 +84,27 @@ pub enum CliMode {
     Browse {
         name: String,
     },
+    /// Diagnose the last failed command with the configured agent.
+    Fix {
+        pane: Option<String>,
+        print_only: bool,
+        hint: Option<String>,
+    },
+    /// Open the agent pane, optionally with a prompt.
+    Agent {
+        pane: Option<String>,
+        action: AgentAction,
+    },
+}
+
+#[derive(Debug, PartialEq)]
+pub enum AgentAction {
+    /// Report the agent CLIs found on `PATH`.
+    List,
+    /// Print the effective agent configuration without secrets.
+    Show,
+    /// Show the pane and send this prompt, when there is one.
+    Prompt(Option<String>),
 }
 
 /// The actions `oxterm action` can ask a running window to perform.
@@ -258,7 +279,36 @@ pub const VERBS: &[Verb] = &[
                Speak MCP over stdin and stdout, one JSON object per line. The tools\n\
                create tabs, split panes, type, capture output, wait for a command and\n\
                open workspaces in a running Oxterm. Nothing is printed except protocol\n\
-               messages; diagnostics go to standard error.\n",
+               messages; diagnostics go to standard error.\n\n\
+               Agent features are opt-in: when agent_enabled is false the server\n\
+               exposes no tools, and every call is recorded in the audit log.\n",
+    },
+    Verb {
+        name: "fix",
+        synopsis: "fix [--pane ID] [--print] [HINT...]",
+        summary: "Ask the agent to diagnose the last failed command",
+        help: "Usage: oxterm fix [--pane ID] [--print] [HINT...]\n\n\
+               Collect the last command reported by the shell integration (command,\n\
+               directory, exit status and recent output) and send it to the agent\n\
+               pane as a fix request. HINT steers the agent, for example\n\
+               'the include path looks wrong'. --print prints the prompt instead of\n\
+               sending it, so it can be reviewed or piped to another tool.\n\n\
+               Needs agent_enabled and agent_command in the settings; nothing is\n\
+               sent without them.\n",
+    },
+    Verb {
+        name: "agent",
+        synopsis: "agent [--pane ID] [--list|--show] [PROMPT...]",
+        summary: "Open the agent pane or send it a prompt",
+        help: "Usage: oxterm agent [--pane ID] [PROMPT...]\n\
+               \x20      oxterm agent --list\n\
+               \x20      oxterm agent --show\n\n\
+               With PROMPT, show the agent pane for the target pane and send the\n\
+               prompt; without it, just toggle the pane. --list reports the ACP\n\
+               agent CLIs already installed on PATH and the command to configure;\n\
+               Oxterm never installs one. --show prints the effective agent settings\n\
+               and never a secret. The target pane comes from --pane, then\n\
+               $OXTERM_PANE, then the only open pane.\n",
     },
 ];
 
@@ -409,6 +459,73 @@ fn parse_browse(args: &[String], help: &'static str) -> Result<CliMode, String> 
     Ok(CliMode::Browse {
         name: name.ok_or("browse requires a connection name")?,
     })
+}
+
+fn parse_fix(args: &[String], help: &'static str) -> Result<CliMode, String> {
+    let mut pane = None;
+    let mut print_only = false;
+    let mut words = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-h" | "--help" => return Ok(CliMode::Help(help)),
+            "--pane" => {
+                i += 1;
+                pane = Some(args.get(i).ok_or("--pane requires a session id")?.clone());
+            }
+            "--print" => print_only = true,
+            value if value.starts_with('-') => {
+                return Err(format!("unknown option: {}", value));
+            }
+            value => words.push(value.to_string()),
+        }
+        i += 1;
+    }
+    let hint = words.join(" ").trim().to_string();
+    Ok(CliMode::Fix {
+        pane,
+        print_only,
+        hint: (!hint.is_empty()).then_some(hint),
+    })
+}
+
+fn parse_agent(args: &[String], help: &'static str) -> Result<CliMode, String> {
+    let mut pane = None;
+    let mut list = false;
+    let mut show = false;
+    let mut words = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-h" | "--help" => return Ok(CliMode::Help(help)),
+            "--pane" => {
+                i += 1;
+                pane = Some(args.get(i).ok_or("--pane requires a session id")?.clone());
+            }
+            "--list" => list = true,
+            "--show" => show = true,
+            value if value.starts_with('-') => {
+                return Err(format!("unknown option: {}", value));
+            }
+            value => words.push(value.to_string()),
+        }
+        i += 1;
+    }
+    if list && show {
+        return Err("--list and --show cannot be combined".to_string());
+    }
+    if (list || show) && !words.is_empty() {
+        return Err("--list and --show do not take a prompt".to_string());
+    }
+    let action = if list {
+        AgentAction::List
+    } else if show {
+        AgentAction::Show
+    } else {
+        let prompt = words.join(" ").trim().to_string();
+        AgentAction::Prompt((!prompt.is_empty()).then_some(prompt))
+    };
+    Ok(CliMode::Agent { pane, action })
 }
 
 fn parse_events(args: &[String], help: &'static str) -> Result<CliMode, String> {
@@ -607,6 +724,8 @@ pub fn parse_verb(args: &[String]) -> Result<CliMode, String> {
         "tunnel" => return parse_tunnel(&args[1..], entry.help),
         "events" => return parse_events(&args[1..], entry.help),
         "browse" => return parse_browse(&args[1..], entry.help),
+        "fix" => return parse_fix(&args[1..], entry.help),
+        "agent" => return parse_agent(&args[1..], entry.help),
         "action" => return parse_action(&args[1..], entry.help),
         "workspace" => return parse_workspace(&args[1..], entry.help),
         "mcp" => {
@@ -937,6 +1056,61 @@ mod tests {
             assert!(entry.help.contains("Usage: oxterm"));
             assert!(summary().contains(entry.name));
         }
+    }
+
+    #[test]
+    fn parses_fix_and_agent() {
+        assert_eq!(
+            parse_verb(&args(&[
+                "fix", "--pane", "3", "--print", "check", "the", "path"
+            ]))
+            .unwrap(),
+            CliMode::Fix {
+                pane: Some("3".to_string()),
+                print_only: true,
+                hint: Some("check the path".to_string()),
+            }
+        );
+        assert_eq!(
+            parse_verb(&args(&["fix"])).unwrap(),
+            CliMode::Fix {
+                pane: None,
+                print_only: false,
+                hint: None,
+            }
+        );
+        assert!(parse_verb(&args(&["fix", "--bogus"])).is_err());
+
+        assert_eq!(
+            parse_verb(&args(&["agent", "--list"])).unwrap(),
+            CliMode::Agent {
+                pane: None,
+                action: AgentAction::List,
+            }
+        );
+        assert_eq!(
+            parse_verb(&args(&["agent", "--show"])).unwrap(),
+            CliMode::Agent {
+                pane: None,
+                action: AgentAction::Show,
+            }
+        );
+        assert_eq!(
+            parse_verb(&args(&["agent", "--pane", "4", "why", "failed?"])).unwrap(),
+            CliMode::Agent {
+                pane: Some("4".to_string()),
+                action: AgentAction::Prompt(Some("why failed?".to_string())),
+            }
+        );
+        assert_eq!(
+            parse_verb(&args(&["agent"])).unwrap(),
+            CliMode::Agent {
+                pane: None,
+                action: AgentAction::Prompt(None),
+            }
+        );
+        assert!(parse_verb(&args(&["agent", "--list", "--show"])).is_err());
+        assert!(parse_verb(&args(&["agent", "--list", "prompt"])).is_err());
     }
 
     #[test]

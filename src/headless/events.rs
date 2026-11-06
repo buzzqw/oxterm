@@ -34,6 +34,7 @@ pub const EVENT_NAMES: &[&str] = &[
     "pane_focused",
     "selection_changed",
     "theme_changed",
+    "agent_status",
     "output_line",
 ];
 

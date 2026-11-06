@@ -105,8 +105,8 @@ pub struct CommandBlock {
 }
 
 pub const OXTERM_COMMANDS: &[&str] = &[
-    "history", "wnotes", "onotes", "learn", "optimize", "session", "snippet", "ssh", "help",
-    "clear", "cls",
+    "history", "wnotes", "onotes", "learn", "optimize", "session", "snippet", "ssh", "fix",
+    "agent", "help", "clear", "cls",
 ];
 
 /// A row in the command palette: a slash command or a direct action.
@@ -3182,6 +3182,79 @@ impl TerminalBox {
         *self.imp().osc133_last_exit.borrow()
     }
 
+    /// ssh arguments (without the program name) of the remote session running
+    /// under this terminal, when it is an ssh client. The agent pane uses them
+    /// to start the agent on the same host instead of on the local machine.
+    pub fn remote_session_args(&self) -> Option<Vec<String>> {
+        self.get_ssh_target()
+    }
+
+    /// What the agent needs to diagnose the last command: the command line, the
+    /// directory, the exit status and the recent output.
+    ///
+    /// Everything here comes from OSC 133 and the local process table, exactly
+    /// like the sticky command header, so it stays available when the shell
+    /// integration is on and is empty otherwise.
+    pub fn last_command_context(&self) -> crate::headless::agent::FixContext {
+        let block = {
+            let blocks = self.imp().command_blocks.borrow();
+            // Prefer the last failure: Ctrl+Alt+. and /fix mean "what just went
+            // wrong", which is not the successful command that followed it.
+            blocks
+                .iter()
+                .rev()
+                .find(|block| block.finished && block.exit_code.is_some_and(|code| code != 0))
+                .or_else(|| blocks.iter().rev().find(|block| block.finished))
+                .or_else(|| blocks.last())
+                .cloned()
+        };
+        let command = block
+            .as_ref()
+            .map(|block| block.command.clone())
+            .unwrap_or_else(|| self.last_command());
+        let exit_code = block
+            .as_ref()
+            .and_then(|block| block.exit_code)
+            .or_else(|| self.last_exit_code());
+        let duration_ms = block.as_ref().and_then(|block| block.duration_ms);
+        let output = block
+            .as_ref()
+            .filter(|block| block.command_row >= 0)
+            .map(|block| {
+                let (_, cursor_row) = self.vte().cursor_position();
+                let end = block.end_row.max(block.command_row);
+                let end = if block.finished {
+                    end
+                } else {
+                    cursor_row.max(end)
+                };
+                // Enough context for a compiler error, not the whole session.
+                let start = (end - 500).max(block.command_row);
+                text::range(&self.vte(), start, 0, end, -1).unwrap_or_default()
+            })
+            .unwrap_or_default();
+        // The process directory is authoritative locally; on an SSH tab it is
+        // the local ssh client's directory, so the shell's OSC 7 path is the
+        // one the agent needs.
+        let cwd = if self.remote_session_args().is_some() {
+            self.reported_cwd()
+                .filter(|cwd| cwd.starts_with('/'))
+                .unwrap_or_else(|| self.get_cwd())
+        } else {
+            self.get_cwd()
+        };
+        crate::headless::agent::FixContext {
+            command,
+            cwd,
+            exit_code,
+            duration_ms,
+            output,
+            shell: std::env::var("SHELL")
+                .ok()
+                .filter(|shell| !shell.is_empty()),
+        }
+    }
+
     pub fn is_ssh(&self) -> bool {
         let pid = *self.imp().pid.borrow();
         if pid <= 0 {
@@ -4764,6 +4837,19 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             t.start_history_search()
         })
         .set_tooltip_text(Some("Search command history (Ctrl+R)"));
+        if settings().get_bool("agent_enabled") {
+            menu_action(&tools_menu, self, "Agent Pane", |t| {
+                t.call_window(|window| window.agent_toggle_panel());
+            })
+            .set_tooltip_text(Some("Ask an ACP agent about this terminal (Ctrl+Shift+.)"));
+            let item = menu_action(&tools_menu, self, "Fix Last Failure with Agent", |t| {
+                let term = t.clone();
+                t.call_window(move |window| window.agent_fix(&term, None));
+            });
+            item.set_tooltip_text(Some(
+                "Send the last failed command to the agent (Ctrl+Alt+.)",
+            ));
+        }
 
         let quickmarks = menu_submenu(&tools_menu, "Quickmarks");
         menu_action(&quickmarks, self, "Set Quickmark", |t| t.set_quickmark())
@@ -5142,6 +5228,15 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 self.call_window(|win| win.connections_panel_signal());
                 return glib::Propagation::Stop;
             }
+            // Ctrl+Shift+. arrives as `>` on most layouts when Shift is held.
+            if key == K::period || key == K::greater {
+                self.call_window(|win| win.agent_toggle_panel());
+                return glib::Propagation::Stop;
+            }
+            if key == K::i || key == K::I {
+                self.call_window(|win| win.agent_focus_panel());
+                return glib::Propagation::Stop;
+            }
             if key == K::h || key == K::H {
                 if settings().get_bool("hint_mode_enabled") {
                     self.activate_hints();
@@ -5154,6 +5249,12 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 }
                 return glib::Propagation::Stop;
             }
+        }
+
+        if ctrl && alt && (key == K::period || key == K::greater) {
+            let term = self.clone();
+            self.call_window(move |win| win.agent_fix(&term, None));
+            return glib::Propagation::Stop;
         }
 
         if *self.imp().hints_active.borrow() {
@@ -5695,6 +5796,11 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             ("/wnotes [-file.md] <text>", "Save timestamped note"),
             ("/onotes [-file.md]", "Open notes in editor"),
             ("/ssh NAME", "Open a saved connection or an SSH host"),
+            (
+                "/fix [hint]",
+                "Ask the agent to diagnose the last failed command",
+            ),
+            ("/agent [prompt]", "Open the agent pane or ask it something"),
             ("/help", "Show all commands and shortcuts"),
             ("/clear", "Clear the terminal screen"),
             ("/cls", "Clear the terminal screen"),
@@ -5867,6 +5973,19 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
     fn execute_from_bar(&self) {
         let entry = self.imp().cmd_entry.borrow().clone().unwrap();
         let mut shadow = entry.text().trim().to_string();
+        // `?prompt` asks the agent with the context of this pane, mirroring the
+        // `/command` prefix for local actions.
+        if let Some(prompt) = shadow.strip_prefix('?') {
+            let prompt = prompt.trim().to_string();
+            self.hide_command_bar();
+            let term = self.clone();
+            if prompt.is_empty() {
+                self.call_window(|win| win.agent_focus_panel());
+            } else {
+                self.call_window(move |win| win.agent_prompt(&term, &prompt));
+            }
+            return;
+        }
         let selected = {
             let list = self.imp().cmd_list.borrow().clone();
             list.and_then(|list| {
@@ -6163,6 +6282,23 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             } else {
                 self.call_window(|window| window.connect_text_signal(target));
             }
+            true
+        } else if shadow.starts_with("/fix") {
+            let hint = args().trim().to_string();
+            let term = self.clone();
+            self.call_window(move |window| {
+                window.agent_fix(
+                    &term,
+                    if hint.is_empty() {
+                        None
+                    } else {
+                        Some(hint.as_str())
+                    },
+                );
+            });
+            true
+        } else if shadow == "/agent" {
+            self.call_window(|window| window.agent_focus_panel());
             true
         } else if shadow == "/help" {
             self.cmd_help();

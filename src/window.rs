@@ -198,6 +198,14 @@ pub trait TerminalWindow {
     }
     fn reattach_signal(&self) {}
     fn reconnect_signal(&self, _term: &TerminalBox) {}
+    /// Toggle the optional agent pane. Windows without one keep the default.
+    fn agent_toggle_panel(&self) {}
+    /// Show the agent pane and put the cursor in its prompt.
+    fn agent_focus_panel(&self) {}
+    /// Send `prompt` to the agent session of `term` (control API, `?` palette).
+    fn agent_prompt(&self, _term: &TerminalBox, _prompt: &str) {}
+    /// Ask the agent to diagnose the last command of `term`.
+    fn agent_fix(&self, _term: &TerminalBox, _hint: Option<&str>) {}
     /// Whether this window can open saved connections: a detached window has no
     /// tab bar to put them in.
     fn supports_connections(&self) -> bool {
@@ -1682,6 +1690,10 @@ mod main_imp {
         pub notes_panel: RefCell<Option<crate::notes_panel::NotesPanel>>,
         /// Container that receives the notes panel the first time it is shown.
         pub notes_slot: RefCell<Option<gtk::Box>>,
+        /// The optional agent pane, built on first use. Keeping it out of the
+        /// startup path means a terminal without agent features pays nothing.
+        pub agent_panel: RefCell<Option<std::rc::Rc<crate::agent_panel::AgentPanel>>>,
+        pub agent_slot: RefCell<Option<gtk::Box>>,
         pub connections_panel:
             RefCell<Option<std::rc::Rc<crate::connections_panel::ConnectionsPanel>>>,
         pub connections_slot: RefCell<Option<gtk::Box>>,
@@ -1996,18 +2008,36 @@ impl MainWindow {
             false,
             0,
         );
+        // The agent pane is lazy too: no widget tree, no process and no ACP
+        // handshake until the user asks for it. Its position is read once, when
+        // the window is built.
+        let agent_slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        *self.imp().agent_slot.borrow_mut() = Some(agent_slot.clone());
+        let agent_position = settings().get_str("agent_pane_position");
+        if agent_position == "top" {
+            vbox.pack_start(&agent_slot, false, false, 0);
+        }
         // The notes panel is lazy: its (fairly large) widget tree is created
         // the first time it is shown. The empty slot keeps its place in the
         // layout so the paned terminal area keeps the same size.
         let content_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let connections_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        if agent_position == "left" {
+            content_row.pack_start(&agent_slot, false, true, 0);
+        }
         content_row.pack_start(&connections_slot, false, true, 0);
         *self.imp().connections_slot.borrow_mut() = Some(connections_slot);
         content_row.pack_start(&paned, true, true, 0);
+        if agent_position == "right" {
+            content_row.pack_end(&agent_slot, false, true, 0);
+        }
         let notes_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         content_row.pack_start(&notes_slot, false, true, 0);
         *self.imp().notes_slot.borrow_mut() = Some(notes_slot);
         vbox.pack_start(&content_row, true, true, 0);
+        if !matches!(agent_position.as_str(), "top" | "left" | "right") {
+            vbox.pack_start(&agent_slot, false, false, 0);
+        }
         vbox.pack_end(&stats_box, false, false, 0);
         let weak = self.downgrade();
         let cwd = std::rc::Rc::new(move || {
@@ -4154,6 +4184,9 @@ impl MainWindow {
         if *self.imp().restoring_session.borrow() || *self.imp().moving_tab.borrow() {
             return;
         }
+        if let Some(panel) = self.imp().agent_panel.borrow().clone() {
+            panel.prune(&self.all_terminals());
+        }
         let nb = self.imp().notebook.borrow().clone().unwrap();
         let nb2 = self.imp().notebook2.borrow().clone().unwrap();
         if nb.n_pages() == 0 && nb2.n_pages() == 0 {
@@ -5159,6 +5192,10 @@ impl MainWindow {
             self.clear_tab_failure(&term);
             self.update_cwd_badge(&term);
             self.apply_ssh_alert(&term);
+            if let Some(panel) = self.imp().agent_panel.borrow().clone() {
+                panel.set_active_pane(Some(term.remote_id()));
+                panel.prune(&self.all_terminals());
+            }
             let weak = crate::SendWeak::new(&term);
             glib::idle_add_local(move || {
                 if let Some(t) = weak.upgrade() {
@@ -5859,6 +5896,79 @@ impl MainWindow {
         glib::Propagation::Proceed
     }
 
+    // ── Agent pane ───────────────────────────────────────────
+
+    /// Build the pane the first time it is needed. A user who never enables the
+    /// agent never creates it, and neither does a settings dialog preview.
+    fn ensure_agent_panel(&self) -> Option<std::rc::Rc<crate::agent_panel::AgentPanel>> {
+        if let Some(panel) = self.imp().agent_panel.borrow().clone() {
+            return Some(panel);
+        }
+        let slot = self.imp().agent_slot.borrow().clone()?;
+        let panel = crate::agent_panel::AgentPanel::new(self);
+        slot.pack_start(panel.widget(), true, true, 0);
+        slot.show_all();
+        if let Some(term) = self.current_terminal() {
+            panel.set_active_pane(Some(term.remote_id()));
+        }
+        *self.imp().agent_panel.borrow_mut() = Some(panel.clone());
+        Some(panel)
+    }
+
+    fn agent_enabled(&self) -> bool {
+        settings().get_bool("agent_enabled")
+    }
+
+    pub fn agent_toggle(&self) {
+        if !self.agent_enabled() {
+            self.status_message(
+                "Agent features are disabled. Set agent_enabled and agent_command in the settings.",
+                true,
+            );
+            return;
+        }
+        if let Some(panel) = self.ensure_agent_panel() {
+            if let Some(term) = self.current_terminal() {
+                panel.set_active_pane(Some(term.remote_id()));
+            }
+            panel.toggle();
+        }
+    }
+
+    pub fn agent_focus(&self) {
+        if !self.agent_enabled() {
+            return;
+        }
+        if let Some(panel) = self.ensure_agent_panel() {
+            if let Some(term) = self.current_terminal() {
+                panel.set_active_pane(Some(term.remote_id()));
+            }
+            panel.set_visible(true);
+        }
+    }
+
+    pub fn agent_prompt_for(&self, term: &TerminalBox, prompt: &str) {
+        if !self.agent_enabled() {
+            self.status_message("Agent features are disabled.", true);
+            return;
+        }
+        if let Some(panel) = self.ensure_agent_panel() {
+            panel.prune(&self.all_terminals());
+            panel.prompt_for(term, prompt);
+        }
+    }
+
+    pub fn agent_fix_for(&self, term: &TerminalBox, hint: Option<&str>) {
+        if !self.agent_enabled() {
+            self.status_message("Agent features are disabled.", true);
+            return;
+        }
+        if let Some(panel) = self.ensure_agent_panel() {
+            panel.prune(&self.all_terminals());
+            panel.fix_for(term, hint);
+        }
+    }
+
     // ── Public signals for TerminalBox ───────────────────────
 
     pub fn new_tab_signal(&self) {
@@ -6402,6 +6512,18 @@ impl TerminalWindow for MainWindow {
     }
     fn connections_panel_signal(&self) {
         self.toggle_connections_panel();
+    }
+    fn agent_toggle_panel(&self) {
+        self.agent_toggle();
+    }
+    fn agent_focus_panel(&self) {
+        self.agent_focus();
+    }
+    fn agent_prompt(&self, term: &TerminalBox, prompt: &str) {
+        self.agent_prompt_for(term, prompt);
+    }
+    fn agent_fix(&self, term: &TerminalBox, hint: Option<&str>) {
+        self.agent_fix_for(term, hint);
     }
     fn tunnel_manager_signal(&self) {
         self.show_tunnel_manager(None);

@@ -47,14 +47,25 @@ pub fn classify(value: &Value) -> Request {
 }
 
 pub fn initialize_result() -> Value {
-    json!({
+    initialize_result_with(None)
+}
+
+/// The same response, with `instructions` shown to the client. Oxterm uses it
+/// to explain that agent features are disabled instead of silently exposing an
+/// empty tool list.
+pub fn initialize_result_with(instructions: Option<&str>) -> Value {
+    let mut result = json!({
         "protocolVersion": PROTOCOL_VERSION,
         "capabilities": { "tools": { "listChanged": false } },
         "serverInfo": {
             "name": "oxterm",
             "version": env!("CARGO_PKG_VERSION"),
         }
-    })
+    });
+    if let Some(instructions) = instructions {
+        result["instructions"] = json!(instructions);
+    }
+    result
 }
 
 pub fn tools() -> Value {
