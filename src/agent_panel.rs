@@ -1284,6 +1284,10 @@ impl AgentPanel {
         let allow = acp::default_allow_option(options);
         let reject = acp::default_reject_option(options);
         let names: Vec<&str> = options.iter().map(|option| option.name.as_str()).collect();
+        // The request belongs in the conversation, not only in a dialog that
+        // can sit behind the window: the transcript explains why the turn
+        // stopped when the tool is refused.
+        self.render_to(pane, &format!("\n[permission] {}\n", title));
         let dialog = gtk::MessageDialog::new(
             self.root
                 .toplevel()
@@ -1298,7 +1302,10 @@ impl AgentPanel {
         if !names.is_empty() {
             dialog.set_secondary_text(Some(&format!("Options: {}", names.join(", "))));
         }
-        dialog.set_default_response(gtk::ResponseType::No);
+        // No default button on purpose: Enter is how a prompt is submitted, and
+        // a dialog that appears while someone is typing must not turn that key
+        // into a silent "deny" of the tool. The answer has to be a click.
+        dialog.set_default_response(gtk::ResponseType::None);
         let accepted = dialog.run() == gtk::ResponseType::Yes;
         unsafe { dialog.destroy() };
         let option = if accepted {
@@ -1309,6 +1316,17 @@ impl AgentPanel {
         let response = acp::permission_response(id, option);
         if writer.send(response).is_err() {
             self.render_to(pane, "\n[error] cannot answer the permission request\n");
+        }
+        self.render_to(
+            pane,
+            if accepted {
+                "[permission] allowed\n"
+            } else {
+                "[permission] denied\n"
+            },
+        );
+        if self.active_pane().as_deref() == Some(pane) {
+            self.update_header();
         }
     }
 
