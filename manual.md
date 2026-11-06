@@ -431,8 +431,10 @@ absolute command to configure for each (`PATH` plus the usual per-user bin
 directories); `oxterm agent --show` prints the effective configuration and the
 permission policies. Oxterm never installs an agent.
 
-Most agents report the models they offer. The agent pane header then shows a
-model picker, and the choice is written to `agent_model` so every new session
+Most agents report the models they offer, sometimes in two lists; Oxterm shows
+the one with more choices, so every variant the agent can switch to (including
+Gemini's High/Medium/Low tiers) is selectable. The agent pane header then shows
+a model picker, and the choice is written to `agent_model` so every new session
 starts on it. In Preferences > Agents the Model field is the same picker: choose
 an installed agent (or press Test connection) and Oxterm asks that agent for its
 list, then offers the values in a combo box; the entry stays editable for a

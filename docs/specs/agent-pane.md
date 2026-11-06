@@ -130,10 +130,14 @@ the hand-off without touching anything else.
 Two model shapes are in use. Newer agents put the model in the `configOptions`
 of `session/new` (alongside effort or session mode) and take
 `session/set_config_option`; older ones report a top-level `models` object with
-`currentModelId` and `availableModels` and take `session/set_model`. The pane
-shows a picker in its header for either shape as soon as a session is ready. An
-agent that reports neither has no picker, because choosing a model is the
-agent's feature, not Oxterm's.
+`currentModelId` and `availableModels` and take `session/set_model`. Some agents
+send both, and the older list can be richer: Antigravity's `configOptions` fold
+the Gemini tiers into one model plus a separate thinking level, while its
+`models` object names `gemini-3.8-flash-high`, `-medium` and `-low` separately.
+Oxterm therefore uses whichever list offers more choices, so every variant the
+agent can switch to is selectable. The pane shows a picker in its header for
+either shape as soon as a session is ready. An agent that reports neither has
+no picker, because choosing a model is the agent's feature, not Oxterm's.
 
 Picking a model sends the request that shape announced and writes the chosen
 value to `agent_model`. Preferences > Agents exposes the same choice as an

@@ -125,15 +125,40 @@ pub struct Models {
 }
 
 /// Read the model list from either ACP shape.
+///
+/// Newer agents put the model in `configOptions`; older ones report a
+/// top-level `models` object (which the ACP spec also defines). Some report
+/// both, and the older list is often richer — Antigravity names each Gemini
+/// tier separately there (`gemini-3.8-flash-high/medium/low`) while its
+/// `configOptions` folds them into one model plus a separate thinking level —
+/// so the list with more choices wins, and `session/set_model` is used to match.
 pub fn session_models(result: &Value) -> Option<Models> {
+    let legacy = legacy_models(result);
     let (current, choices) = config_choices(result, "model");
-    if current.is_some() || !choices.is_empty() {
-        return Some(Models {
+    let config = if current.is_some() || !choices.is_empty() {
+        Some(Models {
             current,
             choices,
             api: ModelApi::ConfigOption,
-        });
+        })
+    } else {
+        None
+    };
+    match (legacy, config) {
+        (Some(legacy), Some(config)) => {
+            if legacy.choices.len() >= config.choices.len() {
+                Some(legacy)
+            } else {
+                Some(config)
+            }
+        }
+        (Some(legacy), None) => Some(legacy),
+        (None, config) => config,
     }
+}
+
+/// The top-level `models` object older agents report.
+fn legacy_models(result: &Value) -> Option<Models> {
     let models = result.get("models")?;
     let current = models
         .get("currentModelId")
@@ -1057,12 +1082,30 @@ for line in sys.stdin:
                 },
             ]
         );
-        // configOptions win when both shapes are present.
-        let modern = json!({"configOptions": [
-            {"id": "model", "currentValue": "a/b", "options": [{"value": "a/b", "name": "A"}]}
+        // With both shapes, the list that names more models wins.
+        let richer_config = json!({"configOptions": [
+            {"id": "model", "currentValue": "a/b", "options": [
+                {"value": "a/b", "name": "A"}, {"value": "c/d", "name": "C"}]}
         ], "models": {"currentModelId": "x/y"}});
-        assert_eq!(session_models(&modern).unwrap().api, ModelApi::ConfigOption);
-        assert_eq!(session_model(&modern).as_deref(), Some("a/b"));
+        assert_eq!(
+            session_models(&richer_config).unwrap().api,
+            ModelApi::ConfigOption
+        );
+        assert_eq!(session_model(&richer_config).as_deref(), Some("a/b"));
+
+        // Antigravity sends both: the older list names every Gemini tier, so it
+        // wins and the tier ids stay selectable.
+        let richer_legacy = json!({"configOptions": [
+            {"id": "model", "currentValue": "gemini-3.8-flash", "options": [
+                {"value": "gemini-3.8-flash", "name": "Gemini 3.8 Flash"}]}
+        ], "models": {"currentModelId": "gemini-3.8-flash-high", "availableModels": [
+            {"modelId": "gemini-3.8-flash-high", "name": "Gemini 3.8 Flash (High)"},
+            {"modelId": "gemini-3.8-flash-medium", "name": "Gemini 3.8 Flash (Medium)"},
+            {"modelId": "gemini-3.8-flash-low", "name": "Gemini 3.8 Flash (Low)"}]}});
+        let chosen = session_models(&richer_legacy).unwrap();
+        assert_eq!(chosen.api, ModelApi::SetModel);
+        assert_eq!(chosen.current.as_deref(), Some("gemini-3.8-flash-high"));
+        assert_eq!(chosen.choices.len(), 3);
         assert_eq!(session_models(&json!({"sessionId": "s"})), None);
 
         let request = set_model(CONFIG_ID_BASE + 4, "s1", "c/d");
