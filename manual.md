@@ -417,6 +417,22 @@ user has installed. It is disabled by default:
 to configure for each; `oxterm agent --show` prints the effective configuration
 and the permission policies. Oxterm never installs an agent.
 
+The CLIs Oxterm recognises, and the command to use once one is installed and
+logged in:
+
+| Agent | Install | `agent_command` |
+| --- | --- | --- |
+| OpenCode | already packaged by OpenCode | `opencode acp` |
+| Claude Code | `npm install -g @zed-industries/claude-code-acp` (plus Claude Code, logged in) | `claude-code-acp` |
+| Gemini CLI | `npm install -g @google/gemini-cli`, then run `gemini` once | `gemini --experimental-acp` |
+| GitHub Copilot CLI | `npm install -g @github/copilot`, then run `copilot` once | `copilot --acp --stdio` |
+| Codex | `npm install -g @agentclientprotocol/codex-acp` (plus Codex, logged in) | `codex-acp` |
+
+Install only the one you want; each has its own account and terms. A
+desktop-launched Oxterm searches `~/.opencode/bin`, `~/.local/bin` and the other
+usual per-user bin directories in addition to `PATH`, and `agent --list` prints
+the absolute path so the setting does not depend on the launcher's environment.
+
 | Action | Shortcut |
 | --- | --- |
 | Show or hide the agent pane | `Ctrl+Shift+.` |

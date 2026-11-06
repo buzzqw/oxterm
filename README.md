@@ -95,9 +95,11 @@ user already has:
 }
 ```
 
-`oxterm agent --list` shows the known ACP CLIs found on `PATH` and the command to
-configure; `oxterm agent --show` prints the effective configuration. Oxterm never
-installs anything.
+`oxterm agent --list` shows the known ACP CLIs already installed (OpenCode,
+Claude Code, Gemini, Copilot and Codex) with the absolute command to configure;
+`oxterm agent --show` prints the effective configuration. Oxterm never installs
+anything, and the manual lists the install command for each agent if you want
+another one.
 
 With it enabled, `Ctrl+Shift+.` toggles a docked agent pane, `Ctrl+Shift+I`
 focuses it and `Ctrl+Alt+.` sends the last failed command with its directory,

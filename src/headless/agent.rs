@@ -546,17 +546,12 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
     KnownAgent {
         program: "copilot",
         label: "GitHub Copilot CLI",
-        command: "copilot",
+        command: "copilot --acp --stdio",
     },
     KnownAgent {
-        program: "codex",
-        label: "Codex CLI",
-        command: "codex",
-    },
-    KnownAgent {
-        program: "amp",
-        label: "Amp",
-        command: "amp",
+        program: "codex-acp",
+        label: "Codex (ACP adapter)",
+        command: "codex-acp",
     },
 ];
 
