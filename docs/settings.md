@@ -101,6 +101,7 @@ never written back to disk.
 | `agent_command` | string | `""` | ACP agent CLI to run in the agent pane, e.g. "opencode acp" or "claude-code-acp". |
 | `agent_remote_command` | string | `""` | ACP agent CLI to run on an SSH host instead, e.g. "opencode acp"; empty keeps it local. |
 | `agent_mcp` | bool | `true` | Hand the agent Oxterm's own MCP server, so it can drive tabs after your approval. |
+| `agent_auto_fix` | bool | `true` | When a command is not found (exit 127), ask the agent automatically and print its answer in the terminal. |
 | `agent_policy_read` | string | `auto` | Allow agents to read terminal contents without asking. |
 |  |  | Values: `auto`, `ask`, `deny` |  |
 | `agent_policy_create` | string | `ask` | Allow agents to open tabs, split panes and load workspaces. |

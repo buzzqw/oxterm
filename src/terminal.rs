@@ -3870,6 +3870,13 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                         "cwd": self.get_cwd(),
                     }),
                 );
+                // A command the shell could not find is the one case where the
+                // typed line is not really a shell command: hand it to the
+                // agent, which answers in this terminal.
+                if crate::headless::agent::auto_fix_wanted(&settings().raw_data(), status) {
+                    let term = self.clone();
+                    self.call_window(move |win| win.agent_auto_fix_signal(&term));
+                }
             }
             osc133::Event::PromptStart => {
                 *self.imp().osc133_cmd_start_row.borrow_mut() = -1;

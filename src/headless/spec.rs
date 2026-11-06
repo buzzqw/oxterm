@@ -1024,6 +1024,12 @@ pub const SETTINGS: &[Setting] = &[
         Default::Bool(true),
         "Hand the agent Oxterm's own MCP server, so it can drive tabs after your approval.",
     ),
+    setting(
+        "agent_auto_fix",
+        Kind::Bool,
+        Default::Bool(true),
+        "When a command is not found (exit 127), ask the agent automatically and print its answer in the terminal.",
+    ),
     Setting {
         key: "agent_policy_read",
         kind: Kind::Text,

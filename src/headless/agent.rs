@@ -178,6 +178,18 @@ pub fn configured(settings: &Value) -> bool {
     enabled(settings) && !settings_string(settings, "agent_command").trim().is_empty()
 }
 
+/// Whether a finished command should be handed to the agent without the user
+/// asking. Only a command the shell could not find (exit status 127) is
+/// eligible, and only when agent features and the automatic hand-off are on.
+pub fn auto_fix_wanted(settings: &Value, exit_code: Option<i64>) -> bool {
+    exit_code == Some(127)
+        && configured(settings)
+        && settings
+            .get("agent_auto_fix")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+}
+
 /// Whether the agent may drive the terminal through the MCP server.
 pub fn mcp_available(settings: &Value) -> bool {
     enabled(settings)
@@ -468,6 +480,16 @@ pub fn fix_prompt(context: &FixContext, hint: Option<&str>) -> String {
     out
 }
 
+/// Agent text is echoed into a real terminal, so strip control characters
+/// first: model output must not be able to drive the terminal parser (OSC 52
+/// clipboard writes, cursor movement, title changes). Newlines, carriage
+/// returns and tabs survive so paragraphs keep their shape.
+pub fn plain_for_terminal(text: &str) -> String {
+    text.chars()
+        .filter(|ch| matches!(ch, '\n' | '\r' | '\t') || !ch.is_control())
+        .collect()
+}
+
 /// Keep the first `max` characters, marking what was dropped.
 pub fn truncate_head(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
@@ -723,6 +745,40 @@ mod tests {
         let command_only = settings(&[("agent_command", json!("opencode acp"))]);
         assert!(!configured(&command_only));
         assert!(!mcp_available(&command_only));
+    }
+
+    #[test]
+    fn auto_fix_only_fires_for_a_missing_command() {
+        let ready = settings(&[
+            ("agent_enabled", json!(true)),
+            ("agent_command", json!("opencode acp")),
+        ]);
+        assert!(auto_fix_wanted(&ready, Some(127)));
+        assert!(!auto_fix_wanted(&ready, Some(1)));
+        assert!(!auto_fix_wanted(&ready, Some(0)));
+        assert!(!auto_fix_wanted(&ready, None));
+
+        let off = settings(&[
+            ("agent_enabled", json!(true)),
+            ("agent_command", json!("opencode acp")),
+            ("agent_auto_fix", json!(false)),
+        ]);
+        assert!(!auto_fix_wanted(&off, Some(127)));
+
+        // Nothing starts without the master switch and a command.
+        let disabled = settings(&[("agent_command", json!("opencode acp"))]);
+        assert!(!auto_fix_wanted(&disabled, Some(127)));
+        let no_command = settings(&[("agent_enabled", json!(true))]);
+        assert!(!auto_fix_wanted(&no_command, Some(127)));
+    }
+
+    #[test]
+    fn terminal_echo_keeps_layout_but_drops_control_sequences() {
+        assert_eq!(
+            plain_for_terminal("a\u{1b}]52;c;cGF5bG9hZA==\u{7}b\n\tc"),
+            "a]52;c;cGF5bG9hZA==b\n\tc"
+        );
+        assert_eq!(plain_for_terminal("plain text"), "plain text");
     }
 
     #[test]

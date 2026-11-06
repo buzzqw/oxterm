@@ -90,6 +90,26 @@ Hiding the pane is a stash, not a destroy. `Ctrl+Shift+.` toggles it,
 owned by the window: closing the window (or the whole application) ends every
 session, and tabs of different windows do not share one.
 
+## Command-not-found hand-off
+
+When a command finishes with exit status 127 and both `agent_enabled` and
+`agent_auto_fix` are on, the terminal hands the failure to the agent exactly
+like `/fix`: same context prompt, same per-tab ACP session. The difference is
+presentation. The pane is not opened, and the answer is mirrored into the
+terminal's display as it streams, so a line the shell could not find reads like
+a normal command. The pane transcript still keeps the whole turn for later.
+
+The mirror is one-way: text is written with `Terminal::feed`, never typed into
+the shell, so the shell's line discipline is untouched. Before echoing, control
+characters are stripped (`agent::plain_for_terminal`): model output must not be
+able to emit OSC 52, move the cursor or change the title. System messages and
+tool calls stay in the pane; the terminal shows message chunks and notices.
+
+This needs the OSC 133 shell integration, which is where the exit status comes
+from. A successful command, a normal failure (exit 1) and a remote shell that
+does not report status are never handed off. `agent_auto_fix: false` disables
+the hand-off without touching anything else.
+
 ## Policy
 
 The same policy governs both directions:

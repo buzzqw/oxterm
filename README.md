@@ -71,7 +71,8 @@ memory footprint and the memory-safety guarantees of Rust.
   per-class permission policy and an audit log
 - Optional agent integration, off by default and configured by the user: an ACP
   agent pane with one session per tab, `oxterm fix` with shell context from
-  OSC 133, `?prompt` and `/fix` in the command bar
+  OSC 133, `?prompt` and `/fix` in the command bar, and an inline answer when a
+  command is not found
 - VI copy mode with motions, text objects, visual block selection, scrolloff, and bookmarks
 - Session restore, named sessions, profiles, command palette, quickmarks, and hints
 - Compact right-click menu with submenus for clipboard (text/HTML/all/last
@@ -111,7 +112,10 @@ are only the representation:
 With it enabled, `Ctrl+Shift+.` toggles a docked agent pane, `Ctrl+Shift+I`
 focuses it and `Ctrl+Alt+.` sends the last failed command with its directory,
 exit status and output. The same context is available as `oxterm fix [HINT]`,
-`/fix` and `?prompt` in the command bar. Each tab keeps its own session while
+`/fix` and `?prompt` in the command bar. Since a command the shell cannot find
+(exit 127) is not really a shell command, Oxterm asks the agent about it
+automatically and prints the answer in the terminal itself; set `agent_auto_fix`
+to false to keep the hand-off explicit. Each tab keeps its own session while
 the pane is hidden, and an SSH tab can run the agent on the remote host with
 `agent_remote_command` instead of locally.
 

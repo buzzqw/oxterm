@@ -206,6 +206,8 @@ pub trait TerminalWindow {
     fn agent_prompt(&self, _term: &TerminalBox, _prompt: &str) {}
     /// Ask the agent to diagnose the last command of `term`.
     fn agent_fix(&self, _term: &TerminalBox, _hint: Option<&str>) {}
+    /// The shell could not find the last command: hand it to the agent.
+    fn agent_auto_fix_signal(&self, _term: &TerminalBox) {}
     /// Open the Agents page of the preferences window.
     fn agent_settings(&self) {}
     /// Whether this window can open saved connections: a detached window has no
@@ -2304,6 +2306,13 @@ impl MainWindow {
             }
         }
         terminals
+    }
+
+    /// Look a pane up by the id the agent panel uses for its session map.
+    pub fn terminal_by_remote_id(&self, id: &str) -> Option<TerminalBox> {
+        self.all_terminals()
+            .into_iter()
+            .find(|term| term.remote_id() == id)
     }
 
     pub(crate) fn find_terminal(&self, term: &TerminalBox) -> Option<(gtk::Notebook, u32)> {
@@ -5952,6 +5961,15 @@ impl MainWindow {
         if let Some(panel) = self.ensure_agent_panel() {
             panel.prune(&self.all_terminals());
             panel.fix_for(term, hint);
+        }
+    }
+
+    /// A command the shell could not find. The panel answers in the terminal
+    /// instead of opening itself, so the flow stays like running a command.
+    pub fn agent_auto_fix_signal(&self, term: &TerminalBox) {
+        if let Some(panel) = self.ensure_agent_panel() {
+            panel.prune(&self.all_terminals());
+            panel.fix_for_auto(term);
         }
     }
 

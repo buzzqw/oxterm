@@ -1511,6 +1511,7 @@ struct AgentPage {
     command: gtk::Entry,
     remote: gtk::Entry,
     mcp: gtk::CheckButton,
+    auto_fix: gtk::CheckButton,
     read: gtk::ComboBoxText,
     create: gtk::ComboBoxText,
     input: gtk::ComboBoxText,
@@ -1684,6 +1685,18 @@ fn build_agents(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, 
     ));
     page.row_keyed("Share Oxterm's MCP server", &mcp, Some("agent_mcp"));
 
+    let auto_fix = gtk::CheckButton::new();
+    auto_fix.set_active(s.get_bool("agent_auto_fix"));
+    auto_fix.set_tooltip_text(Some(
+        "When a command is not found (exit 127), send the failure to the agent and print its \
+         answer in the terminal instead of opening the pane.",
+    ));
+    page.row_keyed(
+        "Ask when a command is not found",
+        &auto_fix,
+        Some("agent_auto_fix"),
+    );
+
     page.section("Permissions");
     page.note(
         "Ask opens a dialog in the running window. With no window, no answer or a timeout, \
@@ -1747,6 +1760,7 @@ fn build_agents(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, 
         command,
         remote,
         mcp,
+        auto_fix,
         read,
         create,
         input,
@@ -2475,6 +2489,7 @@ impl DialogState {
         s.set_str("agent_command", &agent_command);
         s.set_str("agent_remote_command", self.agents.remote.text().trim());
         s.set_bool("agent_mcp", self.agents.mcp.is_active());
+        s.set_bool("agent_auto_fix", self.agents.auto_fix.is_active());
         s.set_str(
             "agent_policy_read",
             &combo_value(&self.agents.read, AGENT_POLICY, "auto"),
