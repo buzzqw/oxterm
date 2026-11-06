@@ -542,6 +542,8 @@ fn tool_update_text(update: &Value) -> Option<String> {
 pub struct Probe {
     pub agent: String,
     pub model: Option<String>,
+    /// Every model the agent listed, for the Preferences picker.
+    pub models: Vec<ConfigChoice>,
     pub protocol: i64,
 }
 
@@ -636,11 +638,15 @@ pub fn probe(argv: &[String], cwd: &str, timeout: Duration) -> Result<Probe, Str
                             stop(&mut child);
                             return Err("the agent did not return a session id".to_string());
                         }
-                        let model = session_model(&result);
+                        let models = session_models(&result);
+                        let (model, choices) = models
+                            .map(|models| (models.current, models.choices))
+                            .unwrap_or((None, Vec::new()));
                         stop(&mut child);
                         return Ok(Probe {
                             agent,
                             model,
+                            models: choices,
                             protocol,
                         });
                     }
@@ -952,6 +958,7 @@ for line in sys.stdin:
             Probe {
                 agent: "Fake Probe".to_string(),
                 model: Some("test/model".to_string()),
+                models: Vec::new(),
                 protocol: 1,
             }
         );

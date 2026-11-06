@@ -128,7 +128,10 @@ agent that reports neither has no picker, because choosing a model is the
 agent's feature, not Oxterm's.
 
 Picking a model sends the request that shape announced and writes the chosen
-value to `agent_model`. A new session starts on that
+value to `agent_model`. Preferences > Agents exposes the same choice as an
+editable combo: choosing an installed agent, or pressing Test connection, runs
+`acp::probe`, which performs the handshake and returns the reported models, so
+the list always matches the agent that will actually run. A new session starts on that
 value: the panel sends the same request as soon as the handshake completes,
 before the queued prompt, because both go through the same writer channel. This
 is what makes the choice apply to the command-not-found hand-off, whose pane is

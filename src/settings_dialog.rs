@@ -1509,7 +1509,7 @@ fn build_notes(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, N
 struct AgentPage {
     enabled: gtk::CheckButton,
     command: gtk::Entry,
-    model: gtk::Entry,
+    model: gtk::ComboBoxText,
     remote: gtk::Entry,
     mcp: gtk::CheckButton,
     auto_fix: gtk::CheckButton,
@@ -1519,6 +1519,122 @@ struct AgentPage {
     audit: gtk::CheckButton,
     usage: gtk::CheckButton,
     position: gtk::ComboBoxText,
+}
+
+/// The entry of an editable model picker, if the widget has one.
+fn model_entry(combo: &gtk::ComboBoxText) -> Option<gtk::Entry> {
+    combo.child().and_downcast::<gtk::Entry>()
+}
+
+fn model_text(combo: &gtk::ComboBoxText) -> String {
+    model_entry(combo)
+        .map(|entry| entry.text().to_string())
+        .unwrap_or_default()
+}
+
+fn set_model_text(combo: &gtk::ComboBoxText, text: &str) {
+    if let Some(entry) = model_entry(combo) {
+        entry.set_text(text);
+    }
+    combo.set_active(None);
+}
+
+/// Fill the model picker with what an agent reported, keeping the current value
+/// selectable even when the agent did not list it.
+fn fill_models(
+    combo: &gtk::ComboBoxText,
+    current: &str,
+    choices: &[crate::headless::acp::ConfigChoice],
+) {
+    combo.remove_all();
+    for choice in choices {
+        combo.append(Some(&choice.value), &choice.name);
+    }
+    let current = current.trim();
+    if !current.is_empty() {
+        if !choices.iter().any(|choice| choice.value == current) {
+            combo.append(Some(current), current);
+        }
+        set_model_text(combo, current);
+    }
+}
+
+/// Ask the agent for its handshake and model list, then fill the picker.
+/// `keep` is the value to keep selected when the agent still offers it.
+fn probe_agent(
+    raw: String,
+    combo: gtk::ComboBoxText,
+    status: gtk::Label,
+    generation: Rc<Cell<u64>>,
+    keep: String,
+) {
+    let raw = raw.trim().to_string();
+    let run = generation.get() + 1;
+    generation.set(run);
+    let argv = match shell_words::split(&raw) {
+        Ok(argv) if !argv.is_empty() => argv,
+        Ok(_) => {
+            status.set_text("Enter a command first.");
+            return;
+        }
+        Err(error) => {
+            status.set_text(&format!("Invalid command: {error}"));
+            return;
+        }
+    };
+    status.set_text("Starting the agent…");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let cwd = dirs::home_dir()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|| "/tmp".to_string());
+    std::thread::spawn(move || {
+        let _ = sender.send(crate::headless::acp::probe(
+            &argv,
+            &cwd,
+            std::time::Duration::from_secs(20),
+        ));
+    });
+    glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        match receiver.try_recv() {
+            Ok(report) => {
+                // A newer test started while this one ran: drop the stale one.
+                if generation.get() == run {
+                    match report {
+                        Ok(report) => {
+                            fill_models(&combo, &keep, &report.models);
+                            let current = report
+                                .model
+                                .map(|model| format!(", using {model}"))
+                                .unwrap_or_default();
+                            let options = if report.models.is_empty() {
+                                "no model list".to_string()
+                            } else {
+                                format!("{} models", report.models.len())
+                            };
+                            status.set_text(&format!(
+                                "OK — {} (protocol {}{current}, {options}). \
+                                 Tick Enable agent features to use it.",
+                                report.agent, report.protocol
+                            ));
+                        }
+                        Err(error) => {
+                            combo.remove_all();
+                            set_model_text(&combo, "");
+                            status.set_text(&format!("Failed: {error}"));
+                        }
+                    }
+                }
+                glib::ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                if generation.get() == run {
+                    status.set_text("The test stopped unexpectedly.");
+                }
+                glib::ControlFlow::Break
+            }
+        }
+    });
 }
 
 fn build_agents(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, AgentPage) {
@@ -1572,32 +1688,19 @@ fn build_agents(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, 
     ));
     page.row_keyed("Agent command", &command, Some("agent_command"));
 
-    let model = gtk::Entry::new();
-    model.set_text(&s.get_str("agent_model"));
-    model.set_placeholder_text(Some("empty: the agent's default model"));
+    // A model only makes sense for one agent, so this is a picker filled by
+    // asking the configured agent what it supports, with a free-text entry for
+    // a value the agent did not list.
+    let model = gtk::ComboBoxText::with_entry();
+    if let Some(entry) = model.child().and_downcast::<gtk::Entry>() {
+        entry.set_placeholder_text(Some("empty: the agent's default model"));
+    }
     model.set_tooltip_text(Some(
-        "Model every new agent session starts on, written as the agent lists it \
-         (for example deepseek/deepseek-v4-pro). The agent pane header has the same picker, \
-         filled with the models the agent reports.",
+        "Model every new agent session starts on. Choose an installed agent and the list \
+         is filled from what that agent reports; the agent pane header has the same picker.",
     ));
     page.row_keyed("Model", &model, Some("agent_model"));
-
-    {
-        let command = command.clone();
-        let detected = detected.clone();
-        installed.connect_changed(move |combo| {
-            let index = combo.active().unwrap_or(0) as usize;
-            if index == 0 {
-                return;
-            }
-            if let Some((agent, path)) = detected.get(index - 1) {
-                let text = agent.command_with_path(path);
-                if command.text() != text {
-                    command.set_text(&text);
-                }
-            }
-        });
-    }
+    let probe_generation = Rc::new(Cell::new(0u64));
 
     if detected.is_empty() {
         page.note(
@@ -1617,64 +1720,59 @@ fn build_agents(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, 
     check_result.style_context().add_class("dim-label");
     {
         let command = command.clone();
+        let model = model.clone();
         let check_result = check_result.clone();
-        let button = check.clone();
+        let generation = probe_generation.clone();
         check.connect_clicked(move |_| {
-            let raw = command.text().trim().to_string();
-            let argv = match shell_words::split(&raw) {
-                Ok(argv) if !argv.is_empty() => argv,
-                Ok(_) => {
-                    check_result.set_text("Enter a command first.");
-                    return;
+            probe_agent(
+                command.text().to_string(),
+                model.clone(),
+                check_result.clone(),
+                generation.clone(),
+                model_text(&model),
+            );
+        });
+    }
+    {
+        let command = command.clone();
+        let detected = detected.clone();
+        let model = model.clone();
+        let check_result = check_result.clone();
+        let generation = probe_generation.clone();
+        installed.connect_changed(move |combo| {
+            let index = combo.active().unwrap_or(0) as usize;
+            if index == 0 {
+                return;
+            }
+            if let Some((agent, path)) = detected.get(index - 1) {
+                let text = agent.command_with_path(path);
+                if command.text() != text {
+                    command.set_text(&text);
                 }
-                Err(error) => {
-                    check_result.set_text(&format!("Invalid command: {}", error));
-                    return;
-                }
-            };
-            button.set_sensitive(false);
-            check_result.set_text("Testing…");
-            let (sender, receiver) = std::sync::mpsc::channel();
-            let cwd = dirs::home_dir()
-                .map(|path| path.to_string_lossy().to_string())
-                .unwrap_or_else(|| "/tmp".to_string());
-            std::thread::spawn(move || {
-                let message = match crate::headless::acp::probe(
-                    &argv,
-                    &cwd,
-                    std::time::Duration::from_secs(20),
-                ) {
-                    Ok(report) => {
-                        let model = report
-                            .model
-                            .map(|model| format!(", model {}", model))
-                            .unwrap_or_default();
-                        format!(
-                            "OK — {} (protocol {}{}). Tick Enable agent features to use it.",
-                            report.agent, report.protocol, model
-                        )
-                    }
-                    Err(error) => format!("Failed: {}", error),
-                };
-                let _ = sender.send(message);
-            });
-            let button = button.clone();
-            let check_result = check_result.clone();
-            glib::timeout_add_local(
-                std::time::Duration::from_millis(100),
-                move || match receiver.try_recv() {
-                    Ok(message) => {
-                        check_result.set_text(&message);
-                        button.set_sensitive(true);
-                        glib::ControlFlow::Break
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        check_result.set_text("The test stopped unexpectedly.");
-                        button.set_sensitive(true);
-                        glib::ControlFlow::Break
-                    }
-                },
+                // The previous choice belongs to the previous agent.
+                fill_models(&model, "", &[]);
+                probe_agent(
+                    text,
+                    model.clone(),
+                    check_result.clone(),
+                    generation.clone(),
+                    String::new(),
+                );
+            }
+        });
+    }
+    {
+        let command = command.clone();
+        let model = model.clone();
+        let check_result = check_result.clone();
+        let generation = probe_generation.clone();
+        command.connect_activate(move |entry| {
+            probe_agent(
+                entry.text().to_string(),
+                model.clone(),
+                check_result.clone(),
+                generation.clone(),
+                String::new(),
             );
         });
     }
@@ -2499,7 +2597,7 @@ impl DialogState {
         }
         s.set_bool("agent_enabled", self.agents.enabled.is_active());
         s.set_str("agent_command", &agent_command);
-        s.set_str("agent_model", self.agents.model.text().trim());
+        s.set_str("agent_model", model_text(&self.agents.model).trim());
         s.set_str("agent_remote_command", self.agents.remote.text().trim());
         s.set_bool("agent_mcp", self.agents.mcp.is_active());
         s.set_bool("agent_auto_fix", self.agents.auto_fix.is_active());
@@ -2751,7 +2849,7 @@ impl DialogState {
             .enabled
             .set_active(default_bool("agent_enabled"));
         self.agents.command.set_text(&default_str("agent_command"));
-        self.agents.model.set_text(&default_str("agent_model"));
+        fill_models(&self.agents.model, &default_str("agent_model"), &[]);
         self.agents
             .remote
             .set_text(&default_str("agent_remote_command"));
