@@ -571,13 +571,10 @@ impl AgentPanel {
                     .into_iter()
                     .filter(|arg| arg != "-t" && arg != "-T"),
             );
-            match agent::command_argv(&remote_command) {
-                Ok(command) => args.extend(command),
-                Err(error) => {
-                    self.append_text(&format!("\n{}\n", error));
-                    return;
-                }
-            }
+            // ssh joins the command arguments with spaces and hands the result
+            // to the remote shell, so keep the user's string intact instead of
+            // splitting and re-joining (which would drop quoting).
+            args.push(remote_command);
             args
         } else {
             match agent::command_argv(
@@ -1156,4 +1153,109 @@ fn read_agent(
         }
     }
     let _ = events.send(UiEvent::Closed { pane });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    fn fake_agent() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "oxterm-fake-agent-{}-{}.py",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            r#"#!/usr/bin/env python3
+import json, sys
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    if method == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": {
+            "protocolVersion": 1,
+            "agentCapabilities": {},
+            "agentInfo": {"name": "fake", "title": "Fake Agent"}}}), flush=True)
+    elif method == "session/new":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                          "result": {"sessionId": "s1"}}), flush=True)
+    elif method == "session/prompt":
+        print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {
+            "sessionId": "s1", "update": {"sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": "hello from fake"}}}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                          "result": {"stopReason": "end_turn"}}), flush=True)
+"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path
+    }
+
+    #[test]
+    fn a_session_handshakes_streams_and_finishes_a_turn() {
+        let script = fake_agent();
+        let (tx, rx) = mpsc::channel();
+        let session = spawn_session(
+            "pane-1".to_string(),
+            &[script.to_string_lossy().to_string()],
+            "/tmp",
+            Vec::new(),
+            tx,
+        )
+        .expect("spawn fake agent");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut ready = false;
+        while Instant::now() < deadline && !ready {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(UiEvent::Ready { agent, session, .. }) => {
+                    assert_eq!(agent, "Fake Agent");
+                    assert_eq!(session, "s1");
+                    ready = true;
+                }
+                Ok(UiEvent::Error { message, .. }) => panic!("handshake failed: {message}"),
+                Ok(_) => {}
+                Err(_) => {}
+            }
+        }
+        assert!(ready, "the session never became ready");
+
+        session
+            .writer
+            .send(acp::session_prompt(3, "s1", "hi"))
+            .unwrap();
+        let mut said_hello = false;
+        let mut finished = false;
+        while Instant::now() < deadline && !finished {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(UiEvent::Update {
+                    update: acp::Update::AgentMessage(text),
+                    ..
+                }) => {
+                    assert_eq!(text, "hello from fake");
+                    said_hello = true;
+                }
+                Ok(UiEvent::TurnDone { reason, .. }) => {
+                    assert_eq!(reason, "end_turn");
+                    finished = true;
+                }
+                Ok(UiEvent::Error { message, .. }) => panic!("agent error: {message}"),
+                Ok(_) => {}
+                Err(_) => {}
+            }
+        }
+        assert!(said_hello, "no streamed message arrived");
+        assert!(finished, "the turn never finished");
+        std::fs::remove_file(script).ok();
+    }
 }
