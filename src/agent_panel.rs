@@ -27,6 +27,13 @@ use crate::settings::settings;
 use crate::terminal::TerminalBox;
 use crate::window::MainWindow;
 
+/// The id of the handshake request that opens or resumes the ACP session.
+const SESSION_REQUEST_ID: u64 = 2;
+/// A `session/new` retry after the agent refused `session/load`. Below
+/// `acp::CONFIG_ID_BASE` on purpose, and far above the prompt ids the panel
+/// uses.
+const SESSION_NEW_FALLBACK_ID: u64 = 900_000_000;
+
 /// The messages the reader thread sends to the GTK loop.
 enum UiEvent {
     Ready {
@@ -36,6 +43,9 @@ enum UiEvent {
         models: Vec<acp::ConfigChoice>,
         model_api: Option<acp::ModelApi>,
         session: String,
+        /// True when the process attached to an existing session with
+        /// `session/load` instead of starting a new one.
+        resumed: bool,
     },
     /// The agent accepted a configuration change (the model, for now).
     ModelChanged {
@@ -740,18 +750,18 @@ impl AgentPanel {
             self.show_setup(first_prompt);
             return;
         }
-        let state = self
-            .sessions
-            .borrow()
-            .get(&pane)
-            .map(|session| (session.ready, session.status));
-        if let Some((ready, status)) = state {
-            if ready {
+        let mut previous: Option<Session> = None;
+        let state = self.sessions.borrow_mut().get_mut(&pane).map(|session| {
+            let alive = session.child.try_wait().ok().flatten().is_none();
+            (session.ready, session.status, alive)
+        });
+        if let Some((ready, status, alive)) = state {
+            if ready && alive {
                 self.send_prompt(&pane, first_prompt, mirror);
                 self.update_header();
                 return;
             }
-            if status != "error" && status != "closed" {
+            if alive && status != "error" && status != "closed" {
                 if let Some(session) = self.sessions.borrow_mut().get_mut(&pane) {
                     session.queue.push((first_prompt.to_string(), mirror));
                     session.status = "starting";
@@ -760,8 +770,11 @@ impl AgentPanel {
                 return;
             }
             // A process that exited or failed the handshake is replaced on the
-            // next prompt instead of swallowing it in a dead queue.
-            self.sessions.borrow_mut().remove(&pane);
+            // next prompt instead of swallowing it in a dead queue. Keep the
+            // old session so its transcript, history and ACP id can be reused:
+            // the replacement asks `session/load` and the agent continues the
+            // same conversation.
+            previous = self.sessions.borrow_mut().remove(&pane);
         }
 
         if !agent::configured(&settings) {
@@ -844,13 +857,42 @@ impl AgentPanel {
             Vec::new()
         };
 
-        match spawn_session(pane.clone(), &argv, &cwd, servers, self.events_tx.clone()) {
-            Ok(session) => {
+        let resume = previous
+            .as_ref()
+            .and_then(|session| session.session_id.clone());
+        let resumed = resume.is_some();
+        let message = if resumed {
+            format!("\nResuming {} in {}…\n", argv.join(" "), cwd)
+        } else {
+            format!("\nStarting {} in {}…\n", argv.join(" "), cwd)
+        };
+        match spawn_session(
+            pane.clone(),
+            &argv,
+            &cwd,
+            servers,
+            self.events_tx.clone(),
+            resume.clone(),
+        ) {
+            Ok(mut session) => {
+                if let Some(mut old) = previous {
+                    // Keep the conversation on screen and in the input history;
+                    // only the child process is new.
+                    session.transcript = std::mem::take(&mut old.transcript);
+                    session.history = std::mem::take(&mut old.history);
+                    session.history_index = old.history_index;
+                    session.usage = std::mem::take(&mut old.usage);
+                    session.agent_name = std::mem::take(&mut old.agent_name);
+                    session.model = old.model.take();
+                    session.models = std::mem::take(&mut old.models);
+                    session.model_api = old.model_api;
+                    session.model_previous = old.model_previous.take();
+                    session.mirror = agent::Mirror::new();
+                    session.mirror_current = false;
+                    session.session_id = resume;
+                }
                 self.sessions.borrow_mut().insert(pane.clone(), session);
-                self.render_to(
-                    &pane,
-                    &format!("\nStarting {} in {}…\n", argv.join(" "), cwd),
-                );
+                self.render_to(&pane, &message);
                 // The session is not ready until the handshake completes; queue
                 // the first prompt so the user does not have to repeat it.
                 if let Some(session) = self.sessions.borrow_mut().get_mut(&pane) {
@@ -890,6 +932,15 @@ impl AgentPanel {
         };
         if !session.ready || session.busy {
             session.queue.push((text.to_string(), mirror));
+            return;
+        }
+        if session.child.try_wait().ok().flatten().is_some() {
+            // The process is gone but the reader has not reported it yet. Do
+            // not write into a dead pipe: the next prompt restarts and resumes
+            // the session.
+            session.queue.push((text.to_string(), mirror));
+            session.ready = false;
+            session.status = "closed";
             return;
         }
         let Some(session_id) = session.session_id.clone() else {
@@ -937,15 +988,29 @@ impl AgentPanel {
                     models,
                     model_api,
                     session,
+                    resumed,
                 } => {
+                    let had_transcript = self
+                        .sessions
+                        .borrow()
+                        .get(&pane)
+                        .is_some_and(|state| !state.transcript.is_empty());
                     let mut sessions = self.sessions.borrow_mut();
                     if let Some(state) = sessions.get_mut(&pane) {
                         state.ready = true;
                         state.status = "ready";
-                        state.agent_name = agent;
-                        state.model = model;
-                        state.models = models;
-                        state.model_api = model_api;
+                        if !agent.is_empty() {
+                            state.agent_name = agent;
+                        }
+                        if model.is_some() {
+                            state.model = model;
+                        }
+                        if !models.is_empty() {
+                            state.models = models;
+                        }
+                        if model_api.is_some() {
+                            state.model_api = model_api;
+                        }
                         state.session_id = Some(session);
                     }
                     let queued: Vec<(String, bool)> = sessions
@@ -953,6 +1018,9 @@ impl AgentPanel {
                         .map(|state| std::mem::take(&mut state.queue))
                         .unwrap_or_default();
                     drop(sessions);
+                    if resumed && had_transcript {
+                        self.render_to(&pane, "\n[agent session resumed]\n");
+                    }
                     // Before the queued prompt: the writer channel keeps the
                     // order, so the model change reaches the agent first.
                     self.apply_preferred_model(&pane);
@@ -1078,23 +1146,46 @@ impl AgentPanel {
                             }
                         }
                     }
+                    let mut retry: Vec<(String, bool)> = Vec::new();
                     let mut sessions = self.sessions.borrow_mut();
                     if let Some(state) = sessions.get_mut(&pane) {
-                        let never_connected = state.session_id.is_none();
+                        let never_connected = state.agent_name.is_empty();
                         state.status = "closed";
                         state.ready = false;
                         state.busy = false;
-                        state.session_id = None;
                         state.append("\n[the agent process exited]\n");
                         if never_connected {
                             state.append(
                                 "If it exited immediately, check that the command speaks ACP. \
                                  `oxterm agent --list` shows the known agent CLIs.\n",
                             );
+                        } else if state.session_id.is_some() {
+                            state.append(
+                                "The next prompt restarts the agent and resumes this session.\n",
+                            );
+                        }
+                        if !state.queue.is_empty() {
+                            // Prompts that arrived while the process was dying
+                            // were never sent. Restart and resume now instead of
+                            // losing them.
+                            retry = std::mem::take(&mut state.queue);
                         }
                     }
                     drop(sessions);
                     self.publish_status(&pane, "closed");
+                    if let Some(first) = retry.first().cloned() {
+                        if let Some(window) = self.window.upgrade() {
+                            if let Some(term) = window.terminal_by_remote_id(&pane) {
+                                self.ensure_session(&term, &first.0, first.1);
+                                retry.remove(0);
+                                if !retry.is_empty() {
+                                    if let Some(state) = self.sessions.borrow_mut().get_mut(&pane) {
+                                        state.queue.extend(retry);
+                                    }
+                                }
+                            }
+                        }
+                    }
                     self.render_active();
                     self.update_header();
                 }
@@ -1497,6 +1588,7 @@ fn spawn_session(
     cwd: &str,
     servers: Vec<acp::McpServer>,
     events: Sender<UiEvent>,
+    resume: Option<String>,
 ) -> Result<Session, String> {
     let program = agent::resolve_program(argv.first().ok_or("no agent command")?);
     let mut child = Command::new(&program)
@@ -1528,7 +1620,17 @@ fn spawn_session(
     let pane_for_reader = pane.clone();
     thread::Builder::new()
         .name("oxterm-agent-reader".to_string())
-        .spawn(move || read_agent(pane_for_reader, stdout, writer_thread, events, cwd, servers))
+        .spawn(move || {
+            read_agent(
+                pane_for_reader,
+                stdout,
+                writer_thread,
+                events,
+                cwd,
+                servers,
+                resume,
+            )
+        })
         .map_err(|error| format!("cannot start the agent reader: {}", error))?;
 
     Ok(Session {
@@ -1561,9 +1663,13 @@ fn read_agent(
     events: Sender<UiEvent>,
     cwd: String,
     servers: Vec<acp::McpServer>,
+    resume: Option<String>,
 ) {
     let _ = writer.send(acp::initialize(1));
     let mut agent_name = String::new();
+    // True while the pending handshake request is `session/load` rather than
+    // `session/new`.
+    let mut loading = false;
     for line in BufReader::new(stdout).lines() {
         let Ok(line) = line else {
             break;
@@ -1599,11 +1705,27 @@ fn read_agent(
                         });
                         continue;
                     }
+                    if loading && number == Some(SESSION_REQUEST_ID) {
+                        // The agent advertised `session/load` but refused this
+                        // one. Do not leave the user without an agent: start a
+                        // fresh session and keep the transcript on screen.
+                        let _ = events.send(UiEvent::Error {
+                            pane: pane.clone(),
+                            message: format!("could not resume the agent session: {message}"),
+                        });
+                        loading = false;
+                        let _ =
+                            writer.send(acp::session_new(SESSION_NEW_FALLBACK_ID, &cwd, &servers));
+                        continue;
+                    }
                     let _ = events.send(UiEvent::Error {
                         pane: pane.clone(),
                         message,
                     });
-                    if number == Some(1) || number == Some(2) {
+                    if number == Some(1)
+                        || number == Some(SESSION_REQUEST_ID)
+                        || number == Some(SESSION_NEW_FALLBACK_ID)
+                    {
                         break;
                     }
                     continue;
@@ -1627,15 +1749,35 @@ fn read_agent(
                     Some(1) => {
                         let result = result.unwrap_or(Value::Null);
                         agent_name = acp::agent_title(&result);
-                        let _ = writer.send(acp::session_new(2, &cwd, &servers));
+                        if let Some(session) =
+                            resume.as_deref().filter(|_| acp::supports_load(&result))
+                        {
+                            loading = true;
+                            let _ = writer.send(acp::session_load(
+                                SESSION_REQUEST_ID,
+                                session,
+                                &cwd,
+                                &servers,
+                            ));
+                        } else {
+                            let _ =
+                                writer.send(acp::session_new(SESSION_REQUEST_ID, &cwd, &servers));
+                        }
                     }
-                    Some(2) => {
+                    Some(SESSION_REQUEST_ID) | Some(SESSION_NEW_FALLBACK_ID) => {
                         let result = result.unwrap_or(Value::Null);
+                        let resumed = loading && number == Some(SESSION_REQUEST_ID);
+                        loading = false;
                         let session = result
                             .get("sessionId")
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .to_string();
+                        let session = if session.is_empty() && resumed {
+                            resume.clone().unwrap_or_default()
+                        } else {
+                            session
+                        };
                         if session.is_empty() {
                             let _ = events.send(UiEvent::Error {
                                 pane: pane.clone(),
@@ -1654,6 +1796,7 @@ fn read_agent(
                             models: choices,
                             model_api,
                             session,
+                            resumed,
                         });
                     }
                     _ => {
@@ -1670,6 +1813,13 @@ fn read_agent(
             }
             acp::Incoming::Notification { method, params } => {
                 if method == "session/update" {
+                    // `session/load` replays the stored conversation as
+                    // notifications before it answers. The pane already has
+                    // that transcript, so rendering the replay would duplicate
+                    // it. Live updates start after the load response.
+                    if loading {
+                        continue;
+                    }
                     if let Some(update) = acp::parse_update(&params) {
                         let _ = events.send(UiEvent::Update {
                             pane: pane.clone(),
@@ -1759,6 +1909,107 @@ for line in sys.stdin:
     }
 
     #[test]
+    fn a_session_resumes_with_load_when_the_agent_supports_it() {
+        let log = std::env::temp_dir().join(format!(
+            "oxterm-load-agent-{}-{}.log",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let script = std::env::temp_dir().join(format!(
+            "oxterm-load-agent-{}-{}.py",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &script,
+            format!(
+                r#"#!/usr/bin/env python3
+import json, sys
+log = {log:?}
+def options(value):
+    return [{{"id": "model", "name": "Model", "currentValue": value,
+             "options": [{{"value": "m", "name": "M"}}]}}]
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    if method == "initialize":
+        print(json.dumps({{"jsonrpc": "2.0", "id": message["id"], "result": {{
+            "protocolVersion": 1,
+            "agentCapabilities": {{"loadSession": True}},
+            "agentInfo": {{"name": "fake", "title": "Fake Agent"}}}}}}), flush=True)
+    elif method == "session/load":
+        with open(log, "a") as handle:
+            handle.write("load " + message["params"]["sessionId"] + "\n")
+        # Replay the stored conversation before answering, exactly like a real
+        # agent. The pane must not render this again.
+        print(json.dumps({{"jsonrpc": "2.0", "method": "session/update", "params": {{
+            "sessionId": message["params"]["sessionId"],
+            "update": {{"sessionUpdate": "agent_message_chunk",
+            "content": {{"type": "text", "text": "OLD ANSWER"}}}}}}}}), flush=True)
+        print(json.dumps({{"jsonrpc": "2.0", "id": message["id"], "result": {{
+            "sessionId": message["params"]["sessionId"],
+            "configOptions": options("m")}}}}), flush=True)
+    elif method == "session/new":
+        with open(log, "a") as handle:
+            handle.write("new\n")
+        print(json.dumps({{"jsonrpc": "2.0", "id": message["id"], "result": {{
+            "sessionId": "new-id", "configOptions": options("m")}}}}), flush=True)
+"#,
+                log = log
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let (tx, rx) = mpsc::channel();
+        let session = spawn_session(
+            "pane-load".to_string(),
+            &[script.to_string_lossy().to_string()],
+            "/tmp",
+            Vec::new(),
+            tx,
+            Some("s-old".to_string()),
+        )
+        .expect("spawn fake agent");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut ready = false;
+        while Instant::now() < deadline && !ready {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(UiEvent::Ready {
+                    session,
+                    resumed: true,
+                    ..
+                }) => {
+                    assert_eq!(session, "s-old");
+                    ready = true;
+                }
+                Ok(UiEvent::Update { update, .. }) => {
+                    panic!("replayed an update while loading: {update:?}")
+                }
+                Ok(UiEvent::Error { message, .. }) => panic!("handshake failed: {message}"),
+                Ok(_) => {}
+                Err(_) => {}
+            }
+        }
+        assert!(ready, "the resumed session never became ready");
+        drop(session);
+        let logged = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(logged, "load s-old\n");
+        std::fs::remove_file(&log).ok();
+        std::fs::remove_file(&script).ok();
+    }
+
+    #[test]
     fn a_session_handshakes_streams_and_finishes_a_turn() {
         let script = fake_agent();
         let (tx, rx) = mpsc::channel();
@@ -1768,6 +2019,7 @@ for line in sys.stdin:
             "/tmp",
             Vec::new(),
             tx,
+            None,
         )
         .expect("spawn fake agent");
 

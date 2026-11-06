@@ -73,6 +73,11 @@ session kills only that process.
 3. `session/new` passes the terminal's working directory and, when
    `agent_mcp` is true and the agent is local, Oxterm's own MCP server:
    `{"name": "oxterm", "command": "<current exe>", "args": ["mcp"]}`.
+   When an agent process exits and the next prompt restarts it, the second
+   `initialize` result says whether the agent keeps sessions
+   (`agentCapabilities.loadSession`); Oxterm then sends `session/load` with the
+   same session id, cwd and MCP servers instead of `session/new`, so the
+   conversation continues where it stopped.
 4. `session/prompt` sends one text block. `session/update` notifications are
    rendered as they arrive: message chunks, thoughts, tool calls, plans, usage
    and notices.
@@ -83,7 +88,9 @@ session kills only that process.
 6. `session/cancel` is sent by `/stop`. The process stays alive for the next
    prompt.
 7. Closing a tab kills only its session; hiding the pane or switching tabs keeps
-   the session and its transcript.
+   the session and its transcript. A process that exits is restarted and
+   resumed on the next prompt; if the agent refuses `session/load`, Oxterm falls
+   back to a fresh `session/new` and keeps the transcript on screen.
 
 Hiding the pane is a stash, not a destroy. `Ctrl+Shift+.` toggles it,
 `Ctrl+Shift+I` focuses it, `Ctrl+Alt+.` sends the last failure. The process is
@@ -248,8 +255,10 @@ wants; configure the remote command for remote work.
 
 - The pane position (`agent_pane_position`) is read when the window is built; a
   change applies to new windows.
-- Conversations are not persisted; a new window starts new sessions. ACP
-  `session/load` is not used yet.
+- Conversations are not persisted across windows; a new window starts new
+  sessions. Within a tab, an agent process that exits is resumed with
+  `session/load` when the agent supports it, so the conversation survives as
+  long as the tab is open.
 - Only text prompts are sent. Images and resources are not advertised.
 - `agent_remote_command` uses the running `ssh` arguments; if the tab is not an
   SSH client it is ignored.
@@ -271,12 +280,17 @@ triggers can follow a session without subscribing to the transcript.
 - `src/headless/acp.rs`: request shapes, message classification, streamed text,
   tools, plans, usage, permission defaults, and the `configOptions` model list
   versus the reserved configuration ids.
-- `src/agent_panel.rs`: a fake ACP agent hands over, streams a turn, and accepts
-  a model change without ending the turn.
+- `src/agent_panel.rs`: a fake ACP agent hands over, streams a turn, accepts
+  a model change without ending the turn, and resumes a session with
+  `session/load` when the agent advertises support.
 - `tests/gui_lifecycle.rs` (`agent-auto-fix`): the real binary starts a session
   for a command the shell cannot find, applies `agent_model` before the queued
   prompt, the answer reaches the terminal, and a command typed afterwards lands
   on a prompt line under it.
+- `tests/gui_lifecycle.rs` (`agent-session`): two prompts in the same tab use
+  the same ACP session; when the agent process exits after the first turn, the
+  second process resumes it with `session/load`, keeps the turn counter, and
+  the pane can be hidden and another tab visited in between.
 - `src/headless/control_cli.rs`: `fix`/`agent` parsing and help.
 - `tests/mcp.rs`: with the switch off the server exposes no tools and explains
   why; with it on the normal tool list is back.

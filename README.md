@@ -116,7 +116,8 @@ exit status and output. The same context is available as `oxterm fix [HINT]`,
 (exit 127) is not really a shell command, Oxterm asks the agent about it
 automatically and prints the answer in the terminal itself; set `agent_auto_fix`
 to false to keep the hand-off explicit. Each tab keeps its own session while
-the pane is hidden, and an SSH tab can run the agent on the remote host with
+the pane is hidden, an exited agent process is resumed with `session/load` when
+the CLI supports it, and an SSH tab can run the agent on the remote host with
 `agent_remote_command` instead of locally.
 
 When the agent reports the models it supports, the pane header shows them in a

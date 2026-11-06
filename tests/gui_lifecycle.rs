@@ -27,6 +27,7 @@ const SCENARIOS: &[&str] = &[
     "theme-switch",
     "tab-failure",
     "agent-auto-fix",
+    "agent-session",
     "preferences",
 ];
 
@@ -132,11 +133,84 @@ for line in sys.stdin:
                           "result": {"stopReason": "end_turn"}}), flush=True)
 "#;
 
+/// `agent-session` checks that two separate hand-offs reach the same ACP
+/// session even when the agent process exits after each turn. The fake agent
+/// writes its pid, session id and turn counter to a log: a restart must use
+/// `session/load` and continue the turn counter instead of starting over.
+const FAKE_SESSION_AGENT: &str = r#"#!/usr/bin/env python3
+import json, os, sys, uuid
+home = os.environ["HOME"]
+log = os.path.join(home, "agent-session.log")
+state_path = os.path.join(home, "agent-session-state.json")
+def read_state():
+    try:
+        with open(state_path) as handle:
+            return json.load(handle)
+    except Exception:
+        return {}
+def write_state(state):
+    with open(state_path, "w") as handle:
+        json.dump(state, handle)
+def options(value):
+    return [{"id": "model", "name": "Model", "currentValue": value,
+             "options": [{"value": "default/model", "name": "Default"},
+                         {"value": "wanted/model", "name": "Wanted"}]}]
+def log_line(kind, sid, turn):
+    with open(log, "a") as handle:
+        handle.write("{} {} {} {}\n".format(kind, os.getpid(), sid, turn))
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    if method == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": {
+            "protocolVersion": 1,
+            "agentCapabilities": {"loadSession": True},
+            "agentInfo": {"name": "fake", "title": "Fake Agent"}}}), flush=True)
+    elif method == "session/new":
+        sid = uuid.uuid4().hex
+        write_state({"sid": sid, "turn": 0})
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": {
+            "sessionId": sid, "configOptions": options("default/model")}}), flush=True)
+    elif method == "session/load":
+        sid = message["params"]["sessionId"]
+        state = read_state()
+        if state.get("sid") != sid:
+            state = {"sid": sid, "turn": 0}
+            write_state(state)
+        log_line("load", sid, state["turn"])
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": {
+            "sessionId": sid, "configOptions": options("default/model")}}), flush=True)
+    elif method == "session/set_config_option":
+        value = message["params"]["value"]
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                          "result": {"configOptions": options(value)}}), flush=True)
+    elif method == "session/prompt":
+        state = read_state()
+        state["turn"] = state.get("turn", 0) + 1
+        write_state(state)
+        log_line("prompt", state["sid"], state["turn"])
+        print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {
+            "sessionId": state["sid"], "update": {"sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": "OXTERM-SESSION-{}".format(state["turn"])}}}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                          "result": {"stopReason": "end_turn"}}), flush=True)
+        # Exit after the turn: the next prompt must resume the session in a
+        # fresh process instead of starting from an empty conversation.
+        sys.exit(0)
+"#;
+
 /// `agent-auto-fix` needs a real shell and a configured agent, not `sleep`.
 fn configure_agent(home: &Path) -> Result<(), String> {
+    configure_agent_script(home, FAKE_AGENT)
+}
+
+fn configure_session_agent(home: &Path) -> Result<(), String> {
+    configure_agent_script(home, FAKE_SESSION_AGENT)
+}
+
+fn configure_agent_script(home: &Path, script: &str) -> Result<(), String> {
     let agent = home.join("fake-agent.py");
-    fs::write(&agent, FAKE_AGENT)
-        .map_err(|error| format!("could not write fake agent: {error}"))?;
+    fs::write(&agent, script).map_err(|error| format!("could not write fake agent: {error}"))?;
     fs::set_permissions(&agent, fs::Permissions::from_mode(0o755))
         .map_err(|error| format!("could not make the fake agent executable: {error}"))?;
     let settings = home.join(".config").join("oxterm");
@@ -154,9 +228,13 @@ fn configure_agent(home: &Path) -> Result<(), String> {
 
 fn run_scenario(scenario: &str) -> Result<(), String> {
     let home = TempHome::new(scenario);
-    let agent_scenario = scenario == "agent-auto-fix";
+    let agent_scenario = scenario == "agent-auto-fix" || scenario == "agent-session";
     if agent_scenario {
-        configure_agent(home.path())?;
+        if scenario == "agent-session" {
+            configure_session_agent(home.path())?;
+        } else {
+            configure_agent(home.path())?;
+        }
     }
     let mut command = Command::new(env!("CARGO_BIN_EXE_oxterm"));
     command.arg("--no-restore");

@@ -73,6 +73,33 @@ pub fn session_new(id: u64, cwd: &str, servers: &[McpServer]) -> Value {
     })
 }
 
+/// `session/load` request: attach a new process to a session the agent already
+/// knows. ACP agents that advertise `agentCapabilities.loadSession` keep the
+/// conversation across process restarts, which is how Oxterm makes the agent
+/// remember previous turns after the CLI exits or crashes.
+pub fn session_load(id: u64, session_id: &str, cwd: &str, servers: &[McpServer]) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "session/load",
+        "params": {
+            "sessionId": session_id,
+            "cwd": cwd,
+            "mcpServers": servers.iter().map(McpServer::to_json).collect::<Vec<_>>(),
+        },
+    })
+}
+
+/// Whether the agent advertised `session/load` in its `initialize` result.
+pub fn supports_load(result: &Value) -> bool {
+    let Some(capabilities) = result.get("agentCapabilities") else {
+        return false;
+    };
+    ["loadSession", "load_session"]
+        .iter()
+        .any(|key| capabilities.get(*key).and_then(Value::as_bool) == Some(true))
+}
+
 /// Request ids from this value up belong to session configuration
 /// (`session/set_config_option`) instead of prompts.
 ///
@@ -774,6 +801,22 @@ mod tests {
         assert_eq!(new["params"]["cwd"], "/tmp");
         assert_eq!(new["params"]["mcpServers"][0]["name"], "oxterm");
         assert_eq!(new["params"]["mcpServers"][0]["args"][0], "mcp");
+
+        let load = session_load(9, "s1", "/tmp", &servers);
+        assert_eq!(load["method"], "session/load");
+        assert_eq!(load["params"]["sessionId"], "s1");
+        assert_eq!(load["params"]["cwd"], "/tmp");
+        assert_eq!(load["params"]["mcpServers"][0]["name"], "oxterm");
+        assert!(supports_load(&json!({
+            "agentCapabilities": { "loadSession": true }
+        })));
+        assert!(supports_load(&json!({
+            "agentCapabilities": { "load_session": true }
+        })));
+        assert!(!supports_load(&json!({
+            "agentCapabilities": { "loadSession": false }
+        })));
+        assert!(!supports_load(&json!({})));
 
         let prompt = session_prompt(3, "s1", "hello");
         assert_eq!(prompt["params"]["sessionId"], "s1");

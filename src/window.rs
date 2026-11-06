@@ -6770,6 +6770,7 @@ pub mod test_scenario {
             "theme-switch" => theme_switch(win),
             "tab-failure" => tab_failure(win),
             "agent-auto-fix" => agent_auto_fix(win),
+            "agent-session" => agent_session(win),
             "preferences" => preferences(win),
             other => Err(format!("unknown test scenario: {other}")),
         }
@@ -6886,6 +6887,108 @@ pub mod test_scenario {
         }
         win.set_split("single", false);
         Ok(())
+    }
+
+    /// Two prompts in the same tab must reach the same agent process and the
+    /// same ACP session. The fake agent logs its pid (used as the session id)
+    /// and a turn counter; a restart would show two different pids.
+    fn agent_session(win: &MainWindow) -> Result<(), String> {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let term = win
+            .current_terminal()
+            .ok_or_else(|| "no current terminal".to_string())?;
+        let log = std::path::PathBuf::from(
+            std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?,
+        )
+        .join("agent-session.log");
+
+        let main_loop = glib::MainLoop::new(None, false);
+        let outcome: Rc<RefCell<Option<Result<(), String>>>> = Rc::new(RefCell::new(None));
+        {
+            let win = win.clone();
+            let term = term.clone();
+            let main_loop = main_loop.clone();
+            let outcome = outcome.clone();
+            let log = log.clone();
+            let started = std::time::Instant::now();
+            let mut sent_first = false;
+            let mut sent_second = false;
+            let mut first_logged: Option<std::time::Instant> = None;
+            glib::timeout_add_local(Duration::from_millis(100), move || {
+                let lines: Vec<String> = std::fs::read_to_string(&log)
+                    .unwrap_or_default()
+                    .lines()
+                    .map(str::to_string)
+                    .collect();
+                let prompts: Vec<Vec<&str>> = lines
+                    .iter()
+                    .filter(|line| line.starts_with("prompt "))
+                    .map(|line| line.split_whitespace().collect())
+                    .collect();
+                if !sent_first {
+                    win.agent_prompt_for(&term, "first prompt");
+                    sent_first = true;
+                } else if !sent_second {
+                    if first_logged.is_none() && !prompts.is_empty() {
+                        first_logged = Some(std::time::Instant::now());
+                    }
+                    // Give the panel a moment to see the process exit and mark
+                    // the session closed before the second prompt arrives.
+                    if first_logged.is_some_and(|at| at.elapsed() > Duration::from_millis(800)) {
+                        // Hiding the pane and visiting another tab must not throw
+                        // the session away: this is the "while the terminal is
+                        // open" promise.
+                        win.agent_toggle();
+                        let command = vec!["sleep".to_string(), "30".to_string()];
+                        win.add_new_tab(None, None, Some("other"), Some("other"), Some(&command));
+                        win.next_tab_signal();
+                        win.agent_prompt_for(&term, "second prompt");
+                        sent_second = true;
+                    }
+                }
+                if prompts.len() >= 2 {
+                    let first = &prompts[0];
+                    let second = &prompts[1];
+                    let loads = lines
+                        .iter()
+                        .filter(|line| line.starts_with("load "))
+                        .count();
+                    let result = if first.get(1) == second.get(1) {
+                        Err(format!("the agent process did not restart: {lines:?}"))
+                    } else if first.get(2) != second.get(2) {
+                        Err(format!(
+                            "the second process started a different session: {lines:?}"
+                        ))
+                    } else if first.get(3) != Some(&"1") || second.get(3) != Some(&"2") {
+                        Err(format!(
+                            "the agent did not see both turns in order: {lines:?}"
+                        ))
+                    } else if loads == 0 {
+                        Err(format!(
+                            "the second process did not use session/load: {lines:?}"
+                        ))
+                    } else {
+                        Ok(())
+                    };
+                    *outcome.borrow_mut() = Some(result);
+                    main_loop.quit();
+                    return glib::ControlFlow::Break;
+                }
+                if started.elapsed() > Duration::from_secs(20) {
+                    *outcome.borrow_mut() = Some(Err(format!(
+                        "the second prompt never reached the agent; log: {lines:?}"
+                    )));
+                    main_loop.quit();
+                    return glib::ControlFlow::Break;
+                }
+                glib::ControlFlow::Continue
+            });
+        }
+        main_loop.run();
+        let outcome = outcome.borrow_mut().take();
+        outcome.unwrap_or_else(|| Err("the agent session scenario did not finish".to_string()))
     }
 
     /// A command the shell cannot find must reach the agent through the
