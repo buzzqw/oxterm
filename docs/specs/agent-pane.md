@@ -112,6 +112,14 @@ and prose is word-wrapped to the terminal width. Lines end in CRLF because
 `feed` bypasses the tty, where a bare LF would leave the cursor in the same
 column and every line would start where the previous one ended.
 
+When the answer ends, the prompt is put back under the cursor: the shell had
+already drawn it before the answer arrived, and without a redraw the cursor
+would sit at the end of the answer while the prompt stayed lines above, so the
+next keystrokes would echo in the wrong place. `Terminal::redraw_prompt_line`
+nudges the pty width by one column and back — interactive shells repaint on
+SIGWINCH — and wakes the PTY broker so it forwards the change; it does nothing
+while a command is running and nothing is typed into the shell.
+
 This needs the OSC 133 shell integration, which is where the exit status comes
 from. A successful command, a normal failure (exit 1) and a remote shell that
 does not report status are never handed off. `agent_auto_fix: false` disables
@@ -260,7 +268,8 @@ triggers can follow a session without subscribing to the transcript.
   a model change without ending the turn.
 - `tests/gui_lifecycle.rs` (`agent-auto-fix`): the real binary starts a session
   for a command the shell cannot find, applies `agent_model` before the queued
-  prompt, and the answer reaches the terminal.
+  prompt, the answer reaches the terminal, and a command typed afterwards lands
+  on a prompt line under it.
 - `src/headless/control_cli.rs`: `fix`/`agent` parsing and help.
 - `tests/mcp.rs`: with the switch off the server exposes no tools and explains
   why; with it on the normal tool list is back.

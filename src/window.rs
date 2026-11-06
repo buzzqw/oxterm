@@ -6930,11 +6930,47 @@ pub mod test_scenario {
             });
         }
         main_loop.run();
-        if matches!(*outcome.borrow(), Some(true)) {
+        if !matches!(*outcome.borrow(), Some(true)) {
+            return Err(format!(
+                "the agent answer never reached the terminal; screen:\n{}",
+                term.capture_text("all", 0)
+            ));
+        }
+        // The shell had already drawn its prompt before the answer; typing must
+        // now continue on a prompt line under the answer, not at the column the
+        // answer left behind.
+        term.control_send("echo OXTERM-PROMPT-OK", true);
+        let prompt_loop = glib::MainLoop::new(None, false);
+        let typed = Rc::new(RefCell::new(None));
+        {
+            let term = term.clone();
+            let prompt_loop = prompt_loop.clone();
+            let typed = typed.clone();
+            let started = std::time::Instant::now();
+            glib::timeout_add_local(Duration::from_millis(150), move || {
+                let text = term.capture_text("all", 0);
+                let on_prompt = text
+                    .lines()
+                    .any(|line| line.trim_end().ends_with("$ echo OXTERM-PROMPT-OK"));
+                if on_prompt {
+                    *typed.borrow_mut() = Some(true);
+                    prompt_loop.quit();
+                    return glib::ControlFlow::Break;
+                }
+                if started.elapsed() > Duration::from_secs(6) {
+                    *typed.borrow_mut() = Some(false);
+                    prompt_loop.quit();
+                    return glib::ControlFlow::Break;
+                }
+                glib::ControlFlow::Continue
+            });
+        }
+        prompt_loop.run();
+        if matches!(*typed.borrow(), Some(true)) {
             Ok(())
         } else {
             Err(format!(
-                "the agent answer never reached the terminal; screen:\n{}",
+                "the prompt did not come back after the answer; screen:\n{}",
                 term.capture_text("all", 0)
             ))
         }

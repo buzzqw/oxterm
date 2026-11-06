@@ -2969,6 +2969,63 @@ impl TerminalBox {
         foreground != shell_group
     }
 
+    /// Ask the shell to repaint its prompt and the current input line where the
+    /// cursor is now.
+    ///
+    /// An inline agent answer is written after the prompt the shell had already
+    /// drawn. Without this the cursor stays at the end of the answer, the
+    /// prompt sits several lines above it, and the next keystrokes echo in the
+    /// wrong place. Interactive shells repaint on SIGWINCH, which is the only
+    /// portable way to ask for a redraw without submitting a line; the pty
+    /// width is nudged by one column and restored a moment later, so the
+    /// terminal grid never changes and nothing is typed into the shell.
+    pub fn redraw_prompt_line(&self) {
+        if !*self.imp().interactive_shell.borrow() || self.has_active_process() {
+            return;
+        }
+        let fd = *self.imp().pty_fd.borrow();
+        if fd < 0 {
+            return;
+        }
+        unsafe {
+            let mut size: libc::winsize = std::mem::zeroed();
+            if libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) != 0 || size.ws_col == 0 {
+                return;
+            }
+            let original = size;
+            size.ws_col = original.ws_col.saturating_add(1);
+            if libc::ioctl(fd, libc::TIOCSWINSZ, &size) != 0 {
+                return;
+            }
+            // Local tabs run behind the PTY broker, which only re-reads the
+            // GUI size when it is signalled.
+            if let Some(handle) = self.imp().remote_handle.borrow().as_ref() {
+                handle.notify_resize();
+            }
+            let weak = crate::SendWeak::new(self);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
+                if let Some(term) = weak.upgrade() {
+                    let fd = *term.imp().pty_fd.borrow();
+                    if fd >= 0 {
+                        // Both SIGWINCHs repaint the same line, so the prompt
+                        // is never printed twice. Restore only if nobody
+                        // resized the window in the meantime.
+                        let mut current: libc::winsize = std::mem::zeroed();
+                        let unchanged = libc::ioctl(fd, libc::TIOCGWINSZ, &mut current) == 0
+                            && current.ws_col == original.ws_col.saturating_add(1)
+                            && current.ws_row == original.ws_row;
+                        if unchanged {
+                            libc::ioctl(fd, libc::TIOCSWINSZ, &original);
+                        }
+                    }
+                    if let Some(handle) = term.imp().remote_handle.borrow().as_ref() {
+                        handle.notify_resize();
+                    }
+                }
+            });
+        }
+    }
+
     pub fn reattach_local(&self) {
         if let Some(pty) = self.imp().remote_pty.borrow_mut().take() {
             self.vte().set_pty(Some(&pty));

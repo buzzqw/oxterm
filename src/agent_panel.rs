@@ -866,6 +866,18 @@ impl AgentPanel {
                      printed by `oxterm agent --list`.\n",
                     error
                 ));
+                if mirror {
+                    // The hand-off already printed its header in the terminal;
+                    // report the failure there too and give the prompt back.
+                    term.vte().feed(
+                        agent::plain_for_terminal(&format!(
+                            "\r\n[agent error] cannot start the agent: {}\r\n",
+                            error
+                        ))
+                        .as_bytes(),
+                    );
+                    term.redraw_prompt_line();
+                }
                 self.update_header();
             }
         }
@@ -996,6 +1008,9 @@ impl AgentPanel {
                         if let Some(window) = self.window.upgrade() {
                             if let Some(term) = window.terminal_by_remote_id(&pane) {
                                 term.vte().feed(b"\r\n");
+                                // The prompt was drawn before the answer; ask
+                                // the shell to put it back under the cursor.
+                                term.redraw_prompt_line();
                             }
                         }
                     }
@@ -1040,6 +1055,7 @@ impl AgentPanel {
                                     ))
                                     .as_bytes(),
                                 );
+                                term.redraw_prompt_line();
                             }
                         }
                         if let Some(state) = self.sessions.borrow_mut().get_mut(&pane) {
