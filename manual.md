@@ -431,6 +431,14 @@ absolute command to configure for each (`PATH` plus the usual per-user bin
 directories); `oxterm agent --show` prints the effective configuration and the
 permission policies. Oxterm never installs an agent.
 
+Most agents report the models they offer as session configuration options. The
+agent pane header then shows a model picker, and the choice is written to
+`agent_model` so every new session starts on it. That includes the hidden
+session used when a command is not found, which is why the picker is also in
+Preferences. Authentication is not Oxterm's: if the agent answers that a
+provider needs credentials, log in with that agent's own CLI (`opencode auth
+login`, for example) or choose a model whose provider is already authenticated.
+
 The CLIs Oxterm recognises, and the command to use once one is installed and
 logged in:
 

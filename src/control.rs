@@ -839,6 +839,18 @@ fn run_agent(pane: Option<&str>, action: AgentAction) -> i32 {
                     command
                 }
             );
+            let model = settings
+                .get("agent_model")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            println!(
+                "agent_model: {}",
+                if model.trim().is_empty() {
+                    "(agent default)"
+                } else {
+                    model
+                }
+            );
             println!(
                 "agent_remote_command: {}",
                 if remote.trim().is_empty() {

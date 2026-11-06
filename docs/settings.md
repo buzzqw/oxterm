@@ -99,6 +99,7 @@ never written back to disk.
 | `ssh_connection_sharing` | bool | `true` | Share SSH connections and enable keepalives through the bundled wrapper. |
 | `agent_enabled` | bool | `false` | Enable the optional agent features (agent pane, oxterm fix, MCP tools). Off by default. |
 | `agent_command` | string | `""` | ACP agent CLI to run in the agent pane, e.g. "opencode acp" or "claude-code-acp". |
+| `agent_model` | string | `""` | Model to select in the agent session, as the agent lists it; empty keeps the agent's default. |
 | `agent_remote_command` | string | `""` | ACP agent CLI to run on an SSH host instead, e.g. "opencode acp"; empty keeps it local. |
 | `agent_mcp` | bool | `true` | Hand the agent Oxterm's own MCP server, so it can drive tabs after your approval. |
 | `agent_auto_fix` | bool | `true` | When a command is not found (exit 127), ask the agent automatically and print its answer in the terminal. |

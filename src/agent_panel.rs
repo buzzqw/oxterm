@@ -9,7 +9,7 @@
 //! The protocol half lives in `headless::acp`; this file is the transport (two
 //! small threads around the child's stdio) and the widgets.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
@@ -33,7 +33,19 @@ enum UiEvent {
         pane: String,
         agent: String,
         model: Option<String>,
+        models: Vec<acp::ConfigChoice>,
         session: String,
+    },
+    /// The agent accepted a configuration change (the model, for now).
+    ModelChanged {
+        pane: String,
+        model: Option<String>,
+        models: Vec<acp::ConfigChoice>,
+    },
+    /// The agent refused it. The session stays usable: only the choice failed.
+    ModelRejected {
+        pane: String,
+        message: String,
     },
     Update {
         pane: String,
@@ -65,6 +77,8 @@ struct Session {
     session_id: Option<String>,
     agent_name: String,
     model: Option<String>,
+    /// The models the agent offered in `configOptions`, if it reports any.
+    models: Vec<acp::ConfigChoice>,
     transcript: String,
     ready: bool,
     busy: bool,
@@ -105,6 +119,13 @@ impl Drop for Session {
 pub struct AgentPanel {
     root: gtk::Revealer,
     header: gtk::Label,
+    /// Model picker for the active tab's session. Hidden until the agent
+    /// reports the choices it supports.
+    model_combo: gtk::ComboBoxText,
+    /// Set while the combo is filled programmatically, so filling it does not
+    /// send a configuration change back to the agent.
+    combo_syncing: Cell<bool>,
+    combo_values: RefCell<Vec<(String, String)>>,
     usage: gtk::Label,
     view: gtk::TextView,
     entry: gtk::Entry,
@@ -139,6 +160,15 @@ impl AgentPanel {
         let header = gtk::Label::new(Some("Agent"));
         header.set_xalign(0.0);
         header.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        let model_combo = gtk::ComboBoxText::new();
+        model_combo.set_tooltip_text(Some(
+            "Model used by this tab's agent session; the choice is remembered for new sessions",
+        ));
+        model_combo.set_size_request(220, -1);
+        // The pane is revealed with show_all(); the picker appears only once
+        // the agent reports which models it offers.
+        model_combo.set_no_show_all(true);
+        model_combo.set_visible(false);
         let usage = gtk::Label::new(Some(""));
         usage.set_xalign(1.0);
         usage.style_context().add_class("dim-label");
@@ -152,6 +182,7 @@ impl AgentPanel {
         close_button.set_relief(gtk::ReliefStyle::None);
         close_button.set_tooltip_text(Some("Hide the agent pane (the session is kept)"));
         header_row.pack_start(&header, true, true, 0);
+        header_row.pack_start(&model_combo, false, false, 0);
         header_row.pack_start(&usage, false, false, 0);
         header_row.pack_start(&settings_button, false, false, 0);
         header_row.pack_start(&fix_button, false, false, 0);
@@ -217,6 +248,9 @@ impl AgentPanel {
         let panel = Rc::new(AgentPanel {
             root,
             header,
+            model_combo,
+            combo_syncing: Cell::new(false),
+            combo_values: RefCell::new(Vec::new()),
             usage,
             view,
             entry,
@@ -258,6 +292,11 @@ impl AgentPanel {
             close_button.connect_clicked(move |_| {
                 panel.hide();
             });
+        }
+        {
+            let panel = panel.clone();
+            let combo = panel.model_combo.clone();
+            combo.connect_changed(move |combo| panel.select_model(combo));
         }
         {
             let panel = panel.clone();
@@ -857,6 +896,7 @@ impl AgentPanel {
                     pane,
                     agent,
                     model,
+                    models,
                     session,
                 } => {
                     let mut sessions = self.sessions.borrow_mut();
@@ -865,6 +905,7 @@ impl AgentPanel {
                         state.status = "ready";
                         state.agent_name = agent;
                         state.model = model;
+                        state.models = models;
                         state.session_id = Some(session);
                     }
                     let queued: Vec<(String, bool)> = sessions
@@ -872,11 +913,39 @@ impl AgentPanel {
                         .map(|state| std::mem::take(&mut state.queue))
                         .unwrap_or_default();
                     drop(sessions);
+                    // Before the queued prompt: the writer channel keeps the
+                    // order, so the model change reaches the agent first.
+                    self.apply_preferred_model(&pane);
                     self.publish_status(&pane, "ready");
                     for (text, mirror) in queued {
                         self.send_prompt(&pane, &text, mirror);
                     }
                     self.update_header();
+                }
+                UiEvent::ModelChanged {
+                    pane,
+                    model,
+                    models,
+                } => {
+                    if let Some(state) = self.sessions.borrow_mut().get_mut(&pane) {
+                        if model.is_some() {
+                            state.model = model;
+                        }
+                        if !models.is_empty() {
+                            state.models = models;
+                        }
+                    }
+                    if self.active_pane().as_deref() == Some(pane.as_str()) {
+                        self.update_header();
+                    }
+                }
+                UiEvent::ModelRejected { pane, message } => {
+                    // A refused choice is not a failed session: keep the agent
+                    // usable and let the picker fall back to the real model.
+                    self.render_to(&pane, &format!("\n[model not changed] {}\n", message));
+                    if self.active_pane().as_deref() == Some(pane.as_str()) {
+                        self.update_header();
+                    }
                 }
                 UiEvent::Update { pane, update } => {
                     self.render_update(&pane, update);
@@ -1176,28 +1245,134 @@ impl AgentPanel {
         self.update_header();
     }
 
+    /// The user picked a model in the header. It is remembered, so the next
+    /// session starts on it too: that is what makes the choice apply to a
+    /// command-not-found hand-off, whose pane never opens.
+    fn select_model(&self, combo: &gtk::ComboBoxText) {
+        if self.combo_syncing.get() {
+            return;
+        }
+        let Some(value) = combo.active_id().map(|value| value.to_string()) else {
+            return;
+        };
+        let Some(pane) = self.active_pane() else {
+            return;
+        };
+        settings().set_str("agent_model", &value);
+        let mut sessions = self.sessions.borrow_mut();
+        let Some(session) = sessions.get_mut(&pane) else {
+            return;
+        };
+        if session.model.as_deref() == Some(value.as_str()) {
+            return;
+        }
+        let Some(session_id) = session.session_id.clone() else {
+            return;
+        };
+        let id = acp::CONFIG_ID_BASE + session.next_id;
+        session.next_id += 1;
+        let _ = session
+            .writer
+            .send(acp::set_config_option(id, &session_id, "model", &value));
+    }
+
+    /// A fresh session starts on the model remembered in the settings. A value
+    /// the agent does not list is ignored, so a stale setting cannot keep every
+    /// session from working.
+    fn apply_preferred_model(&self, pane: &str) {
+        let preferred = settings().get_str("agent_model").trim().to_string();
+        if preferred.is_empty() {
+            return;
+        }
+        let mut sessions = self.sessions.borrow_mut();
+        let Some(session) = sessions.get_mut(pane) else {
+            return;
+        };
+        if session.model.as_deref() == Some(preferred.as_str()) {
+            return;
+        }
+        if !session.models.is_empty()
+            && !session
+                .models
+                .iter()
+                .any(|choice| choice.value == preferred)
+        {
+            return;
+        }
+        let Some(session_id) = session.session_id.clone() else {
+            return;
+        };
+        let id = acp::CONFIG_ID_BASE + session.next_id;
+        session.next_id += 1;
+        let _ = session
+            .writer
+            .send(acp::set_config_option(id, &session_id, "model", &preferred));
+    }
+
+    /// Fill the picker without waking the `changed` handler.
+    fn sync_model_combo(&self, current: Option<&str>, models: &[acp::ConfigChoice]) {
+        let mut values: Vec<(String, String)> = models
+            .iter()
+            .map(|choice| (choice.value.clone(), choice.name.clone()))
+            .collect();
+        // A current value the agent did not list still has to be selectable,
+        // otherwise the picker would show nothing.
+        if let Some(current) = current {
+            if !values.iter().any(|(value, _)| value == current) {
+                values.push((current.to_string(), current.to_string()));
+            }
+        }
+        if *self.combo_values.borrow() != values {
+            self.combo_syncing.set(true);
+            self.model_combo.remove_all();
+            for (value, name) in &values {
+                self.model_combo.append(Some(value), name);
+            }
+            self.combo_syncing.set(false);
+            *self.combo_values.borrow_mut() = values;
+        }
+        if let Some(current) = current {
+            let active = self.model_combo.active_id().map(|id| id.to_string());
+            if active.as_deref() != Some(current) {
+                self.combo_syncing.set(true);
+                self.model_combo.set_active_id(Some(current));
+                self.combo_syncing.set(false);
+            }
+        }
+        self.model_combo.set_visible(!models.is_empty());
+    }
+
     fn update_header(&self) {
-        let (name, model, status, usage) = self
+        let (name, model, models, status, usage) = self
             .active_pane()
             .and_then(|pane| {
                 self.sessions.borrow().get(&pane).map(|session| {
                     (
                         session.agent_name.clone(),
                         session.model.clone(),
+                        session.models.clone(),
                         session.status,
                         session.usage.clone(),
                     )
                 })
             })
-            .unwrap_or_else(|| ("not started".to_string(), None, "", String::new()));
+            .unwrap_or_else(|| {
+                (
+                    "not started".to_string(),
+                    None,
+                    Vec::new(),
+                    "",
+                    String::new(),
+                )
+            });
         let mut text = String::from("Agent");
         if !name.is_empty() {
             text.push_str(" · ");
             text.push_str(&name);
         }
-        if let Some(model) = model.filter(|model| !model.is_empty()) {
+        if let Some(model) = model.as_ref().filter(|model| !model.is_empty()) {
             text.push_str(" · ");
-            text.push_str(&model);
+            text.push_str(model);
         }
         if !status.is_empty() {
             text.push_str(" · ");
@@ -1207,6 +1382,7 @@ impl AgentPanel {
             text.push_str(" · disabled");
         }
         self.header.set_text(&text);
+        self.sync_model_combo(model.as_deref(), &models);
         self.usage.set_text(&usage);
         self.usage
             .set_visible(settings().get_bool("agent_show_usage") && !usage.is_empty());
@@ -1259,6 +1435,7 @@ fn spawn_session(
         session_id: None,
         agent_name: String::new(),
         model: None,
+        models: Vec::new(),
         transcript: String::new(),
         ready: false,
         busy: false,
@@ -1302,12 +1479,21 @@ fn read_agent(
         match incoming {
             acp::Incoming::Response { id, result, error } => {
                 let number = id.as_u64();
+                let is_config = number.is_some_and(|number| number >= acp::CONFIG_ID_BASE);
                 if let Some(error) = error {
                     let message = error
                         .get("message")
                         .and_then(Value::as_str)
                         .unwrap_or("the agent returned an error")
                         .to_string();
+                    if is_config {
+                        // The turn is untouched: only the choice was refused.
+                        let _ = events.send(UiEvent::ModelRejected {
+                            pane: pane.clone(),
+                            message,
+                        });
+                        continue;
+                    }
                     let _ = events.send(UiEvent::Error {
                         pane: pane.clone(),
                         message,
@@ -1315,6 +1501,16 @@ fn read_agent(
                     if number == Some(1) || number == Some(2) {
                         break;
                     }
+                    continue;
+                }
+                if is_config {
+                    let result = result.unwrap_or(Value::Null);
+                    let (model, models) = acp::config_choices(&result, "model");
+                    let _ = events.send(UiEvent::ModelChanged {
+                        pane: pane.clone(),
+                        model,
+                        models,
+                    });
                     continue;
                 }
                 match number {
@@ -1337,10 +1533,12 @@ fn read_agent(
                             });
                             break;
                         }
+                        let (model, models) = acp::config_choices(&result, "model");
                         let _ = events.send(UiEvent::Ready {
                             pane: pane.clone(),
                             agent: agent_name.clone(),
-                            model: acp::session_model(&result),
+                            model,
+                            models,
                             session,
                         });
                     }
@@ -1418,8 +1616,17 @@ for line in sys.stdin:
             "agentCapabilities": {},
             "agentInfo": {"name": "fake", "title": "Fake Agent"}}}), flush=True)
     elif method == "session/new":
-        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
-                          "result": {"sessionId": "s1"}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": {
+            "sessionId": "s1",
+            "configOptions": [{"id": "model", "currentValue": "one",
+                "options": [{"value": "one", "name": "Model One"},
+                            {"value": "two", "name": "Model Two"}]}]}}), flush=True)
+    elif method == "session/set_config_option":
+        value = message["params"]["value"]
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": {
+            "configOptions": [{"id": "model", "currentValue": value,
+                "options": [{"value": "one", "name": "Model One"},
+                            {"value": "two", "name": "Model Two"}]}]}}), flush=True)
     elif method == "session/prompt":
         print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {
             "sessionId": "s1", "update": {"sessionUpdate": "agent_message_chunk",
@@ -1454,9 +1661,23 @@ for line in sys.stdin:
         let mut ready = false;
         while Instant::now() < deadline && !ready {
             match rx.recv_timeout(Duration::from_millis(200)) {
-                Ok(UiEvent::Ready { agent, session, .. }) => {
+                Ok(UiEvent::Ready {
+                    agent,
+                    model,
+                    models,
+                    session,
+                    ..
+                }) => {
                     assert_eq!(agent, "Fake Agent");
                     assert_eq!(session, "s1");
+                    assert_eq!(model.as_deref(), Some("one"));
+                    assert_eq!(
+                        models
+                            .iter()
+                            .map(|choice| choice.value.as_str())
+                            .collect::<Vec<_>>(),
+                        vec!["one", "two"]
+                    );
                     ready = true;
                 }
                 Ok(UiEvent::Error { message, .. }) => panic!("handshake failed: {message}"),
@@ -1465,6 +1686,33 @@ for line in sys.stdin:
             }
         }
         assert!(ready, "the session never became ready");
+
+        // A configuration change must answer with ModelChanged, never with a
+        // TurnDone: the two share the response shape and only the id tells them
+        // apart.
+        session
+            .writer
+            .send(acp::set_config_option(
+                acp::CONFIG_ID_BASE + 9,
+                "s1",
+                "model",
+                "two",
+            ))
+            .unwrap();
+        let mut switched = false;
+        while Instant::now() < deadline && !switched {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(UiEvent::ModelChanged { model, models, .. }) => {
+                    assert_eq!(model.as_deref(), Some("two"));
+                    assert_eq!(models.len(), 2);
+                    switched = true;
+                }
+                Ok(UiEvent::TurnDone { .. }) => panic!("a config change completed a turn"),
+                Ok(_) => {}
+                Err(_) => {}
+            }
+        }
+        assert!(switched, "the model change was not reported");
 
         session
             .writer

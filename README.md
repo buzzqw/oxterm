@@ -119,6 +119,12 @@ to false to keep the hand-off explicit. Each tab keeps its own session while
 the pane is hidden, and an SSH tab can run the agent on the remote host with
 `agent_remote_command` instead of locally.
 
+When the agent reports the models it supports, the pane header shows them in a
+picker; the choice is stored in `agent_model` and every new session starts on
+it, including the invisible one behind the command-not-found hand-off. Provider
+credentials stay the agent's own business: log in with its CLI (`opencode auth
+login`, say) or pick a model whose provider is already authenticated.
+
 What the agent may do is a setting per class of action: reading the terminal
 (`agent_policy_read`, default `auto`), opening tabs (`agent_policy_create`,
 `ask`) and typing into a shell (`agent_policy_input`, `ask`). An `ask` decision

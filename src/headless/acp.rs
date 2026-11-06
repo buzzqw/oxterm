@@ -73,6 +73,86 @@ pub fn session_new(id: u64, cwd: &str, servers: &[McpServer]) -> Value {
     })
 }
 
+/// Request ids from this value up belong to session configuration
+/// (`session/set_config_option`) instead of prompts.
+///
+/// A JSON-RPC response does not repeat the method, so the reader thread has to
+/// tell the two apart by id: a configuration response updates the model picker
+/// and must never complete a turn.
+pub const CONFIG_ID_BASE: u64 = 1_000_000_000;
+
+/// `session/set_config_option` request: choose one of the values the agent
+/// listed in `configOptions`, such as the model.
+pub fn set_config_option(id: u64, session_id: &str, config_id: &str, value: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "session/set_config_option",
+        "params": {
+            "sessionId": session_id,
+            "configId": config_id,
+            "value": value,
+        },
+    })
+}
+
+/// One selectable value of a `configOptions` entry reported by the agent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigChoice {
+    pub value: String,
+    /// Human label, falling back to the value when the agent omits it.
+    pub name: String,
+}
+
+/// The value in use and the choices offered for `config` (for example
+/// `"model"`) in a `session/new` or `session/set_config_option` result.
+///
+/// An empty choice list means the agent does not report that config at all,
+/// which is not an error: older agents only support prompts.
+pub fn config_choices(result: &Value, config: &str) -> (Option<String>, Vec<ConfigChoice>) {
+    let Some(entry) = result
+        .get("configOptions")
+        .and_then(Value::as_array)
+        .and_then(|options| {
+            options
+                .iter()
+                .find(|option| option.get("id").and_then(Value::as_str) == Some(config))
+        })
+    else {
+        return (None, Vec::new());
+    };
+    let current = entry
+        .get("currentValue")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let choices = entry
+        .get("options")
+        .and_then(Value::as_array)
+        .map(|options| {
+            options
+                .iter()
+                .filter_map(|option| {
+                    let value = option.get("value").and_then(Value::as_str)?;
+                    if value.is_empty() {
+                        return None;
+                    }
+                    let name = option
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or(value);
+                    Some(ConfigChoice {
+                        value: value.to_string(),
+                        name: name.to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (current, choices)
+}
+
 /// `session/prompt` request with one text block.
 pub fn session_prompt(id: u64, session_id: &str, text: &str) -> Value {
     json!({
@@ -524,17 +604,9 @@ fn error_message(error: &Value) -> String {
 }
 
 /// Model selected for the session, when the agent reports it in the
-/// `configOptions` of `session/new`. Display metadata only.
+/// `configOptions` of `session/new` or `session/set_config_option`.
 pub fn session_model(result: &Value) -> Option<String> {
-    result
-        .get("configOptions")
-        .and_then(Value::as_array)?
-        .iter()
-        .find(|option| option.get("id").and_then(Value::as_str) == Some("model"))
-        .and_then(|option| option.get("currentValue"))
-        .and_then(Value::as_str)
-        .filter(|model| !model.is_empty())
-        .map(str::to_string)
+    config_choices(result, "model").0
 }
 
 /// Stop reason of a completed `session/prompt` response.
@@ -825,6 +897,49 @@ for line in sys.stdin:
         );
         assert_eq!(session_model(&json!({"sessionId": "s"})), None);
         assert_eq!(session_model(&json!({"configOptions": []})), None);
+    }
+
+    #[test]
+    fn reads_the_model_choices_and_current_value() {
+        let result = json!({"sessionId": "s", "configOptions": [
+            {"id": "model", "name": "Model", "currentValue": "deepseek/deepseek-flash",
+             "options": [
+                {"value": "deepseek/deepseek-v4-pro", "name": "DeepSeek V4 Pro"},
+                {"value": "deepseek/deepseek-flash"},
+             ]},
+            {"id": "mode", "currentValue": "build"},
+        ]});
+        let (current, choices) = config_choices(&result, "model");
+        assert_eq!(current.as_deref(), Some("deepseek/deepseek-flash"));
+        assert_eq!(
+            choices,
+            vec![
+                ConfigChoice {
+                    value: "deepseek/deepseek-v4-pro".to_string(),
+                    name: "DeepSeek V4 Pro".to_string(),
+                },
+                ConfigChoice {
+                    value: "deepseek/deepseek-flash".to_string(),
+                    name: "deepseek/deepseek-flash".to_string(),
+                },
+            ]
+        );
+        // A config the agent does not report, and an agent with no options.
+        assert_eq!(config_choices(&result, "effort"), (None, Vec::new()));
+        assert_eq!(
+            config_choices(&json!({"sessionId": "s"}), "model"),
+            (None, Vec::new())
+        );
+    }
+
+    #[test]
+    fn builds_a_config_change_that_does_not_look_like_a_prompt() {
+        let request = set_config_option(CONFIG_ID_BASE + 3, "s1", "model", "a/b");
+        assert_eq!(request["method"], "session/set_config_option");
+        assert_eq!(request["params"]["sessionId"], "s1");
+        assert_eq!(request["params"]["configId"], "model");
+        assert_eq!(request["params"]["value"], "a/b");
+        assert!(request["id"].as_u64().unwrap() >= CONFIG_ID_BASE);
     }
 
     #[test]

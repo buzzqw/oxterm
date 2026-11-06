@@ -1509,6 +1509,7 @@ fn build_notes(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, N
 struct AgentPage {
     enabled: gtk::CheckButton,
     command: gtk::Entry,
+    model: gtk::Entry,
     remote: gtk::Entry,
     mcp: gtk::CheckButton,
     auto_fix: gtk::CheckButton,
@@ -1570,6 +1571,16 @@ fn build_agents(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, 
         "ACP agent CLI to run in the agent pane. It must already be installed and logged in.",
     ));
     page.row_keyed("Agent command", &command, Some("agent_command"));
+
+    let model = gtk::Entry::new();
+    model.set_text(&s.get_str("agent_model"));
+    model.set_placeholder_text(Some("empty: the agent's default model"));
+    model.set_tooltip_text(Some(
+        "Model every new agent session starts on, written as the agent lists it \
+         (for example deepseek/deepseek-v4-pro). The agent pane header has the same picker, \
+         filled with the models the agent reports.",
+    ));
+    page.row_keyed("Model", &model, Some("agent_model"));
 
     {
         let command = command.clone();
@@ -1758,6 +1769,7 @@ fn build_agents(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, 
     let state = AgentPage {
         enabled,
         command,
+        model,
         remote,
         mcp,
         auto_fix,
@@ -2487,6 +2499,7 @@ impl DialogState {
         }
         s.set_bool("agent_enabled", self.agents.enabled.is_active());
         s.set_str("agent_command", &agent_command);
+        s.set_str("agent_model", self.agents.model.text().trim());
         s.set_str("agent_remote_command", self.agents.remote.text().trim());
         s.set_bool("agent_mcp", self.agents.mcp.is_active());
         s.set_bool("agent_auto_fix", self.agents.auto_fix.is_active());
@@ -2738,6 +2751,7 @@ impl DialogState {
             .enabled
             .set_active(default_bool("agent_enabled"));
         self.agents.command.set_text(&default_str("agent_command"));
+        self.agents.model.set_text(&default_str("agent_model"));
         self.agents
             .remote
             .set_text(&default_str("agent_remote_command"));

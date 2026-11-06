@@ -110,6 +110,31 @@ from. A successful command, a normal failure (exit 1) and a remote shell that
 does not report status are never handed off. `agent_auto_fix: false` disables
 the hand-off without touching anything else.
 
+## Model selection
+
+`session/new` may carry `configOptions`: the agent lists the model it is using
+and every model it offers, plus other selects such as effort or session mode.
+The pane shows the model list in its header as soon as a session is ready; an
+agent that reports no options simply has no picker, because choosing a model is
+the agent's feature, not Oxterm's.
+
+Picking a model sends `session/set_config_option` with `configId: "model"` and
+the chosen value, and writes it to `agent_model`. A new session starts on that
+value: the panel sends the same request as soon as the handshake completes,
+before the queued prompt, because both go through the same writer channel. This
+is what makes the choice apply to the command-not-found hand-off, whose pane is
+never shown. A remembered model the agent does not list is ignored, so a stale
+setting cannot break every session.
+
+Configuration responses need their own request ids (from
+`acp::CONFIG_ID_BASE`): a JSON-RPC response does not repeat the method, and a
+response id from the prompt range would be mistaken for a finished turn. A
+refused model is reported in the pane and leaves the session alive.
+
+Credentials are never Oxterm's business. If the agent answers that a provider
+needs authentication, the user logs in with that agent's own CLI
+(`opencode auth login`, for example) or picks an authenticated model.
+
 ## Policy
 
 The same policy governs both directions:
@@ -217,7 +242,13 @@ triggers can follow a session without subscribing to the transcript.
 - `src/headless/agent.rs`: defaults are off, policy fallback, tool classes,
   prompt truncation, audit redaction, command parsing, PATH detection.
 - `src/headless/acp.rs`: request shapes, message classification, streamed text,
-  tools, plans, usage, permission defaults.
+  tools, plans, usage, permission defaults, and the `configOptions` model list
+  versus the reserved configuration ids.
+- `src/agent_panel.rs`: a fake ACP agent hands over, streams a turn, and accepts
+  a model change without ending the turn.
+- `tests/gui_lifecycle.rs` (`agent-auto-fix`): the real binary starts a session
+  for a command the shell cannot find, applies `agent_model` before the queued
+  prompt, and the answer reaches the terminal.
 - `src/headless/control_cli.rs`: `fix`/`agent` parsing and help.
 - `tests/mcp.rs`: with the switch off the server exposes no tools and explains
   why; with it on the normal tool list is back.

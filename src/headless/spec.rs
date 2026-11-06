@@ -1013,6 +1013,12 @@ pub const SETTINGS: &[Setting] = &[
         "ACP agent CLI to run in the agent pane, e.g. \"opencode acp\" or \"claude-code-acp\".",
     ),
     setting(
+        "agent_model",
+        Kind::Text,
+        Default::Text(""),
+        "Model to select in the agent session, as the agent lists it; empty keeps the agent's default.",
+    ),
+    setting(
         "agent_remote_command",
         Kind::Text,
         Default::Text(""),

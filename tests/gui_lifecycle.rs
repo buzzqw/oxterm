@@ -92,8 +92,18 @@ fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Result<(), String>
 }
 
 /// A minimal ACP agent: one streamed message per prompt, then the turn ends.
+///
+/// It starts on a model that "needs authentication" and only answers on
+/// `wanted/model`, which is the model the scenario stores in `agent_model`. A
+/// run that does not switch models before the prompt therefore fails, the same
+/// way a real agent does when its default provider is not logged in.
 const FAKE_AGENT: &str = r#"#!/usr/bin/env python3
 import json, sys
+model = "default/model"
+def options(value):
+    return [{"id": "model", "name": "Model", "currentValue": value,
+             "options": [{"value": "default/model", "name": "Default"},
+                         {"value": "wanted/model", "name": "Wanted"}]}]
 for line in sys.stdin:
     message = json.loads(line)
     method = message.get("method")
@@ -103,9 +113,18 @@ for line in sys.stdin:
             "agentCapabilities": {},
             "agentInfo": {"name": "fake", "title": "Fake Agent"}}}), flush=True)
     elif method == "session/new":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": {
+            "sessionId": "s1", "configOptions": options(model)}}), flush=True)
+    elif method == "session/set_config_option":
+        model = message["params"]["value"]
         print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
-                          "result": {"sessionId": "s1"}}), flush=True)
+                          "result": {"configOptions": options(model)}}), flush=True)
     elif method == "session/prompt":
+        if model != "wanted/model":
+            print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "error": {
+                "code": -32000,
+                "message": "Authentication required: provider authentication required"}}), flush=True)
+            continue
         print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {
             "sessionId": "s1", "update": {"sessionUpdate": "agent_message_chunk",
             "content": {"type": "text", "text": "OXTERM-SCENARIO-ANSWER"}}}}), flush=True)
@@ -126,7 +145,7 @@ fn configure_agent(home: &Path) -> Result<(), String> {
     fs::write(
         settings.join("settings.json"),
         format!(
-            r#"{{"agent_enabled": true, "agent_command": "{}", "shell_command": "/bin/bash", "osc133": true}}"#,
+            r#"{{"agent_enabled": true, "agent_command": "{}", "agent_model": "wanted/model", "shell_command": "/bin/bash", "osc133": true}}"#,
             agent.display()
         ),
     )
