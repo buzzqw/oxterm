@@ -6534,6 +6534,9 @@ impl TerminalWindow for MainWindow {
     fn agent_fix(&self, term: &TerminalBox, hint: Option<&str>) {
         self.agent_fix_for(term, hint);
     }
+    fn agent_auto_fix_signal(&self, term: &TerminalBox) {
+        MainWindow::agent_auto_fix_signal(self, term);
+    }
     fn agent_settings(&self) {
         MainWindow::agent_settings(self);
     }
@@ -6764,6 +6767,7 @@ pub mod test_scenario {
             "split-zoom" => split_zoom(win),
             "theme-switch" => theme_switch(win),
             "tab-failure" => tab_failure(win),
+            "agent-auto-fix" => agent_auto_fix(win),
             "preferences" => preferences(win),
             other => Err(format!("unknown test scenario: {other}")),
         }
@@ -6880,6 +6884,58 @@ pub mod test_scenario {
         }
         win.set_split("single", false);
         Ok(())
+    }
+
+    /// A command the shell cannot find must reach the agent through the
+    /// `TerminalWindow` trait and its answer must land in the terminal. This is
+    /// the end-to-end guard for the wiring, not just for `fix_for_auto`.
+    fn agent_auto_fix(win: &MainWindow) -> Result<(), String> {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let term = win
+            .current_terminal()
+            .ok_or_else(|| "no current terminal".to_string())?;
+        // Let bash finish sourcing the integration script before typing.
+        {
+            let term = term.clone();
+            glib::timeout_add_local_once(Duration::from_millis(1500), move || {
+                term.control_send("ciao --oxterm-agent-scenario", true);
+            });
+        }
+        let main_loop = glib::MainLoop::new(None, false);
+        let outcome = Rc::new(RefCell::new(None));
+        {
+            let term = term.clone();
+            let main_loop = main_loop.clone();
+            let outcome = outcome.clone();
+            let started = std::time::Instant::now();
+            glib::timeout_add_local(Duration::from_millis(200), move || {
+                let text = term.capture_text("all", 0);
+                if text.contains("command not found, asking")
+                    && text.contains("OXTERM-SCENARIO-ANSWER")
+                {
+                    *outcome.borrow_mut() = Some(true);
+                    main_loop.quit();
+                    return glib::ControlFlow::Break;
+                }
+                if started.elapsed() > Duration::from_secs(15) {
+                    *outcome.borrow_mut() = Some(false);
+                    main_loop.quit();
+                    return glib::ControlFlow::Break;
+                }
+                glib::ControlFlow::Continue
+            });
+        }
+        main_loop.run();
+        if matches!(*outcome.borrow(), Some(true)) {
+            Ok(())
+        } else {
+            Err(format!(
+                "the agent answer never reached the terminal; screen:\n{}",
+                term.capture_text("all", 0)
+            ))
+        }
     }
 
     fn tab_failure(win: &MainWindow) -> Result<(), String> {

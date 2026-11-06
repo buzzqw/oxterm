@@ -26,6 +26,7 @@ const SCENARIOS: &[&str] = &[
     "split-zoom",
     "theme-switch",
     "tab-failure",
+    "agent-auto-fix",
     "preferences",
 ];
 
@@ -90,12 +91,62 @@ fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Result<(), String>
     ))
 }
 
+/// A minimal ACP agent: one streamed message per prompt, then the turn ends.
+const FAKE_AGENT: &str = r#"#!/usr/bin/env python3
+import json, sys
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    if method == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": {
+            "protocolVersion": 1,
+            "agentCapabilities": {},
+            "agentInfo": {"name": "fake", "title": "Fake Agent"}}}), flush=True)
+    elif method == "session/new":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                          "result": {"sessionId": "s1"}}), flush=True)
+    elif method == "session/prompt":
+        print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {
+            "sessionId": "s1", "update": {"sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": "OXTERM-SCENARIO-ANSWER"}}}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                          "result": {"stopReason": "end_turn"}}), flush=True)
+"#;
+
+/// `agent-auto-fix` needs a real shell and a configured agent, not `sleep`.
+fn configure_agent(home: &Path) -> Result<(), String> {
+    let agent = home.join("fake-agent.py");
+    fs::write(&agent, FAKE_AGENT)
+        .map_err(|error| format!("could not write fake agent: {error}"))?;
+    fs::set_permissions(&agent, fs::Permissions::from_mode(0o755))
+        .map_err(|error| format!("could not make the fake agent executable: {error}"))?;
+    let settings = home.join(".config").join("oxterm");
+    fs::create_dir_all(&settings)
+        .map_err(|error| format!("could not create config dir: {error}"))?;
+    fs::write(
+        settings.join("settings.json"),
+        format!(
+            r#"{{"agent_enabled": true, "agent_command": "{}", "shell_command": "/bin/bash", "osc133": true}}"#,
+            agent.display()
+        ),
+    )
+    .map_err(|error| format!("could not write settings: {error}"))
+}
+
 fn run_scenario(scenario: &str) -> Result<(), String> {
     let home = TempHome::new(scenario);
-    let child = Command::new(env!("CARGO_BIN_EXE_oxterm"))
-        .arg("--no-restore")
-        .args(["-e", "sleep", "30"])
+    let agent_scenario = scenario == "agent-auto-fix";
+    if agent_scenario {
+        configure_agent(home.path())?;
+    }
+    let mut command = Command::new(env!("CARGO_BIN_EXE_oxterm"));
+    command.arg("--no-restore");
+    if !agent_scenario {
+        command.args(["-e", "sleep", "30"]);
+    }
+    let child = command
         .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
         .env("XDG_RUNTIME_DIR", home.path())
         .env("OXTERM_TEST_SCENARIO", scenario)
         .env("NO_AT_BRIDGE", "1")
@@ -108,7 +159,7 @@ fn run_scenario(scenario: &str) -> Result<(), String> {
         .map_err(|error| format!("could not start Oxterm: {error}"))?;
 
     let mut child = child;
-    let waited = wait_with_timeout(&mut child, Duration::from_secs(20));
+    let waited = wait_with_timeout(&mut child, Duration::from_secs(30));
     let output = child
         .wait_with_output()
         .map_err(|error| format!("could not read Oxterm output: {error}"))?;
