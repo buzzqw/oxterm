@@ -1601,8 +1601,8 @@ fn build_agents(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, 
 
     if detected.is_empty() {
         page.note(
-            "No ACP agent was found. Install OpenCode, Claude Code, Gemini, GitHub Copilot CLI or \
-             Codex (the manual lists each command), or type the command of your agent above.",
+            "No ACP agent was found. Install OpenCode, Claude Code, Antigravity, Gemini, GitHub Copilot CLI \
+             or Codex (the manual lists each command), or type the command of your agent above.",
         );
     }
 

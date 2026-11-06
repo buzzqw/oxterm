@@ -5918,7 +5918,9 @@ impl MainWindow {
         let slot = self.imp().agent_slot.borrow().clone()?;
         let panel = crate::agent_panel::AgentPanel::new(self);
         slot.pack_start(panel.widget(), true, true, 0);
-        slot.show_all();
+        // Only the slot: the pane itself stays hidden until it is opened, so an
+        // unused agent pane does not eat the terminal's height.
+        slot.show();
         if let Some(term) = self.current_terminal() {
             panel.set_active_pane(Some(term.remote_id()));
         }

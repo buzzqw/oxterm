@@ -105,6 +105,13 @@ characters are stripped (`agent::plain_for_terminal`): model output must not be
 able to emit OSC 52, move the cursor or change the title. System messages and
 tool calls stay in the pane; the terminal shows message chunks and notices.
 
+The terminal is not a Markdown renderer, so `agent::Mirror` flattens the stream
+line by line: fences, bold markers, heading prefixes and code-block indentation
+are removed, paragraphs are collapsed to one blank line, code keeps its spacing,
+and prose is word-wrapped to the terminal width. Lines end in CRLF because
+`feed` bypasses the tty, where a bare LF would leave the cursor in the same
+column and every line would start where the previous one ended.
+
 This needs the OSC 133 shell integration, which is where the exit status comes
 from. A successful command, a normal failure (exit 1) and a remote shell that
 does not report status are never handed off. `agent_auto_fix: false` disables
@@ -112,14 +119,16 @@ the hand-off without touching anything else.
 
 ## Model selection
 
-`session/new` may carry `configOptions`: the agent lists the model it is using
-and every model it offers, plus other selects such as effort or session mode.
-The pane shows the model list in its header as soon as a session is ready; an
-agent that reports no options simply has no picker, because choosing a model is
-the agent's feature, not Oxterm's.
+Two model shapes are in use. Newer agents put the model in the `configOptions`
+of `session/new` (alongside effort or session mode) and take
+`session/set_config_option`; older ones report a top-level `models` object with
+`currentModelId` and `availableModels` and take `session/set_model`. The pane
+shows a picker in its header for either shape as soon as a session is ready. An
+agent that reports neither has no picker, because choosing a model is the
+agent's feature, not Oxterm's.
 
-Picking a model sends `session/set_config_option` with `configId: "model"` and
-the chosen value, and writes it to `agent_model`. A new session starts on that
+Picking a model sends the request that shape announced and writes the chosen
+value to `agent_model`. A new session starts on that
 value: the panel sends the same request as soon as the handshake completes,
 before the queued prompt, because both go through the same writer channel. This
 is what makes the choice apply to the command-not-found hand-off, whose pane is

@@ -104,6 +104,85 @@ pub struct ConfigChoice {
     pub name: String,
 }
 
+/// Which request switches models.
+///
+/// Newer agents report a `model` entry in `configOptions` and take
+/// `session/set_config_option`; older ones (Antigravity, for example) report a
+/// top-level `models` object and take `session/set_model`. Both are in use, so
+/// the client speaks whichever the agent announced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelApi {
+    ConfigOption,
+    SetModel,
+}
+
+/// The model list a session reported and the request that changes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Models {
+    pub current: Option<String>,
+    pub choices: Vec<ConfigChoice>,
+    pub api: ModelApi,
+}
+
+/// Read the model list from either ACP shape.
+pub fn session_models(result: &Value) -> Option<Models> {
+    let (current, choices) = config_choices(result, "model");
+    if current.is_some() || !choices.is_empty() {
+        return Some(Models {
+            current,
+            choices,
+            api: ModelApi::ConfigOption,
+        });
+    }
+    let models = result.get("models")?;
+    let current = models
+        .get("currentModelId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let choices: Vec<ConfigChoice> = models
+        .get("availableModels")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|model| {
+                    let value = model.get("modelId").and_then(Value::as_str)?;
+                    if value.is_empty() {
+                        return None;
+                    }
+                    let name = model
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or(value);
+                    Some(ConfigChoice {
+                        value: value.to_string(),
+                        name: name.to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if current.is_none() && choices.is_empty() {
+        return None;
+    }
+    Some(Models {
+        current,
+        choices,
+        api: ModelApi::SetModel,
+    })
+}
+
+/// `session/set_model` request, the older way to choose a model.
+pub fn set_model(id: u64, session_id: &str, model_id: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "session/set_model",
+        "params": { "sessionId": session_id, "modelId": model_id },
+    })
+}
+
 /// The value in use and the choices offered for `config` (for example
 /// `"model"`) in a `session/new` or `session/set_config_option` result.
 ///
@@ -606,7 +685,7 @@ fn error_message(error: &Value) -> String {
 /// Model selected for the session, when the agent reports it in the
 /// `configOptions` of `session/new` or `session/set_config_option`.
 pub fn session_model(result: &Value) -> Option<String> {
-    config_choices(result, "model").0
+    session_models(result).and_then(|models| models.current)
 }
 
 /// Stop reason of a completed `session/prompt` response.
@@ -930,6 +1009,45 @@ for line in sys.stdin:
             config_choices(&json!({"sessionId": "s"}), "model"),
             (None, Vec::new())
         );
+    }
+
+    #[test]
+    fn reads_the_legacy_model_list_and_its_request() {
+        let result = json!({"sessionId": "s", "models": {
+            "currentModelId": "gemini-3.8-flash-high",
+            "availableModels": [
+                {"modelId": "gemini-3.8-flash-high", "name": "Gemini 3.8 Flash (High)"},
+                {"modelId": "gemini-3.8-flash-low"},
+            ],
+        }});
+        let models = session_models(&result).expect("legacy models");
+        assert_eq!(models.api, ModelApi::SetModel);
+        assert_eq!(models.current.as_deref(), Some("gemini-3.8-flash-high"));
+        assert_eq!(
+            models.choices,
+            vec![
+                ConfigChoice {
+                    value: "gemini-3.8-flash-high".to_string(),
+                    name: "Gemini 3.8 Flash (High)".to_string(),
+                },
+                ConfigChoice {
+                    value: "gemini-3.8-flash-low".to_string(),
+                    name: "gemini-3.8-flash-low".to_string(),
+                },
+            ]
+        );
+        // configOptions win when both shapes are present.
+        let modern = json!({"configOptions": [
+            {"id": "model", "currentValue": "a/b", "options": [{"value": "a/b", "name": "A"}]}
+        ], "models": {"currentModelId": "x/y"}});
+        assert_eq!(session_models(&modern).unwrap().api, ModelApi::ConfigOption);
+        assert_eq!(session_model(&modern).as_deref(), Some("a/b"));
+        assert_eq!(session_models(&json!({"sessionId": "s"})), None);
+
+        let request = set_model(CONFIG_ID_BASE + 4, "s1", "c/d");
+        assert_eq!(request["method"], "session/set_model");
+        assert_eq!(request["params"]["modelId"], "c/d");
+        assert!(request["id"].as_u64().unwrap() >= CONFIG_ID_BASE);
     }
 
     #[test]

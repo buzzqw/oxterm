@@ -446,6 +446,7 @@ logged in:
 | --- | --- | --- |
 | OpenCode | already packaged by OpenCode | `opencode acp` |
 | Claude Code | `npm install -g @zed-industries/claude-code-acp` (plus Claude Code, logged in) | `claude-code-acp` |
+| Antigravity | already packaged as `agy` | `agy acp` |
 | Gemini CLI | `npm install -g @google/gemini-cli`, then run `gemini` once | `gemini --experimental-acp` |
 | GitHub Copilot CLI | `npm install -g @github/copilot`, then run `copilot` once | `copilot --acp --stdio` |
 | Codex | `npm install -g @agentclientprotocol/codex-acp` (plus Codex, logged in) | `codex-acp` |

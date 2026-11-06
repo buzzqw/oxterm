@@ -34,6 +34,7 @@ enum UiEvent {
         agent: String,
         model: Option<String>,
         models: Vec<acp::ConfigChoice>,
+        model_api: Option<acp::ModelApi>,
         session: String,
     },
     /// The agent accepted a configuration change (the model, for now).
@@ -77,8 +78,11 @@ struct Session {
     session_id: Option<String>,
     agent_name: String,
     model: Option<String>,
-    /// The models the agent offered in `configOptions`, if it reports any.
+    /// The models the agent offered, and how to switch between them.
     models: Vec<acp::ConfigChoice>,
+    model_api: Option<acp::ModelApi>,
+    /// Model shown before the change in flight, restored if the agent refuses.
+    model_previous: Option<String>,
     transcript: String,
     ready: bool,
     busy: bool,
@@ -91,6 +95,8 @@ struct Session {
     /// True while the turn being answered came from a command-not-found
     /// hand-off; its answer is echoed into the pane's terminal.
     mirror_current: bool,
+    /// Markdown flattened for the terminal, kept across streamed chunks.
+    mirror: agent::Mirror,
 }
 
 impl Session {
@@ -244,6 +250,10 @@ impl AgentPanel {
         entry.set_margin_bottom(8);
         entry.style_context().add_class("oxterm-agent-entry");
         body.pack_start(&entry, false, false, 0);
+        // Show the contents but not the Revealer: the pane is hidden until it
+        // is opened, and a shown Revealer reserves room even when it is not
+        // revealing its child.
+        body.show_all();
 
         let panel = Rc::new(AgentPanel {
             root,
@@ -334,13 +344,26 @@ impl AgentPanel {
     }
 
     pub fn set_visible(&self, visible: bool) {
-        self.root.set_reveal_child(visible);
         if visible {
+            self.root.show();
+            self.root.set_reveal_child(true);
             if agent::configured(&settings().raw_data()) {
                 self.setup.hide();
             }
             self.render_active();
             self.entry.grab_focus();
+        } else {
+            self.root.set_reveal_child(false);
+            // A Revealer that is merely not revealing still asks for its
+            // child's height, which left the terminal short and an empty band
+            // below it. Hiding the widget after the slide-out gives the space
+            // back; showing it again before this runs keeps the pane open.
+            let root = self.root.clone();
+            glib::timeout_add_local_once(Duration::from_millis(220), move || {
+                if !root.reveals_child() {
+                    root.hide();
+                }
+            });
         }
     }
 
@@ -485,8 +508,8 @@ impl AgentPanel {
             self.setup_combo.set_sensitive(false);
             self.setup_enable.set_sensitive(false);
             self.setup_note.set_text(
-                "No ACP agent was found. Install OpenCode, Claude Code, Gemini, Copilot or Codex, \
-                 or open Agent settings to enter a command.",
+                "No ACP agent was found. Install OpenCode, Claude Code, Antigravity, Gemini, \
+                 Copilot or Codex, or open Agent settings to enter a command.",
             );
         } else {
             self.setup_combo.set_sensitive(true);
@@ -872,6 +895,9 @@ impl AgentPanel {
             session.busy = true;
             session.status = "working";
             session.mirror_current = mirror;
+            if mirror {
+                session.mirror = agent::Mirror::new();
+            }
         }
         let status = session.status;
         drop(sessions);
@@ -897,6 +923,7 @@ impl AgentPanel {
                     agent,
                     model,
                     models,
+                    model_api,
                     session,
                 } => {
                     let mut sessions = self.sessions.borrow_mut();
@@ -906,6 +933,7 @@ impl AgentPanel {
                         state.agent_name = agent;
                         state.model = model;
                         state.models = models;
+                        state.model_api = model_api;
                         state.session_id = Some(session);
                     }
                     let queued: Vec<(String, bool)> = sessions
@@ -941,8 +969,11 @@ impl AgentPanel {
                 }
                 UiEvent::ModelRejected { pane, message } => {
                     // A refused choice is not a failed session: keep the agent
-                    // usable and let the picker fall back to the real model.
+                    // usable and put the picker back on the model in use.
                     self.render_to(&pane, &format!("\n[model not changed] {}\n", message));
+                    if let Some(state) = self.sessions.borrow_mut().get_mut(&pane) {
+                        state.model = state.model_previous.clone();
+                    }
                     if self.active_pane().as_deref() == Some(pane.as_str()) {
                         self.update_header();
                     }
@@ -960,6 +991,7 @@ impl AgentPanel {
                     self.ask_permission(&pane, &id, &title, &options, &writer);
                 }
                 UiEvent::TurnDone { pane, reason } => {
+                    self.flush_mirror(&pane);
                     if self.take_mirrored_turn(&pane) {
                         if let Some(window) = self.window.upgrade() {
                             if let Some(term) = window.terminal_by_remote_id(&pane) {
@@ -998,10 +1030,18 @@ impl AgentPanel {
                 UiEvent::Error { pane, message } => {
                     self.render_to(&pane, &format!("\n[error] {}\n", message));
                     if self.mirroring(&pane) {
-                        self.mirror_to_terminal(
-                            &pane,
-                            &format!("\r\n[agent error] {}\r\n", message),
-                        );
+                        self.flush_mirror(&pane);
+                        if let Some(window) = self.window.upgrade() {
+                            if let Some(term) = window.terminal_by_remote_id(&pane) {
+                                term.vte().feed(
+                                    agent::plain_for_terminal(&format!(
+                                        "\r\n[agent error] {}\r\n",
+                                        message
+                                    ))
+                                    .as_bytes(),
+                                );
+                            }
+                        }
                         if let Some(state) = self.sessions.borrow_mut().get_mut(&pane) {
                             state.mirror_current = false;
                         }
@@ -1197,8 +1237,9 @@ impl AgentPanel {
             .is_some_and(|session| session.mirror_current)
     }
 
-    /// Echo agent text into the pane's terminal. The text is sanitized first:
-    /// it comes from a model and must not be able to drive the terminal parser.
+    /// Echo agent text into the pane's terminal. The Markdown is flattened and
+    /// wrapped first, and the text is sanitized: it comes from a model and must
+    /// not be able to drive the terminal parser.
     fn mirror_to_terminal(&self, pane: &str, text: &str) {
         if text.is_empty() || !self.mirroring(pane) {
             return;
@@ -1206,8 +1247,43 @@ impl AgentPanel {
         let Some(window) = self.window.upgrade() else {
             return;
         };
-        if let Some(term) = window.terminal_by_remote_id(pane) {
-            term.vte().feed(agent::plain_for_terminal(text).as_bytes());
+        let Some(term) = window.terminal_by_remote_id(pane) else {
+            return;
+        };
+        let width = term.vte().column_count().max(20) as usize;
+        let out = {
+            let mut sessions = self.sessions.borrow_mut();
+            let Some(session) = sessions.get_mut(pane) else {
+                return;
+            };
+            session.mirror.push(text, width)
+        };
+        if !out.is_empty() {
+            term.vte().feed(agent::plain_for_terminal(&out).as_bytes());
+        }
+    }
+
+    /// Write the last partial line of a mirrored turn.
+    fn flush_mirror(&self, pane: &str) {
+        if !self.mirroring(pane) {
+            return;
+        }
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let Some(term) = window.terminal_by_remote_id(pane) else {
+            return;
+        };
+        let width = term.vte().column_count().max(20) as usize;
+        let out = {
+            let mut sessions = self.sessions.borrow_mut();
+            let Some(session) = sessions.get_mut(pane) else {
+                return;
+            };
+            session.mirror.finish(width)
+        };
+        if !out.is_empty() {
+            term.vte().feed(agent::plain_for_terminal(&out).as_bytes());
         }
     }
 
@@ -1271,9 +1347,10 @@ impl AgentPanel {
         };
         let id = acp::CONFIG_ID_BASE + session.next_id;
         session.next_id += 1;
-        let _ = session
-            .writer
-            .send(acp::set_config_option(id, &session_id, "model", &value));
+        session.model_previous = session.model.clone();
+        session.model = Some(value.clone());
+        let request = model_request(id, &session_id, session.model_api, &value);
+        let _ = session.writer.send(request);
     }
 
     /// A fresh session starts on the model remembered in the settings. A value
@@ -1304,9 +1381,10 @@ impl AgentPanel {
         };
         let id = acp::CONFIG_ID_BASE + session.next_id;
         session.next_id += 1;
-        let _ = session
-            .writer
-            .send(acp::set_config_option(id, &session_id, "model", &preferred));
+        session.model_previous = session.model.clone();
+        session.model = Some(preferred.clone());
+        let request = model_request(id, &session_id, session.model_api, &preferred);
+        let _ = session.writer.send(request);
     }
 
     /// Fill the picker without waking the `changed` handler.
@@ -1389,6 +1467,14 @@ impl AgentPanel {
     }
 }
 
+/// The request that switches models for the API this session announced.
+fn model_request(id: u64, session_id: &str, api: Option<acp::ModelApi>, value: &str) -> Value {
+    match api {
+        Some(acp::ModelApi::SetModel) => acp::set_model(id, session_id, value),
+        _ => acp::set_config_option(id, session_id, "model", value),
+    }
+}
+
 fn spawn_session(
     pane: String,
     argv: &[String],
@@ -1436,6 +1522,8 @@ fn spawn_session(
         agent_name: String::new(),
         model: None,
         models: Vec::new(),
+        model_api: None,
+        model_previous: None,
         transcript: String::new(),
         ready: false,
         busy: false,
@@ -1446,6 +1534,7 @@ fn spawn_session(
         usage: String::new(),
         status: "starting",
         mirror_current: false,
+        mirror: agent::Mirror::new(),
     })
 }
 
@@ -1505,11 +1594,16 @@ fn read_agent(
                 }
                 if is_config {
                     let result = result.unwrap_or(Value::Null);
-                    let (model, models) = acp::config_choices(&result, "model");
+                    let models = acp::session_models(&result);
+                    // `session/set_model` may answer with an empty result: the
+                    // panel already shows the requested value.
+                    let (model, choices) = models
+                        .map(|models| (models.current, models.choices))
+                        .unwrap_or((None, Vec::new()));
                     let _ = events.send(UiEvent::ModelChanged {
                         pane: pane.clone(),
                         model,
-                        models,
+                        models: choices,
                     });
                     continue;
                 }
@@ -1533,12 +1627,16 @@ fn read_agent(
                             });
                             break;
                         }
-                        let (model, models) = acp::config_choices(&result, "model");
+                        let models = acp::session_models(&result);
+                        let (model, choices, model_api) = models
+                            .map(|models| (models.current, models.choices, Some(models.api)))
+                            .unwrap_or((None, Vec::new(), None));
                         let _ = events.send(UiEvent::Ready {
                             pane: pane.clone(),
                             agent: agent_name.clone(),
                             model,
-                            models,
+                            models: choices,
+                            model_api,
                             session,
                         });
                     }
