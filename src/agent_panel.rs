@@ -106,6 +106,12 @@ pub struct AgentPanel {
     entry: gtk::Entry,
     sessions: RefCell<HashMap<String, Session>>,
     active: RefCell<Option<String>>,
+    setup: gtk::Box,
+    setup_combo: gtk::ComboBoxText,
+    setup_note: gtk::Label,
+    setup_enable: gtk::Button,
+    setup_commands: RefCell<Vec<String>>,
+    pending_prompt: RefCell<Option<String>>,
     events: Receiver<UiEvent>,
     events_tx: Sender<UiEvent>,
     window: crate::SendWeak<MainWindow>,
@@ -132,6 +138,9 @@ impl AgentPanel {
         let usage = gtk::Label::new(Some(""));
         usage.set_xalign(1.0);
         usage.style_context().add_class("dim-label");
+        let settings_button = gtk::Button::with_label("⚙");
+        settings_button.set_relief(gtk::ReliefStyle::None);
+        settings_button.set_tooltip_text(Some("Agent settings"));
         let fix_button = gtk::Button::with_label("Fix");
         fix_button.set_relief(gtk::ReliefStyle::None);
         fix_button.set_tooltip_text(Some("Ask the agent to fix the last failed command"));
@@ -140,9 +149,39 @@ impl AgentPanel {
         close_button.set_tooltip_text(Some("Hide the agent pane (the session is kept)"));
         header_row.pack_start(&header, true, true, 0);
         header_row.pack_start(&usage, false, false, 0);
+        header_row.pack_start(&settings_button, false, false, 0);
         header_row.pack_start(&fix_button, false, false, 0);
         header_row.pack_start(&close_button, false, false, 0);
         body.pack_start(&header_row, false, false, 0);
+
+        // Inline first-run setup. It is part of the pane so the user never has
+        // to edit settings.json: pick an installed agent, press Enable, and the
+        // pending prompt is sent immediately.
+        let setup = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        setup.style_context().add_class("oxterm-agent-setup");
+        let setup_title = gtk::Label::new(None);
+        setup_title.set_markup("<b>Agent features are not configured</b>");
+        setup_title.set_xalign(0.0);
+        let setup_combo = gtk::ComboBoxText::new();
+        setup_combo.set_hexpand(true);
+        let setup_enable = gtk::Button::with_label("Enable");
+        let setup_prefs = gtk::Button::with_label("Agent settings…");
+        let setup_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        setup_row.pack_start(&setup_combo, true, true, 0);
+        setup_row.pack_start(&setup_enable, false, false, 0);
+        setup_row.pack_start(&setup_prefs, false, false, 0);
+        let setup_note = gtk::Label::new(None);
+        setup_note.set_xalign(0.0);
+        setup_note.set_line_wrap(true);
+        setup_note.set_max_width_chars(90);
+        setup_note.style_context().add_class("dim-label");
+        setup.pack_start(&setup_title, false, false, 0);
+        setup.pack_start(&setup_row, false, false, 0);
+        setup.pack_start(&setup_note, false, false, 0);
+        setup.show_all();
+        setup.set_no_show_all(true);
+        setup.hide();
+        body.pack_start(&setup, false, false, 0);
 
         let scroller = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
         scroller.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
@@ -179,6 +218,12 @@ impl AgentPanel {
             entry,
             sessions: RefCell::new(HashMap::new()),
             active: RefCell::new(None),
+            setup,
+            setup_combo,
+            setup_note,
+            setup_enable,
+            setup_commands: RefCell::new(Vec::new()),
+            pending_prompt: RefCell::new(None),
             events: rx,
             events_tx: tx,
             window: crate::SendWeak::new(window),
@@ -210,6 +255,19 @@ impl AgentPanel {
                 panel.hide();
             });
         }
+        {
+            let panel = panel.clone();
+            settings_button.connect_clicked(move |_| panel.open_agent_settings());
+        }
+        {
+            let panel = panel.clone();
+            setup_prefs.connect_clicked(move |_| panel.open_agent_settings());
+        }
+        {
+            let enable = panel.setup_enable.clone();
+            let panel = panel.clone();
+            enable.connect_clicked(move |_| panel.enable_selected_agent());
+        }
 
         let poll = Rc::downgrade(&panel);
         glib::timeout_add_local(Duration::from_millis(100), move || {
@@ -235,6 +293,9 @@ impl AgentPanel {
     pub fn set_visible(&self, visible: bool) {
         self.root.set_reveal_child(visible);
         if visible {
+            if agent::configured(&settings().raw_data()) {
+                self.setup.hide();
+            }
             self.render_active();
             self.entry.grab_focus();
         }
@@ -288,15 +349,6 @@ impl AgentPanel {
     }
 
     pub fn fix_for(&self, term: &TerminalBox, hint: Option<&str>) {
-        if !agent::enabled(&settings().raw_data()) {
-            self.append_text(&format!(
-                "\nAgent features are disabled. Set \"agent_enabled\": true and \
-                 \"agent_command\" in {}.\n",
-                crate::settings::config_file().display()
-            ));
-            self.set_visible(true);
-            return;
-        }
         let context = term.last_command_context();
         if context.is_empty() {
             self.set_visible(true);
@@ -342,6 +394,77 @@ impl AgentPanel {
             *self.active.borrow_mut() = None;
             self.render_active();
         }
+    }
+
+    /// Show the inline first-run setup. `prompt` is sent automatically once the
+    /// user enables an agent; an empty prompt just configures.
+    pub fn show_setup(&self, prompt: &str) {
+        if !prompt.trim().is_empty() {
+            *self.pending_prompt.borrow_mut() = Some(prompt.to_string());
+        }
+        let detected = agent::detected_agents();
+        self.setup_combo.remove_all();
+        let mut commands = Vec::new();
+        for (agent, path) in &detected {
+            let command = agent.command_with_path(path);
+            self.setup_combo
+                .append_text(&format!("{} — {}", agent.label, command));
+            commands.push(command);
+        }
+        *self.setup_commands.borrow_mut() = commands;
+        if detected.is_empty() {
+            self.setup_combo.set_sensitive(false);
+            self.setup_enable.set_sensitive(false);
+            self.setup_note.set_text(
+                "No ACP agent was found. Install OpenCode, Claude Code, Gemini, Copilot or Codex, \
+                 or open Agent settings to enter a command.",
+            );
+        } else {
+            self.setup_combo.set_sensitive(true);
+            self.setup_enable.set_sensitive(true);
+            self.setup_combo.set_active(Some(0));
+            self.setup_note.set_text(
+                "Choose an installed agent and press Enable; the prompt is sent right after. \
+                 Nothing is installed or started before that.",
+            );
+        }
+        self.set_visible(true);
+        self.setup.show();
+        if self.setup_combo.is_sensitive() {
+            self.setup_combo.grab_focus();
+        }
+    }
+
+    fn enable_selected_agent(&self) {
+        let index = self.setup_combo.active().unwrap_or(0) as usize;
+        let Some(command) = self.setup_commands.borrow().get(index).cloned() else {
+            self.setup_note.set_text("Choose an agent first.");
+            return;
+        };
+        let s = settings();
+        s.begin_batch();
+        s.set_bool("agent_enabled", true);
+        s.set_str("agent_command", &command);
+        s.end_batch();
+        s.notify_changed();
+        self.setup.hide();
+        self.update_header();
+        let prompt = self.pending_prompt.borrow_mut().take();
+        if let Some(prompt) = prompt.filter(|prompt| !prompt.trim().is_empty()) {
+            if let Some(window) = self.window.upgrade() {
+                if let Some(term) = window.current_terminal() {
+                    self.ensure_session(&term, &prompt);
+                }
+            }
+        }
+    }
+
+    fn open_agent_settings(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let parent: gtk::Window = window.clone().upcast();
+        crate::settings_dialog::show_settings_dialog_at(Some(&parent), Some("agents"));
     }
 
     // ── Prompt handling ──────────────────────────────────────
@@ -520,6 +643,11 @@ impl AgentPanel {
 
     fn ensure_session(&self, term: &TerminalBox, first_prompt: &str) {
         let pane = term.remote_id();
+        let settings = settings().raw_data();
+        if !agent::enabled(&settings) {
+            self.show_setup(first_prompt);
+            return;
+        }
         let state = self
             .sessions
             .borrow()
@@ -544,14 +672,8 @@ impl AgentPanel {
             self.sessions.borrow_mut().remove(&pane);
         }
 
-        let settings = settings().raw_data();
         if !agent::configured(&settings) {
-            self.append_text(&format!(
-                "\nAgent features are not configured. Set \"agent_enabled\": true and \
-                 \"agent_command\" (for example \"opencode acp\") in {}.\n\
-                 `oxterm agent --list` shows the agent CLIs already installed.\n",
-                crate::settings::config_file().display()
-            ));
+            self.show_setup(first_prompt);
             return;
         }
 
@@ -688,6 +810,12 @@ impl AgentPanel {
     }
 
     fn drain_events(&self) {
+        // Configuration can also arrive from the Preferences window while this
+        // pane is open; hide the inline setup as soon as it is valid.
+        if self.setup.is_visible() && agent::configured(&settings().raw_data()) {
+            self.setup.hide();
+            self.update_header();
+        }
         loop {
             let event = match self.events.try_recv() {
                 Ok(event) => event,

@@ -86,20 +86,27 @@ memory footprint and the memory-safety guarantees of Rust.
 
 Oxterm does not start, install, or call an agent unless the user asks for it.
 The feature is off by default and needs an ACP-compatible agent CLI that the
-user already has:
+user already has. You do not have to edit any file:
+
+1. Open **Preferences → Agents** (or Tools → **Agent Settings…**, or the ⚙ in
+   the agent pane).
+2. Pick one of the agents Oxterm found, or type a custom command.
+3. Press **Test connection**; Oxterm performs the real ACP handshake and shows
+   the agent and model it offers.
+4. Tick **Enable agent features** and press OK.
+
+The same thing is available without the dialog: press `Ctrl+Shift+.` and the
+pane offers to choose and enable an agent inline, then sends the pending prompt.
+`oxterm agent --list` and `oxterm agent --show` do the same from a shell; the
+manual lists the install command for each supported agent. The stored settings
+are only the representation:
 
 ```jsonc
 {
     "agent_enabled": true,
-    "agent_command": "opencode acp"   // any ACP agent you installed
+    "agent_command": "opencode acp"
 }
 ```
-
-`oxterm agent --list` shows the known ACP CLIs already installed (OpenCode,
-Claude Code, Gemini, Copilot and Codex) with the absolute command to configure;
-`oxterm agent --show` prints the effective configuration. Oxterm never installs
-anything, and the manual lists the install command for each agent if you want
-another one.
 
 With it enabled, `Ctrl+Shift+.` toggles a docked agent pane, `Ctrl+Shift+I`
 focuses it and `Ctrl+Alt+.` sends the last failed command with its directory,

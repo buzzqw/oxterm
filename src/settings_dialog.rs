@@ -1535,48 +1535,139 @@ fn build_agents(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, 
     ));
     page.row_keyed("Enable agent features", &enabled, Some("agent_enabled"));
 
+    // The installed-agent list is the normal way in: pick one, check it and
+    // enable it. The entry below stays editable for a custom or not-yet-known
+    // agent, but nothing here requires editing settings.json.
+    let detected = crate::headless::agent::detected_agents();
+    let installed = gtk::ComboBoxText::new();
+    installed.append_text("Choose an installed agent…");
+    for (agent, path) in &detected {
+        installed.append_text(&format!(
+            "{} — {}",
+            agent.label,
+            agent.command_with_path(path)
+        ));
+    }
+    let current_command = s.get_str("agent_command");
+    let mut selected = 0;
+    for (index, (agent, path)) in detected.iter().enumerate() {
+        if current_command.trim() == agent.command_with_path(path) {
+            selected = index as u32 + 1;
+        }
+    }
+    installed.set_active(Some(selected));
+    installed.set_sensitive(!detected.is_empty());
+    installed.set_tooltip_text(Some(
+        "ACP agents already installed on this computer. Choosing one fills the command below; nothing is installed or started.",
+    ));
+    page.row("Installed agents", &installed);
+
     let command = gtk::Entry::new();
-    command.set_text(&s.get_str("agent_command"));
-    command.set_placeholder_text(Some("e.g. opencode acp"));
+    command.set_text(&current_command);
+    command.set_placeholder_text(Some("e.g. opencode acp, or a full path"));
     command.set_tooltip_text(Some(
-        "ACP agent CLI to run in the agent pane. It must already be installed and on PATH.",
+        "ACP agent CLI to run in the agent pane. It must already be installed and logged in.",
     ));
     page.row_keyed("Agent command", &command, Some("agent_command"));
 
-    let scan = gtk::Button::with_label("Detect installed agents");
-    scan.set_tooltip_text(Some(
-        "Look for known ACP agent CLIs on PATH; nothing is installed or started.",
-    ));
-    let found = gtk::Label::new(None);
-    found.set_xalign(0.0);
-    found.set_line_wrap(true);
-    found.set_max_width_chars(70);
-    found.style_context().add_class("dim-label");
     {
         let command = command.clone();
-        let found = found.clone();
-        scan.connect_clicked(move |_| {
-            let detected = crate::headless::agent::detected_agents();
-            if detected.is_empty() {
-                found.set_text("No known ACP agent CLI found on PATH.");
+        let detected = detected.clone();
+        installed.connect_changed(move |combo| {
+            let index = combo.active().unwrap_or(0) as usize;
+            if index == 0 {
                 return;
             }
-            let labels: Vec<String> = detected
-                .iter()
-                .map(|(agent, path)| {
-                    format!("{} ({}) — {}", agent.label, agent.command, path.display())
-                })
-                .collect();
-            found.set_text(&format!("Found: {}", labels.join("   ·   ")));
-            if command.text().trim().is_empty() {
-                if let Some((agent, path)) = detected.first() {
-                    command.set_text(&agent.command_with_path(path));
+            if let Some((agent, path)) = detected.get(index - 1) {
+                let text = agent.command_with_path(path);
+                if command.text() != text {
+                    command.set_text(&text);
                 }
             }
         });
     }
-    page.row("Already installed", &scan);
-    page.full(&found);
+
+    if detected.is_empty() {
+        page.note(
+            "No ACP agent was found. Install OpenCode, Claude Code, Gemini, GitHub Copilot CLI or \
+             Codex (the manual lists each command), or type the command of your agent above.",
+        );
+    }
+
+    let check = gtk::Button::with_label("Test connection");
+    check.set_tooltip_text(Some(
+        "Start the agent, perform the ACP handshake and report the agent and model it offers.",
+    ));
+    let check_result = gtk::Label::new(None);
+    check_result.set_xalign(0.0);
+    check_result.set_line_wrap(true);
+    check_result.set_max_width_chars(70);
+    check_result.style_context().add_class("dim-label");
+    {
+        let command = command.clone();
+        let check_result = check_result.clone();
+        let button = check.clone();
+        check.connect_clicked(move |_| {
+            let raw = command.text().trim().to_string();
+            let argv = match shell_words::split(&raw) {
+                Ok(argv) if !argv.is_empty() => argv,
+                Ok(_) => {
+                    check_result.set_text("Enter a command first.");
+                    return;
+                }
+                Err(error) => {
+                    check_result.set_text(&format!("Invalid command: {}", error));
+                    return;
+                }
+            };
+            button.set_sensitive(false);
+            check_result.set_text("Testing…");
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let cwd = dirs::home_dir()
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_else(|| "/tmp".to_string());
+            std::thread::spawn(move || {
+                let message = match crate::headless::acp::probe(
+                    &argv,
+                    &cwd,
+                    std::time::Duration::from_secs(20),
+                ) {
+                    Ok(report) => {
+                        let model = report
+                            .model
+                            .map(|model| format!(", model {}", model))
+                            .unwrap_or_default();
+                        format!(
+                            "OK — {} (protocol {}{}). Tick Enable agent features to use it.",
+                            report.agent, report.protocol, model
+                        )
+                    }
+                    Err(error) => format!("Failed: {}", error),
+                };
+                let _ = sender.send(message);
+            });
+            let button = button.clone();
+            let check_result = check_result.clone();
+            glib::timeout_add_local(
+                std::time::Duration::from_millis(100),
+                move || match receiver.try_recv() {
+                    Ok(message) => {
+                        check_result.set_text(&message);
+                        button.set_sensitive(true);
+                        glib::ControlFlow::Break
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        check_result.set_text("The test stopped unexpectedly.");
+                        button.set_sensitive(true);
+                        glib::ControlFlow::Break
+                    }
+                },
+            );
+        });
+    }
+    page.row("Check it works", &check);
+    page.full(&check_result);
 
     let remote = gtk::Entry::new();
     remote.set_text(&s.get_str("agent_remote_command"));
@@ -1683,6 +1774,13 @@ struct DialogState {
 }
 
 pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
+    show_settings_dialog_at(parent, None);
+}
+
+/// Open the preferences window on a specific page ("agents", "general", …).
+/// The agent pane uses it from its inline setup, so the user never has to find
+/// the page by hand or edit the settings file.
+pub fn show_settings_dialog_at(parent: Option<&gtk::Window>, page: Option<&str>) {
     let s = settings();
     let dialog = gtk::Dialog::new();
     dialog.set_title("Preferences - Oxterm");
@@ -1951,6 +2049,9 @@ pub fn show_settings_dialog(parent: Option<&gtk::Window>) {
     }
 
     dialog.show_all();
+    if let Some(page) = page {
+        stack.set_visible_child_name(page);
+    }
     // Keep the filter box empty and quiet: a focused GtkEntry hides its
     // placeholder, so the page list takes the initial focus instead.
     dialog.set_focus(Some(&sidebar));
@@ -2362,8 +2463,16 @@ impl DialogState {
         );
         s.set_str("notes_template", self.notes.template.text().trim());
 
+        let mut errors = Vec::new();
+        let agent_command = self.agents.command.text().trim().to_string();
+        if self.agents.enabled.is_active() && agent_command.is_empty() {
+            errors
+                .push("Agents: a command is required when agent features are enabled.".to_string());
+        } else if !agent_command.is_empty() && shell_words::split(&agent_command).is_err() {
+            errors.push("Agents: the command cannot be parsed; check the quoting.".to_string());
+        }
         s.set_bool("agent_enabled", self.agents.enabled.is_active());
-        s.set_str("agent_command", self.agents.command.text().trim());
+        s.set_str("agent_command", &agent_command);
         s.set_str("agent_remote_command", self.agents.remote.text().trim());
         s.set_bool("agent_mcp", self.agents.mcp.is_active());
         s.set_str(
@@ -2387,7 +2496,7 @@ impl DialogState {
 
         s.end_batch();
         s.notify_changed();
-        Vec::new()
+        errors
     }
 
     /// Put every widget back to its documented default without saving. The

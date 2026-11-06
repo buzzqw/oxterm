@@ -404,7 +404,20 @@ the handshake but exposes no tools and explains why in `instructions`.
 #### Agent pane and fix context
 
 The agent pane speaks the Agent Client Protocol (ACP) with any agent CLI the
-user has installed. It is disabled by default:
+user has installed. It is disabled by default, and the normal way to set it up
+is the interface:
+
+1. Open **Preferences → Agents** (or Tools → **Agent Settings...**, or the ⚙
+   button in the agent pane).
+2. Choose one of the installed agents Oxterm found, or enter a custom command.
+3. Press **Test connection**: Oxterm starts the agent, performs the ACP
+   handshake and reports the agent name, protocol and model, or the error.
+4. Tick **Enable agent features** and press OK.
+
+Pressing `Ctrl+Shift+.` on a fresh configuration opens the pane with the same
+choice inline: pick an agent, press Enable, and a pending prompt is sent
+immediately. Nothing is installed or started before the user confirms. The
+settings file is only the stored representation; editing it is never required:
 
 ```jsonc
 {
@@ -413,9 +426,10 @@ user has installed. It is disabled by default:
 }
 ```
 
-`oxterm agent --list` reports the known ACP CLIs found on `PATH` and the command
-to configure for each; `oxterm agent --show` prints the effective configuration
-and the permission policies. Oxterm never installs an agent.
+`oxterm agent --list` reports the known ACP CLIs already installed and the
+absolute command to configure for each (`PATH` plus the usual per-user bin
+directories); `oxterm agent --show` prints the effective configuration and the
+permission policies. Oxterm never installs an agent.
 
 The CLIs Oxterm recognises, and the command to use once one is installed and
 logged in:

@@ -136,6 +136,8 @@ impl App {
                 .oxterm-status-bar { font-size: 0.85em; font-family: Monospace; color: alpha(@theme_fg_color, 0.75); background: alpha(@theme_bg_color, 0.45); padding: 2px 8px; }
                 .oxterm-status-widget { padding: 0 6px; }
                 .oxterm-agent-panel { background: alpha(@theme_bg_color, 0.97); border-top: 1px solid alpha(currentColor, 0.25); }
+                .oxterm-agent-setup { padding: 8px 10px; background: alpha(@theme_fg_color, 0.05); border-bottom: 1px solid alpha(currentColor, 0.15); }
+                .oxterm-agent-setup label { font-size: 0.9em; }
                 .oxterm-agent-panel textview text { background: transparent; }
                 .oxterm-agent-header { padding: 3px 8px; border-bottom: 1px solid alpha(currentColor, 0.15); }
                 .oxterm-agent-header label { font-size: 0.85em; }

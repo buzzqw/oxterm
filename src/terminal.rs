@@ -320,6 +320,12 @@ const PALETTE_ACTIONS: &[PaletteAction] = &[
         detail: "Start, stop and edit the SSH tunnels of every connection",
         keys: "",
     },
+    PaletteAction {
+        id: "agent-settings",
+        title: "Agent settings",
+        detail: "Choose, test and enable an ACP agent for the agent pane",
+        keys: "",
+    },
 ];
 
 const HINT_CHARS: &str = "asdfghjklqwertyuiopzxcvbnm";
@@ -6115,6 +6121,9 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             }
             "tunnel-manager" => {
                 self.call_window(|window| window.tunnel_manager_signal());
+            }
+            "agent-settings" => {
+                self.call_window(|window| window.agent_settings());
             }
             _ => {}
         }

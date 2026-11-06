@@ -10,6 +10,11 @@
 //! `mcp.rs`. The transport itself lives in `agent_panel.rs`; Oxterm is only the
 //! client, never the agent.
 
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
 use serde_json::{json, Value};
 
 /// ACP major protocol version supported by this client.
@@ -373,6 +378,151 @@ fn tool_update_text(update: &Value) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+/// What a successful [`probe`] learned about an agent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Probe {
+    pub agent: String,
+    pub model: Option<String>,
+    pub protocol: i64,
+}
+
+/// Start `argv`, perform the ACP handshake and report the agent it finds.
+///
+/// The Preferences page uses this to verify a command before saving it: it
+/// proves the program exists, speaks ACP, finishes `session/new` and (when the
+/// agent reports it) names the model. The child is killed before returning.
+/// This is display-free so it can also be tested with a fake agent.
+pub fn probe(argv: &[String], cwd: &str, timeout: Duration) -> Result<Probe, String> {
+    let program = argv.first().ok_or("agent_command is empty")?;
+    // The preferences dialog may run with the desktop's minimal PATH; resolve
+    // the same way the agent pane does.
+    let program = super::agent::resolve_program(program);
+    let mut child = Command::new(&program)
+        .args(&argv[1..])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("{}: {}", program, error))?;
+    let mut stdin = child.stdin.take().ok_or("the agent has no stdin")?;
+    let stdout = child.stdout.take().ok_or("the agent has no stdout")?;
+    let (lines, received) = mpsc::channel::<String>();
+    std::thread::Builder::new()
+        .name("oxterm-acp-probe".to_string())
+        .spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if !line.trim().is_empty() && lines.send(line).is_err() {
+                    break;
+                }
+            }
+        })
+        .map_err(|error| format!("cannot read from the agent: {}", error))?;
+
+    let stop = |child: &mut Child| {
+        let _ = child.kill();
+        let _ = child.wait();
+    };
+    if let Err(error) = write_message(&mut stdin, &initialize(1)) {
+        stop(&mut child);
+        return Err(format!("cannot write to the agent: {}", error));
+    }
+
+    let deadline = Instant::now() + timeout;
+    let mut agent = String::from("agent");
+    let mut protocol = 0;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            stop(&mut child);
+            return Err("the agent did not answer in time".to_string());
+        }
+        let line = match received.recv_timeout(remaining) {
+            Ok(line) => line,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                stop(&mut child);
+                return Err("the agent did not answer in time".to_string());
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                stop(&mut child);
+                return Err("the agent exited before answering".to_string());
+            }
+        };
+        match parse(&line) {
+            Ok(Incoming::Response { id, result, error }) => {
+                if let Some(error) = error {
+                    stop(&mut child);
+                    return Err(error_message(&error));
+                }
+                match id.as_u64() {
+                    Some(1) => {
+                        let result = result.unwrap_or(Value::Null);
+                        protocol = result
+                            .get("protocolVersion")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0);
+                        agent = agent_title(&result);
+                        if let Err(error) = write_message(&mut stdin, &session_new(2, cwd, &[])) {
+                            stop(&mut child);
+                            return Err(format!("cannot write to the agent: {}", error));
+                        }
+                    }
+                    Some(2) => {
+                        let result = result.unwrap_or(Value::Null);
+                        let session = result
+                            .get("sessionId")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        if session.is_empty() {
+                            stop(&mut child);
+                            return Err("the agent did not return a session id".to_string());
+                        }
+                        let model = session_model(&result);
+                        stop(&mut child);
+                        return Ok(Probe {
+                            agent,
+                            model,
+                            protocol,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Incoming::Request { id, method, .. }) => {
+                // Never leave the probe waiting on a method we do not implement.
+                let response = json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": -32601, "message": format!("unsupported method: {}", method) },
+                });
+                let _ = write_message(&mut stdin, &response);
+            }
+            Ok(Incoming::Notification { .. }) => {}
+            Err(_) => {}
+        }
+    }
+}
+
+fn write_message(stdin: &mut ChildStdin, value: &Value) -> std::io::Result<()> {
+    writeln!(stdin, "{}", value)?;
+    stdin.flush()
+}
+
+fn error_message(error: &Value) -> String {
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("the agent returned an error");
+    let data = error
+        .get("data")
+        .and_then(Value::as_str)
+        .filter(|data| !data.is_empty());
+    match data {
+        Some(data) => format!("{}: {}", message, data),
+        None => message.to_string(),
+    }
+}
+
 /// Model selected for the session, when the agent reports it in the
 /// `configOptions` of `session/new`. Display metadata only.
 pub fn session_model(result: &Value) -> Option<String> {
@@ -608,6 +758,59 @@ mod tests {
             Some("reject-once")
         );
         assert_eq!(permission_title(&json!({})), "run a tool");
+    }
+
+    #[test]
+    fn a_probe_completes_the_handshake_and_reports_the_model() {
+        let path = std::env::temp_dir().join(format!(
+            "oxterm-acp-probe-{}-{}.py",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            r#"#!/usr/bin/env python3
+import json, sys
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    if method == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": {
+            "protocolVersion": 1,
+            "agentCapabilities": {},
+            "agentInfo": {"name": "fake", "title": "Fake Probe"}}}), flush=True)
+    elif method == "session/new":
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": {
+            "sessionId": "s1",
+            "configOptions": [{"id": "model", "currentValue": "test/model"}]}}), flush=True)
+"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let argv = vec![path.to_string_lossy().to_string()];
+        let report = probe(&argv, "/tmp", Duration::from_secs(5)).expect("probe");
+        assert_eq!(
+            report,
+            Probe {
+                agent: "Fake Probe".to_string(),
+                model: Some("test/model".to_string()),
+                protocol: 1,
+            }
+        );
+        let missing = probe(
+            &["/definitely/not/an/agent".to_string()],
+            "/tmp",
+            Duration::from_secs(2),
+        );
+        assert!(missing.is_err());
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -17,6 +17,13 @@ user, persisting conversations.
 
 ## Enabling
 
+The user never has to edit the settings file. The normal paths are the
+**Agents** page of the preferences window (also reachable from Tools → Agent
+Settings…, the ⚙ button in the pane, or the `Agent settings` palette action)
+and the inline setup shown by `Ctrl+Shift+.` or by the first prompt. Both list
+the agents found, offer a live **Test connection** (`acp::probe`, a real
+handshake), write the settings below, and send a pending prompt after enabling.
+
 Two settings must both be true before anything can start:
 
 ```jsonc
@@ -29,10 +36,8 @@ Two settings must both be true before anything can start:
 `oxterm agent --list` reports the known ACP CLIs already installed and the
 absolute command to configure for each (`PATH` plus the usual per-user bin
 directories, because a desktop-launched GUI has a smaller `PATH` than a shell);
-`oxterm agent --show` prints the effective
-configuration and the policies. The same settings are on the **Agents** page of
-the preferences window, including a "Detect installed agents" button. Oxterm
-never installs an agent.
+`oxterm agent --show` prints the effective configuration and the policies.
+Oxterm never installs an agent.
 
 ## Architecture
 

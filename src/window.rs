@@ -206,6 +206,8 @@ pub trait TerminalWindow {
     fn agent_prompt(&self, _term: &TerminalBox, _prompt: &str) {}
     /// Ask the agent to diagnose the last command of `term`.
     fn agent_fix(&self, _term: &TerminalBox, _hint: Option<&str>) {}
+    /// Open the Agents page of the preferences window.
+    fn agent_settings(&self) {}
     /// Whether this window can open saved connections: a detached window has no
     /// tab bar to put them in.
     fn supports_connections(&self) -> bool {
@@ -5915,43 +5917,31 @@ impl MainWindow {
         Some(panel)
     }
 
-    fn agent_enabled(&self) -> bool {
-        settings().get_bool("agent_enabled")
-    }
-
     pub fn agent_toggle(&self) {
-        if !self.agent_enabled() {
-            self.status_message(
-                "Agent features are disabled. Set agent_enabled and agent_command in the settings.",
-                true,
-            );
-            return;
-        }
         if let Some(panel) = self.ensure_agent_panel() {
             if let Some(term) = self.current_terminal() {
                 panel.set_active_pane(Some(term.remote_id()));
             }
             panel.toggle();
+            if panel.is_visible() && !crate::headless::agent::configured(&settings().raw_data()) {
+                panel.show_setup("");
+            }
         }
     }
 
     pub fn agent_focus(&self) {
-        if !self.agent_enabled() {
-            return;
-        }
         if let Some(panel) = self.ensure_agent_panel() {
             if let Some(term) = self.current_terminal() {
                 panel.set_active_pane(Some(term.remote_id()));
             }
             panel.set_visible(true);
+            if !crate::headless::agent::configured(&settings().raw_data()) {
+                panel.show_setup("");
+            }
         }
     }
 
     pub fn agent_prompt_for(&self, term: &TerminalBox, prompt: &str) {
-        if !self.agent_enabled() {
-            self.status_message("Agent features are disabled.", true);
-            return;
-        }
         if let Some(panel) = self.ensure_agent_panel() {
             panel.prune(&self.all_terminals());
             panel.prompt_for(term, prompt);
@@ -5959,14 +5949,15 @@ impl MainWindow {
     }
 
     pub fn agent_fix_for(&self, term: &TerminalBox, hint: Option<&str>) {
-        if !self.agent_enabled() {
-            self.status_message("Agent features are disabled.", true);
-            return;
-        }
         if let Some(panel) = self.ensure_agent_panel() {
             panel.prune(&self.all_terminals());
             panel.fix_for(term, hint);
         }
+    }
+
+    pub fn agent_settings(&self) {
+        let parent: gtk::Window = self.clone().upcast();
+        crate::settings_dialog::show_settings_dialog_at(Some(&parent), Some("agents"));
     }
 
     // ── Public signals for TerminalBox ───────────────────────
@@ -6524,6 +6515,9 @@ impl TerminalWindow for MainWindow {
     }
     fn agent_fix(&self, term: &TerminalBox, hint: Option<&str>) {
         self.agent_fix_for(term, hint);
+    }
+    fn agent_settings(&self) {
+        MainWindow::agent_settings(self);
     }
     fn tunnel_manager_signal(&self) {
         self.show_tunnel_manager(None);
