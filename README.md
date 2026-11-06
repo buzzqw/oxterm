@@ -117,8 +117,9 @@ is available as `oxterm fix [HINT]`,
 `/fix` in the command bar and `?prompt` typed at the shell prompt (or in the
 command bar): a line that starts with `?` is sent to the agent as a question
 instead of being run by the shell. Since a command the shell cannot find
-(exit 127) is not really a shell command, Oxterm asks the agent about it
-automatically and prints the answer in the terminal itself; set `agent_auto_fix`
+(exit 127) is not really a shell command, Oxterm hands it to the agent: a
+sentence opens the agent pane as a request, so the agent can use its own tools,
+while a likely typo gets the answer inline in the terminal. Set `agent_auto_fix`
 to false to keep the hand-off explicit. Each tab keeps its own session while
 the pane is hidden, an exited agent process is resumed with `session/load` when
 the CLI supports it, and an SSH tab can run the agent on the remote host with

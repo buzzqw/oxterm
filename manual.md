@@ -472,6 +472,13 @@ the absolute path so the setting does not depend on the launcher's environment.
 | Ask with the active pane as context | `?prompt` at the shell prompt or in the command bar |
 | Diagnose the last failure | `/fix [hint]` or `oxterm fix [HINT]` |
 
+A command the shell cannot find (exit 127) is not a shell command at all. With
+`agent_auto_fix` on, Oxterm hands the line to the agent: when it reads like a
+sentence the agent pane opens with it as a request, so the agent can use its own
+tools; a likely typo keeps the smaller "what went wrong" answer inline in the
+terminal. A line typed at the prompt that starts with `?` does the same
+explicitly, for prose that begins with a real command.
+
 Each tab owns one session, keyed by pane id. Hiding the pane or switching tabs
 keeps the session and its transcript; closing the tab ends it. A prompt sent
 from `oxterm fix --pane ID` or `?prompt` starts the session on demand.

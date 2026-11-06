@@ -187,6 +187,75 @@ pub fn prompt_from_line(line: &str) -> Option<&str> {
     line.trim().strip_prefix('?').map(str::trim)
 }
 
+/// Whether a line the shell could not find looks like a sentence rather than a
+/// mistyped command line.
+///
+/// The exit status already proved the first word is not a command, so all that
+/// is left is to tell `analizza il mio .bashrc per favore` from `gti status`.
+/// The test is deliberately conservative: shell syntax, flags and short lines
+/// stay with the usual "explain the failure" hand-off, because a sentence the
+/// user typed for a command is much more common than a long prose line.
+pub fn looks_like_prose(command: &str) -> bool {
+    let line = command.trim();
+    let words: Vec<&str> = line.split_whitespace().collect();
+    if words.len() < 6 {
+        return false;
+    }
+    if line.contains(|c| {
+        matches!(
+            c,
+            '=' | '$'
+                | '|'
+                | '&'
+                | '<'
+                | '>'
+                | '*'
+                | '\\'
+                | '/'
+                | '('
+                | ')'
+                | '{'
+                | '}'
+                | '['
+                | ']'
+        )
+    }) {
+        return false;
+    }
+    if words.iter().any(|word| word.starts_with('-')) {
+        return false;
+    }
+    // Prose is mostly plain words; a line of paths, hashes or versions is not.
+    let plain = words
+        .iter()
+        .filter(|word| {
+            word.chars()
+                .all(|c| c.is_alphabetic() || matches!(c, ',' | '.' | ';' | ':' | '!' | '\'' | '?'))
+        })
+        .count();
+    plain * 3 >= words.len() * 2
+}
+
+/// The prompt for a line that may be a request rather than a failed command.
+/// The agent decides which one it is, so a misdetection still ends with a
+/// useful answer instead of a sentence run as a command.
+pub fn request_prompt(context: &FixContext) -> String {
+    let mut out = String::from(
+        "A line I typed at my shell prompt was not a command: the shell could not find it.\n\
+         If it is a request in natural language, carry it out with your own tools and show me \
+         the result.\n\
+         If it is a mistyped command, explain the mistake and show the command to run.\n\
+         Do not run shell commands without asking me first.\n\n",
+    );
+    out.push_str("Line:\n```\n");
+    out.push_str(context.command.trim_end());
+    out.push_str("\n```\n");
+    if !context.cwd.trim().is_empty() {
+        out.push_str(&format!("\nWorking directory: `{}`\n", context.cwd));
+    }
+    out
+}
+
 /// Whether a finished command should be handed to the agent without the user
 /// asking. Only a command the shell could not find (exit status 127) is
 /// eligible, and only when agent features and the automatic hand-off are on.
@@ -948,6 +1017,44 @@ mod tests {
         assert_eq!(prompt_from_line("ls -la"), None);
         assert_eq!(prompt_from_line("echo '?x'"), None);
         assert_eq!(prompt_from_line(""), None);
+    }
+
+    #[test]
+    fn a_sentence_is_told_apart_from_a_mistyped_command() {
+        assert!(looks_like_prose(
+            "analizza il mio .bashrc per migliorarlo, considera che uso cachyos, il terminale e tante connessione ssh"
+        ));
+        assert!(looks_like_prose(
+            "come faccio a copiare un file in un altra cartella"
+        ));
+        assert!(looks_like_prose(
+            "why does the terminal keep losing my history after a reboot"
+        ));
+        // Typos, flags, paths and shell syntax stay with the usual hand-off.
+        assert!(!looks_like_prose("gti status"));
+        assert!(!looks_like_prose("gti status -s"));
+        assert!(!looks_like_prose("systemctl restat nginx"));
+        assert!(!looks_like_prose("docker compose up -d"));
+        assert!(!looks_like_prose("cat /home/andres/.bashrc | head -20"));
+        assert!(!looks_like_prose("FOO=bar make all"));
+        assert!(!looks_like_prose(""));
+    }
+
+    #[test]
+    fn a_request_prompt_carries_the_line_and_the_directory() {
+        let context = FixContext {
+            command: "analizza il mio .bashrc".into(),
+            cwd: "/home/andres".into(),
+            exit_code: Some(127),
+            output: String::new(),
+            duration_ms: None,
+            shell: Some("bash".into()),
+        };
+        let prompt = request_prompt(&context);
+        assert!(prompt.contains("carry it out with your own tools"));
+        assert!(prompt.contains("analizza il mio .bashrc"));
+        assert!(prompt.contains("/home/andres"));
+        assert!(prompt.contains("Do not run shell commands"));
     }
 
     #[test]

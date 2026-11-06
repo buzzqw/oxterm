@@ -3929,10 +3929,19 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 );
                 // A command the shell could not find is the one case where the
                 // typed line is not really a shell command: hand it to the
-                // agent, which answers in this terminal.
+                // agent. A sentence goes to the pane as a request, where the
+                // agent can use its tools; a likely typo keeps the inline
+                // "explain the failure" answer in this terminal.
                 if crate::headless::agent::auto_fix_wanted(&settings().raw_data(), status) {
-                    let term = self.clone();
-                    self.call_window(move |win| win.agent_auto_fix_signal(&term));
+                    let context = self.last_command_context();
+                    if crate::headless::agent::looks_like_prose(&context.command) {
+                        let prompt = crate::headless::agent::request_prompt(&context);
+                        let term = self.clone();
+                        self.call_window(move |win| win.agent_prompt(&term, &prompt));
+                    } else {
+                        let term = self.clone();
+                        self.call_window(move |win| win.agent_auto_fix_signal(&term));
+                    }
                 }
             }
             osc133::Event::PromptStart => {
