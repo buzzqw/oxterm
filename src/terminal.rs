@@ -5476,6 +5476,33 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             if !self.is_oxterm_command(&shadow) && self.is_oxterm_command(&real_text) {
                 shadow = real_text.clone();
             }
+            // `?prompt` asks the agent with this pane as context, like the same
+            // prefix in the command bar. The line is withdrawn before the shell
+            // sees it, so bash does not report it as a command it cannot find.
+            // Only at a shell prompt: a `?` typed into `less`, `vim` or `ssh`
+            // belongs to that program and must reach it untouched.
+            if !self.has_active_process() {
+                let typed = if crate::headless::agent::prompt_from_line(&real_text).is_some() {
+                    real_text.as_str()
+                } else {
+                    shadow.as_str()
+                };
+                if let Some(prompt) = crate::headless::agent::prompt_from_line(typed) {
+                    let prompt = prompt.to_string();
+                    *self.imp().input_shadow.borrow_mut() = String::new();
+                    *self.imp().shadow_anchor.borrow_mut() = None;
+                    self.feed_command_bytes(b"\x15");
+                    if prompt.is_empty() {
+                        let _ = self.call_window(|window| window.agent_focus_panel());
+                    } else {
+                        let term = self.clone();
+                        let _ = self.call_window(move |window| window.agent_prompt(&term, &prompt));
+                    }
+                    // Let the shell draw a fresh prompt under the pane's output.
+                    self.vte().feed_child(b"\r");
+                    return glib::Propagation::Stop;
+                }
+            }
             if !shadow.is_empty() {
                 let is_oxterm_cmd = self.is_oxterm_command(&shadow);
                 if !is_oxterm_cmd {

@@ -178,6 +178,15 @@ pub fn configured(settings: &Value) -> bool {
     enabled(settings) && !settings_string(settings, "agent_command").trim().is_empty()
 }
 
+/// A line typed at the shell prompt that starts with `?` is a question for the
+/// agent, not a command: `?explain this` returns `Some("explain this")`.
+///
+/// `Some("")` means the user typed only `?` and wants the pane focused, while
+/// `None` means the line is an ordinary command and must reach the shell.
+pub fn prompt_from_line(line: &str) -> Option<&str> {
+    line.trim().strip_prefix('?').map(str::trim)
+}
+
 /// Whether a finished command should be handed to the agent without the user
 /// asking. Only a command the shell could not find (exit status 127) is
 /// eligible, and only when agent features and the automatic hand-off are on.
@@ -919,6 +928,26 @@ mod tests {
         let command_only = settings(&[("agent_command", json!("opencode acp"))]);
         assert!(!configured(&command_only));
         assert!(!mcp_available(&command_only));
+    }
+
+    #[test]
+    fn a_leading_question_mark_is_a_prompt_for_the_agent() {
+        assert_eq!(
+            prompt_from_line("? analizza il mio ~/.bashrc"),
+            Some("analizza il mio ~/.bashrc")
+        );
+        assert_eq!(
+            prompt_from_line("  ?perche' e' lento?  "),
+            Some("perche' e' lento?")
+        );
+        // A bare `?` only asks for the pane, it has nothing to send.
+        assert_eq!(prompt_from_line("?"), Some(""));
+        assert_eq!(prompt_from_line("?   "), Some(""));
+        // Everything else belongs to the shell, including a `?` that is not
+        // the first character or is inside quotes.
+        assert_eq!(prompt_from_line("ls -la"), None);
+        assert_eq!(prompt_from_line("echo '?x'"), None);
+        assert_eq!(prompt_from_line(""), None);
     }
 
     #[test]

@@ -466,7 +466,7 @@ the absolute path so the setting does not depend on the launcher's environment.
 | Show or hide the agent pane | `Ctrl+Shift+.` |
 | Focus the agent pane | `Ctrl+Shift+I` |
 | Send the last failed command | `Ctrl+Alt+.` |
-| Ask with the active pane as context | `?prompt` in the command bar |
+| Ask with the active pane as context | `?prompt` at the shell prompt or in the command bar |
 | Diagnose the last failure | `/fix [hint]` or `oxterm fix [HINT]` |
 
 Each tab owns one session, keyed by pane id. Hiding the pane or switching tabs

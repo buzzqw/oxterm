@@ -229,8 +229,11 @@ oxterm agent [--pane ID] [--list|--show] [PROMPT...]
 oxterm fix   [--pane ID] [--print] [HINT...]
 ```
 
-In the command bar, `?prompt` asks the agent with this pane as context,
-`/fix [hint]` sends the last failure, and `/agent` focuses the pane.
+A line typed at the shell prompt that starts with `?` is a question for the
+agent with this pane as context: Oxterm withdraws the line before the shell runs
+it, sends the rest to the agent, and leaves a fresh prompt. A bare `?` only
+focuses the pane. The same prefix works in the command bar, where `/fix [hint]`
+sends the last failure and `/agent` focuses the pane.
 
 ## Remote hosts
 
