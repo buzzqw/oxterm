@@ -97,6 +97,11 @@ Hiding the pane is a stash, not a destroy. `Ctrl+Shift+.` toggles it,
 owned by the window: closing the window (or the whole application) ends every
 session, and tabs of different windows do not share one.
 
+The pane is event-driven. ACP reader threads send one UI event per message; a
+bridge thread wakes the main loop only when an event exists, and the pane
+handles it there. A hidden pane with no agent process causes no wakeups, and
+the settings signal hides the inline setup as soon as the agent is configured.
+
 ## Asking with `?`
 
 A line typed at a shell prompt that starts with `?` is the only line Oxterm

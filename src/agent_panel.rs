@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::rc::Rc;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::Duration;
 
@@ -147,8 +147,9 @@ pub struct AgentPanel {
     setup_enable: gtk::Button,
     setup_commands: RefCell<Vec<String>>,
     pending_prompt: RefCell<Option<String>>,
-    events: Receiver<UiEvent>,
     events_tx: Sender<UiEvent>,
+    /// The Settings "changed" handler; disconnected when the pane goes away.
+    settings_handler: RefCell<Option<glib::SignalHandlerId>>,
     window: crate::SendWeak<MainWindow>,
 }
 
@@ -276,8 +277,8 @@ impl AgentPanel {
             setup_enable,
             setup_commands: RefCell::new(Vec::new()),
             pending_prompt: RefCell::new(None),
-            events: rx,
             events_tx: tx,
+            settings_handler: RefCell::new(None),
             window: crate::SendWeak::new(window),
         });
 
@@ -326,15 +327,37 @@ impl AgentPanel {
             enable.connect_clicked(move |_| panel.enable_selected_agent());
         }
 
-        let poll = Rc::downgrade(&panel);
-        glib::timeout_add_local(Duration::from_millis(100), move || {
-            if let Some(panel) = poll.upgrade() {
-                panel.drain_events();
-                glib::ControlFlow::Continue
-            } else {
-                glib::ControlFlow::Break
-            }
-        });
+        // Wake the UI only when a session thread has something to report.
+        // Polling a channel every 100 ms kept the process out of deep idle for
+        // as long as the pane existed, even while it was hidden.
+        {
+            let weak = crate::Sendable(Rc::downgrade(&panel));
+            let _ = std::thread::Builder::new()
+                .name("oxterm-agent-ui".to_string())
+                .spawn(move || {
+                    let weak = weak;
+                    while let Ok(event) = rx.recv() {
+                        let weak = crate::Sendable(weak.0.clone());
+                        crate::run_on_main(move || {
+                            let weak = weak;
+                            if let Some(panel) = weak.0.upgrade() {
+                                panel.handle_event(event);
+                            }
+                        });
+                    }
+                });
+        }
+        // The setup panel must disappear as soon as the agent is configured in
+        // Preferences; there is no polling tick to notice it any more.
+        {
+            let weak = Rc::downgrade(&panel);
+            let handler = settings().connect_changed(move || {
+                if let Some(panel) = weak.upgrade() {
+                    panel.refresh_setup();
+                }
+            });
+            *panel.settings_handler.borrow_mut() = Some(handler);
+        }
 
         panel
     }
@@ -934,191 +957,188 @@ impl AgentPanel {
         self.render_active();
     }
 
-    fn drain_events(&self) {
-        // Configuration can also arrive from the Preferences window while this
-        // pane is open; hide the inline setup as soon as it is valid.
+    /// Hide the inline setup once the agent becomes configured, including when
+    /// the user enables it from the Preferences window.
+    fn refresh_setup(&self) {
         if self.setup.is_visible() && agent::configured(&settings().raw_data()) {
             self.setup.hide();
             self.update_header();
         }
-        loop {
-            let event = match self.events.try_recv() {
-                Ok(event) => event,
-                Err(_) => break,
-            };
-            match event {
-                UiEvent::Ready {
-                    pane,
-                    agent,
-                    model,
-                    models,
-                    model_api,
-                    session,
-                    resumed,
-                } => {
-                    let had_transcript = self
-                        .sessions
-                        .borrow()
-                        .get(&pane)
-                        .is_some_and(|state| !state.transcript.is_empty());
-                    let mut sessions = self.sessions.borrow_mut();
-                    if let Some(state) = sessions.get_mut(&pane) {
-                        state.ready = true;
-                        state.status = "ready";
-                        if !agent.is_empty() {
-                            state.agent_name = agent;
-                        }
-                        if model.is_some() {
-                            state.model = model;
-                        }
-                        if !models.is_empty() {
-                            state.models = models;
-                        }
-                        if model_api.is_some() {
-                            state.model_api = model_api;
-                        }
-                        state.session_id = Some(session);
+    }
+
+    fn handle_event(&self, event: UiEvent) {
+        match event {
+            UiEvent::Ready {
+                pane,
+                agent,
+                model,
+                models,
+                model_api,
+                session,
+                resumed,
+            } => {
+                let had_transcript = self
+                    .sessions
+                    .borrow()
+                    .get(&pane)
+                    .is_some_and(|state| !state.transcript.is_empty());
+                let mut sessions = self.sessions.borrow_mut();
+                if let Some(state) = sessions.get_mut(&pane) {
+                    state.ready = true;
+                    state.status = "ready";
+                    if !agent.is_empty() {
+                        state.agent_name = agent;
                     }
-                    let queued: Vec<String> = sessions
-                        .get_mut(&pane)
-                        .map(|state| std::mem::take(&mut state.queue))
-                        .unwrap_or_default();
-                    drop(sessions);
-                    if resumed && had_transcript {
-                        self.render_to(&pane, "\n[agent session resumed]\n");
+                    if model.is_some() {
+                        state.model = model;
                     }
-                    // Before the queued prompt: the writer channel keeps the
-                    // order, so the model change reaches the agent first.
-                    self.apply_preferred_model(&pane);
-                    self.publish_status(&pane, "ready");
-                    for text in queued {
-                        self.send_prompt(&pane, &text);
+                    if !models.is_empty() {
+                        state.models = models;
                     }
+                    if model_api.is_some() {
+                        state.model_api = model_api;
+                    }
+                    state.session_id = Some(session);
+                }
+                let queued: Vec<String> = sessions
+                    .get_mut(&pane)
+                    .map(|state| std::mem::take(&mut state.queue))
+                    .unwrap_or_default();
+                drop(sessions);
+                if resumed && had_transcript {
+                    self.render_to(&pane, "\n[agent session resumed]\n");
+                }
+                // Before the queued prompt: the writer channel keeps the
+                // order, so the model change reaches the agent first.
+                self.apply_preferred_model(&pane);
+                self.publish_status(&pane, "ready");
+                for text in queued {
+                    self.send_prompt(&pane, &text);
+                }
+                self.update_header();
+            }
+            UiEvent::ModelChanged {
+                pane,
+                model,
+                models,
+            } => {
+                if let Some(state) = self.sessions.borrow_mut().get_mut(&pane) {
+                    if model.is_some() {
+                        state.model = model;
+                    }
+                    if !models.is_empty() {
+                        state.models = models;
+                    }
+                }
+                if self.active_pane().as_deref() == Some(pane.as_str()) {
                     self.update_header();
                 }
-                UiEvent::ModelChanged {
-                    pane,
-                    model,
-                    models,
-                } => {
-                    if let Some(state) = self.sessions.borrow_mut().get_mut(&pane) {
-                        if model.is_some() {
-                            state.model = model;
-                        }
-                        if !models.is_empty() {
-                            state.models = models;
-                        }
-                    }
-                    if self.active_pane().as_deref() == Some(pane.as_str()) {
-                        self.update_header();
-                    }
+            }
+            UiEvent::ModelRejected { pane, message } => {
+                // A refused choice is not a failed session: keep the agent
+                // usable and put the picker back on the model in use.
+                self.render_to(&pane, &format!("\n[model not changed] {}\n", message));
+                if let Some(state) = self.sessions.borrow_mut().get_mut(&pane) {
+                    state.model = state.model_previous.clone();
                 }
-                UiEvent::ModelRejected { pane, message } => {
-                    // A refused choice is not a failed session: keep the agent
-                    // usable and put the picker back on the model in use.
-                    self.render_to(&pane, &format!("\n[model not changed] {}\n", message));
-                    if let Some(state) = self.sessions.borrow_mut().get_mut(&pane) {
-                        state.model = state.model_previous.clone();
-                    }
-                    if self.active_pane().as_deref() == Some(pane.as_str()) {
-                        self.update_header();
-                    }
-                }
-                UiEvent::Update { pane, update } => {
-                    self.render_update(&pane, update);
-                }
-                UiEvent::Permission {
-                    pane,
-                    id,
-                    title,
-                    options,
-                    writer,
-                } => {
-                    self.ask_permission(&pane, &id, &title, &options, &writer);
-                }
-                UiEvent::TurnDone { pane, reason } => {
-                    if let Some(state) = self.sessions.borrow_mut().get_mut(&pane) {
-                        state.busy = false;
-                        state.status = "ready";
-                    }
-                    self.publish_status(&pane, "ready");
-                    // A prompt that arrived while the agent was busy runs now,
-                    // one turn at a time.
-                    let next = self.sessions.borrow_mut().get_mut(&pane).and_then(|state| {
-                        if state.ready && !state.queue.is_empty() {
-                            Some(state.queue.remove(0))
-                        } else {
-                            None
-                        }
-                    });
-                    if let Some(text) = next {
-                        self.send_prompt(&pane, &text);
-                    }
-                    if reason != "end_turn" && reason != "cancelled" {
-                        self.render_to(&pane, &format!("\n[turn stopped: {}]\n", reason));
-                    }
-                    if self.active_pane().as_deref() == Some(pane.as_str()) {
-                        self.update_header();
-                    } else if let Some(state) = self.sessions.borrow().get(&pane) {
-                        if !state.ready {
-                            self.update_header();
-                        }
-                    }
-                }
-                UiEvent::Error { pane, message } => {
-                    self.render_to(&pane, &format!("\n[error] {}\n", message));
-                    if let Some(state) = self.sessions.borrow_mut().get_mut(&pane) {
-                        state.status = "error";
-                        state.busy = false;
-                        state.ready = false;
-                    }
-                    self.publish_status(&pane, "error");
+                if self.active_pane().as_deref() == Some(pane.as_str()) {
                     self.update_header();
                 }
-                UiEvent::Closed { pane } => {
-                    let mut retry: Vec<String> = Vec::new();
-                    let mut sessions = self.sessions.borrow_mut();
-                    if let Some(state) = sessions.get_mut(&pane) {
-                        let never_connected = state.agent_name.is_empty();
-                        state.status = "closed";
-                        state.ready = false;
-                        state.busy = false;
-                        state.append("\n[the agent process exited]\n");
-                        if never_connected {
-                            state.append(
-                                "If it exited immediately, check that the command speaks ACP. \
+            }
+            UiEvent::Update { pane, update } => {
+                self.render_update(&pane, update);
+            }
+            UiEvent::Permission {
+                pane,
+                id,
+                title,
+                options,
+                writer,
+            } => {
+                self.ask_permission(&pane, &id, &title, &options, &writer);
+            }
+            UiEvent::TurnDone { pane, reason } => {
+                if let Some(state) = self.sessions.borrow_mut().get_mut(&pane) {
+                    state.busy = false;
+                    state.status = "ready";
+                }
+                self.publish_status(&pane, "ready");
+                // A prompt that arrived while the agent was busy runs now,
+                // one turn at a time.
+                let next = self.sessions.borrow_mut().get_mut(&pane).and_then(|state| {
+                    if state.ready && !state.queue.is_empty() {
+                        Some(state.queue.remove(0))
+                    } else {
+                        None
+                    }
+                });
+                if let Some(text) = next {
+                    self.send_prompt(&pane, &text);
+                }
+                if reason != "end_turn" && reason != "cancelled" {
+                    self.render_to(&pane, &format!("\n[turn stopped: {}]\n", reason));
+                }
+                if self.active_pane().as_deref() == Some(pane.as_str()) {
+                    self.update_header();
+                } else if let Some(state) = self.sessions.borrow().get(&pane) {
+                    if !state.ready {
+                        self.update_header();
+                    }
+                }
+            }
+            UiEvent::Error { pane, message } => {
+                self.render_to(&pane, &format!("\n[error] {}\n", message));
+                if let Some(state) = self.sessions.borrow_mut().get_mut(&pane) {
+                    state.status = "error";
+                    state.busy = false;
+                    state.ready = false;
+                }
+                self.publish_status(&pane, "error");
+                self.update_header();
+            }
+            UiEvent::Closed { pane } => {
+                let mut retry: Vec<String> = Vec::new();
+                let mut sessions = self.sessions.borrow_mut();
+                if let Some(state) = sessions.get_mut(&pane) {
+                    let never_connected = state.agent_name.is_empty();
+                    state.status = "closed";
+                    state.ready = false;
+                    state.busy = false;
+                    state.append("\n[the agent process exited]\n");
+                    if never_connected {
+                        state.append(
+                            "If it exited immediately, check that the command speaks ACP. \
                                  `oxterm agent --list` shows the known agent CLIs.\n",
-                            );
-                        } else if state.session_id.is_some() {
-                            state.append(
-                                "The next prompt restarts the agent and resumes this session.\n",
-                            );
-                        }
-                        if !state.queue.is_empty() {
-                            // Prompts that arrived while the process was dying
-                            // were never sent. Restart and resume now instead of
-                            // losing them.
-                            retry = std::mem::take(&mut state.queue);
-                        }
+                        );
+                    } else if state.session_id.is_some() {
+                        state.append(
+                            "The next prompt restarts the agent and resumes this session.\n",
+                        );
                     }
-                    drop(sessions);
-                    self.publish_status(&pane, "closed");
-                    if let Some(first) = retry.first().cloned() {
-                        if let Some(window) = self.window.upgrade() {
-                            if let Some(term) = window.terminal_by_remote_id(&pane) {
-                                self.ensure_session(&term, &first);
-                                retry.remove(0);
-                                if !retry.is_empty() {
-                                    if let Some(state) = self.sessions.borrow_mut().get_mut(&pane) {
-                                        state.queue.extend(retry);
-                                    }
+                    if !state.queue.is_empty() {
+                        // Prompts that arrived while the process was dying
+                        // were never sent. Restart and resume now instead of
+                        // losing them.
+                        retry = std::mem::take(&mut state.queue);
+                    }
+                }
+                drop(sessions);
+                self.publish_status(&pane, "closed");
+                if let Some(first) = retry.first().cloned() {
+                    if let Some(window) = self.window.upgrade() {
+                        if let Some(term) = window.terminal_by_remote_id(&pane) {
+                            self.ensure_session(&term, &first);
+                            retry.remove(0);
+                            if !retry.is_empty() {
+                                if let Some(state) = self.sessions.borrow_mut().get_mut(&pane) {
+                                    state.queue.extend(retry);
                                 }
                             }
                         }
                     }
-                    self.render_active();
-                    self.update_header();
                 }
+                self.render_active();
+                self.update_header();
             }
         }
     }
@@ -1448,6 +1468,14 @@ impl AgentPanel {
         self.usage.set_text(&usage);
         self.usage
             .set_visible(settings().get_bool("agent_show_usage") && !usage.is_empty());
+    }
+}
+
+impl Drop for AgentPanel {
+    fn drop(&mut self) {
+        if let Some(handler) = self.settings_handler.borrow_mut().take() {
+            settings().disconnect_changed(handler);
+        }
     }
 }
 

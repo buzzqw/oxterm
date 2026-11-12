@@ -896,7 +896,9 @@ Five of those rows are separate experiments, all on the same defaults:
   empty window. It counts cursor blink, timers and helper wakeups. Alacritty's
   and xfce4-terminal's default cursors do not blink and neither arms a periodic
   timer, so both measure about zero; Oxterm's blinking cursor and periodic timers
-  cost 2.6 ms, Ghostty's 15.2 ms.
+  cost 2.6 ms, Ghostty's 15.2 ms. A hidden agent pane adds no wakeup: its
+  session threads post one event to the main loop only when they have
+  something to report.
 - **Plain lines** are the same workload without the SGR sequences, so comparing
   the two drain rows shows what the colour handling and the extra 0.8 MB cost:
   70 ms for Oxterm, 56 ms for Ghostty, 12 ms for Alacritty and 9 ms for
