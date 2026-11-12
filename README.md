@@ -71,8 +71,8 @@ memory footprint and the memory-safety guarantees of Rust.
   per-class permission policy and an audit log
 - Optional agent integration, off by default and configured by the user: an ACP
   agent pane with one session per tab, `oxterm fix` with shell context from
-  OSC 133, `?prompt` at the shell prompt or in the command bar, and an inline
-  answer when a command is not found
+  OSC 133, `?prompt` at the shell prompt or in the command bar, and `?` as the
+  only line the agent takes from the shell
 - VI copy mode with motions, text objects, visual block selection, scrolloff, and bookmarks
 - Session restore, named sessions, profiles, command palette, quickmarks, and hints
 - Compact right-click menu with submenus for clipboard (text/HTML/all/last
@@ -116,18 +116,17 @@ less room, and the share is remembered in `agent_pane_share`. The same context
 is available as `oxterm fix [HINT]`,
 `/fix` in the command bar and `?prompt` typed at the shell prompt (or in the
 command bar): a line that starts with `?` is sent to the agent as a question
-instead of being run by the shell. Since a command the shell cannot find
-(exit 127) is not really a shell command, Oxterm hands it to the agent: a
-sentence opens the agent pane as a request, so the agent can use its own tools,
-while a likely typo gets the answer inline in the terminal. Set `agent_auto_fix`
-to false to keep the hand-off explicit. Each tab keeps its own session while
+instead of being run by the shell, and that prefix is the only trigger. A
+failed command is never handed over automatically: the shell prints its usual
+error and the next line stays your decision. Set `agent_question_prefix` to
+false to give every line back to the shell. Each tab keeps its own session while
 the pane is hidden, an exited agent process is resumed with `session/load` when
 the CLI supports it, and an SSH tab can run the agent on the remote host with
 `agent_remote_command` instead of locally.
 
 When the agent reports the models it supports, the pane header shows them in a
 picker; the choice is stored in `agent_model` and every new session starts on
-it, including the invisible one behind the command-not-found hand-off. Provider
+it, including the session started by `?prompt`. Provider
 credentials stay the agent's own business: log in with its CLI (`opencode auth
 login`, say) or pick a model whose provider is already authenticated.
 

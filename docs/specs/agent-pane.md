@@ -97,40 +97,20 @@ Hiding the pane is a stash, not a destroy. `Ctrl+Shift+.` toggles it,
 owned by the window: closing the window (or the whole application) ends every
 session, and tabs of different windows do not share one.
 
-## Command-not-found hand-off
+## Asking with `?`
 
-When a command finishes with exit status 127 and both `agent_enabled` and
-`agent_auto_fix` are on, the terminal hands the failure to the agent exactly
-like `/fix`: same context prompt, same per-tab ACP session. The difference is
-presentation. The pane is not opened, and the answer is mirrored into the
-terminal's display as it streams, so a line the shell could not find reads like
-a normal command. The pane transcript still keeps the whole turn for later.
+A line typed at a shell prompt that starts with `?` is the only line Oxterm
+takes from the shell. When `agent_enabled` and `agent_question_prefix` allow it,
+Enter removes the line before the shell sees it and sends the rest to the agent
+with the pane as context: `?why is this slow` becomes the prompt
+`why is this slow`, and a bare `?` only focuses the pane. The command bar
+accepts the same prefix, so both entry points share one preference.
 
-The mirror is one-way: text is written with `Terminal::feed`, never typed into
-the shell, so the shell's line discipline is untouched. Before echoing, control
-characters are stripped (`agent::plain_for_terminal`): model output must not be
-able to emit OSC 52, move the cursor or change the title. System messages and
-tool calls stay in the pane; the terminal shows message chunks and notices.
-
-The terminal is not a Markdown renderer, so `agent::Mirror` flattens the stream
-line by line: fences, bold markers, heading prefixes and code-block indentation
-are removed, paragraphs are collapsed to one blank line, code keeps its spacing,
-and prose is word-wrapped to the terminal width. Lines end in CRLF because
-`feed` bypasses the tty, where a bare LF would leave the cursor in the same
-column and every line would start where the previous one ended.
-
-When the answer ends, the prompt is put back under the cursor: the shell had
-already drawn it before the answer arrived, and without a redraw the cursor
-would sit at the end of the answer while the prompt stayed lines above, so the
-next keystrokes would echo in the wrong place. `Terminal::redraw_prompt_line`
-nudges the pty width by one column and back — interactive shells repaint on
-SIGWINCH — and wakes the PTY broker so it forwards the change; it does nothing
-while a command is running and nothing is typed into the shell.
-
-This needs the OSC 133 shell integration, which is where the exit status comes
-from. A successful command, a normal failure (exit 1) and a remote shell that
-does not report status are never handed off. `agent_auto_fix: false` disables
-the hand-off without touching anything else.
+The check runs at a shell prompt, so a `?` typed into `less`, `vim` or an `ssh`
+session belongs to that program. A failed command is never handed to the agent
+automatically: the shell prints its usual error and the next line stays the
+user's decision. `agent_question_prefix: false` turns the prefix off without
+touching anything else.
 
 ## Model selection
 
@@ -156,8 +136,8 @@ and sent, and `acp::resolve_model` also accepts a display name for a value typed
 by hand. A new session starts on that
 value: the panel sends the same request as soon as the handshake completes,
 before the queued prompt, because both go through the same writer channel. This
-is what makes the choice apply to the command-not-found hand-off, whose pane is
-never shown. A remembered model the agent does not list is ignored, so a stale
+is what makes the choice apply to the prompt sent by `?` or `oxterm fix` before
+it is answered. A remembered model the agent does not list is ignored, so a stale
 setting cannot break every session.
 
 Configuration responses need their own request ids (from
@@ -286,10 +266,9 @@ triggers can follow a session without subscribing to the transcript.
 - `src/agent_panel.rs`: a fake ACP agent hands over, streams a turn, accepts
   a model change without ending the turn, and resumes a session with
   `session/load` when the agent advertises support.
-- `tests/gui_lifecycle.rs` (`agent-auto-fix`): the real binary starts a session
-  for a command the shell cannot find, applies `agent_model` before the queued
-  prompt, the answer reaches the terminal, and a command typed afterwards lands
-  on a prompt line under it.
+- `tests/gui_lifecycle.rs` (`agent-question-prefix`): the real binary takes a
+  `?` line away from the shell, applies `agent_model` before the queued prompt,
+  and the answer reaches the agent pane.
 - `tests/gui_lifecycle.rs` (`agent-session`): two prompts in the same tab use
   the same ACP session; when the agent process exits after the first turn, the
   second process resumes it with `session/load`, keeps the turn counter, and

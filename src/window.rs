@@ -206,8 +206,6 @@ pub trait TerminalWindow {
     fn agent_prompt(&self, _term: &TerminalBox, _prompt: &str) {}
     /// Ask the agent to diagnose the last command of `term`.
     fn agent_fix(&self, _term: &TerminalBox, _hint: Option<&str>) {}
-    /// The shell could not find the last command: hand it to the agent.
-    fn agent_auto_fix_signal(&self, _term: &TerminalBox) {}
     /// Open the Agents page of the preferences window.
     fn agent_settings(&self) {}
     /// Whether this window can open saved connections: a detached window has no
@@ -6125,15 +6123,6 @@ impl MainWindow {
         }
     }
 
-    /// A command the shell could not find. The panel answers in the terminal
-    /// instead of opening itself, so the flow stays like running a command.
-    pub fn agent_auto_fix_signal(&self, term: &TerminalBox) {
-        if let Some(panel) = self.ensure_agent_panel() {
-            panel.prune(&self.all_terminals());
-            panel.fix_for_auto(term);
-        }
-    }
-
     pub fn agent_settings(&self) {
         let parent: gtk::Window = self.clone().upcast();
         crate::settings_dialog::show_settings_dialog_at(Some(&parent), Some("agents"));
@@ -6695,9 +6684,6 @@ impl TerminalWindow for MainWindow {
     fn agent_fix(&self, term: &TerminalBox, hint: Option<&str>) {
         self.agent_fix_for(term, hint);
     }
-    fn agent_auto_fix_signal(&self, term: &TerminalBox) {
-        MainWindow::agent_auto_fix_signal(self, term);
-    }
     fn agent_settings(&self) {
         MainWindow::agent_settings(self);
     }
@@ -6928,7 +6914,7 @@ pub mod test_scenario {
             "split-zoom" => split_zoom(win),
             "theme-switch" => theme_switch(win),
             "tab-failure" => tab_failure(win),
-            "agent-auto-fix" => agent_auto_fix(win),
+            "agent-question-prefix" => agent_question_prefix(win),
             "agent-session" => agent_session(win),
             "preferences" => preferences(win),
             other => Err(format!("unknown test scenario: {other}")),
@@ -7150,41 +7136,48 @@ pub mod test_scenario {
         outcome.unwrap_or_else(|| Err("the agent session scenario did not finish".to_string()))
     }
 
-    /// A command the shell cannot find must reach the agent through the
-    /// `TerminalWindow` trait and its answer must land in the terminal. This is
-    /// the end-to-end guard for the wiring, not just for `fix_for_auto`.
-    fn agent_auto_fix(win: &MainWindow) -> Result<(), String> {
+    /// A line typed at the shell prompt that starts with `?` must reach the
+    /// agent instead of the shell, and its answer must land in the agent pane.
+    fn agent_question_prefix(win: &MainWindow) -> Result<(), String> {
         use std::cell::RefCell;
         use std::rc::Rc;
 
         let term = win
             .current_terminal()
             .ok_or_else(|| "no current terminal".to_string())?;
-        // Let bash finish sourcing the integration script before typing.
-        {
-            let term = term.clone();
-            glib::timeout_add_local_once(Duration::from_millis(1500), move || {
-                term.control_send("ciao --oxterm-agent-scenario", true);
-            });
-        }
+        let panel = win
+            .ensure_agent_panel()
+            .ok_or_else(|| "the agent pane is missing".to_string())?;
         let main_loop = glib::MainLoop::new(None, false);
-        let outcome = Rc::new(RefCell::new(None));
+        let outcome: Rc<RefCell<Option<Result<(), String>>>> = Rc::new(RefCell::new(None));
         {
             let term = term.clone();
+            let panel = panel.clone();
             let main_loop = main_loop.clone();
             let outcome = outcome.clone();
             let started = std::time::Instant::now();
-            glib::timeout_add_local(Duration::from_millis(200), move || {
-                let text = term.capture_text("all", 0);
-                if text.contains("command not found, asking")
-                    && text.contains("OXTERM-SCENARIO-ANSWER")
-                {
-                    *outcome.borrow_mut() = Some(true);
+            let mut sent = false;
+            glib::timeout_add_local(Duration::from_millis(100), move || {
+                // Let bash finish sourcing the integration script before typing.
+                if !sent && started.elapsed() > Duration::from_millis(1500) {
+                    sent = true;
+                    if !term.try_agent_prompt("?ciao --oxterm-agent-scenario") {
+                        *outcome.borrow_mut() =
+                            Some(Err("the ? line was not handed to the agent".to_string()));
+                        main_loop.quit();
+                        return glib::ControlFlow::Break;
+                    }
+                }
+                if sent && panel.transcript_text().contains("OXTERM-SCENARIO-ANSWER") {
+                    *outcome.borrow_mut() = Some(Ok(()));
                     main_loop.quit();
                     return glib::ControlFlow::Break;
                 }
                 if started.elapsed() > Duration::from_secs(15) {
-                    *outcome.borrow_mut() = Some(false);
+                    *outcome.borrow_mut() = Some(Err(format!(
+                        "the agent answer never reached the pane; transcript:\n{}",
+                        panel.transcript_text()
+                    )));
                     main_loop.quit();
                     return glib::ControlFlow::Break;
                 }
@@ -7192,50 +7185,8 @@ pub mod test_scenario {
             });
         }
         main_loop.run();
-        if !matches!(*outcome.borrow(), Some(true)) {
-            return Err(format!(
-                "the agent answer never reached the terminal; screen:\n{}",
-                term.capture_text("all", 0)
-            ));
-        }
-        // The shell had already drawn its prompt before the answer; typing must
-        // now continue on a prompt line under the answer, not at the column the
-        // answer left behind.
-        term.control_send("echo OXTERM-PROMPT-OK", true);
-        let prompt_loop = glib::MainLoop::new(None, false);
-        let typed = Rc::new(RefCell::new(None));
-        {
-            let term = term.clone();
-            let prompt_loop = prompt_loop.clone();
-            let typed = typed.clone();
-            let started = std::time::Instant::now();
-            glib::timeout_add_local(Duration::from_millis(150), move || {
-                let text = term.capture_text("all", 0);
-                let on_prompt = text
-                    .lines()
-                    .any(|line| line.trim_end().ends_with("$ echo OXTERM-PROMPT-OK"));
-                if on_prompt {
-                    *typed.borrow_mut() = Some(true);
-                    prompt_loop.quit();
-                    return glib::ControlFlow::Break;
-                }
-                if started.elapsed() > Duration::from_secs(6) {
-                    *typed.borrow_mut() = Some(false);
-                    prompt_loop.quit();
-                    return glib::ControlFlow::Break;
-                }
-                glib::ControlFlow::Continue
-            });
-        }
-        prompt_loop.run();
-        if matches!(*typed.borrow(), Some(true)) {
-            Ok(())
-        } else {
-            Err(format!(
-                "the prompt did not come back after the answer; screen:\n{}",
-                term.capture_text("all", 0)
-            ))
-        }
+        let outcome = outcome.borrow_mut().take();
+        outcome.unwrap_or_else(|| Err("the agent question scenario did not finish".to_string()))
     }
 
     fn tab_failure(win: &MainWindow) -> Result<(), String> {

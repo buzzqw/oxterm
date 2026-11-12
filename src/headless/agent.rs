@@ -187,83 +187,15 @@ pub fn prompt_from_line(line: &str) -> Option<&str> {
     line.trim().strip_prefix('?').map(str::trim)
 }
 
-/// Whether a line the shell could not find looks like a sentence rather than a
-/// mistyped command line.
+/// Whether a `?` line should go to the agent rather than the shell.
 ///
-/// The exit status already proved the first word is not a command, so all that
-/// is left is to tell `analizza il mio .bashrc per favore` from `gti status`.
-/// The test is deliberately conservative: shell syntax, flags and short lines
-/// stay with the usual "explain the failure" hand-off, because a sentence the
-/// user typed for a command is much more common than a long prose line.
-pub fn looks_like_prose(command: &str) -> bool {
-    let line = command.trim();
-    let words: Vec<&str> = line.split_whitespace().collect();
-    if words.len() < 6 {
-        return false;
-    }
-    if line.contains(|c| {
-        matches!(
-            c,
-            '=' | '$'
-                | '|'
-                | '&'
-                | '<'
-                | '>'
-                | '*'
-                | '\\'
-                | '/'
-                | '('
-                | ')'
-                | '{'
-                | '}'
-                | '['
-                | ']'
-        )
-    }) {
-        return false;
-    }
-    if words.iter().any(|word| word.starts_with('-')) {
-        return false;
-    }
-    // Prose is mostly plain words; a line of paths, hashes or versions is not.
-    let plain = words
-        .iter()
-        .filter(|word| {
-            word.chars()
-                .all(|c| c.is_alphabetic() || matches!(c, ',' | '.' | ';' | ':' | '!' | '\'' | '?'))
-        })
-        .count();
-    plain * 3 >= words.len() * 2
-}
-
-/// The prompt for a line that may be a request rather than a failed command.
-/// The agent decides which one it is, so a misdetection still ends with a
-/// useful answer instead of a sentence run as a command.
-pub fn request_prompt(context: &FixContext) -> String {
-    let mut out = String::from(
-        "A line I typed at my shell prompt was not a command: the shell could not find it.\n\
-         If it is a request in natural language, carry it out with your own tools and show me \
-         the result.\n\
-         If it is a mistyped command, explain the mistake and show the command to run.\n\
-         Do not run shell commands without asking me first.\n\n",
-    );
-    out.push_str("Line:\n```\n");
-    out.push_str(context.command.trim_end());
-    out.push_str("\n```\n");
-    if !context.cwd.trim().is_empty() {
-        out.push_str(&format!("\nWorking directory: `{}`\n", context.cwd));
-    }
-    out
-}
-
-/// Whether a finished command should be handed to the agent without the user
-/// asking. Only a command the shell could not find (exit status 127) is
-/// eligible, and only when agent features and the automatic hand-off are on.
-pub fn auto_fix_wanted(settings: &Value, exit_code: Option<i64>) -> bool {
-    exit_code == Some(127)
-        && configured(settings)
+/// This is the only way a line typed at the prompt starts the agent: a failed
+/// command is never handed over automatically. The preference is on by default
+/// and only applies when the agent features themselves are enabled.
+pub fn question_prefix_enabled(settings: &Value) -> bool {
+    enabled(settings)
         && settings
-            .get("agent_auto_fix")
+            .get("agent_question_prefix")
             .and_then(Value::as_bool)
             .unwrap_or(true)
 }
@@ -558,185 +490,6 @@ pub fn fix_prompt(context: &FixContext, hint: Option<&str>) -> String {
     out
 }
 
-/// Agent text is echoed into a real terminal, so strip control characters
-/// first: model output must not be able to drive the terminal parser (OSC 52
-/// clipboard writes, cursor movement, title changes). Newlines, carriage
-/// returns and tabs survive so paragraphs keep their shape.
-pub fn plain_for_terminal(text: &str) -> String {
-    text.chars()
-        .filter(|ch| matches!(ch, '\n' | '\r' | '\t') || !ch.is_control())
-        .collect()
-}
-
-/// Streaming Markdown-to-terminal filter for the inline answer.
-///
-/// Agents answer in Markdown but a terminal is not a Markdown renderer: raw
-/// `**` markers, fences and code-block indentation read as noise, and the
-/// model's own line breaks wrap again at the window edge. The mirror keeps the
-/// stream (it only emits whole lines) and flattens each one to plain prose,
-/// word-wrapped to the terminal width. Fenced code keeps its internal spacing
-/// and is never re-wrapped.
-#[derive(Default)]
-pub struct Mirror {
-    pending: String,
-    fence: bool,
-    /// A blank line is owed, but only written once another line follows, so a
-    /// paragraph break appears and trailing blanks do not.
-    blank: bool,
-    wrote: bool,
-}
-
-impl Mirror {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Feed a chunk and return the text that can be written to the terminal now.
-    pub fn push(&mut self, chunk: &str, width: usize) -> String {
-        self.pending.push_str(chunk);
-        let mut out = String::new();
-        while let Some(index) = self.pending.find('\n') {
-            let line: String = self.pending.drain(..=index).collect();
-            self.emit(line.trim_end_matches('\n'), width, &mut out);
-        }
-        out
-    }
-
-    /// Flush a last line that arrived without a trailing newline.
-    pub fn finish(&mut self, width: usize) -> String {
-        let mut out = String::new();
-        if !self.pending.is_empty() {
-            let line = std::mem::take(&mut self.pending);
-            self.emit(&line, width, &mut out);
-        }
-        out
-    }
-
-    fn emit(&mut self, raw: &str, width: usize, out: &mut String) {
-        let Some((line, preformatted)) = flatten_line(raw, &mut self.fence) else {
-            return;
-        };
-        if line.trim().is_empty() {
-            if self.wrote {
-                self.blank = true;
-            }
-            return;
-        }
-        if self.blank {
-            out.push_str("\r\n");
-            self.blank = false;
-        }
-        if preformatted {
-            out.push_str(&line);
-        } else {
-            out.push_str(&wrap(&line, width));
-        }
-        // `feed` bypasses the tty, so no ONLCR: a bare LF would keep the
-        // cursor in the same column and every line would start where the
-        // previous one ended.
-        out.push_str("\r\n");
-        self.wrote = true;
-    }
-}
-
-/// Flatten one Markdown line. `None` drops the line (fence markers and rules);
-/// the flag marks fenced code, which keeps its spacing.
-fn flatten_line(raw: &str, fence: &mut bool) -> Option<(String, bool)> {
-    let trimmed = raw.trim_start();
-    if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-        *fence = !*fence;
-        return None;
-    }
-    if *fence {
-        return Some((trimmed.trim_end().to_string(), true));
-    }
-    let trimmed = trimmed.trim_end();
-    // A horizontal rule is punctuation, not content.
-    if trimmed.chars().count() >= 3
-        && trimmed
-            .chars()
-            .all(|ch| matches!(ch, '-' | '*' | '_' | ' '))
-    {
-        return None;
-    }
-    let text = trimmed.trim_start_matches('#').trim_start();
-    let text = text.strip_prefix("> ").unwrap_or(text);
-    Some((plain_inline(text), false))
-}
-
-/// Remove the inline Markdown the terminal would otherwise show literally.
-fn plain_inline(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let chars: Vec<char> = text.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        match chars[i] {
-            '*' | '_' if chars.get(i + 1) == Some(&chars[i]) => {
-                // Bold markers come in pairs; drop both.
-                i += 2;
-            }
-            '`' => {
-                i += 1;
-            }
-            '!' if chars.get(i + 1) == Some(&'[') => {
-                // An image: keep the alt text, drop the bang.
-                i += 1;
-            }
-            '[' => {
-                // [label](url) reads better as "label (url)".
-                let Some(close) = chars[i + 1..].iter().position(|ch| *ch == ']') else {
-                    out.push(chars[i]);
-                    i += 1;
-                    continue;
-                };
-                let close = i + 1 + close;
-                let label: String = chars[i + 1..close].iter().collect();
-                if chars.get(close + 1) == Some(&'(') {
-                    if let Some(end) = chars[close + 2..].iter().position(|ch| *ch == ')') {
-                        let url: String = chars[close + 2..close + 2 + end].iter().collect();
-                        out.push_str(&label);
-                        if url != label && !url.is_empty() {
-                            out.push_str(&format!(" ({url})"));
-                        }
-                        i = close + 2 + end + 1;
-                        continue;
-                    }
-                }
-                out.push_str(&label);
-                i = close + 1;
-            }
-            ch => {
-                out.push(ch);
-                i += 1;
-            }
-        }
-    }
-    out.trim_end().to_string()
-}
-
-/// Break a line at spaces so it fits `width` columns. Long words stay whole.
-fn wrap(text: &str, width: usize) -> String {
-    let mut out = String::new();
-    let mut column = 0usize;
-    for word in text.split_whitespace() {
-        let length = word.chars().count();
-        if column == 0 {
-            out.push_str(word);
-            column = length;
-        } else if column + 1 + length <= width {
-            out.push(' ');
-            out.push_str(word);
-            column += 1 + length;
-        } else {
-            // CRLF: the text is fed to the terminal parser, not through a tty.
-            out.push_str("\r\n");
-            out.push_str(word);
-            column = length;
-        }
-    }
-    out
-}
-
 /// Keep the first `max` characters, marking what was dropped.
 pub fn truncate_head(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
@@ -1020,75 +773,29 @@ mod tests {
     }
 
     #[test]
-    fn a_sentence_is_told_apart_from_a_mistyped_command() {
-        assert!(looks_like_prose(
-            "analizza il mio .bashrc per migliorarlo, considera che uso cachyos, il terminale e tante connessione ssh"
-        ));
-        assert!(looks_like_prose(
-            "come faccio a copiare un file in un altra cartella"
-        ));
-        assert!(looks_like_prose(
-            "why does the terminal keep losing my history after a reboot"
-        ));
-        // Typos, flags, paths and shell syntax stay with the usual hand-off.
-        assert!(!looks_like_prose("gti status"));
-        assert!(!looks_like_prose("gti status -s"));
-        assert!(!looks_like_prose("systemctl restat nginx"));
-        assert!(!looks_like_prose("docker compose up -d"));
-        assert!(!looks_like_prose("cat /home/andres/.bashrc | head -20"));
-        assert!(!looks_like_prose("FOO=bar make all"));
-        assert!(!looks_like_prose(""));
-    }
-
-    #[test]
-    fn a_request_prompt_carries_the_line_and_the_directory() {
-        let context = FixContext {
-            command: "analizza il mio .bashrc".into(),
-            cwd: "/home/andres".into(),
-            exit_code: Some(127),
-            output: String::new(),
-            duration_ms: None,
-            shell: Some("bash".into()),
-        };
-        let prompt = request_prompt(&context);
-        assert!(prompt.contains("carry it out with your own tools"));
-        assert!(prompt.contains("analizza il mio .bashrc"));
-        assert!(prompt.contains("/home/andres"));
-        assert!(prompt.contains("Do not run shell commands"));
-    }
-
-    #[test]
-    fn auto_fix_only_fires_for_a_missing_command() {
+    fn a_question_prefix_needs_the_agent_and_the_preference() {
         let ready = settings(&[
             ("agent_enabled", json!(true)),
             ("agent_command", json!("opencode acp")),
         ]);
-        assert!(auto_fix_wanted(&ready, Some(127)));
-        assert!(!auto_fix_wanted(&ready, Some(1)));
-        assert!(!auto_fix_wanted(&ready, Some(0)));
-        assert!(!auto_fix_wanted(&ready, None));
+        assert!(question_prefix_enabled(&ready));
 
         let off = settings(&[
             ("agent_enabled", json!(true)),
             ("agent_command", json!("opencode acp")),
-            ("agent_auto_fix", json!(false)),
+            ("agent_question_prefix", json!(false)),
         ]);
-        assert!(!auto_fix_wanted(&off, Some(127)));
+        assert!(!question_prefix_enabled(&off));
 
-        // Nothing starts without the master switch and a command.
-        let disabled = settings(&[("agent_command", json!("opencode acp"))]);
-        assert!(!auto_fix_wanted(&disabled, Some(127)));
+        // The master switch still wins, while an enabled agent without a
+        // command keeps the prefix so the pane can offer its setup.
+        let disabled = settings(&[
+            ("agent_enabled", json!(false)),
+            ("agent_command", json!("opencode acp")),
+        ]);
+        assert!(!question_prefix_enabled(&disabled));
         let no_command = settings(&[("agent_enabled", json!(true))]);
-        assert!(!auto_fix_wanted(&no_command, Some(127)));
-    }
-
-    #[test]
-    fn terminal_echo_keeps_layout_but_drops_control_sequences() {
-        assert_eq!(
-            plain_for_terminal("a\u{1b}]52;c;cGF5bG9hZA==\u{7}b\n\tc"),
-            "a]52;c;cGF5bG9hZA==b\n\tc"
-        );
-        assert_eq!(plain_for_terminal("plain text"), "plain text");
+        assert!(question_prefix_enabled(&no_command));
     }
 
     #[test]
@@ -1257,50 +964,6 @@ mod tests {
         );
         assert_eq!(resolve_program("/already/absolute"), "/already/absolute");
         std::fs::remove_dir_all(&directory).unwrap();
-    }
-
-    #[test]
-    fn the_mirror_flattens_markdown_for_the_terminal() {
-        let mut mirror = Mirror::new();
-        let out = mirror.push(
-            "# What went wrong\n\n\
-             The command was **not found**, see `type -a ciao`.\n\n\n\
-             ```bash\n  type -a ciao\n    ls -l /home/andres/ciao\n```\n\
-             > Tip: [install it](https://example.com/ciao).\n\
-             ---\n",
-            60,
-        );
-        assert_eq!(
-            out,
-            "What went wrong\r\n\r\n\
-             The command was not found, see type -a ciao.\r\n\r\n\
-             type -a ciao\r\n\
-             ls -l /home/andres/ciao\r\n\
-             Tip: install it (https://example.com/ciao).\r\n"
-        );
-        assert_eq!(mirror.finish(60), "");
-    }
-
-    #[test]
-    fn the_mirror_streams_whole_lines_and_wraps_them() {
-        let mut mirror = Mirror::new();
-        // A chunk that ends mid-line writes nothing yet.
-        assert_eq!(mirror.push("one two three", 10), "");
-        assert_eq!(
-            mirror.push(" four\nfive\n", 10),
-            "one two\r\nthree four\r\nfive\r\n"
-        );
-        // A blank line is held back until something follows it, and a final
-        // line without a newline still arrives with `finish`.
-        assert_eq!(mirror.push("\n\nsix", 40), "");
-        assert_eq!(mirror.finish(40), "\r\nsix\r\n");
-    }
-
-    #[test]
-    fn the_mirror_keeps_code_lines_intact() {
-        let mut mirror = Mirror::new();
-        let out = mirror.push("```\nif a  ==  b { x }\n```\n", 40);
-        assert_eq!(out, "if a  ==  b { x }\r\n");
     }
 
     #[test]

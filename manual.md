@@ -441,11 +441,11 @@ a model picker, and the choice is written to `agent_model` so every new session
 starts on it. In Preferences > Agents the Model field is the same picker: choose
 an installed agent (or press Test connection) and Oxterm asks that agent for its
 list, then offers the values in a combo box; the entry stays editable for a
-value the agent did not list. That includes the hidden
-session used when a command is not found, which is why the picker is also in
-Preferences. Authentication is not Oxterm's: if the agent answers that a
-provider needs credentials, log in with that agent's own CLI (`opencode auth
-login`, for example) or choose a model whose provider is already authenticated.
+value the agent did not list. That includes the session started by a `?prompt`
+line at the shell prompt, which is why the picker is also in Preferences.
+Authentication is not Oxterm's: if the agent answers that a provider needs
+credentials, log in with that agent's own CLI (`opencode auth login`, for
+example) or choose a model whose provider is already authenticated.
 
 The CLIs Oxterm recognises, and the command to use once one is installed and
 logged in:
@@ -472,12 +472,13 @@ the absolute path so the setting does not depend on the launcher's environment.
 | Ask with the active pane as context | `?prompt` at the shell prompt or in the command bar |
 | Diagnose the last failure | `/fix [hint]` or `oxterm fix [HINT]` |
 
-A command the shell cannot find (exit 127) is not a shell command at all. With
-`agent_auto_fix` on, Oxterm hands the line to the agent: when it reads like a
-sentence the agent pane opens with it as a request, so the agent can use its own
-tools; a likely typo keeps the smaller "what went wrong" answer inline in the
-terminal. A line typed at the prompt that starts with `?` does the same
-explicitly, for prose that begins with a real command.
+A line typed at the shell prompt that starts with `?` is the only trigger for
+the agent: with `agent_question_prefix` on, Enter withdraws it before the shell
+sees it and sends the rest as a prompt, so `?why is slow` asks the agent and a
+bare `?` only focuses the pane. A failed command is never handed over
+automatically; the shell prints its usual error and the next line stays the
+user's decision. The same prefix works in the command bar, and turning the
+preference off gives every line back to the shell.
 
 Each tab owns one session, keyed by pane id. Hiding the pane or switching tabs
 keeps the session and its transcript; closing the tab ends it. A prompt sent

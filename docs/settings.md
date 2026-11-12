@@ -102,7 +102,7 @@ never written back to disk.
 | `agent_model` | string | `""` | Model to select in the agent session, as the agent lists it; empty keeps the agent's default. |
 | `agent_remote_command` | string | `""` | ACP agent CLI to run on an SSH host instead, e.g. "opencode acp"; empty keeps it local. |
 | `agent_mcp` | bool | `true` | Hand the agent Oxterm's own MCP server, so it can drive tabs after your approval. |
-| `agent_auto_fix` | bool | `true` | When a command is not found (exit 127), ask the agent automatically and print its answer in the terminal. |
+| `agent_question_prefix` | bool | `true` | Send a line that starts with "?" to the agent instead of running it as a shell command (when agent_enabled is on). |
 | `agent_policy_read` | string | `auto` | Allow agents to read terminal contents without asking. |
 |  |  | Values: `auto`, `ask`, `deny` |  |
 | `agent_policy_create` | string | `ask` | Allow agents to open tabs, split panes and load workspaces. |

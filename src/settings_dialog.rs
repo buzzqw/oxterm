@@ -1512,7 +1512,7 @@ struct AgentPage {
     model: gtk::ComboBoxText,
     remote: gtk::Entry,
     mcp: gtk::CheckButton,
-    auto_fix: gtk::CheckButton,
+    question_prefix: gtk::CheckButton,
     read: gtk::ComboBoxText,
     create: gtk::ComboBoxText,
     input: gtk::ComboBoxText,
@@ -1829,16 +1829,21 @@ fn build_agents(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, 
     ));
     page.row_keyed("Share Oxterm's MCP server", &mcp, Some("agent_mcp"));
 
-    let auto_fix = gtk::CheckButton::new();
-    auto_fix.set_active(s.get_bool("agent_auto_fix"));
-    auto_fix.set_tooltip_text(Some(
-        "When a command is not found (exit 127), send the failure to the agent and print its \
-         answer in the terminal instead of opening the pane.",
+    page.note(
+        "A line that starts with ? is sent to the agent instead of the shell. Failed commands \
+         are never sent automatically: use Ctrl+Alt+. or /fix for those.",
+    );
+    let question_prefix = gtk::CheckButton::new();
+    question_prefix.set_active(s.get_bool("agent_question_prefix"));
+    question_prefix.set_tooltip_text(Some(
+        "Type ? followed by a phrase or a command at the shell prompt to ask the agent. \
+         The line is sent to the agent instead of being run by the shell; without ? the \
+         shell runs the line as usual, even when it fails.",
     ));
     page.row_keyed(
-        "Ask when a command is not found",
-        &auto_fix,
-        Some("agent_auto_fix"),
+        "Ask the agent with a leading ?",
+        &question_prefix,
+        Some("agent_question_prefix"),
     );
 
     page.section("Permissions");
@@ -1905,7 +1910,7 @@ fn build_agents(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, 
         model,
         remote,
         mcp,
-        auto_fix,
+        question_prefix,
         read,
         create,
         input,
@@ -2635,7 +2640,10 @@ impl DialogState {
         s.set_str("agent_model", model_text(&self.agents.model).trim());
         s.set_str("agent_remote_command", self.agents.remote.text().trim());
         s.set_bool("agent_mcp", self.agents.mcp.is_active());
-        s.set_bool("agent_auto_fix", self.agents.auto_fix.is_active());
+        s.set_bool(
+            "agent_question_prefix",
+            self.agents.question_prefix.is_active(),
+        );
         s.set_str(
             "agent_policy_read",
             &combo_value(&self.agents.read, AGENT_POLICY, "auto"),

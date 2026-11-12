@@ -20,7 +20,6 @@ use std::time::Duration;
 
 use gtk::prelude::*;
 use serde_json::{json, Value};
-use zoha_vte::traits::TerminalExt;
 
 use crate::headless::{acp, agent};
 use crate::settings::settings;
@@ -97,16 +96,11 @@ struct Session {
     ready: bool,
     busy: bool,
     next_id: u64,
-    queue: Vec<(String, bool)>,
+    queue: Vec<String>,
     history: Vec<String>,
     history_index: usize,
     usage: String,
     status: &'static str,
-    /// True while the turn being answered came from a command-not-found
-    /// hand-off; its answer is echoed into the pane's terminal.
-    mirror_current: bool,
-    /// Markdown flattened for the terminal, kept across streamed chunks.
-    mirror: agent::Mirror,
 }
 
 impl Session {
@@ -349,6 +343,15 @@ impl AgentPanel {
         &self.root
     }
 
+    /// The rendered transcript, used by the GUI scenario tests.
+    pub fn transcript_text(&self) -> String {
+        let buffer = self.view.buffer().expect("text view has a buffer");
+        buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), false)
+            .map(|text| text.to_string())
+            .unwrap_or_default()
+    }
+
     pub fn is_visible(&self) -> bool {
         self.root.reveals_child()
     }
@@ -414,7 +417,7 @@ impl AgentPanel {
         }
         let shown = visible.unwrap_or(text).to_string();
         let pane = term.remote_id();
-        self.ensure_session(term, text, false);
+        self.ensure_session(term, text);
         self.render_to(&pane, &format!("\n▶ {}\n", shown));
         self.record_prompt(&shown);
     }
@@ -455,32 +458,6 @@ impl AgentPanel {
         }
         self.set_visible(true);
         self.ask_for(term, &prompt, Some(&shown));
-    }
-
-    /// `/fix` without the user asking: the shell could not find the command
-    /// (exit 127). The answer is echoed into the terminal and the pane keeps
-    /// its normal state, so the flow stays like running a command.
-    pub fn fix_for_auto(&self, term: &TerminalBox) {
-        if !agent::configured(&settings().raw_data()) {
-            return;
-        }
-        let context = term.last_command_context();
-        if context.is_empty() {
-            return;
-        }
-        let pane = term.remote_id();
-        let command = crate::headless::text::truncate_chars(context.command.trim(), 80);
-        let header = format!(
-            "\r\n\x1b[90m[agent]\x1b[0m {}: command not found, asking…\r\n",
-            agent::plain_for_terminal(&command)
-        );
-        term.vte().feed(header.as_bytes());
-        let prompt = agent::fix_prompt(&context, None);
-        let shown = format!("/fix  —  {} (not found)", command);
-        self.set_active_pane(Some(pane.clone()));
-        self.ensure_session(term, &prompt, true);
-        self.render_to(&pane, &format!("\n▶ {}\n", shown));
-        self.record_prompt(&shown);
     }
 
     /// Called when a prompt arrives from the control API or the `?` palette.
@@ -562,7 +539,7 @@ impl AgentPanel {
         if let Some(prompt) = prompt.filter(|prompt| !prompt.trim().is_empty()) {
             if let Some(window) = self.window.upgrade() {
                 if let Some(term) = window.current_terminal() {
-                    self.ensure_session(&term, &prompt, false);
+                    self.ensure_session(&term, &prompt);
                 }
             }
         }
@@ -750,7 +727,7 @@ impl AgentPanel {
 
     // ── Sessions ─────────────────────────────────────────────
 
-    fn ensure_session(&self, term: &TerminalBox, first_prompt: &str, mirror: bool) {
+    fn ensure_session(&self, term: &TerminalBox, first_prompt: &str) {
         let pane = term.remote_id();
         let settings = settings().raw_data();
         if !agent::enabled(&settings) {
@@ -764,13 +741,13 @@ impl AgentPanel {
         });
         if let Some((ready, status, alive)) = state {
             if ready && alive {
-                self.send_prompt(&pane, first_prompt, mirror);
+                self.send_prompt(&pane, first_prompt);
                 self.update_header();
                 return;
             }
             if alive && status != "error" && status != "closed" {
                 if let Some(session) = self.sessions.borrow_mut().get_mut(&pane) {
-                    session.queue.push((first_prompt.to_string(), mirror));
+                    session.queue.push(first_prompt.to_string());
                     session.status = "starting";
                 }
                 self.update_header();
@@ -894,8 +871,6 @@ impl AgentPanel {
                     session.models = std::mem::take(&mut old.models);
                     session.model_api = old.model_api;
                     session.model_previous = old.model_previous.take();
-                    session.mirror = agent::Mirror::new();
-                    session.mirror_current = false;
                     session.session_id = resume;
                 }
                 self.sessions.borrow_mut().insert(pane.clone(), session);
@@ -903,7 +878,7 @@ impl AgentPanel {
                 // The session is not ready until the handshake completes; queue
                 // the first prompt so the user does not have to repeat it.
                 if let Some(session) = self.sessions.borrow_mut().get_mut(&pane) {
-                    session.queue.push((first_prompt.to_string(), mirror));
+                    session.queue.push(first_prompt.to_string());
                     session.status = "starting";
                 }
                 self.update_header();
@@ -915,43 +890,31 @@ impl AgentPanel {
                      printed by `oxterm agent --list`.\n",
                     error
                 ));
-                if mirror {
-                    // The hand-off already printed its header in the terminal;
-                    // report the failure there too and give the prompt back.
-                    term.vte().feed(
-                        agent::plain_for_terminal(&format!(
-                            "\r\n[agent error] cannot start the agent: {}\r\n",
-                            error
-                        ))
-                        .as_bytes(),
-                    );
-                    term.redraw_prompt_line();
-                }
                 self.update_header();
             }
         }
     }
 
-    fn send_prompt(&self, pane: &str, text: &str, mirror: bool) {
+    fn send_prompt(&self, pane: &str, text: &str) {
         let mut sessions = self.sessions.borrow_mut();
         let Some(session) = sessions.get_mut(pane) else {
             return;
         };
         if !session.ready || session.busy {
-            session.queue.push((text.to_string(), mirror));
+            session.queue.push(text.to_string());
             return;
         }
         if session.child.try_wait().ok().flatten().is_some() {
             // The process is gone but the reader has not reported it yet. Do
             // not write into a dead pipe: the next prompt restarts and resumes
             // the session.
-            session.queue.push((text.to_string(), mirror));
+            session.queue.push(text.to_string());
             session.ready = false;
             session.status = "closed";
             return;
         }
         let Some(session_id) = session.session_id.clone() else {
-            session.queue.push((text.to_string(), mirror));
+            session.queue.push(text.to_string());
             return;
         };
         let id = session.next_id;
@@ -964,10 +927,6 @@ impl AgentPanel {
         } else {
             session.busy = true;
             session.status = "working";
-            session.mirror_current = mirror;
-            if mirror {
-                session.mirror = agent::Mirror::new();
-            }
         }
         let status = session.status;
         drop(sessions);
@@ -1020,7 +979,7 @@ impl AgentPanel {
                         }
                         state.session_id = Some(session);
                     }
-                    let queued: Vec<(String, bool)> = sessions
+                    let queued: Vec<String> = sessions
                         .get_mut(&pane)
                         .map(|state| std::mem::take(&mut state.queue))
                         .unwrap_or_default();
@@ -1032,8 +991,8 @@ impl AgentPanel {
                     // order, so the model change reaches the agent first.
                     self.apply_preferred_model(&pane);
                     self.publish_status(&pane, "ready");
-                    for (text, mirror) in queued {
-                        self.send_prompt(&pane, &text, mirror);
+                    for text in queued {
+                        self.send_prompt(&pane, &text);
                     }
                     self.update_header();
                 }
@@ -1078,17 +1037,6 @@ impl AgentPanel {
                     self.ask_permission(&pane, &id, &title, &options, &writer);
                 }
                 UiEvent::TurnDone { pane, reason } => {
-                    self.flush_mirror(&pane);
-                    if self.take_mirrored_turn(&pane) {
-                        if let Some(window) = self.window.upgrade() {
-                            if let Some(term) = window.terminal_by_remote_id(&pane) {
-                                term.vte().feed(b"\r\n");
-                                // The prompt was drawn before the answer; ask
-                                // the shell to put it back under the cursor.
-                                term.redraw_prompt_line();
-                            }
-                        }
-                    }
                     if let Some(state) = self.sessions.borrow_mut().get_mut(&pane) {
                         state.busy = false;
                         state.status = "ready";
@@ -1103,8 +1051,8 @@ impl AgentPanel {
                             None
                         }
                     });
-                    if let Some((text, mirror)) = next {
-                        self.send_prompt(&pane, &text, mirror);
+                    if let Some(text) = next {
+                        self.send_prompt(&pane, &text);
                     }
                     if reason != "end_turn" && reason != "cancelled" {
                         self.render_to(&pane, &format!("\n[turn stopped: {}]\n", reason));
@@ -1119,24 +1067,6 @@ impl AgentPanel {
                 }
                 UiEvent::Error { pane, message } => {
                     self.render_to(&pane, &format!("\n[error] {}\n", message));
-                    if self.mirroring(&pane) {
-                        self.flush_mirror(&pane);
-                        if let Some(window) = self.window.upgrade() {
-                            if let Some(term) = window.terminal_by_remote_id(&pane) {
-                                term.vte().feed(
-                                    agent::plain_for_terminal(&format!(
-                                        "\r\n[agent error] {}\r\n",
-                                        message
-                                    ))
-                                    .as_bytes(),
-                                );
-                                term.redraw_prompt_line();
-                            }
-                        }
-                        if let Some(state) = self.sessions.borrow_mut().get_mut(&pane) {
-                            state.mirror_current = false;
-                        }
-                    }
                     if let Some(state) = self.sessions.borrow_mut().get_mut(&pane) {
                         state.status = "error";
                         state.busy = false;
@@ -1146,14 +1076,7 @@ impl AgentPanel {
                     self.update_header();
                 }
                 UiEvent::Closed { pane } => {
-                    if self.take_mirrored_turn(&pane) {
-                        if let Some(window) = self.window.upgrade() {
-                            if let Some(term) = window.terminal_by_remote_id(&pane) {
-                                term.vte().feed(b"\r\n[agent process exited]\r\n");
-                            }
-                        }
-                    }
-                    let mut retry: Vec<(String, bool)> = Vec::new();
+                    let mut retry: Vec<String> = Vec::new();
                     let mut sessions = self.sessions.borrow_mut();
                     if let Some(state) = sessions.get_mut(&pane) {
                         let never_connected = state.agent_name.is_empty();
@@ -1183,7 +1106,7 @@ impl AgentPanel {
                     if let Some(first) = retry.first().cloned() {
                         if let Some(window) = self.window.upgrade() {
                             if let Some(term) = window.terminal_by_remote_id(&pane) {
-                                self.ensure_session(&term, &first.0, first.1);
+                                self.ensure_session(&term, &first);
                                 retry.remove(0);
                                 if !retry.is_empty() {
                                     if let Some(state) = self.sessions.borrow_mut().get_mut(&pane) {
@@ -1204,7 +1127,6 @@ impl AgentPanel {
         match update {
             acp::Update::AgentMessage(text) => {
                 self.render_to(pane, &text);
-                self.mirror_to_terminal(pane, &text);
             }
             acp::Update::Thought(text) => {
                 // Keep reasoning visibly secondary and compact.
@@ -1267,7 +1189,6 @@ impl AgentPanel {
             acp::Update::Notice { severity, title } => {
                 let line = format!("\n[{}] {}\n", severity, title);
                 self.render_to(pane, &line);
-                self.mirror_to_terminal(pane, &line);
             }
             acp::Update::Other => {}
         }
@@ -1361,74 +1282,6 @@ impl AgentPanel {
         self.scroll_to_end();
     }
 
-    /// True while the turn being answered is a command-not-found hand-off.
-    fn mirroring(&self, pane: &str) -> bool {
-        self.sessions
-            .borrow()
-            .get(pane)
-            .is_some_and(|session| session.mirror_current)
-    }
-
-    /// Echo agent text into the pane's terminal. The Markdown is flattened and
-    /// wrapped first, and the text is sanitized: it comes from a model and must
-    /// not be able to drive the terminal parser.
-    fn mirror_to_terminal(&self, pane: &str, text: &str) {
-        if text.is_empty() || !self.mirroring(pane) {
-            return;
-        }
-        let Some(window) = self.window.upgrade() else {
-            return;
-        };
-        let Some(term) = window.terminal_by_remote_id(pane) else {
-            return;
-        };
-        let width = term.vte().column_count().max(20) as usize;
-        let out = {
-            let mut sessions = self.sessions.borrow_mut();
-            let Some(session) = sessions.get_mut(pane) else {
-                return;
-            };
-            session.mirror.push(text, width)
-        };
-        if !out.is_empty() {
-            term.vte().feed(agent::plain_for_terminal(&out).as_bytes());
-        }
-    }
-
-    /// Write the last partial line of a mirrored turn.
-    fn flush_mirror(&self, pane: &str) {
-        if !self.mirroring(pane) {
-            return;
-        }
-        let Some(window) = self.window.upgrade() else {
-            return;
-        };
-        let Some(term) = window.terminal_by_remote_id(pane) else {
-            return;
-        };
-        let width = term.vte().column_count().max(20) as usize;
-        let out = {
-            let mut sessions = self.sessions.borrow_mut();
-            let Some(session) = sessions.get_mut(pane) else {
-                return;
-            };
-            session.mirror.finish(width)
-        };
-        if !out.is_empty() {
-            term.vte().feed(agent::plain_for_terminal(&out).as_bytes());
-        }
-    }
-
-    /// Clear the mirror flag of the turn that just finished. Returns true when
-    /// that turn was a command-not-found hand-off.
-    fn take_mirrored_turn(&self, pane: &str) -> bool {
-        self.sessions
-            .borrow_mut()
-            .get_mut(pane)
-            .map(|session| std::mem::take(&mut session.mirror_current))
-            .unwrap_or(false)
-    }
-
     fn scroll_to_end(&self) {
         let buffer = self.view.buffer().expect("text view has a buffer");
         let mut end = buffer.end_iter();
@@ -1454,8 +1307,7 @@ impl AgentPanel {
     }
 
     /// The user picked a model in the header. It is remembered, so the next
-    /// session starts on it too: that is what makes the choice apply to a
-    /// command-not-found hand-off, whose pane never opens.
+    /// session starts on it too, including the one started by `?prompt`.
     fn select_model(&self, combo: &gtk::ComboBoxText) {
         if self.combo_syncing.get() {
             return;
@@ -1676,8 +1528,6 @@ fn spawn_session(
         history_index: 0,
         usage: String::new(),
         status: "starting",
-        mirror_current: false,
-        mirror: agent::Mirror::new(),
     })
 }
 

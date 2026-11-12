@@ -2969,63 +2969,6 @@ impl TerminalBox {
         foreground != shell_group
     }
 
-    /// Ask the shell to repaint its prompt and the current input line where the
-    /// cursor is now.
-    ///
-    /// An inline agent answer is written after the prompt the shell had already
-    /// drawn. Without this the cursor stays at the end of the answer, the
-    /// prompt sits several lines above it, and the next keystrokes echo in the
-    /// wrong place. Interactive shells repaint on SIGWINCH, which is the only
-    /// portable way to ask for a redraw without submitting a line; the pty
-    /// width is nudged by one column and restored a moment later, so the
-    /// terminal grid never changes and nothing is typed into the shell.
-    pub fn redraw_prompt_line(&self) {
-        if !*self.imp().interactive_shell.borrow() || self.has_active_process() {
-            return;
-        }
-        let fd = *self.imp().pty_fd.borrow();
-        if fd < 0 {
-            return;
-        }
-        unsafe {
-            let mut size: libc::winsize = std::mem::zeroed();
-            if libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) != 0 || size.ws_col == 0 {
-                return;
-            }
-            let original = size;
-            size.ws_col = original.ws_col.saturating_add(1);
-            if libc::ioctl(fd, libc::TIOCSWINSZ, &size) != 0 {
-                return;
-            }
-            // Local tabs run behind the PTY broker, which only re-reads the
-            // GUI size when it is signalled.
-            if let Some(handle) = self.imp().remote_handle.borrow().as_ref() {
-                handle.notify_resize();
-            }
-            let weak = crate::SendWeak::new(self);
-            glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
-                if let Some(term) = weak.upgrade() {
-                    let fd = *term.imp().pty_fd.borrow();
-                    if fd >= 0 {
-                        // Both SIGWINCHs repaint the same line, so the prompt
-                        // is never printed twice. Restore only if nobody
-                        // resized the window in the meantime.
-                        let mut current: libc::winsize = std::mem::zeroed();
-                        let unchanged = libc::ioctl(fd, libc::TIOCGWINSZ, &mut current) == 0
-                            && current.ws_col == original.ws_col.saturating_add(1)
-                            && current.ws_row == original.ws_row;
-                        if unchanged {
-                            libc::ioctl(fd, libc::TIOCSWINSZ, &original);
-                        }
-                    }
-                    if let Some(handle) = term.imp().remote_handle.borrow().as_ref() {
-                        handle.notify_resize();
-                    }
-                }
-            });
-        }
-    }
-
     pub fn reattach_local(&self) {
         if let Some(pty) = self.imp().remote_pty.borrow_mut().take() {
             self.vte().set_pty(Some(&pty));
@@ -3658,6 +3601,32 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         self.vte().feed_child(&bytes);
     }
 
+    /// Take a line that starts with `?` out of the shell and send it to the
+    /// agent. Returns `false` when the line is an ordinary command, or when the
+    /// agent features or the preference are off, so the caller can let it reach
+    /// the shell untouched.
+    pub fn try_agent_prompt(&self, line: &str) -> bool {
+        if !crate::headless::agent::question_prefix_enabled(&settings().raw_data()) {
+            return false;
+        }
+        let Some(prompt) = crate::headless::agent::prompt_from_line(line) else {
+            return false;
+        };
+        let prompt = prompt.to_string();
+        *self.imp().input_shadow.borrow_mut() = String::new();
+        *self.imp().shadow_anchor.borrow_mut() = None;
+        self.feed_command_bytes(b"\x15");
+        if prompt.is_empty() {
+            let _ = self.call_window(|window| window.agent_focus_panel());
+        } else {
+            let term = self.clone();
+            let _ = self.call_window(move |window| window.agent_prompt(&term, &prompt));
+        }
+        // Let the shell draw a fresh prompt under the pane's output.
+        self.vte().feed_child(b"\r");
+        true
+    }
+
     /// Text for `oxterm capture`: visible screen, N lines of history, or all.
     pub fn capture_text(&self, scope: &str, lines: usize) -> String {
         let vte = self.vte();
@@ -3927,22 +3896,6 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                         "cwd": self.get_cwd(),
                     }),
                 );
-                // A command the shell could not find is the one case where the
-                // typed line is not really a shell command: hand it to the
-                // agent. A sentence goes to the pane as a request, where the
-                // agent can use its tools; a likely typo keeps the inline
-                // "explain the failure" answer in this terminal.
-                if crate::headless::agent::auto_fix_wanted(&settings().raw_data(), status) {
-                    let context = self.last_command_context();
-                    if crate::headless::agent::looks_like_prose(&context.command) {
-                        let prompt = crate::headless::agent::request_prompt(&context);
-                        let term = self.clone();
-                        self.call_window(move |win| win.agent_prompt(&term, &prompt));
-                    } else {
-                        let term = self.clone();
-                        self.call_window(move |win| win.agent_auto_fix_signal(&term));
-                    }
-                }
             }
             osc133::Event::PromptStart => {
                 *self.imp().osc133_cmd_start_row.borrow_mut() = -1;
@@ -5496,19 +5449,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
                 } else {
                     shadow.as_str()
                 };
-                if let Some(prompt) = crate::headless::agent::prompt_from_line(typed) {
-                    let prompt = prompt.to_string();
-                    *self.imp().input_shadow.borrow_mut() = String::new();
-                    *self.imp().shadow_anchor.borrow_mut() = None;
-                    self.feed_command_bytes(b"\x15");
-                    if prompt.is_empty() {
-                        let _ = self.call_window(|window| window.agent_focus_panel());
-                    } else {
-                        let term = self.clone();
-                        let _ = self.call_window(move |window| window.agent_prompt(&term, &prompt));
-                    }
-                    // Let the shell draw a fresh prompt under the pane's output.
-                    self.vte().feed_child(b"\r");
+                if self.try_agent_prompt(typed) {
                     return glib::Propagation::Stop;
                 }
             }
@@ -6081,16 +6022,20 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         let mut shadow = entry.text().trim().to_string();
         // `?prompt` asks the agent with the context of this pane, mirroring the
         // `/command` prefix for local actions.
-        if let Some(prompt) = shadow.strip_prefix('?') {
-            let prompt = prompt.trim().to_string();
-            self.hide_command_bar();
-            let term = self.clone();
-            if prompt.is_empty() {
-                self.call_window(|win| win.agent_focus_panel());
-            } else {
-                self.call_window(move |win| win.agent_prompt(&term, &prompt));
+        if shadow.starts_with('?')
+            && crate::headless::agent::question_prefix_enabled(&settings().raw_data())
+        {
+            if let Some(prompt) = shadow.strip_prefix('?') {
+                let prompt = prompt.trim().to_string();
+                self.hide_command_bar();
+                let term = self.clone();
+                if prompt.is_empty() {
+                    self.call_window(|win| win.agent_focus_panel());
+                } else {
+                    self.call_window(move |win| win.agent_prompt(&term, &prompt));
+                }
+                return;
             }
-            return;
         }
         let selected = {
             let list = self.imp().cmd_list.borrow().clone();

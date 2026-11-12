@@ -1031,10 +1031,10 @@ pub const SETTINGS: &[Setting] = &[
         "Hand the agent Oxterm's own MCP server, so it can drive tabs after your approval.",
     ),
     setting(
-        "agent_auto_fix",
+        "agent_question_prefix",
         Kind::Bool,
         Default::Bool(true),
-        "When a command is not found (exit 127), ask the agent automatically and print its answer in the terminal.",
+        "Send a line that starts with \"?\" to the agent instead of running it as a shell command (when agent_enabled is on).",
     ),
     Setting {
         key: "agent_policy_read",

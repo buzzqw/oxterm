@@ -26,7 +26,7 @@ const SCENARIOS: &[&str] = &[
     "split-zoom",
     "theme-switch",
     "tab-failure",
-    "agent-auto-fix",
+    "agent-question-prefix",
     "agent-session",
     "preferences",
 ];
@@ -199,7 +199,7 @@ for line in sys.stdin:
         sys.exit(0)
 "#;
 
-/// `agent-auto-fix` needs a real shell and a configured agent, not `sleep`.
+/// `agent-question-prefix` needs a real shell and a configured agent, not `sleep`.
 fn configure_agent(home: &Path) -> Result<(), String> {
     configure_agent_script(home, FAKE_AGENT)
 }
@@ -228,7 +228,7 @@ fn configure_agent_script(home: &Path, script: &str) -> Result<(), String> {
 
 fn run_scenario(scenario: &str) -> Result<(), String> {
     let home = TempHome::new(scenario);
-    let agent_scenario = scenario == "agent-auto-fix" || scenario == "agent-session";
+    let agent_scenario = scenario == "agent-question-prefix" || scenario == "agent-session";
     if agent_scenario {
         if scenario == "agent-session" {
             configure_session_agent(home.path())?;
