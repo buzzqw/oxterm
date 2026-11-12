@@ -1783,6 +1783,35 @@ for line in sys.stdin:
         path
     }
 
+    /// Spawning a script that was just written can race with the kernel and
+    /// fail with ETXTBSY ("Text file busy"). Retry briefly instead of turning a
+    /// test-only timing artifact into a failure.
+    fn spawn_retrying(
+        pane: &str,
+        argv: &[String],
+        events: Sender<UiEvent>,
+        resume: Option<String>,
+    ) -> Session {
+        let mut attempt = 0;
+        loop {
+            match spawn_session(
+                pane.to_string(),
+                argv,
+                "/tmp",
+                Vec::new(),
+                events.clone(),
+                resume.clone(),
+            ) {
+                Ok(session) => return session,
+                Err(error) if error.contains("Text file busy") && attempt < 40 => {
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(error) => panic!("spawn fake agent: {error}"),
+            }
+        }
+    }
+
     #[test]
     fn a_session_resumes_with_load_when_the_agent_supports_it() {
         let log = std::env::temp_dir().join(format!(
@@ -1847,15 +1876,8 @@ for line in sys.stdin:
         }
 
         let (tx, rx) = mpsc::channel();
-        let session = spawn_session(
-            "pane-load".to_string(),
-            &[script.to_string_lossy().to_string()],
-            "/tmp",
-            Vec::new(),
-            tx,
-            Some("s-old".to_string()),
-        )
-        .expect("spawn fake agent");
+        let argv = vec![script.to_string_lossy().to_string()];
+        let session = spawn_retrying("pane-load", &argv, tx, Some("s-old".to_string()));
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut ready = false;
         while Instant::now() < deadline && !ready {
@@ -1888,15 +1910,8 @@ for line in sys.stdin:
     fn a_session_handshakes_streams_and_finishes_a_turn() {
         let script = fake_agent();
         let (tx, rx) = mpsc::channel();
-        let session = spawn_session(
-            "pane-1".to_string(),
-            &[script.to_string_lossy().to_string()],
-            "/tmp",
-            Vec::new(),
-            tx,
-            None,
-        )
-        .expect("spawn fake agent");
+        let argv = vec![script.to_string_lossy().to_string()];
+        let session = spawn_retrying("pane-1", &argv, tx, None);
 
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut ready = false;
