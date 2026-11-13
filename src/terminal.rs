@@ -1242,6 +1242,9 @@ mod imp {
         pub vi_pending: RefCell<String>,
         pub vi_count: RefCell<String>,
         pub vi_user_marks: RefCell<Vec<i64>>,
+        /// VI copy mode draws every visible row on every frame. Cache the line
+        /// text and its character length until the terminal contents change.
+        pub vi_line_cache: RefCell<std::collections::HashMap<i64, (String, i64)>>,
         pub vi_last_key: RefCell<Option<gdk::keys::Key>>,
         pub vi_last_key_time: RefCell<i64>,
 
@@ -1682,6 +1685,13 @@ impl TerminalBox {
             let weak = crate::SendWeak::new(self);
             let pending = Rc::new(Cell::new(false));
             vte.connect_contents_changed(move |_| {
+                // Any output can shift or rewrite rows, so cached VI copy
+                // lines are no longer trustworthy.
+                if let Some(term) = weak.upgrade() {
+                    if *term.imp().vi_copy_active.borrow() {
+                        term.clear_vi_line_cache();
+                    }
+                }
                 // No trigger configured and no output subscriber: scheduling a
                 // timeout for every chunk would only add main-loop churn.
                 if active_triggers().is_empty() && !crate::headless::events::bus().wants_output() {

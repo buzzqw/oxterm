@@ -100,7 +100,11 @@ fn worker(mut connection: Connection, jobs: mpsc::Receiver<Job>, results: mpsc::
     let protocol = connection.protocol;
     let simple = |connection: &Connection, operation: Operation| -> Result<(), String> {
         let text = remote_files::script(protocol, &operation)?;
-        remote_files::run(connection, &text).map(|_| ())
+        let result = remote_files::run(connection, &text).map(|_| ());
+        if result.is_ok() {
+            remote_files::invalidate(connection);
+        }
+        result
     };
     for job in jobs {
         let job = match job {

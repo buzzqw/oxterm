@@ -422,7 +422,35 @@ impl HistoryManager {
                 Some(&error.to_string()),
             );
         }
+        Self::initialize_command_stats(&conn)?;
         Ok(conn)
+    }
+
+    /// A tiny `command -> newest row` table so the default history view does not
+    /// aggregate a million rows on every open. New databases create it empty and
+    /// the first insert fills it; existing databases are populated once here.
+    fn initialize_command_stats(conn: &Connection) -> rusqlite::Result<()> {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'command_stats')",
+            [],
+            |row| row.get(0),
+        )?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS command_stats (
+                command TEXT PRIMARY KEY,
+                last_id INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_command_stats_last_id
+                ON command_stats(last_id DESC);",
+        )?;
+        if !exists {
+            conn.execute(
+                "INSERT INTO command_stats(command, last_id)
+                 SELECT command, MAX(id) FROM commands GROUP BY command",
+                [],
+            )?;
+        }
+        Ok(())
     }
 
     fn initialize_fts(conn: &Connection) -> rusqlite::Result<()> {
@@ -535,6 +563,22 @@ impl HistoryManager {
                 0
             }
         };
+        if id != 0 {
+            if let Err(error) = conn
+                .prepare_cached(
+                    "INSERT INTO command_stats(command, last_id) VALUES (?1, ?2)
+                     ON CONFLICT(command) DO UPDATE SET last_id = excluded.last_id",
+                )
+                .and_then(|mut stmt| stmt.execute(params![command, id]))
+            {
+                crate::logging::Logger::log(
+                    "WARNING",
+                    "history",
+                    "could not update command stats",
+                    Some(&error.to_string()),
+                );
+            }
+        }
         drop(conn);
         if id != 0 {
             self.bump_inserts(1);
@@ -563,10 +607,21 @@ impl HistoryManager {
                 crate::logging::log_warning("could not prepare history import");
                 return 0;
             };
+            let Ok(mut stats) = tx.prepare(
+                "INSERT INTO command_stats(command, last_id) VALUES (?1, ?2)
+                 ON CONFLICT(command) DO UPDATE SET last_id = excluded.last_id",
+            ) else {
+                crate::logging::log_warning("could not prepare command stats import");
+                return 0;
+            };
             let ts = Self::now_ts();
             let mut failed = false;
             for cmd in commands {
                 if stmt.execute(params![cmd, cwd, exit_code, ts]).is_ok() {
+                    let id = tx.last_insert_rowid();
+                    if stats.execute(params![cmd, id]).is_err() {
+                        failed = true;
+                    }
                     n += 1;
                 } else {
                     failed = true;
@@ -632,9 +687,10 @@ impl HistoryManager {
             let result = if !cwd.is_empty() {
                 (|| -> rusqlite::Result<Vec<Vec<Value>>> {
                     let mut stmt = conn.prepare(
-                        "SELECT MAX(id) AS id, command, cwd, timestamp, exit_code, duration_ms, git_branch FROM commands \
-                         WHERE command NOT LIKE '/%' ESCAPE '\\' GROUP BY command \
-                         ORDER BY CASE WHEN cwd = ?1 THEN 0 ELSE 1 END, id DESC LIMIT ?2",
+                        "SELECT c.id, c.command, c.cwd, c.timestamp, c.exit_code, c.duration_ms, c.git_branch \
+                         FROM command_stats s JOIN commands c ON c.id = s.last_id \
+                         WHERE c.command NOT LIKE '/%' ESCAPE '\\' \
+                         ORDER BY CASE WHEN c.cwd = ?1 THEN 0 ELSE 1 END, s.last_id DESC LIMIT ?2",
                     )?;
                     let iter = stmt.query_map(params![cwd, limit], Self::map_row_7)?;
                     iter.collect()
@@ -642,9 +698,10 @@ impl HistoryManager {
             } else {
                 (|| -> rusqlite::Result<Vec<Vec<Value>>> {
                     let mut stmt = conn.prepare(
-                        "SELECT MAX(id) AS id, command, cwd, timestamp, exit_code, duration_ms, git_branch FROM commands \
-                         WHERE command NOT LIKE '/%' ESCAPE '\\' GROUP BY command \
-                         ORDER BY id DESC LIMIT ?1",
+                        "SELECT c.id, c.command, c.cwd, c.timestamp, c.exit_code, c.duration_ms, c.git_branch \
+                         FROM command_stats s JOIN commands c ON c.id = s.last_id \
+                         WHERE c.command NOT LIKE '/%' ESCAPE '\\' \
+                         ORDER BY s.last_id DESC LIMIT ?1",
                     )?;
                     let iter = stmt.query_map(params![limit], Self::map_row_7)?;
                     iter.collect()
@@ -927,6 +984,18 @@ impl HistoryManager {
                     Some(&error.to_string()),
                 );
             }
+            // Every command whose newest row was trimmed has no row left.
+            if let Err(error) = conn.execute(
+                "DELETE FROM command_stats WHERE last_id <= ?1",
+                params![cutoff],
+            ) {
+                crate::logging::Logger::log(
+                    "WARNING",
+                    "history",
+                    "could not trim command stats",
+                    Some(&error.to_string()),
+                );
+            }
         }
     }
 
@@ -949,6 +1018,7 @@ impl HistoryManager {
         if has_fts {
             sql.push_str(" INSERT INTO commands_fts(commands_fts) VALUES ('delete-all');");
         }
+        sql.push_str(" DELETE FROM command_stats;");
         sql.push_str(" PRAGMA secure_delete = OFF; PRAGMA wal_checkpoint(TRUNCATE);");
         if let Err(error) = conn.execute_batch(&sql) {
             crate::logging::Logger::log(
@@ -981,6 +1051,13 @@ impl HistoryManager {
             Self::remove_duplicates(&tx).map_err(|error| error.to_string())?;
             tx.commit().map_err(|error| error.to_string())?;
         }
+        // Duplicate removal can drop the row a command's stats point at.
+        conn.execute_batch(
+            "DELETE FROM command_stats;
+             INSERT INTO command_stats(command, last_id)
+                 SELECT command, MAX(id) FROM commands GROUP BY command;",
+        )
+        .map_err(|error| error.to_string())?;
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
             .map_err(|error| error.to_string())?;
         conn.execute_batch("ANALYZE; VACUUM;")
@@ -1112,6 +1189,7 @@ mod tests {
         )
         .unwrap();
         HistoryManager::initialize_fts(&conn).unwrap();
+        HistoryManager::initialize_command_stats(&conn).unwrap();
         HistoryManager {
             conn: Mutex::new(conn),
             inserts_since_trim: Mutex::new(0),
@@ -1139,6 +1217,44 @@ mod tests {
             .collect();
 
         assert_eq!(commands, ["ssh andres@example.test"]);
+    }
+
+    #[test]
+    fn default_view_shows_the_latest_row_per_command() {
+        let history = test_history();
+        history.add("git status", "/workspace/a", 0);
+        history.add("cargo build", "/workspace", 0);
+        history.add("git status", "/workspace/b", 1);
+
+        let rows = history.search("", 50, "");
+        let commands: Vec<_> = rows
+            .iter()
+            .map(|row| row[1].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(commands, ["git status", "cargo build"]);
+        assert_eq!(rows[0][2].as_str(), Some("/workspace/b"));
+        assert_eq!(rows[0][4].as_i64(), Some(1));
+
+        // A command from the current directory sorts before the others.
+        let preferred = history.search("", 50, "/workspace");
+        assert_eq!(preferred[0][1].as_str(), Some("cargo build"));
+    }
+
+    #[test]
+    fn command_stats_are_rebuilt_for_an_existing_history() {
+        let history = test_history();
+        history.add("git status", "/workspace", 0);
+        history.add("cargo build", "/workspace", 0);
+        {
+            let conn = history.conn.lock().unwrap();
+            conn.execute_batch("DROP TABLE command_stats;").unwrap();
+            HistoryManager::initialize_command_stats(&conn).unwrap();
+            let rows: i64 = conn
+                .query_row("SELECT COUNT(*) FROM command_stats", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(rows, 2);
+        }
+        assert_eq!(history.search("", 10, "").len(), 2);
     }
 
     #[test]

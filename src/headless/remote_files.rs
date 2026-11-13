@@ -4,10 +4,11 @@
 //! operation. A password never travels on a command line, and `sftp` reuses an
 //! open shared connection, so browsing a host with a tab open needs no new login.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::connections::{Auth, Connection, Protocol, PROBE_TIMEOUT};
@@ -47,7 +48,9 @@ fn parse_line(line: &str) -> Option<RemoteEntry> {
         words.push((start, word));
         position = start + word.len();
     }
-    let month = words.iter().position(|(_, word)| MONTHS.contains(word))?;
+    let month = words
+        .iter()
+        .position(|(_, word)| MONTHS.iter().any(|name| word.eq_ignore_ascii_case(name)))?;
     let size = words.get(month.checked_sub(1)?)?.1.parse().ok()?;
     let (name_start, _) = *words.get(month + 3)?;
     let modified = format!(
@@ -234,9 +237,62 @@ fn effective_config_cached(connection: &Connection) -> Option<String> {
     value
 }
 
+/// How long a directory listing may be reused. Short enough that changes made
+/// outside Oxterm show up quickly, long enough that walking back and forth in
+/// the browser does not spawn a new `sftp`/`lftp` for every step.
+const LIST_CACHE_FRESH_FOR: Duration = Duration::from_secs(8);
+const LIST_CACHE_MAX: usize = 128;
+
+type ListCache = Mutex<HashMap<String, (Instant, Vec<RemoteEntry>)>>;
+
+fn list_cache() -> &'static ListCache {
+    static CACHE: OnceLock<ListCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cache_key(connection: &Connection, path: &str) -> String {
+    format!(
+        "{:?}|{}|{}|{}|{}|{}",
+        connection.protocol,
+        connection.host,
+        connection.port.unwrap_or(0),
+        connection.user,
+        connection.id,
+        path
+    )
+}
+
+/// Drop cached listings after a change. Called by every mutating operation.
+pub fn invalidate(_connection: &Connection) {
+    if let Ok(mut cache) = list_cache().lock() {
+        cache.clear();
+    }
+}
+
+fn cached_listing(connection: &Connection, path: &str) -> Option<Vec<RemoteEntry>> {
+    let cache = list_cache().lock().ok()?;
+    let (at, entries) = cache.get(&cache_key(connection, path))?;
+    (at.elapsed() < LIST_CACHE_FRESH_FOR).then(|| entries.clone())
+}
+
+fn store_listing(connection: &Connection, path: &str, entries: &[RemoteEntry]) {
+    if let Ok(mut cache) = list_cache().lock() {
+        if cache.len() >= LIST_CACHE_MAX {
+            cache.clear();
+        }
+        cache.insert(
+            cache_key(connection, path),
+            (Instant::now(), entries.to_vec()),
+        );
+    }
+}
+
 fn sftp_command(connection: &Connection) -> Command {
     let effective = effective_config_cached(connection);
     let mut command = Command::new("sftp");
+    // `ls -l` formats the month with the user's locale; the listing parser
+    // expects the C-locale abbreviations.
+    command.env("LC_TIME", "C");
     // `-b -` stops at the first error. ssh takes the first value of an option, so
     // this keeps a stored password possible where `-b` would imply BatchMode.
     command.args(["-q", "-b", "-", "-o", "BatchMode=no"]);
@@ -258,6 +314,9 @@ fn sftp_command(connection: &Connection) -> Command {
 
 fn lftp_command() -> Command {
     let mut command = Command::new("lftp");
+    // `cls` formats the month with the user's locale; keep the parser input
+    // deterministic without changing the filename charset handling.
+    command.env("LC_TIME", "C");
     command.arg("-f").arg("/dev/stdin");
     command
 }
@@ -362,15 +421,45 @@ pub fn home_directory(connection: &Connection) -> Result<String, String> {
 }
 
 pub fn list(connection: &Connection, path: &str) -> Result<Vec<RemoteEntry>, String> {
+    if let Some(entries) = cached_listing(connection, path) {
+        return Ok(entries);
+    }
+    list_uncached(connection, path)
+}
+
+/// List without consulting or filling the cache. Used while planning a
+/// recursive delete, where a stale entry could leave a folder non-empty.
+fn list_uncached(connection: &Connection, path: &str) -> Result<Vec<RemoteEntry>, String> {
     let output = run(
         connection,
         &script(connection.protocol, &Operation::List(path.to_string()))?,
     )?;
-    Ok(parse_listing(&output))
+    let entries = parse_listing(&output);
+    store_listing(connection, path, &entries);
+    Ok(entries)
 }
 
-/// Delete a file or a folder with all it holds. `sftp` removes only empty folders,
-/// so its tree is walked here, one level at a time.
+fn collect_tree(
+    connection: &Connection,
+    path: &str,
+    files: &mut Vec<String>,
+    dirs: &mut Vec<String>,
+) -> Result<(), String> {
+    for entry in list_uncached(connection, path)? {
+        let child = join(path, &entry.name);
+        if entry.is_dir {
+            dirs.push(child.clone());
+            collect_tree(connection, &child, files, dirs)?;
+        } else {
+            files.push(child);
+        }
+    }
+    Ok(())
+}
+
+/// Delete a file or a folder with all it holds. `sftp` removes only empty
+/// folders, so its tree is walked first and every removal is sent in one
+/// batch: one process instead of one per file.
 pub fn delete(connection: &Connection, path: &str, is_dir: bool) -> Result<(), String> {
     let protocol = connection.protocol;
     if !is_dir {
@@ -378,18 +467,39 @@ pub fn delete(connection: &Connection, path: &str, is_dir: bool) -> Result<(), S
             connection,
             &script(protocol, &Operation::DeleteFile(path.to_string()))?,
         )?;
+        invalidate(connection);
         return Ok(());
     }
-    if protocol != Protocol::Ftp {
-        for entry in list(connection, path)? {
-            // A link to a folder is removed as a link: its target is not ours.
-            delete(connection, &join(path, &entry.name), entry.is_dir)?;
-        }
+    if protocol == Protocol::Ftp {
+        // `lftp` removes the whole tree itself.
+        run(
+            connection,
+            &script(protocol, &Operation::DeleteDir(path.to_string()))?,
+        )?;
+        invalidate(connection);
+        return Ok(());
     }
-    run(
-        connection,
-        &script(protocol, &Operation::DeleteDir(path.to_string()))?,
-    )?;
+    let mut files = Vec::new();
+    let mut dirs = Vec::new();
+    collect_tree(connection, path, &mut files, &mut dirs)?;
+    let mut batch = String::new();
+    for file in &files {
+        batch.push_str("rm ");
+        batch.push_str(&quote_path(file)?);
+        batch.push('\n');
+    }
+    // Children were pushed before their parent; removing in reverse leaves
+    // every folder empty by the time its own `rmdir` runs.
+    for dir in dirs.iter().rev() {
+        batch.push_str("rmdir ");
+        batch.push_str(&quote_path(dir)?);
+        batch.push('\n');
+    }
+    batch.push_str("rmdir ");
+    batch.push_str(&quote_path(path)?);
+    batch.push('\n');
+    run(connection, &batch)?;
+    invalidate(connection);
     Ok(())
 }
 
@@ -422,6 +532,7 @@ pub fn transfer(
         )?
     };
     run(connection, &text)?;
+    invalidate(connection);
     Ok(())
 }
 
@@ -467,6 +578,7 @@ pub fn sync_directory(
 ) -> Result<(), String> {
     let text = sync_script(connection.protocol, upload, from, to)?;
     run(connection, &text)?;
+    invalidate(connection);
     Ok(())
 }
 
@@ -614,5 +726,21 @@ drwxr-xr-x 2 ftp ftp 0 Nov 01 15:16 folder/\n";
         assert_eq!(human_size(12), "12 B");
         assert_eq!(human_size(2048), "2.0 KB");
         assert_eq!(human_size(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    #[test]
+    fn parses_listings_from_any_month_locale() {
+        let upper = "-rw-r--r-- 1 user group 42 Nov 13 08:44 there.txt";
+        let lower = "-rw-r--r-- 1 user group 42 nov 13 08:44 there.txt";
+        for line in [upper, lower] {
+            let entry = parse_line(line).expect(line);
+            assert_eq!(entry.name, "there.txt");
+            assert_eq!(entry.size, 42);
+            assert!(entry.modified.eq_ignore_ascii_case("nov 13 08:44"));
+        }
+        assert_eq!(
+            parse_listing("-rw-r--r-- 1 u g 1 nov 13 08:44 there.txt").len(),
+            1
+        );
     }
 }

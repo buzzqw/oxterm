@@ -38,10 +38,11 @@
 
 ---
 
-> **Stato al 13/11/2026**: i quick win e il secondo batch sono stati applicati
-> (commit `efd5447` e successivo). Il documento resta la fotografia originale;
-> vedi la [sezione 8](#8-stato-di-applicazione) per cosa è stato chiuso e cosa
-> resta aperto.
+> **Stato al 13/11/2026**: i quick win, il secondo batch e i tre interventi a
+> maggior impatto sono stati applicati (commit `efd5447`, `aac806c` e
+> successivo). Il documento resta la fotografia originale; vedi la
+> [sezione 8](#8-stato-di-applicazione) per cosa è stato chiuso e cosa resta
+> aperto.
 
 ## 1. Panoramica Esecutiva
 
@@ -596,6 +597,10 @@ receiver.attach(None, move |event| {
 | `/proc` e `statvfs` ogni 3 s | `src/system_stats.rs` | Worker thread + snapshot `RwLock`; la UI legge solo memoria. |
 | `check_triggers` | `src/terminal.rs` | Gate su `contents_changed`, iterazione senza `Vec`, cap del burst a 2000 righe e marker aggiornato anche quando è inattivo. |
 | Listing locale del file browser | `src/file_browser.rs` | `read_dir`/`stat` su worker con scarto dei risultati obsoleti. |
+| Listing remoti ripetuti | `src/headless/remote_files.rs` | Cache 8 s con invalidazione sulle modifiche; cancellazione ricorsiva SFTP in un solo batch; parser dei mesi case-insensitive. |
+| Bug locale nei listing FTP | `src/headless/remote_files.rs` | `lftp` stampava `nov` con locale italiana e il parser conosceva solo `Nov`: ora `LC_TIME=C` e confronto senza distinzione di maiuscole. |
+| Testo in `vi_copy` | `src/terminal/vi_copy.rs` | Cache per riga di testo e lunghezza, invalidata su `contents_changed`, con limite a 4096 righe. |
+| Lista vuota della history | `src/history.rs` | Tabella `command_stats` (`command -> last_id`) mantenuta dagli insert e popolata una volta sulle history esistenti: da ~480 ms a ~0,1 ms su 1M di righe sintetiche. |
 | Warning Clippy | crate intero | `cargo clippy --all-targets` pulito. |
 
 ### Ancora aperto
@@ -604,9 +609,8 @@ receiver.attach(None, move |event| {
 |---|---|
 | Permission title spoofing ACP | Il titolo è fornito dall'agente: il protocollo non permette una verifica indipendente. Si può solo mostrare più contesto, non eliminare il rischio. |
 | `Zeroizing` per password/TOTP | Richiede una dipendenza nuova e tocca il flusso keyring/askpass; impatto pratico limitato a core dump e swap. |
-| `UNION` con `REPLACE(...) LIKE` in `search_fts` | È una feature voluta (`gitstatus` trova `git status`). Servirebbe una colonna compatta indicizzata o una decisione di prodotto. |
-| Cache del testo in `vi_copy` | Refactor del rendering per-frame, da fare con test visivi dedicati. |
-| Sessioni SFTP/FTP persistenti e cache directory | Refactor medio del sottosistema remoto. |
+| `UNION` con `REPLACE(...) LIKE` in `search_fts` | Ricerca compatta ancora da ottimizzare: servirebbe una colonna compatta indicizzata o una decisione di prodotto. La lista vuota è stata risolta. |
+| Sessioni SFTP/FTP persistenti | Cache e delete batch sono fatti; tenere vivo il processo `lftp`/`sftp` tra le operazioni resta un refactor del protocollo del worker. |
 | Migrazione da `dialog.run()` | 40 chiamate: intervento ampio e con rischio di regressioni UX. |
 | Decomposizione dei monoliti | Refactor strutturale, non un quick win. |
 | Generatori docgen fuori dal binario | Guadagno di dimensione marginale; feature-gating da valutare. |

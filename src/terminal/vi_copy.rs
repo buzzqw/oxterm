@@ -22,6 +22,7 @@ impl TerminalBox {
         if *self.imp().vi_copy_active.borrow() {
             return;
         }
+        self.clear_vi_line_cache();
         *self.imp().vi_copy_active.borrow_mut() = true;
         self.imp().vi_visual_mode.set(ViVisualMode::None);
         self.imp().vi_pending.borrow_mut().clear();
@@ -48,6 +49,7 @@ impl TerminalBox {
 
     pub(super) fn deactivate_vi_copy(&self) {
         *self.imp().vi_copy_active.borrow_mut() = false;
+        self.clear_vi_line_cache();
         self.imp().vi_visual_mode.set(ViVisualMode::None);
         self.imp().vi_pending.borrow_mut().clear();
         self.imp().vi_count.borrow_mut().clear();
@@ -63,14 +65,50 @@ impl TerminalBox {
     }
 
     fn vi_line(&self, row: i64) -> String {
+        let cached = self
+            .imp()
+            .vi_line_cache
+            .borrow()
+            .get(&row)
+            .map(|(line, _)| line.clone());
+        if let Some(line) = cached {
+            return line;
+        }
+        self.vi_load_line(row).0
+    }
+
+    /// Read one row from VTE and remember it. Repeated FFI calls per Cairo
+    /// frame are what made visual mode lag on large buffers.
+    fn vi_load_line(&self, row: i64) -> (String, i64) {
         // `end_col = -1` means "to the start of the next row", i.e. this whole
         // line: `end_col = 0` would describe an empty range.
         let text = text::range(&self.vte(), row, 0, row, -1).unwrap_or_default();
-        text.trim_end_matches(['\n', '\r']).to_string()
+        let line = text.trim_end_matches(['\n', '\r']).to_string();
+        let len = line.chars().count().max(1) as i64;
+        let mut cache = self.imp().vi_line_cache.borrow_mut();
+        // A long session can visit thousands of rows; keep the map bounded.
+        if cache.len() >= 4096 {
+            cache.clear();
+        }
+        cache.insert(row, (line.clone(), len));
+        (line, len)
     }
 
     fn vi_line_len(&self, row: i64) -> i64 {
-        self.vi_line(row).chars().count().max(1) as i64
+        let cached = self
+            .imp()
+            .vi_line_cache
+            .borrow()
+            .get(&row)
+            .map(|(_, len)| *len);
+        if let Some(len) = cached {
+            return len;
+        }
+        self.vi_load_line(row).1
+    }
+
+    pub(super) fn clear_vi_line_cache(&self) {
+        self.imp().vi_line_cache.borrow_mut().clear();
     }
 
     fn vi_clamp_col(&self, row: i64, col: i64) -> i64 {
