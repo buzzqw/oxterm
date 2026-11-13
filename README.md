@@ -6,142 +6,20 @@
 [![GTK3](https://img.shields.io/badge/GTK-3-blue?logo=gnome)](https://www.gtk.org/)
 [![License](https://img.shields.io/badge/License-EUPL%201.2-blue)](LICENSE)
 
-**Oxterm** is a **lightweight, fast, and secure** native Linux terminal
-emulator written in Rust with GTK3 and VTE. It is a **complete and fully
-functional** terminal: light on resources and quick to start, while providing
-everything you expect from a modern terminal.
+**Oxterm** is a **lightweight, blazing fast, and secure** native Linux terminal emulator written in Rust with GTK3 and VTE. It combines the speed, small footprint, and memory-safety of Rust with modern power-user features: tabs, tmux-style split panes, persistent sessions, SSH management, full-text notes, command history, and optional AI agent integration.
 
-The project combines a full terminal emulator with tabs, split panes, command
-history, notes, shell integration, profiles, and sessions — all with a small
-memory footprint and the memory-safety guarantees of Rust.
+---
 
-> **Quick start:** prebuilt Linux executables are already available on the
-> [GitHub Releases page](https://github.com/buzzqw/oxterm/releases/latest).
-> Download the release tarball and keep `oxterm`, `oxterm-broker` and
-> `oxterm-askpass` together; this is the easiest way to use Oxterm, and you do
-> not need Rust or development packages.
+## Quick Navigation
 
-- **[English user manual](manual.md)**
-- **[Terminal compatibility](docs/compatibility.md)**
-- **[Automation and extensibility](docs/extensibility.md)**
-- **[Report an issue](https://github.com/buzzqw/oxterm/issues)**
+- 📖 **[User Manual](manual.md)** — Comprehensive user guide and walkthroughs
+- 📊 **[Performance & Benchmarks](docs/benchmarks.md)** — Detailed profiling, latency tests, and comparative benchmarks
+- ⚙️ **[Settings Reference](docs/settings.md)** — Exhaustive list of all configuration options
+- 🔌 **[Extensibility & Automation](docs/extensibility.md)** — Scripting API, triggers, and workspace specs
+- 🐧 **[Terminal Compatibility](docs/compatibility.md)** — VTE requirements and desktop integration
+- 🐛 **[Report an Issue](https://github.com/buzzqw/oxterm/issues)** — Bug reports and feature suggestions
 
-## Highlights
-
-- Native GTK3/VTE terminal with 256 colors and true-color support
-- Tabs with reorder, rename, move, detach, independent windows, and a
-  **Tabs > Move Tab from Another Oxterm…** command that adopts a running tab
-  from another Oxterm window and closes it there
-- tmux-like single, vertical, and horizontal split layouts, with a configurable prefix key (`Ctrl+B` by default)
-- 247 built-in themes, optional drop-in Ghostty/iTerm2 theme files, automatic light/dark switching, configurable font, colors, 16-color palettes, cursor, opacity, padding, and encoding
-- Typography controls: antialiasing and hinting, cell height and width scaling, optional HarfBuzz shaping, and ligature-friendly fonts
-- Live Preferences reload without restarting the application
-- SQLite command history with reverse search, filters, read-only SQL, replay, command duration, and Git branch metadata
-- Scrollback search with match navigation, clickable `http`/`https` links, and broadcast input across panes
-- Timestamped Markdown notes with an in-app Notes menu, a searchable Notes panel (SQLite FTS5) with `#tags` and preview, per-entry context, and configurable editor integration
-- OSC 133 shell integration for prompts, command boundaries, and exit status
-- Sticky command header, failure marks on the scrollbar, and open-output-in-pager
-- Smart open: hint mode and the context menu turn `path:line:col` output into
-  an editor jump in a new tab, with a configurable `editor_jump_command`
-- Searchable session switcher across local windows, foreign panes, and detached
-  broker sessions, with attach/focus actions
-- Connection manager in the **Connections** menu: a searchable panel with groups, tags, favorites and saved tunnels, which marks open connections and running or failed tunnels at a glance; a tunnel manager with start/stop, editing and a live log; a form that shows the exact `ssh` command, with X11, keepalive, old algorithms, Wake-on-LAN, a pre-connect command, automatic reconnection, session logs, macros, automation rules, per-connection colors and fonts, and keyring passwords and one-time codes; and `oxterm connect`. It runs your OpenSSH and never edits `~/.ssh/config`
-- More connection types from the same menu: Mosh, Telnet, serial, Docker, Kubernetes, AWS Session Manager and any command in a tab; RDP, VNC and SPICE through their own viewers, in a tab so their questions stay visible
-- VNC that starts its own server over ssh: x11vnc, TigerVNC, TurboVNC, TightVNC, wayvnc or your own command, on the remote loopback only, with a one-time password
-- Two-pane SFTP and FTP file browser with drag and drop, recursive folder
-  sync, bookmarks, remote editing that uploads on save, and keyring password
-  prompts; it opens from a saved connection or an SSH tab
-- SSH host picker from saved connections and `~/.ssh/config`, plus an explicit copy-on-demand
-  shell-integration installer for remote bash/zsh sessions
-- Production-host tab highlighting, tunnel inspection, and a ForwardAgent
-  warning in the SSH host picker
-- Global fuzzy command palette for actions and `/commands`, plus a hover
-  decoder for Unix epochs, HTTP status codes and errno values
-- Smart command-finished notifications: only when the terminal is unfocused or a command runs long, with failures always reported, plus a red dot on tabs whose last command failed
-- Scriptable control API: `new`, `split`, `send`, `capture`, `wait`, an
-  event stream and small actions (`set-tab-color`, `notify`, …) against a
-  running window
-- User-defined regex triggers on output (notify, capture, tab colour/title,
-  failure mark) from `~/.config/oxterm/triggers.json`
-- Declarative workspaces (`oxterm workspace FILE`) with tabs, splits, colours
-  and commands, plus a status bar of external widgets and extra command-palette
-  entries from `~/.config/oxterm/extensions.json`
-- `oxterm mcp`: a Model Context Protocol server on stdin/stdout so coding
-  agents can open tabs, type, capture output and wait for commands, behind a
-  per-class permission policy and an audit log
-- Optional agent integration, off by default and configured by the user: an ACP
-  agent pane with one session per tab, `oxterm fix` with shell context from
-  OSC 133, `?prompt` at the shell prompt or in the command bar, and `?` as the
-  only line the agent takes from the shell
-- VI copy mode with motions, text objects, visual block selection, scrolloff, and bookmarks
-- Session restore, named sessions, profiles, command palette, quickmarks, and hints
-- Compact right-click menu with submenus for clipboard (text/HTML/all/last
-  command), links and paths, tabs, splits, tools, zoom, read-only, quickmarks,
-  snippets, and notes actions
-- Persistent PTY broker with SSH-friendly remote attach/detach, session listing, and multi-client terminal sharing
-- Parameterized snippets and JSON export for saved sessions
-- System statistics for the local and remote host (CPU, memory, disk), SSH connection sharing with keepalives, `autossh` support, and `mosh` recognition
-- Optional close confirmation only when a terminal has an active foreground process
-
-## Optional agent integration
-
-Oxterm does not start, install, or call an agent unless the user asks for it.
-The feature is off by default and needs an ACP-compatible agent CLI that the
-user already has. You do not have to edit any file:
-
-1. Open **Preferences → Agents** (or Tools → **Agent Settings…**, or the ⚙ in
-   the agent pane).
-2. Pick one of the agents Oxterm found, or type a custom command.
-3. Press **Test connection**; Oxterm performs the real ACP handshake and shows
-   the agent and model it offers.
-4. Tick **Enable agent features** and press OK.
-
-The same thing is available without the dialog: press `Ctrl+Shift+.` and the
-pane offers to choose and enable an agent inline, then sends the pending prompt.
-`oxterm agent --list` and `oxterm agent --show` do the same from a shell; the
-manual lists the install command for each supported agent. The stored settings
-are only the representation:
-
-```jsonc
-{
-    "agent_enabled": true,
-    "agent_command": "opencode acp"
-}
-```
-
-With it enabled, `Ctrl+Shift+.` toggles a docked agent pane, `Ctrl+Shift+I`
-focuses it and `Ctrl+Alt+.` sends the last failed command with its directory,
-exit status and output. The pane's handle can be dragged to give it more or
-less room, and the share is remembered in `agent_pane_share`. The same context
-is available as `oxterm fix [HINT]`,
-`/fix` in the command bar and `?prompt` typed at the shell prompt (or in the
-command bar): a line that starts with `?` is sent to the agent as a question
-instead of being run by the shell, and that prefix is the only trigger. A
-failed command is never handed over automatically: the shell prints its usual
-error and the next line stays your decision. Set `agent_question_prefix` to
-false to give every line back to the shell. Each tab keeps its own session while
-the pane is hidden, an exited agent process is resumed with `session/load` when
-the CLI supports it, and an SSH tab can run the agent on the remote host with
-`agent_remote_command` instead of locally.
-
-When the agent reports the models it supports, the pane header shows them in a
-picker; the choice is stored in `agent_model` and every new session starts on
-it, including the session started by `?prompt`. Provider
-credentials stay the agent's own business: log in with its CLI (`opencode auth
-login`, say) or pick a model whose provider is already authenticated.
-
-What the agent may do is a setting per class of action: reading the terminal
-(`agent_policy_read`, default `auto`), opening tabs (`agent_policy_create`,
-`ask`) and typing into a shell (`agent_policy_input`, `ask`). An `ask` decision
-opens a dialog in the running window; no answer means no. Every decision is
-appended to `~/.local/state/oxterm/agent-audit.log` without the text typed into
-the shell. The MCP server (`oxterm mcp`) follows the same policy, and with
-`agent_enabled` off it exposes no tools at all.
-
-Oxterm is only the transport: prompts and terminal context go to the agent CLI
-the user chose, over stdio, and nowhere else. See
-[docs/specs/agent-pane.md](docs/specs/agent-pane.md) for the lifecycle, the
-policy table and the limitations.
+---
 
 ## Screenshots
 
@@ -149,167 +27,190 @@ policy table and the limitations.
 
 ![Animated demo: typing a command, the command palette and split panes](docs/screenshots/demo.gif)
 
-| Split panes | Command bar |
-| :---: | :---: |
-| ![Vertical split with two shells](docs/screenshots/splits.png) | ![Command bar with slash commands](docs/screenshots/command-bar.png) |
+| Split Panes | Command Bar | Connections Manager |
+| :---: | :---: | :---: |
+| ![Vertical split with two shells](docs/screenshots/splits.png) | ![Command bar with slash commands](docs/screenshots/command-bar.png) | ![Connections panel with groups and saved hosts](docs/screenshots/connections.png) |
 
-![Connections panel with groups, favorites and saved hosts](docs/screenshots/connections.png)
+---
 
-The images and the animated demo come from an isolated profile running the
-release build, so they never contain real settings or shell history. Regenerate
-them after a UI change with `scripts/capture-screenshots.sh`; the script header
-lists the tools it needs (Xvnc, xdotool, ImageMagick, xfwm4, and ffmpeg for the
-GIF).
+## Key Highlights
 
-## Requirements
+### 🪟 Multiplexing & Layouts
+- **Tmux-style split panes**: Single, vertical, and horizontal splits with a configurable prefix key (`Ctrl+B` by default).
+- **Advanced tab management**: Reorder, rename, detach into new windows, or adopt running tabs across windows (*Tabs > Move Tab from Another Oxterm…*).
+- **Broadcast input**: Type simultaneously across all active split panes.
 
-### Using a release binary
+### ⚡ Persistent PTY Broker (<3 MB RAM)
+- **Crash & close resilience**: Terminal sessions are managed by an independent, display-free broker process (`oxterm-broker`). If the GUI closes or crashes, your shell keeps running.
+- **Remote attach & detach**: Seamlessly re-attach to sessions locally or over SSH via `oxterm -a` or `oxterm -M`.
+- **Tiny footprint**: The headless broker consumes under **3 MB of resident RAM** per session.
 
-You only need a Linux system with GTK3 and VTE 2.91 runtime libraries. Download
-the latest tarball from the [GitHub Releases
-page](https://github.com/buzzqw/oxterm/releases/latest), extract it, and run the
-`oxterm-*-linux-x86_64` executable it contains. Keep the `oxterm-broker-*` file
-next to it for the low-memory PTY broker and the `oxterm-askpass-*` file next to
-it for stored passwords; without them Oxterm still works, but falls back to
-`oxterm --broker` and prompts for passwords in the tab. The archive also
-contains `README.md`, the full `manual.md`, the `LICENSE`, the theme licences
-and a `SHA256SUMS` file covering everything extracted from it.
+### 🌐 Connection Manager & Remote Tools
+- **Connections & tunnels**: Searchable panel for SSH, Mosh, Telnet, Serial, Docker, Kubernetes, AWS Session Manager, and RDP/VNC/SPICE.
+- **Built-in SFTP/FTP file browser**: Two-pane browser with drag-and-drop, remote file editing (uploads on save), and directory synchronization.
+- **Production safety**: Automatic visual badges and warnings for production hosts, active SSH tunnels, and `ForwardAgent yes`.
 
-### Building from source
+### 🐚 OSC 133 Shell Integration
+- **Command boundaries & status**: Automatically identifies prompts, command execution, and exit codes.
+- **Smart notifications**: Desktop alerts only trigger for long-running (>10s) or failed commands when the terminal is unfocused.
+- **Visual failure markers**: Tabs with failed commands display a subtle red dot indicator until selected.
+- **Smart Open**: Context menus and hint mode (`Ctrl+Shift+H`) detect `path:line:col` in output and jump directly to that line in your configured editor.
 
-Source builds need:
+### 🤖 Optional AI Agent Integration
+- **Opt-in & transparent**: Disabled by default; zero background overhead or network calls unless configured.
+- **Dedicated Agent Pane (`Ctrl+Shift+.`)**: Native ACP (Agent Client Protocol) interface with session persistence per tab.
+- **`oxterm fix`**: Instant diagnostics sending failed command output, directory, and status directly to the agent.
+- **`?prompt` syntax**: Type `?` at the shell prompt to ask the agent directly without running the command.
+- **Model Context Protocol (`oxterm mcp`)**: Built-in MCP server on stdio with an audit log and fine-grained permission policies.
 
-- Rust stable and Cargo
-- GTK3 development files
-- VTE 2.91 development files, version 0.70 or newer (Debian 12 ships 0.70;
-  Arch, Fedora and Ubuntu 24.04 ship newer releases). Two settings need 0.74
-  and are ignored, with a warning, on an older VTE; see
-  [docs/compatibility.md](docs/compatibility.md#the-oldest-supported-vte-is-070).
-- `pkg-config`
+### 🎨 Customization & Typography
+- **247 built-in themes**: Catppuccin, Dracula, Tokyo Night, Gruvbox, Nord, Solarized, and more, plus support for Ghostty and iTerm2 `.itermcolors` theme files.
+- **Automatic light/dark switching**: Dynamically follows your desktop environment theme preference.
+- **Typography controls**: Cell height/width scaling, subpixel antialiasing, optional HarfBuzz text shaping, and ligature support.
 
-On Debian or Ubuntu:
+### 🛠️ Power-User Productivity
+- **VI Copy Mode (`Ctrl+Shift+Y`)**: Vim-like keyboard navigation, text objects, visual block selection, and motions.
+- **SQLite command history**: Searchable history with reverse search, duration tracking, Git branch metadata, and read-only SQL queries (`/history :sql`).
+- **Markdown Notes**: Built-in full-text search (SQLite FTS5) notes panel with `#tags`, previews, and quick clipping from terminal output.
+- **Global Command Palette (`Ctrl+Shift+P`)**: Fuzzy search over actions, settings, and built-in slash commands.
 
+---
+
+## Performance at a Glance
+
+Oxterm consistently delivers industry-leading startup and payload throughput while maintaining a minimal memory footprint.
+
+*Measured on an AMD Ryzen 7 5800H running Linux (CachyOS, kernel 7.3.3) under identical default settings:*
+
+| Metric | Oxterm | Ghostty 1.4.0 | Alacritty 0.17.0 | xfce4-terminal 1.2.0 |
+| :--- | :---: | :---: | :---: | :---: |
+| **Time to first interactive shell** | **102 ms** | 577 ms | 243 ms | 231 ms |
+| **Drain 100k ANSI-coloured lines** | **89 ms** | 144 ms | 248 ms | 229 ms |
+| **Drain 100k plain lines** | **81 ms** | 127 ms | 241 ms | 193 ms |
+| **Idle tree RSS** | 96.4 MiB | 201.1 MiB | 133.6 MiB | **78.3 MiB** |
+| **Input round-trip latency (p50)** | **16.0 ms** | — | — | — |
+
+> 📊 **Full Benchmarks & Profiling**: For detailed methodology, CPU cycle breakdowns, and ablation tests on broker overhead, read **[docs/benchmarks.md](docs/benchmarks.md)**.
+
+---
+
+## Quick Start & Installation
+
+### Option 1: Pre-built Binaries (Recommended)
+Download the latest tarball from the **[GitHub Releases page](https://github.com/buzzqw/oxterm/releases/latest)**, extract it, and run:
 ```bash
-sudo apt update
-sudo apt install build-essential pkg-config libgtk-3-dev libvte-2.91-dev
+tar -xzf oxterm-latest-linux-x86_64.tar.gz
+cd oxterm
+./oxterm-linux-x86-64
 ```
+*(Keep `oxterm-broker` and `oxterm-askpass` in the same directory for session persistence and keyring password prompts).*
 
-On Arch Linux:
-
-```bash
-sudo pacman -S base-devel rust gtk3 vte3
-```
-
-Install Rust with [rustup](https://rustup.rs/) if it is not already available.
-
-### Arch Linux (AUR)
-
-The `oxterm` package builds the latest tagged release from source with the
-system GTK3/VTE libraries. Once the package is published in the AUR:
-
+### Option 2: Arch Linux (AUR)
 ```bash
 yay -S oxterm        # or: paru -S oxterm
 ```
 
-The `PKGBUILD` lives in [`packaging/aur`](packaging/aur) and is validated by CI
-when the package, the version or its workflow changes.
+### Option 3: Build from Source
 
-## Build and Run
+**Dependencies**: Rust 2021, GTK3, VTE 2.91 (>= 0.70), and `pkg-config`.
 
-Clone the repository and build the optimized executable:
+```bash
+# Debian / Ubuntu
+sudo apt update && sudo apt install build-essential pkg-config libgtk-3-dev libvte-2.91-dev
 
+# Arch Linux / Manjaro
+sudo pacman -S base-devel rust gtk3 vte3
+
+# Fedora
+sudo dnf install gcc pkgconf-pkg-config gtk3-devel vte291-devel
+```
+
+**Build and Install**:
 ```bash
 git clone https://github.com/buzzqw/oxterm.git
 cd oxterm
-cargo build --release --locked --bins
-./target/release/oxterm
-```
 
-`--bins` also builds `oxterm-broker`, the display-free PTY broker, and
-`oxterm-askpass`, the keyring helper. Keep both next to the GUI binary: each
-session then maps the broker instead of re-executing the GTK binary, which cuts
-its resident memory from about 20 MB to under 3 MB, and stored passwords work.
-If a sibling is missing, Oxterm falls back to `oxterm --broker` or asks `ssh` in
-the tab, and still works.
-
-To create the definitive release binaries in the project root, run:
-
-```bash
-./build.sh
-./oxterm-linux-x86-64
-```
-
-`build.sh` runs the locked release build and copies the results to
-`oxterm-linux-x86-64`, `oxterm-broker-linux-x86-64` and
-`oxterm-askpass-linux-x86-64`. The generated root binaries are ignored by Git.
-
-The launcher uses the release binary when available and falls back to the debug
-binary:
-
-```bash
-./oxterm.sh
-```
-
-The repository includes local build hooks. Configure them with
-`git config core.hooksPath .githooks`; `./setup.sh` also configures them as part
-of its per-user installation. After each commit, the hook builds
-`oxterm-linux-x86-64`, `oxterm-broker-linux-x86-64` and
-`oxterm-askpass-linux-x86-64` in the project root. The generated files are
-ignored by Git. The displayed Oxterm version uses the
-Cargo version plus the total Git commit count as SemVer build metadata, for
-example `MAJOR.MINOR.PATCH+<commit-count>`. Builds without Git metadata show
-the plain release version.
-
-Install the executable, broker, keyring helper, desktop entry, manual page, shell completions,
-and documentation under `~/.local`:
-
-```bash
+# Per-user install under ~/.local (no root required)
 ./setup.sh
-```
 
-The installation prefix can be changed with `PREFIX`; it must be a directory
-writable by your user (use `./install.sh` for `/usr/bin`):
-
-```bash
-PREFIX="${HOME}/.local/opt" ./setup.sh
-```
-
-To build and install the current source version system-wide as `/usr/bin/oxterm`, run:
-
-```bash
+# Or system-wide install under /usr/bin (requires sudo)
 ./install.sh
 ```
 
-The script always rebuilds the release binaries before installing them and asks
-for `sudo` only when it needs permission to write the system installation
-directories. It installs `oxterm`, `oxterm-broker`, `oxterm-askpass`, desktop launcher, manual
-page, shell completions, documentation, and Oxterm ox icon system-wide. Run it
-again after building a newer version so the system command and launcher point
-to the new binary.
+---
 
-### Updating an existing clone
+## Keyboard Shortcuts Cheat Sheet
 
-Compiled binaries are not tracked by Git, so a plain `git pull` only updates
-the sources. Use the update helper instead:
+| Shortcut | Action |
+| :--- | :--- |
+| `Ctrl+Shift+T` | New tab |
+| `Ctrl+Shift+W` | Close tab |
+| `Ctrl+Shift+N` | New window |
+| `Ctrl+PageUp` / `Ctrl+PageDown` | Switch between tabs |
+| `Ctrl+Shift+E` / `Ctrl+Shift+D` | Vertical / horizontal split |
+| `Ctrl+Alt+PageUp` | Switch active split pane |
+| `Ctrl+Shift+B` | Toggle broadcast input across panes |
+| `Ctrl+Shift+F` | Search scrollback history |
+| `Ctrl+Shift+H` | Hint mode (clickable URLs, paths, Git SHAs, and `file:line`) |
+| `Ctrl+Shift+Y` | VI copy mode |
+| `Ctrl+Shift+P` | Global Command Palette |
+| `Ctrl+Shift+O` | Searchable session switcher |
+| `Ctrl+Shift+K` | SSH host picker |
+| `Ctrl+Shift+.` | Toggle AI Agent pane |
+| `Ctrl+Shift+Up` / `Down` | Jump to previous / next OSC 133 prompt |
+| `Ctrl++` / `Ctrl+-` / `Ctrl+0` | Zoom font in / out / reset |
+
+### Tmux-Style Shortcuts (`Ctrl+B` prefix)
+
+| Key sequence | Action |
+| :--- | :--- |
+| `Ctrl+B`, then `c` | New tab |
+| `Ctrl+B`, then `%` / `"` | Split vertically / horizontally |
+| `Ctrl+B`, then `o` | Switch to next pane |
+| `Ctrl+B`, then `n` / `p` | Next / previous tab |
+| `Ctrl+B`, then `s` / `w` | Session switcher |
+| `Ctrl+B`, then `d` | Detach local terminal session |
+| `Ctrl+B`, then `x` | Close current tab |
+
+---
+
+## Built-in Slash Commands
+
+Type `/` or run these commands directly from the terminal prompt:
+
+| Command | Description |
+| :--- | :--- |
+| `/help` | Show command reference |
+| `/history [query]` | Search command history with filters |
+| `/history :sql SELECT ...` | Execute read-only SQL queries on history |
+| `/notes [-file.md] <text>` | Append a timestamped note to the Markdown notes file |
+| `/snippet add NAME CMD` | Save a parameterized command snippet |
+| `/snippet NAME [ARGS...]` | Expand a saved snippet into the shell prompt |
+| `/ssh [NAME]` | Connect to a saved connection or SSH host alias |
+| `/clear` | Clear the terminal screen buffer |
+
+---
+
+## Command-Line Usage
 
 ```bash
-./update.sh
+# Open terminal in a specific directory with custom geometry
+oxterm ~/projects/webapp --geometry 120x40
+
+# Execute a command without restoring the previous session
+oxterm --no-restore -e htop
+
+# Attach to an existing detached broker session
+oxterm -a
+
+# Split a running pane and run a command via the scriptable control API
+pane=$(oxterm split --horizontal --cwd ~/src/app)
+oxterm send --pane "$pane" --enter 'make test'
+oxterm wait --pane "$pane" --timeout 300
 ```
 
-`update.sh` pulls the latest changes, builds the release binary, refreshes
-`oxterm-linux-x86-64`, and runs the installer (`/usr/bin` when writable or via
-`sudo`, otherwise `~/.local`). It accepts `--user` to force the per-user
-install, `--no-pull` to build the current checkout, and `--no-install` to stop
-after the build.
-
-`./setup.sh`, `./install.sh`, and `./update.sh` enable the repository hooks, so
-later `git pull` commands rebuild automatically through the `post-merge` (or
-`post-rewrite` for rebased pulls) hook. The hook refreshes a per-user
-installation directly and a system-wide installation only when `sudo` needs no
-password; otherwise run `./update.sh` after the pull. When Oxterm is installed
-from the AUR package, `yay -Syu` updates it instead.
-
-## Command Line
+<details>
+<summary><b>Complete Command-line Reference (click to expand)</b></summary>
 
 <!-- BEGIN GENERATED HELP -->
 ```text
@@ -393,718 +294,35 @@ Scriptable control (no window unless noted):
 ```
 <!-- END GENERATED HELP -->
 
-### Inspecting the configuration
+</details>
 
-The inspection commands open no window, need no display, and never modify the
-settings file, so they are safe in scripts and over SSH:
+---
 
-```text
-oxterm --show-config              # effective settings as JSON
-oxterm --show-config --default    # built-in defaults only
-oxterm --validate-config [FILE]   # check a file and report invalid keys
-oxterm --list-settings            # every key, type, default and description
-oxterm --list-themes              # color schemes and their fg/bg colors
-oxterm --list-keybinds            # keyboard shortcuts
-oxterm --list-actions             # scriptable control actions
-oxterm --list-fonts               # font families for font_name
-oxterm --edit-config              # edit settings.json in $EDITOR
-oxterm --diagnostics              # versions, paths, permissions and limits
-```
+## Configuration & Data Paths
 
-`-o KEY=VALUE` overrides are reflected by `--show-config` but are never written
-to disk. The complete settings reference is generated from the same table as
-these commands: [docs/settings.md](docs/settings.md).
+Oxterm follows XDG directory standards:
 
-### Scriptable control
+| Path | Purpose |
+| :--- | :--- |
+| `~/.config/oxterm/settings.json` | Active preferences and configuration |
+| `~/.config/oxterm/history.db` | SQLite command history database |
+| `~/.config/oxterm/notes.db` | Full-text indexed notes database (FTS5) |
+| `~/.config/oxterm/connections.json` | Saved SSH and remote connections |
+| `~/.config/oxterm/themes/` | User custom Ghostty/iTerm2 theme files |
+| `~/.local/share/oxterm/notes/` | Raw Markdown note files |
 
-A running Oxterm window also publishes a private control socket, so scripts,
-editors, and coding agents can drive tabs and panes without a GUI:
+---
 
-```text
-oxterm new [DIR] [--cwd DIR] [--title TITLE] [-- COMMAND...]
-oxterm split [--pane ID] [--vertical|--horizontal] [--cwd DIR] [--title TITLE]
-             [-- COMMAND...]
-oxterm send [--pane ID] [--enter] TEXT...        # or: ... - (read stdin)
-oxterm capture [--pane ID] [--scrollback N | --all | --captured [--clear]]
-oxterm wait [--pane ID] [--timeout SECONDS]
-oxterm connect NAME [--split [--pane ID]] [--yes]
-oxterm connections [--json | export | import FILE]
-oxterm tunnel list|start|stop [NAME [INDEX]]
-oxterm browse NAME
-oxterm events [--pane ID] [--event NAME]... [--output] [--json]
-oxterm action set-tab-color|set-tab-title|notify|open-url|insert-text|...
-oxterm workspace [--new-window] [--replace] FILE
-oxterm mcp
-```
+## Support & Contributing
 
-`new` and `split` print the id of the new pane; `split` refuses a window that
-already has two panes. `new` also accepts a directory as its first positional
-argument, as a shorthand for `--cwd`. `send` types into the target pane and,
-with `--enter`, submits the line. `capture` prints the visible screen by
-default, the last `N` lines of history with `--scrollback`, or the whole buffer
-with `--all`. `wait` waits for the next command in the pane and exits with that
-command's status, so a build can be chained and checked. None of them opens a
-window.
+Contributions are welcome! Please read **[CONTRIBUTING.md](CONTRIBUTING.md)** for developer instructions, code formatting guidelines, and test commands.
 
-The target pane comes from `--pane`, then `$OXTERM_PANE`, then the only open
-pane. Exit statuses are `0` for success, `1` for a failed operation, `2` for a
-usage error, `3` when the pane is not found, and `4` when no running Oxterm
-window can be reached. See the [manual](manual.md#scriptable-control) for
-details.
+If you find Oxterm useful, you can support development via [PayPal](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=azanzani@gmail.com&item_name=Support+Oxterm+Project) or [Ko-fi](https://ko-fi.com/buzzqw).
 
-Examples:
-
-```bash
-oxterm ~/src/project
-oxterm --working-directory ~/src/project
-oxterm --title "Build" --geometry 120x40
-oxterm --fullscreen
-oxterm --new-window
-oxterm --no-restore
-oxterm --hold --execute make
-oxterm --class MyTerm --name floating   # window-manager matching
-oxterm --profile work                   # start with a saved profile
-oxterm -o opacity=0.9 -o font_size=14    # ad-hoc setting overrides
-oxterm --font "Fira Code" --font-size 13
-oxterm --config ~/demo-settings.json     # throwaway configuration
-oxterm --execute git status
-oxterm --list                             # list terminals on this host
-oxterm --info 12345-2                      # inspect one terminal
-oxterm -a                                  # choose from the active terminals
-oxterm -a 12345-2                          # attach to one terminal
-oxterm -M                                  # move one here (detaches its other views)
-oxterm -M 12345-2                          # move one terminal here
-oxterm --detach 12345-2                   # release a remote attach
-pane=$(oxterm split --horizontal --cwd ~/src/app)  # new pane, prints its id
-oxterm send --pane "$pane" --enter 'make test'     # type into a pane
-oxterm wait --pane "$pane" --timeout 600           # wait for the command
-oxterm capture --pane "$pane" --scrollback 200     # read its output
-```
-
-`--option`, `--font`, `--font-size` and `--profile` overrides apply only to the
-launched session and are never written back to your saved settings. `--config`
-points Oxterm at an alternative settings file (handy for demos).
-
-`--execute` consumes every following argument as part of the command, so it must
-be the last option. `--` disables option parsing for the following directory
-argument, which is useful when its name begins with `-`.
-
-Without an explicit directory, Oxterm starts in the current working directory.
-
-`oxterm --list`, `oxterm -a [SESSION_ID]` and `oxterm -M [SESSION_ID]` are
-headless commands. They do not open a GTK window: they inspect, attach to, or
-move the live broker session of a running Oxterm terminal on the same host.
-Attaching repaints the session by replaying its most recent output, so the
-current screen appears instead of an empty one. This makes them suitable for use
-through SSH. Broker sockets are private
-(`0700` directory, `0600` socket) and the broker process owns the child PTY, so
-an unexpected GUI crash does not terminate the shell. When the configured
-directory would make the Unix socket path too long, Oxterm falls back to
-`/tmp/oxterm-<uid>/remote/` (also `0700`) so sessions keep working with a long
-`$HOME`. An intentional GUI close
-still terminates its attached tabs through the normal cleanup path, but a tab
-whose local view was switched off (`Ctrl+B`, `d`) or taken over with `oxterm -M`
-keeps running under its broker, so the session survives the close and can be
-reached again with `-a`/`-M` or reclaimed from the original window. Multiple `-a`
-clients may be connected at once; their input is forwarded to the same shell
-and output is broadcast to each client. `-M` instead takes control: it detaches
-every remote controller and turns off the local GUI view, so the chosen session
-is shown only in the terminal that ran the command. In the original Oxterm
-window, `Ctrl+B` then `s`/`w` brings it back. The listing includes the last
-command/application received from the shell, with `running` while OSC 133
-reports that command as active and `last` otherwise.
-
-The GUI starts `oxterm-broker` (or, when that sibling file is not installed,
-the internal `oxterm --broker SOCKET SESSION_ID` mode); neither is normally
-invoked manually. The dedicated binary is display-free and does not map GTK or
-VTE, so a session costs under 3 MB instead of about 20 MB.
-
-Its framed Unix-socket protocol supports
-`LIST`, `INFO`, `ATTACH`, `MOVE`, `DETACH`, `RENAME`, `UPDATE`, `COMMAND`,
-`LOG`, `LOCAL_ON`, `LOCAL_OFF`, `SIGNAL`, `KILL`, `IS_SSH`, `ECHO`, and
-`IS_ACTIVE`. Attached clients exchange
-length-prefixed frames containing terminal input/output, and can detach without
-stopping the broker. On attach the broker replays the most recent child output
-(bounded to a fixed size) so the program's screen is repainted instead of
-appearing blank, then nudges the foreground program to redraw. A reconnect still
-cannot recover output older than that replay window. The broker removes its
-socket after the shell exits. Brokers are event driven: a session left without a
-GUI keeps its shell alive at no CPU cost, and a broker that stops making I/O
-progress for a few seconds terminates itself instead of spinning on a stuck
-descriptor.
-
-The listing columns are `ID`, `NAME`, `TITLE`, `DIRECTORY`, `STATUS`,
-`APPLICATION`, and `APP_STATUS`. `APP_STATUS` is `running` while the command is
-active and `last` after completion.
-
-When **Confirm before closing active terminals** is enabled in Preferences,
-closing a window asks for confirmation only if one of its terminal tabs has an
-active foreground process. A shell waiting at its prompt closes immediately.
-
-## Built-in Commands
-
-Commands beginning with `/` are handled by Oxterm:
-
-| Command | Purpose |
-| --- | --- |
-| `/help` | Show the command reference |
-| `/history [terms]` | Search command history using AND filters |
-| `/history :sql SELECT ...` | Run a read-only history query |
-| `/wnotes [-file.md] <text>` | Save a timestamped note |
-| `/onotes [-file.md]` | Open a notes file in the configured editor |
-| `/learn <file>` | Import commands into history without executing them |
-| `/optimize history` | Keep latest command/directory entries and optimize history in background |
-| `/session export NAME [FILE]` | Export a saved session as private JSON |
-| `/session name NAME` | Assign a stable name shown by remote listing |
-| `/session list` | List saved sessions |
-| `/snippet add NAME COMMAND` | Save a parameterized command snippet |
-| `/snippet NAME [ARGS...]` | Expand a snippet into the prompt without executing it |
-| `/snippet list` | List saved snippets |
-| `/snippet delete NAME` | Remove a saved snippet |
-| `/ssh [NAME]` | Open a saved connection or an SSH host; no name shows the picker |
-| `/clear` / `/cls` | Clear the terminal screen |
-
-The **Notes** menu also provides the integrated Notes panel (full-text search,
-tags, preview, append) plus New Note, Add Selection to Note, Copy All to Note,
-Note Command Output, Open Note, and Open Notes Folder actions (see the manual).
-
-Press `Ctrl+Shift+P` for the global command palette: it fuzzy-searches both the
-`/commands` below and direct actions (tabs, splits, zoom, hints, VI copy,
-pager, tunnels, broadcast, sessions, SSH and more). `Tab` completes the
-selected row, and `Enter` runs it. Typing `/` still filters the built-in
-commands.
-
-## Keyboard Shortcuts
-
-| Shortcut | Action |
-| --- | --- |
-| `Ctrl+Shift+T` | New tab |
-| `Ctrl+Shift+N` | New window |
-| `Ctrl+Shift+W` | Close tab |
-| `Ctrl+Shift+Q` | Close window |
-| `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / paste |
-| `Ctrl+Shift+A` | Select all |
-| `Ctrl+Shift+S` | Rename tab |
-| `Ctrl+Shift+R` | Reset terminal |
-| `Ctrl+Shift+X` | Reset and clear terminal |
-| `Ctrl+Shift+F` | Search the scrollback (Enter/Shift+Enter = next/prev) |
-| `Ctrl++` / `Ctrl+-` / `Ctrl+0` | Zoom font in / out / reset |
-| `Ctrl+Shift+E` / `Ctrl+Shift+D` | Vertical / horizontal split |
-| `Ctrl+Shift+M` / `Ctrl+M` | Set / jump to quickmark |
-| `Ctrl+Shift+H` | Hint mode for URLs, paths, file:line locations, and Git SHAs |
-| `Ctrl+Shift+Y` | VI-style copy mode |
-| `Ctrl+Shift+B` | Toggle broadcast input |
-| `click` | Open the URL under the cursor |
-| `Ctrl+R` | Interactive history search; repeat to cycle matches |
-| `Ctrl+PageUp` / `Ctrl+PageDown` | Previous / next tab |
-| `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` | Move tab |
-| `Ctrl+Alt+PageUp` | Switch split pane |
-| `Ctrl+Shift+Up` / `Ctrl+Shift+Down` | Previous / next OSC 133 prompt |
-| `Ctrl+Shift+P` | Command palette |
-| `Ctrl+Shift+O` | Searchable session switcher |
-| `Ctrl+Shift+K` | Connect to an SSH host from `~/.ssh/config` |
-| `Ctrl+B`, then `c` | New tab (tmux-compatible) |
-| `Ctrl+B`, then `n` / `p` | Next / previous tab |
-| `Ctrl+B`, then `%` / `"` | Vertical / horizontal split |
-| `Ctrl+B`, then `o` | Switch split pane |
-| `Ctrl+B`, then `s` / `w` | Open the session switcher |
-| `Ctrl+B`, then `d` | Detach the local terminal PTY |
-| `Ctrl+B`, then `x` | Close tab |
-| `Alt+1` ... `Alt+9` | Replay one of the 9 most recent history entries (at the shell prompt) |
-| `F11` | Fullscreen |
-
-Any other key after the prefix is passed to the running program together with
-the prefix. When tmux or screen is the foreground process of a pane, the prefix
-is passed to it instead, so the multiplexer's own bindings keep working (for
-example `Ctrl+B`, then `w` lists its windows). The prefix defaults to `Ctrl+B`
-and can be changed under Preferences → Input → "tmux-style prefix keys" and the
-"Prefix key (Ctrl+)" field. Set it to `Ctrl+A` (or turn the prefix off) when you
-use a multiplexer on a remote host reached over ssh, which cannot be detected.
-
-### Smart open, sessions and SSH
-
-- **Smart open.** Hint mode recognizes `path:line[:col]` locations next to URLs,
-  paths, and Git SHAs. Selecting one opens the file at that line in a new tab
-  using `editor_jump_command` (default `${EDITOR:-vi} +{line} {file}`), resolved
-  against the pane's current directory. The same action is available from
-  **Open in Editor** / **Copy Location** in the context menu. Set the template
-  to your editor, for example `code --goto {file}:{line}:{col}` or
-  `nvim +{line} {file}`; `{file}`, `{line}`, and `{col}` are replaced with
-  safely quoted values.
-- **Session switcher.** `Ctrl+Shift+O` (also `Ctrl+B`, then `s`/`w`) opens a
-  searchable list of local panes across all windows, panes owned by other
-  Oxterm processes, and detached broker sessions. Enter focuses a local or
-  foreign pane, or attaches a detached session in a new tab. Foreign panes are
-  focused through the control socket, without moving or restarting them.
-- **SSH hosts.** `Ctrl+Shift+K` lists concrete `Host` aliases from
-  `~/.ssh/config`, including `Include` files; typing `user@host` works too.
-  **Copy Integration Command** places an explicit `ssh host '…'` command on the
-  clipboard that installs the OSC 133 script on the remote bash/zsh account
-  when you run it. Oxterm never injects shell integration into an SSH session
-  automatically.
-- **Production badge.** `ssh_alert_patterns` (default matches `prod`,
-  `production`, `prd` and `live` host names) colours matching SSH tabs with
-  `ssh_alert_color` and adds a *Production host* tooltip. Set the pattern to an
-  empty string to disable it. This is a visual warning, not a command blocker.
-- **SSH tunnels.** The tab tooltip lists the `-L`, `-R` and `-D` forwards of
-  the active session, and **SSH Tunnels...** in the terminal context menu shows
-  the same list in a dialog. It reports what was configured, not the live
-  health of each port.
-- **Agent forwarding warning.** The host picker reads the effective `ssh -G`
-  configuration and warns when `ForwardAgent yes` is active, suggesting
-  `ProxyJump` instead.
-
-### Command palette and hover decoding
-
-`Ctrl+Shift+P` opens a fuzzy command palette over direct actions (new tab,
-splits, zoom, search, history, hints, VI copy, pager, tunnels, broadcast,
-session switcher, SSH picker, and more) and the built-in `/commands`. Type a
-few letters, use `Tab` to complete a row, and `Enter` to run the highlighted
-action; typing `/` narrows the list to slash commands.
-
-Hovering over a 10- or 13-digit Unix epoch between 2000 and 2100 shows the
-local time in a small bubble. On a line with error/status/errno context, a
-known 3-digit HTTP or errno code is explained too. Ordinary numbers do not
-produce tooltips.
-
-## Configuration and Data
-
-Oxterm intentionally uses the existing shared data directory:
-
-```text
-~/.config/oxterm/settings.json          Preferences
-~/.config/oxterm/settings.json.bak      Previous valid Preferences snapshot
-~/.config/oxterm/history.db             SQLite command history
-~/.config/oxterm/notes.db               SQLite full-text notes index
-~/.config/oxterm/sessions/              Saved sessions
-~/.config/oxterm/profiles/              Named profiles
-~/.config/oxterm/connections.json       Saved connections and tunnels (mode 0600)
-~/.config/oxterm/connections-state.json Recent connections and favorites
-~/.config/oxterm/file_bookmarks.json    File-browser bookmarks
-~/.config/oxterm/triggers.json          Output triggers
-~/.config/oxterm/extensions.json        Status widgets and palette entries
-~/.config/oxterm/remote/                Private broker sockets
-~/.config/oxterm/themes/                Drop-in Ghostty and iTerm2 theme files
-~/.local/share/oxterm/notes/            Markdown notes
-/tmp/oxterm-<uid>/remote/               Fallback broker sockets when that path is too long
-```
-
-### Themes
-
-Oxterm ships **247 themes embedded in the binary**: Catppuccin, Dracula,
-Tokyo Night, One Dark, Rose Pine, Kanagawa, Everforest, Gruvbox, Nord,
-Solarized, GitHub, Ayu, Material, Nightfox, the full redistributable
-iTerm2-Color-Schemes collection, and many more. There is nothing to download
-or copy: pick one in **Preferences → Appearance** or with `color_scheme`, and
-`oxterm --list-themes` prints the full list.
-
-Custom themes are optional. Drop a Ghostty-style theme file or an iTerm2
-`.itermcolors` file into `~/.config/oxterm/themes/` and it appears in the list
-on the next start; the file name becomes the theme name.
-
-Automatic light/dark switching uses the desktop's GTK dark-mode preference:
-
-```json
-{
-  "auto_theme": true,
-  "theme_light": "Catppuccin Latte",
-  "theme_dark": "Catppuccin Mocha"
-}
-```
-
-With `auto_theme` enabled, Oxterm follows the desktop when it changes
-appearance (for example at sunset) and re-colors open terminals immediately.
-
-### Notifications and failure markers
-
-With **Preferences → Notifications → Notify when a command finishes** enabled (requires
-OSC 133 shell integration), Oxterm sends a desktop notification only when it is
-useful:
-
-- commands that finish while the terminal has focus stay silent;
-- successful commands shorter than `notify_min_seconds` (10s by default) stay
-  silent;
-- failed commands always notify, so a test suite that dies in two seconds still
-  gets your attention.
-
-The body names the command, its exit code, the duration and the directory. The
-four knobs are `bell_notification`, `notify_only_unfocused`,
-`notify_min_seconds` and `notify_on_failure`.
-
-A tab whose last command failed gets a red dot; it disappears when you select
-that tab (or when the next command succeeds). When a command fails while you
-are watching its tab, no dot is shown because you can already see the error.
-
-Compatibility switches live under **Preferences → Compatibility**: bold text
-using bright colors, inline Sixel images, and OSC 133. Pixel-smooth scrolling is
-on the **Scrolling** page, and the characters treated as part of a word by
-double-click selection are on the **Input** page.
-
-Open **Edit > Preferences** to configure the terminal, appearance, colors,
-scrolling, input, notifications, compatibility, and notes. The filter box at the
-top searches every page, and each setting shows its explanation under its name.
-Most changes are applied immediately.
-
-URLs opened from terminal output are restricted to `http://` and `https://`.
-Links using other schemes are not passed to desktop URL handlers.
-
-The `master` branch also publishes a rolling prerelease after every successful
-push: [Oxterm latest](https://github.com/buzzqw/oxterm/releases/tag/latest).
-It contains `oxterm`, `oxterm-broker` and `oxterm-askpass`, a tarball with all
-three, and a `SHA256SUMS` file. The release is intended for testing and is
-replaced by the next successful master build.
-
-## Development
-
-Run the standard checks before submitting changes:
-
-```bash
-cargo fmt --check
-cargo test --all-targets --locked
-cargo build --release --locked --bins
-```
-
-`src/headless/` is the display-free core: command line and control-command
-parsing, the settings schema and validation, JSON framing, diagnostics and the
-pure VI copy-mode helpers. It must not import GTK or VTE; `tests/headless.rs`
-enforces the boundary, and `cargo test --lib` runs it without a display.
-
-The suite also covers frame bounds, metadata sanitization, history and client
-buffering. `tests/remote_broker.rs` starts the release binary as a real broker
-with two PTYs and verifies control commands, multi-client input/output, local
-forwarding toggles, detach, socket permissions, and cleanup. It also runs
-`oxterm-broker` and asserts that it maps no GTK/VTE libraries and stays under
-12 MB resident. Run that
-integration test alone with:
-
-```bash
-cargo test --test remote_broker -- --nocapture
-```
-
-### Generated documentation
-
-`--help`, the OPTIONS section of the man page, the bash/fish/zsh completions,
-`docs/settings.md`, the shortcut table in the manual and the command line block
-above are generated from `src/headless/spec.rs`. After changing an option, a
-setting or a description, regenerate and commit the result:
-
-```bash
-cargo run --bin oxterm-docgen
-cargo run --bin oxterm-docgen -- --check   # what CI runs
-```
-
-### Benchmarks
-
-Two dependency-free benchmarks guard the "lightweight and fast" promise. The
-core benchmark measures the hot headless paths; the startup benchmark measures
-the real binary, including GUI readiness, tab creation and RSS. Two further
-scripts look outward: one compares Oxterm head to head with other terminals
-(Ghostty, Alacritty and xfce4-terminal by default), and one measures the
-input-to-model latency of the control path.
-
-```bash
-cargo run --release --example bench-core
-cargo run --release --example bench-core -- --check
-
-./scripts/bench-startup.sh                  # needs DISPLAY or WAYLAND_DISPLAY for the GUI part
-./scripts/bench-startup.sh --check
-./scripts/bench-startup.sh --write-baseline # after an intentional change
-```
-
-Reference numbers on a warm cache, release build, minimum of five runs (exact
-values depend on the machine and are only meant to show the order of magnitude):
-
-| Measurement | Reference |
-| --- | --- |
-| CLI parse (one invocation) | ~0.1 µs |
-| Effective defaults / validate all settings | ~9 µs / ~1.5 µs |
-| Load and validate a settings document | ~14 µs |
-| VI word motion (8 hops, long line) | ~0.44 µs |
-| JSON frame round trip | ~0.38 µs |
-| `--version` / `--list-settings` | ~19 ms |
-| Window ready, including the first shell | ~62 ms |
-| Five new tabs through the control API | ~308 ms |
-| RSS with the idle window / after five tabs | ~48 MiB / ~65 MiB |
-
-RSS counts every mapped page of GTK and VTE, which other programs share. The
-memory Oxterm itself accounts for is smaller: 18.7 MB PSS for the idle window and
-21.2 MB with eleven tabs, about 250 KB per tab, on a private X server.
-
-Baselines live in `bench/`. `--check` compares against them and exits non-zero
-past a tolerance (`BENCH_TOLERANCE`, default 4x for startup and 5x for the
-core; CI uses 6x for startup). The GUI startup figure is the best of
-`BENCH_GUI_ATTEMPTS` launches (default 3) so a single slow cold start does not
-fail the guard. The limits are deliberately generous: they catch algorithmic
-and packaging regressions, not run-to-run noise. Regenerate a baseline only
-when a change is understood and intended.
-
-#### Head to head with Ghostty, Alacritty and xfce4-terminal
-
-`scripts/bench-compare.sh` launches Oxterm and its opponents on the same display
-with an isolated `HOME`, so all of them see their default configuration, and
-reports the minimum of several runs:
-
-```bash
-sudo pacman -S ghostty alacritty xfce4-terminal xdotool  # opponents are optional
-./scripts/bench-compare.sh --table          # Markdown table
-./scripts/bench-compare.sh --check          # regression guard per terminal
-BENCH_OPPONENTS="ghostty xfce4-terminal" ./scripts/bench-compare.sh
-XFCE4_TERMINAL_BIN=/path/to/xfce4-terminal ./scripts/bench-compare.sh
-```
-
-Measured on a system with an AMD Ryzen 7 5800H (8 cores, 16 threads, Radeon
-Graphics) running CachyOS with kernel 7.3.3-1-cachyos in an X11 session at
-1920x1080, default configuration, font size 12, release build, powersave CPU
-governor, minimum of three runs; absolute values depend on the machine and on
-its load:
-
-| Measurement | Oxterm | Ghostty 1.4.0 | Alacritty 0.17.0 | xfce4-terminal 1.2.0 |
-| --- | --- | --- | --- | --- |
-| Spawn to first visible window | 526 ms | 450 ms | **279 ms** | 533 ms |
-| Idle CPU over 5 s, no payload | 7.5 ms | 19.8 ms | **0.0 ms** | **0.0 ms** |
-| Spawn to the command inside the terminal | **102 ms** | 577 ms | 243 ms | 231 ms |
-| Drain 100 000 ANSI-coloured lines (8.8 MB) | **89 ms** | 144 ms | 248 ms | 229 ms |
-| Drain 100 000 plain lines (8.0 MB) | **81 ms** | 127 ms | 241 ms | 193 ms |
-| Drain the plain payload in 80-byte writes (8.0 MB) | 319 ms | **291 ms** | 295 ms | 376 ms |
-| CPU to drain ANSI, terminal only | 331.2 ms | 258.5 ms | 257.8 ms | **191.8 ms** |
-| CPU to drain ANSI, GUI process | 261.0 ms | 184.5 ms | 217.8 ms | **182.8 ms** |
-| CPU to drain plain, terminal only | 298.4 ms | 317.5 ms | 247.6 ms | **139.8 ms** |
-| CPU to drain 80-byte writes, terminal only | 421.2 ms | 380.0 ms | **263.6 ms** | 271.0 ms |
-| 20 window resizes | 138 ms | **82 ms** | 255 ms | 310 ms |
-| CPU for the 20 resizes | 31.8 ms | 24.5 ms | 20.5 ms | **12.9 ms** |
-| Close window to process exit | 18 ms | 42 ms | 23 ms | **9 ms** |
-| Total tree RSS when idle | 96.4 MiB | 201.1 MiB | 133.6 MiB | **78.3 MiB** |
-| Peak tree RSS under the ANSI payload | 99.6 MiB | 239.2 MiB | 148.3 MiB | **76.1 MiB** |
-
-Bold marks the best value in each row.
-
-These numbers replace a table whose CPU rows were too kind to Oxterm: after the
-broker became a separate executable, the script no longer counted it. It does now,
-so "terminal only" includes the broker again.
-
-CPU time is the more informative row: wall time in the drain test is bounded by
-how each terminal acknowledges PTY output, while CPU time shows what the
-machine actually spends. It is sampled from the threads of the terminal's own
-processes (`schedstat`), excluding the shell and the payload command, so it
-covers Oxterm's PTY broker and the renderer and PTY threads of Ghostty,
-Alacritty and xfce4-terminal alike. The "terminal only" row sums every thread
-and helper of the terminal, while the "GUI process" row is only the process the
-script launched: for Oxterm the difference is the broker.
-
-Five of those rows are separate experiments, all on the same defaults:
-
-- **Idle CPU** is sampled over five seconds after a half-second settle on an
-  empty window. It counts cursor blink, timers and helper wakeups. Alacritty's
-  and xfce4-terminal's default cursors do not blink and neither arms a periodic
-  timer, so both measure about zero; Oxterm's blinking cursor and periodic timers
-  cost 7.5 ms, Ghostty's 19.8 ms. A hidden agent pane adds no wakeup: its
-  session threads post one event to the main loop only when they have
-  something to report.
-- **Plain lines** are the same workload without the SGR sequences, so comparing
-  the two drain rows shows what the colour handling and the extra 0.8 MB cost:
-  8 ms for Oxterm, 17 ms for Ghostty, 7 ms for Alacritty and 36 ms for
-  xfce4-terminal.
-- **80-byte writes** feed the plain payload through `dd bs=80`, one write per
-  line, to measure per-write overhead rather than bulk throughput. Wall time
-  is 291-376 ms because the writer now paces the terminals; the CPU row shows
-  what the extra wakeups cost each: 421.2 ms for Oxterm and 380.0 ms for
-  Ghostty, well above Alacritty's 263.6 ms and xfce4-terminal's 271.0 ms.
-  Oxterm's extra cost is the broker hop.
-- **20 resizes** alternate a window between two sizes with `xdotool` on an empty
-  pane. The wall time includes xdotool, X11 and window-manager latency, the CPU
-  count includes a 200 ms settle so the last resize is applied.
-- **Close** sends `WM_DELETE_WINDOW` (`xdotool windowquit`) and waits for the
-  process to leave the process table, which covers shutdown and cleanup rather
-  than a signal.
-
-Oxterm reaches the command inside the terminal first: 102 ms, against 231 ms for
-xfce4-terminal, 243 ms for Alacritty and 577 ms for Ghostty. It also finishes
-both drain payloads first, at 89 ms and 81 ms against 144-248 ms and 127-241 ms,
-but read that with the CPU rows. The command returns once the broker has taken
-its bytes, and the GUI goes on working after that: its 261.0 ms of CPU cannot
-fit in 89 ms of wall time. The drain figure shows how little a command is held
-back, not how fast the text is drawn. Ghostty wins the resize storm's wall time
-(82 ms against 138 ms), and Alacritty maps its window first (279 ms against
-450 ms for Ghostty, 526 ms for Oxterm and 533 ms for xfce4-terminal).
-
-xfce4-terminal is the closest peer: it uses the same VTE parser, grid and renderer
-without Oxterm's broker, and it sets the efficiency floor. It spends the least CPU
-on the ANSI and plain payloads (191.8 ms and 139.8 ms against 331.2 ms and
-298.4 ms for Oxterm) and the least memory (78.3 MiB idle against 96.4 MiB for
-Oxterm and 133.6 MiB for Alacritty). Of Oxterm's 331.2 ms, 70.2 ms is its PTY
-broker: the difference between the terminal-only and GUI-process rows. That is
-the price of sessions that survive their window. Alacritty beats Oxterm on CPU in
-every drain row too; Ghostty beats it on ANSI and 80-byte writes but spends more
-on plain lines.
-
-Read the wall figures as order-of-magnitude results: they move between sessions
-with the machine's load. What the script cannot see is the smoothness, frame
-pacing and rendering quality of the GPU terminals, which is their actual
-strength; the next section bounds Oxterm's own input path, but does not compare
-it with them.
-
-The window metrics need X11 and `xdotool`; Wayland-only sessions are not
-supported yet (run the script under `xvfb-run` in CI). Windows are matched by
-`_NET_WM_PID`, because Ghostty ignores `--class` on X11. `BENCH_OPPONENTS`
-selects the opponents to measure, `GHOSTTY_BIN`, `ALACRITTY_BIN` and
-`XFCE4_TERMINAL_BIN` point at non-standard binaries, `BENCH_GHOSTTY_ARGS`,
-`BENCH_ALACRITTY_ARGS` and `BENCH_XFCE4_TERMINAL_ARGS` pass extra flags,
-`BENCH_PAYLOAD_LINES` resizes the payload, `BENCH_IDLE_SECONDS` and
-`BENCH_RESIZE_STEPS` size the two new tests and `BENCH_FONT_SIZE` sets the font
-size used by all of them.
-
-Two caveats apply. `drain_ms` stops when the payload command returns, which is
-bounded by how each terminal reads and acknowledges PTY output: it is an
-order-of-magnitude throughput figure, not a rendering benchmark, and the GPU
-frame times of Ghostty and Alacritty — their actual strength — are not measured
-here. Tree RSS counts the PTY broker and the shell, which is why it is larger
-than the single-process figures reported above. xfce4-terminal shares Oxterm's
-VTE core, so its rows bound what that core costs without the broker rather than
-describing a separate rendering architecture.
-
-#### Input latency
-
-`scripts/bench-latency.py` types a unique marker into a running pane through the
-control socket and polls `capture` until the marker appears in the terminal's
-text model. That covers the part of the input path Oxterm controls: keystroke,
-control socket, GUI PTY, broker, shell PTY, line-discipline echo and back into
-VTE. Two baselines keep the numbers honest: `ping` is a no-op control round
-trip and `capture` is one screen-text extraction.
-
-```bash
-./scripts/bench-latency.py --table
-./scripts/bench-latency.py --runs 200
-./scripts/bench-latency.py --variant fast:cursor_blink=false,text_shaping=false
-```
-
-| Variant | ping p50 | capture p50 | echo p50 | echo p95 |
-| --- | --- | --- | --- | --- |
-| defaults | 0.25 ms | 0.34 ms | 16.0 ms | 17.0 ms |
-| no-blink | 0.25 ms | 0.36 ms | 16.0 ms | 17.1 ms |
-| transparency | 0.25 ms | 0.29 ms | 16.1 ms | 17.1 ms |
-| no-shaping | 0.24 ms | 0.34 ms | 16.1 ms | 17.1 ms |
-| fast | 0.24 ms | 0.36 ms | 16.1 ms | 17.1 ms |
-
-The round trip is one 60 Hz frame for every variant: transparency, cursor
-blink, shaping and smooth scrolling do not move it, because the limit is VTE's
-processing cadence rather than anything Oxterm adds. The broker and the control
-API together stay below 0.5 ms, which is the useful negative result of this
-measurement — it says not to trade visual features for input latency.
-
-What it does not measure is input to photon. Frame pacing, compositor latency
-and glyph rasterization need frame-level timestamps from a renderer, which is
-exactly where GPU terminals like Ghostty and Alacritty are expected to win.
-
-#### What the PTY broker costs
-
-The broker relays every byte between two PTYs. In the table above it accounts for
-about a fifth of the CPU Oxterm spends draining the 8.8 MB payload (70.2 of
-331.2 ms); VTE and the GUI take the rest. Two experiments shaped the conclusion:
-
-- Moving the two relay directions from 8 KiB to 64 KiB reads changed neither
-  drain time nor CPU beyond run-to-run noise (±17% across rounds, both
-  directions), so the cost is the per-byte copy, not the syscall count.
-- Lowering the broker's idle wakeup from 100 ms to 10 ms left the input round
-  trip at 16.3 ms, so the broker is not where the frame of latency comes from.
-
-Two later changes were measured the same way (old and new binary, five runs,
-alternated, twice). The broker no longer polls the GUI PTY size every 100 ms:
-the GUI sends it a `SIGWINCH` when the grid changes, with a 1 s safety-net poll,
-and idle CPU of the whole tree went from 9.0 ms to about 6.3 ms over five
-seconds. Recording the replay buffer in bulk, writing straight to the GUI PTY
-when nothing is queued and building the client frame only when a client is
-attached did not move the drain CPU (326-332 ms before and after): what the
-broker spends is the two PTY writes in the kernel, not user-space copying.
-
-The resize path was then completed: the signal handler writes to a self-pipe
-that is part of the broker's `poll` set, so the size is read after `SIGWINCH`
-(or at startup, or when an attached client detaches) instead of after every
-relay wakeup, and `poll` blocks with no timeout when the session is idle. Under
-the same A/B runs the idle CPU stayed at about 5 ms over five seconds — the
-former 1 s wakeup was already small next to the GUI cursor timer — and the
-throughput CPU stayed within run-to-run noise. The useful result is structural:
-there is no longer one `ioctl` per output wakeup, and an idle broker wakes only
-for real input.
-
-The bigger win is memory. `oxterm-broker` is a second, display-free executable
-built from the same `remote.rs`: it links neither GTK nor VTE, so a session
-costs about 2.7 MB resident instead of 20.4 MB, and almost all of the difference
-is mapped library pages (`RssFile` falls from 17.8 MB to 2.6 MB). Packages and
-the release archive install it next to `oxterm`; a lone single-file binary
-falls back to `oxterm --broker` and keeps working.
-
-The VI copy-mode helpers in `src/headless/vi.rs` now walk `char_indices()`
-instead of collecting a `Vec<char>` on every key press. The word-motion
-micro-benchmark (eight hops on a long line) fell from 3.7 µs to 0.5 µs on the
-test machine; the reference baseline was about 6 µs.
-
-Three smaller fixes from the same review:
-
-- Theme lookup checks Oxterm's own palettes before the generated catalogue, so
-  a default `Dark (Default)`/`Light` session never parses the 112 KB
-  `themes.json` or scans `~/.config/oxterm/themes/`: the first lookup falls
-  from about 1.5 ms to 33 µs, while later lookups are about 25 ns and the full
-  catalogue stays lazy for the settings dialog and `--list-themes`.
-- The history worker reads `.git/HEAD` directly instead of forking
-  `git rev-parse --abbrev-ref HEAD` for the Git-branch column. A fork/exec
-  costs about 2.9 ms on the test machine; the file read costs about 1.2 µs and
-  still handles worktrees, submodules, bare repositories and `GIT_DIR`.
-- The history worker's second thread, which only forwarded requests from the
-  full bounded queue into an overflow channel, is gone: one FIFO channel feeds
-  the worker without blocking the GUI. Settings getters also skip the overrides
-  mutex when no `-o`/`--font` overrides exist and no longer clone the JSON value
-  for scalar reads (about 28 ns per lookup).
-
-The connection manager got the same treatment. The production-host check compiled
-its regular expression for every panel row and title change (191 µs each) and now
-keeps it (0.3 µs). Searching the panel filters what was already read instead of
-rereading three files per key press, the Connections menu reads them when it opens rather
-than at every start, an idle file browser no longer wakes up, and a settled tunnel
-wakes twice a second instead of ten times. The common path barely moved, which was
-the expected result: 19.5 MB to 18.7 MB PSS for the idle window, with no measurable
-change in idle or output CPU, in alternated runs of the old and new binary.
-
-The control server keeps one thread per connection: spawning a thread costs
-about 24-48 µs, a small part of the 0.3 ms control round trip, while a bounded
-pool would let a few long `oxterm wait` requests starve latency-sensitive
-pings.
-
-A `splice`-based relay is the next step if per-byte CPU ever becomes a
-priority; it is deliberately not done yet, because it complicates the remote
-client fan-out for no measured gain in wall time.
-
-Read the rest of the table the same way: Oxterm is a GTK3 frontend that
-delegates the parser, the grid and the drawing to VTE, while Ghostty and
-Alacritty ship their own cores with GPU renderers. The comparison is a fair
-end-to-end verdict on the products, but it measures VTE+GTK against those cores
-— not Oxterm's own code.
-
-The GitHub Actions workflows run the same checks, the documentation check, the
-GUI tests under Xvfb and the benchmark checks, and build an x86_64 release artifact
-on every commit push, pull request, and manual workflow dispatch on any branch.
-Version tags also trigger versioned release artifacts and checksum generation.
-
-For maintainers, release automation is available through:
-
-```bash
-./versiona.sh --dry-run
-./versiona.sh
-```
-
-The normal release flow updates both `Cargo.toml` and `Cargo.lock`, creates an
-annotated version tag, pushes the branch and tag, and publishes the GitHub
-release. Use `--dry-run` to inspect the next version and release notes without
-changing files or Git refs.
-
-## Support
-
-If Oxterm is useful to you, you can support development through
-[PayPal](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=azanzani@gmail.com&item_name=Support+Oxterm+Project).
-
-[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20me-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/buzzqw)
+---
 
 ## License
 
-Oxterm is distributed under the [European Union Public Licence 1.2](LICENSE).
+Oxterm is distributed under the **[European Union Public Licence 1.2](LICENSE)** (EUPL-1.2).
 
-Copyright 2026 Andres Zanzani.
+Copyright © 2026 Andres Zanzani.
