@@ -1,5 +1,5 @@
 use std::fs;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::Instant;
 
 fn mb(val: u64) -> String {
@@ -83,23 +83,71 @@ fn disk_usage(path: &str) -> (u64, u64) {
     (used, total)
 }
 
-static CPU_PREV: std::sync::Mutex<Option<(u64, u64)>> = std::sync::Mutex::new(None);
-static SYSTEM_CACHE: OnceLock<Mutex<Option<(Instant, String)>>> = OnceLock::new();
-static SELF_CACHE: OnceLock<Mutex<Option<(Instant, String)>>> = OnceLock::new();
+static CPU_PREV: Mutex<Option<(u64, u64)>> = Mutex::new(None);
+
+/// Latest values, written by the worker and read by the GTK thread without
+/// touching `/proc` or calling `statvfs`.
+#[derive(Default)]
+struct Snapshot {
+    system: String,
+    own: String,
+}
+
+static SNAPSHOT: OnceLock<RwLock<Snapshot>> = OnceLock::new();
+
+fn snapshot() -> &'static RwLock<Snapshot> {
+    SNAPSHOT.get_or_init(|| {
+        // One synchronous sample gives the first caller real values; every
+        // later update happens on the worker.
+        RwLock::new(Snapshot {
+            system: collect_system(),
+            own: collect_own(),
+        })
+    })
+}
+
+fn start_worker(snapshot: &'static RwLock<Snapshot>) {
+    static STARTED: OnceLock<()> = OnceLock::new();
+    STARTED.get_or_init(|| {
+        let _ = std::thread::Builder::new()
+            .name("oxterm-stats".to_string())
+            .spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let system = collect_system();
+                let own = collect_own();
+                if let Ok(mut guard) = snapshot.write() {
+                    guard.system = system;
+                    guard.own = own;
+                }
+            });
+    });
+}
 
 pub fn collect(is_ssh: bool) -> String {
     if is_ssh {
         return ssh_placeholder();
     }
-    let cache = SYSTEM_CACHE.get_or_init(|| Mutex::new(None));
-    if let Ok(snapshot) = cache.lock() {
-        if let Some((at, value)) = snapshot.as_ref() {
-            if at.elapsed().as_millis() < 500 {
-                return value.clone();
-            }
-        }
-    }
-    let mut prev = CPU_PREV.lock().unwrap();
+    let snapshot = snapshot();
+    start_worker(snapshot);
+    snapshot
+        .read()
+        .map(|value| value.system.clone())
+        .unwrap_or_default()
+}
+
+pub fn collect_self() -> String {
+    let snapshot = snapshot();
+    start_worker(snapshot);
+    snapshot
+        .read()
+        .map(|value| value.own.clone())
+        .unwrap_or_default()
+}
+
+fn collect_system() -> String {
+    let mut prev = CPU_PREV
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let cpu = cpu_percent(&mut prev);
     drop(prev);
     let (mem_used, mem_total) = meminfo();
@@ -114,7 +162,7 @@ pub fn collect(is_ssh: bool) -> String {
     } else {
         0
     };
-    let result = format!(
+    format!(
         "  CPU {:5.1}%  RAM {}/{} ({}%)  Disk {}/{} ({}%)",
         cpu,
         mb(mem_used),
@@ -123,30 +171,14 @@ pub fn collect(is_ssh: bool) -> String {
         mb(disk_used),
         mb(disk_total),
         disk_pct
-    );
-    if let Ok(mut snapshot) = cache.lock() {
-        *snapshot = Some((Instant::now(), result.clone()));
-    }
-    result
+    )
 }
 
-pub fn collect_self() -> String {
-    let cache = SELF_CACHE.get_or_init(|| Mutex::new(None));
-    if let Ok(snapshot) = cache.lock() {
-        if let Some((at, value)) = snapshot.as_ref() {
-            if at.elapsed().as_millis() < 500 {
-                return value.clone();
-            }
-        }
-    }
+fn collect_own() -> String {
     let pid = std::process::id();
     let rss = proc_rss(pid);
     let cpu = process_cpu_percent(pid);
-    let result = format!("Oxterm  CPU {:5.1}%  RAM {}  ", cpu, mb(rss));
-    if let Ok(mut snapshot) = cache.lock() {
-        *snapshot = Some((Instant::now(), result.clone()));
-    }
-    result
+    format!("Oxterm  CPU {:5.1}%  RAM {}  ", cpu, mb(rss))
 }
 
 fn proc_rss(pid: u32) -> u64 {
@@ -211,5 +243,17 @@ mod tests {
     fn parses_proc_memory_with_units() {
         assert_eq!(parse_kmg_swap(" 123456 kB", 1024), 123456 * 1024);
         assert_eq!(parse_kmg_swap("invalid", 1024), 0);
+    }
+
+    #[test]
+    fn snapshot_reports_system_and_process_values() {
+        let system = collect(false);
+        assert!(
+            system.contains("CPU") && system.contains("RAM") && system.contains("Disk"),
+            "{system}"
+        );
+        let own = collect_self();
+        assert!(own.contains("Oxterm") && own.contains("CPU"), "{own}");
+        assert_eq!(collect(true), ssh_placeholder());
     }
 }

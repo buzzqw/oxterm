@@ -18,6 +18,8 @@ use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::Duration;
 
+use futures_channel::mpsc::UnboundedSender;
+
 use gtk::prelude::*;
 use serde_json::{json, Value};
 
@@ -147,7 +149,7 @@ pub struct AgentPanel {
     setup_enable: gtk::Button,
     setup_commands: RefCell<Vec<String>>,
     pending_prompt: RefCell<Option<String>>,
-    events_tx: Sender<UiEvent>,
+    events_tx: UnboundedSender<UiEvent>,
     /// The Settings "changed" handler; disconnected when the pane goes away.
     settings_handler: RefCell<Option<glib::SignalHandlerId>>,
     window: crate::SendWeak<MainWindow>,
@@ -155,7 +157,7 @@ pub struct AgentPanel {
 
 impl AgentPanel {
     pub fn new(window: &MainWindow) -> Rc<AgentPanel> {
-        let (tx, rx) = mpsc::channel();
+        let (tx, mut rx) = futures_channel::mpsc::unbounded();
 
         let root = gtk::Revealer::new();
         root.set_transition_type(gtk::RevealerTransitionType::SlideUp);
@@ -327,25 +329,20 @@ impl AgentPanel {
             enable.connect_clicked(move |_| panel.enable_selected_agent());
         }
 
-        // Wake the UI only when a session thread has something to report.
-        // Polling a channel every 100 ms kept the process out of deep idle for
-        // as long as the pane existed, even while it was hidden.
+        // Wake the UI only when a session thread has something to report. The
+        // async channel is drained by a main-context future, so the `Rc` to
+        // the panel never leaves the main thread (the old worker thread cloned
+        // a non-atomic `Rc::Weak` from another thread, which is undefined
+        // behavior).
         {
-            let weak = crate::Sendable(Rc::downgrade(&panel));
-            let _ = std::thread::Builder::new()
-                .name("oxterm-agent-ui".to_string())
-                .spawn(move || {
-                    let weak = weak;
-                    while let Ok(event) = rx.recv() {
-                        let weak = crate::Sendable(weak.0.clone());
-                        crate::run_on_main(move || {
-                            let weak = weak;
-                            if let Some(panel) = weak.0.upgrade() {
-                                panel.handle_event(event);
-                            }
-                        });
+            let weak = Rc::downgrade(&panel);
+            glib::spawn_future_local(async move {
+                while let Ok(event) = rx.recv().await {
+                    if let Some(panel) = weak.upgrade() {
+                        panel.handle_event(event);
                     }
-                });
+                }
+            });
         }
         // The setup panel must disappear as soon as the agent is configured in
         // Preferences; there is no polling tick to notice it any more.
@@ -1492,7 +1489,7 @@ fn spawn_session(
     argv: &[String],
     cwd: &str,
     servers: Vec<acp::McpServer>,
-    events: Sender<UiEvent>,
+    events: UnboundedSender<UiEvent>,
     resume: Option<String>,
 ) -> Result<Session, String> {
     let program = agent::resolve_program(argv.first().ok_or("no agent command")?);
@@ -1563,7 +1560,7 @@ fn read_agent(
     pane: String,
     stdout: std::process::ChildStdout,
     writer: Sender<Value>,
-    events: Sender<UiEvent>,
+    events: UnboundedSender<UiEvent>,
     cwd: String,
     servers: Vec<acp::McpServer>,
     resume: Option<String>,
@@ -1583,7 +1580,7 @@ fn read_agent(
         let incoming = match acp::parse(&line) {
             Ok(incoming) => incoming,
             Err(error) => {
-                let _ = events.send(UiEvent::Error {
+                let _ = events.unbounded_send(UiEvent::Error {
                     pane: pane.clone(),
                     message: error,
                 });
@@ -1602,7 +1599,7 @@ fn read_agent(
                         .to_string();
                     if is_config {
                         // The turn is untouched: only the choice was refused.
-                        let _ = events.send(UiEvent::ModelRejected {
+                        let _ = events.unbounded_send(UiEvent::ModelRejected {
                             pane: pane.clone(),
                             message,
                         });
@@ -1612,7 +1609,7 @@ fn read_agent(
                         // The agent advertised `session/load` but refused this
                         // one. Do not leave the user without an agent: start a
                         // fresh session and keep the transcript on screen.
-                        let _ = events.send(UiEvent::Error {
+                        let _ = events.unbounded_send(UiEvent::Error {
                             pane: pane.clone(),
                             message: format!("could not resume the agent session: {message}"),
                         });
@@ -1621,7 +1618,7 @@ fn read_agent(
                             writer.send(acp::session_new(SESSION_NEW_FALLBACK_ID, &cwd, &servers));
                         continue;
                     }
-                    let _ = events.send(UiEvent::Error {
+                    let _ = events.unbounded_send(UiEvent::Error {
                         pane: pane.clone(),
                         message,
                     });
@@ -1641,7 +1638,7 @@ fn read_agent(
                     let (model, choices) = models
                         .map(|models| (models.current, models.choices))
                         .unwrap_or((None, Vec::new()));
-                    let _ = events.send(UiEvent::ModelChanged {
+                    let _ = events.unbounded_send(UiEvent::ModelChanged {
                         pane: pane.clone(),
                         model,
                         models: choices,
@@ -1682,7 +1679,7 @@ fn read_agent(
                             session
                         };
                         if session.is_empty() {
-                            let _ = events.send(UiEvent::Error {
+                            let _ = events.unbounded_send(UiEvent::Error {
                                 pane: pane.clone(),
                                 message: "the agent did not return a session id".to_string(),
                             });
@@ -1692,7 +1689,7 @@ fn read_agent(
                         let (model, choices, model_api) = models
                             .map(|models| (models.current, models.choices, Some(models.api)))
                             .unwrap_or((None, Vec::new(), None));
-                        let _ = events.send(UiEvent::Ready {
+                        let _ = events.unbounded_send(UiEvent::Ready {
                             pane: pane.clone(),
                             agent: agent_name.clone(),
                             model,
@@ -1707,7 +1704,7 @@ fn read_agent(
                             .as_ref()
                             .map(acp::stop_reason)
                             .unwrap_or_else(|| "error".to_string());
-                        let _ = events.send(UiEvent::TurnDone {
+                        let _ = events.unbounded_send(UiEvent::TurnDone {
                             pane: pane.clone(),
                             reason,
                         });
@@ -1724,7 +1721,7 @@ fn read_agent(
                         continue;
                     }
                     if let Some(update) = acp::parse_update(&params) {
-                        let _ = events.send(UiEvent::Update {
+                        let _ = events.unbounded_send(UiEvent::Update {
                             pane: pane.clone(),
                             update,
                         });
@@ -1733,7 +1730,7 @@ fn read_agent(
             }
             acp::Incoming::Request { id, method, params } => {
                 if method == "session/request_permission" {
-                    let _ = events.send(UiEvent::Permission {
+                    let _ = events.unbounded_send(UiEvent::Permission {
                         pane: pane.clone(),
                         id,
                         title: acp::permission_title(&params),
@@ -1753,13 +1750,32 @@ fn read_agent(
             }
         }
     }
-    let _ = events.send(UiEvent::Closed { pane });
+    let _ = events.unbounded_send(UiEvent::Closed { pane });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    /// Blocking receive with a timeout for the panel's async event channel;
+    /// the unit tests do not run a main context.
+    fn recv_timeout(
+        rx: &mut futures_channel::mpsc::UnboundedReceiver<UiEvent>,
+        timeout: std::time::Duration,
+    ) -> Result<UiEvent, ()> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match rx.try_recv() {
+                Ok(event) => return Ok(event),
+                Err(futures_channel::mpsc::TryRecvError::Closed) => return Err(()),
+                Err(futures_channel::mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(_) => return Err(()),
+            }
+        }
+    }
 
     fn fake_agent() -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
@@ -1817,7 +1833,7 @@ for line in sys.stdin:
     fn spawn_retrying(
         pane: &str,
         argv: &[String],
-        events: Sender<UiEvent>,
+        events: UnboundedSender<UiEvent>,
         resume: Option<String>,
     ) -> Session {
         let mut attempt = 0;
@@ -1903,13 +1919,13 @@ for line in sys.stdin:
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
 
-        let (tx, rx) = mpsc::channel();
+        let (tx, mut rx) = futures_channel::mpsc::unbounded();
         let argv = vec![script.to_string_lossy().to_string()];
         let session = spawn_retrying("pane-load", &argv, tx, Some("s-old".to_string()));
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut ready = false;
         while Instant::now() < deadline && !ready {
-            match rx.recv_timeout(Duration::from_millis(200)) {
+            match recv_timeout(&mut rx, Duration::from_millis(200)) {
                 Ok(UiEvent::Ready {
                     session,
                     resumed: true,
@@ -1937,14 +1953,14 @@ for line in sys.stdin:
     #[test]
     fn a_session_handshakes_streams_and_finishes_a_turn() {
         let script = fake_agent();
-        let (tx, rx) = mpsc::channel();
+        let (tx, mut rx) = futures_channel::mpsc::unbounded();
         let argv = vec![script.to_string_lossy().to_string()];
         let session = spawn_retrying("pane-1", &argv, tx, None);
 
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut ready = false;
         while Instant::now() < deadline && !ready {
-            match rx.recv_timeout(Duration::from_millis(200)) {
+            match recv_timeout(&mut rx, Duration::from_millis(200)) {
                 Ok(UiEvent::Ready {
                     agent,
                     model,
@@ -1985,7 +2001,7 @@ for line in sys.stdin:
             .unwrap();
         let mut switched = false;
         while Instant::now() < deadline && !switched {
-            match rx.recv_timeout(Duration::from_millis(200)) {
+            match recv_timeout(&mut rx, Duration::from_millis(200)) {
                 Ok(UiEvent::ModelChanged { model, models, .. }) => {
                     assert_eq!(model.as_deref(), Some("two"));
                     assert_eq!(models.len(), 2);
@@ -2005,7 +2021,7 @@ for line in sys.stdin:
         let mut said_hello = false;
         let mut finished = false;
         while Instant::now() < deadline && !finished {
-            match rx.recv_timeout(Duration::from_millis(200)) {
+            match recv_timeout(&mut rx, Duration::from_millis(200)) {
                 Ok(UiEvent::Update {
                     update: acp::Update::AgentMessage(text),
                     ..

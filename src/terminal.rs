@@ -1682,6 +1682,11 @@ impl TerminalBox {
             let weak = crate::SendWeak::new(self);
             let pending = Rc::new(Cell::new(false));
             vte.connect_contents_changed(move |_| {
+                // No trigger configured and no output subscriber: scheduling a
+                // timeout for every chunk would only add main-loop churn.
+                if active_triggers().is_empty() && !crate::headless::events::bus().wants_output() {
+                    return;
+                }
                 if pending.replace(true) {
                     return;
                 }
@@ -2754,32 +2759,37 @@ impl TerminalBox {
         use crate::headless::triggers::Context;
         let triggers = active_triggers();
         let want_output = crate::headless::events::bus().wants_output();
-        if triggers.is_empty() && !want_output {
-            return;
-        }
         let vte = self.vte();
         let (column, row) = vte.cursor_position();
+        if triggers.is_empty() && !want_output {
+            // Keep the marker current even while nobody is listening, so a
+            // subscriber that connects later does not ask for the whole
+            // scrollback.
+            self.imp().trigger_row.set(row);
+            return;
+        }
         let last_row = self.imp().trigger_row.get();
         // The first look rewinds a little to catch output that arrived before
         // the first `contents_changed`. Later looks start where the previous
         // one ended, and a cursor that moved backwards (clear, reset, trimmed
-        // scrollback) restarts from the current line.
+        // scrollback) restarts from the current line. A long burst is capped so
+        // one delayed look cannot scan the entire scrollback.
+        const MAX_BURST_LOOKBACK: i64 = 2000;
         let start = if last_row < 0 {
             (row - 200).max(0)
         } else if row < last_row {
             self.imp().output_row.set(row - 1);
             row
         } else {
-            last_row
+            last_row.max(row - MAX_BURST_LOOKBACK)
         };
         let Some(text) = text::range(&vte, start, 0, row, column) else {
             return;
         };
-        let lines: Vec<&str> = text.split('\n').collect();
         let in_command_output = self.command_running();
         let profile = settings().get_str("active_profile");
         let profile = profile.trim();
-        for (offset, line) in lines.iter().enumerate() {
+        for (offset, line) in text.lines().enumerate() {
             if line.trim().is_empty() {
                 continue;
             }

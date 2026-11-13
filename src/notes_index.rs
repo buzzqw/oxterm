@@ -18,6 +18,10 @@ pub fn notes_db_path() -> PathBuf {
     settings::config_dir().join("notes.db")
 }
 
+/// Bump when `init_schema` changes. The DDL only runs once per database
+/// instead of on every connection (there is one per note search).
+const SCHEMA_VERSION: i64 = 1;
+
 /// One indexed note entry (a `## timestamp` section).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NoteEntry {
@@ -257,7 +261,14 @@ fn open() -> Result<Connection, String> {
         .map_err(|e| e.to_string())?;
     conn.pragma_update(None, "synchronous", "NORMAL")
         .map_err(|e| e.to_string())?;
-    init_schema(&conn)?;
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    if version < SCHEMA_VERSION {
+        init_schema(&conn)?;
+        conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
+            .map_err(|e| e.to_string())?;
+    }
     Ok(conn)
 }
 

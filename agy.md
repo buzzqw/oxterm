@@ -34,8 +34,14 @@
    - 5.6 [Tabella Risoluzione Warning Clippy](#56-tabella-risoluzione-warning-clippy)
 6. [Guida Pratica alle Ottimizzazioni con Codice](#6-guida-pratica-alle-ottimizzazioni-con-codice)
 7. [Matrice di Priorità & Roadmap d'Intervento](#7-matrice-di-priorità--roadmap-dintervento)
+8. [Stato di Applicazione](#8-stato-di-applicazione)
 
 ---
+
+> **Stato al 13/11/2026**: i quick win e il secondo batch sono stati applicati
+> (commit `efd5447` e successivo). Il documento resta la fotografia originale;
+> vedi la [sezione 8](#8-stato-di-applicazione) per cosa è stato chiuso e cosa
+> resta aperto.
 
 ## 1. Panoramica Esecutiva
 
@@ -567,3 +573,41 @@ receiver.attach(None, move |event| {
 
 ---
 *Report redatto per la revisione del progetto Oxterm.*
+
+---
+
+## 8. Stato di Applicazione
+
+### Chiuso
+
+| Intervento | Dove | Note |
+|---|---|---|
+| Campi morti di `TerminalBox` | `src/terminal.rs` | Rimossi i 4 campi di resize mai usati. |
+| `ptsname` non reentrant | `src/terminal.rs`, `src/remote.rs` | Passaggio a `ptsname_r` con buffer locale. |
+| Risultati syscall non controllati | `src/logging.rs`, `src/system_stats.rs` | `gettimeofday`/`gmtime_r` controllati con fallback; `sysconf` non può più diventare `u64::MAX`. |
+| Timer della status bar | `src/status_bar.rs` | `Break` quando la label è stata distrutta; niente più comandi orfani. |
+| Regex dei tag ricompilata | `src/notes_index.rs` | `LazyLock` + `PRAGMA user_version` per non rieseguire il DDL a ogni connessione. |
+| Ricerca note a ogni tasto | `src/window.rs`, `src/notes_index.rs` | Debounce 180 ms, generation counter e schema inizializzato una volta. |
+| `fsync` dell'autosave sul main thread | `src/window.rs`, `src/session.rs` | Scrittura su worker, con ordinamento dei writer per non sovrascrivere un salvataggio più recente. |
+| Statement SQLite ricompilati | `src/history.rs` | `prepare_cached` su insert/update. |
+| Comandi lunghi nel dialogo ACP | `src/headless/agent.rs` | Mostra testa e coda (`truncate_middle`) invece dei soli primi 600 caratteri. |
+| `Sendable<Rc::Weak>` in `agent_panel` | `src/agent_panel.rs` | Canale asincrono drenato dal main context: il `Weak` non lascia più il thread GTK. |
+| `unsafe impl Send/Sync` su `ViewerTab` | `src/connections_ui.rs` | Rimossi; il passaggio al main thread usa `Sendable`. |
+| `/proc` e `statvfs` ogni 3 s | `src/system_stats.rs` | Worker thread + snapshot `RwLock`; la UI legge solo memoria. |
+| `check_triggers` | `src/terminal.rs` | Gate su `contents_changed`, iterazione senza `Vec`, cap del burst a 2000 righe e marker aggiornato anche quando è inattivo. |
+| Listing locale del file browser | `src/file_browser.rs` | `read_dir`/`stat` su worker con scarto dei risultati obsoleti. |
+| Warning Clippy | crate intero | `cargo clippy --all-targets` pulito. |
+
+### Ancora aperto
+
+| Intervento | Perché è rimasto aperto |
+|---|---|
+| Permission title spoofing ACP | Il titolo è fornito dall'agente: il protocollo non permette una verifica indipendente. Si può solo mostrare più contesto, non eliminare il rischio. |
+| `Zeroizing` per password/TOTP | Richiede una dipendenza nuova e tocca il flusso keyring/askpass; impatto pratico limitato a core dump e swap. |
+| `UNION` con `REPLACE(...) LIKE` in `search_fts` | È una feature voluta (`gitstatus` trova `git status`). Servirebbe una colonna compatta indicizzata o una decisione di prodotto. |
+| Cache del testo in `vi_copy` | Refactor del rendering per-frame, da fare con test visivi dedicati. |
+| Sessioni SFTP/FTP persistenti e cache directory | Refactor medio del sottosistema remoto. |
+| Migrazione da `dialog.run()` | 40 chiamate: intervento ampio e con rischio di regressioni UX. |
+| Decomposizione dei monoliti | Refactor strutturale, non un quick win. |
+| Generatori docgen fuori dal binario | Guadagno di dimensione marginale; feature-gating da valutare. |
+

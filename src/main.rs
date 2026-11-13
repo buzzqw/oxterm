@@ -82,6 +82,14 @@ pub struct Sendable<T>(pub T);
 unsafe impl<T> Send for Sendable<T> {}
 unsafe impl<T> Sync for Sendable<T> {}
 
+impl<T> std::ops::Deref for Sendable<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
 struct App {
     app: gtk::Application,
 }

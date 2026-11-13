@@ -1170,7 +1170,7 @@ impl MainWindow {
         let cancelled = Arc::new(AtomicBool::new(false));
         // The viewer's tab is created on the main thread once the service answers.
         let viewer_term = ViewerTab::new();
-        let viewer_term_from_thread = viewer_term.clone();
+        let viewer_term_from_thread = crate::Sendable(viewer_term.clone());
         {
             let started = started.clone();
             let cancelled = cancelled.clone();
@@ -1662,9 +1662,6 @@ impl ViewerTab {
         }
     }
 }
-
-unsafe impl Send for ViewerTab {}
-unsafe impl Sync for ViewerTab {}
 
 /// Reads the keyring, which may wait for an unlock: not on the GUI thread.
 fn stored_password(connection: &Connection) -> Option<String> {

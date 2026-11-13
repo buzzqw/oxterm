@@ -388,6 +388,8 @@ struct Browser {
     results: mpsc::Receiver<Outcome>,
     pending: Cell<usize>,
     polling: Cell<bool>,
+    /// Discards a local directory listing that finished after a newer one.
+    local_generation: Cell<u64>,
     queued: RefCell<VecDeque<String>>,
     edits: RefCell<Vec<EditSession>>,
     /// For the polling timer. Weak: the timer must not keep a closed browser alive.
@@ -507,13 +509,34 @@ impl Browser {
     }
 
     fn load_local(&self, path: &str) {
-        match local_entries(Path::new(path)) {
-            Ok(entries) => {
-                self.local.path.set_text(path);
-                self.local.fill(&entries);
-            }
-            Err(error) => self.say(&error),
-        }
+        // Directory traversal and `stat` calls can block for a long time on a
+        // huge folder or a network mount, so list on a worker and apply the
+        // result on the main thread.
+        let generation = self.local_generation.get().wrapping_add(1);
+        self.local_generation.set(generation);
+        self.say(&format!("Reading {}...", path));
+        let Some(browser) = self.me.borrow().upgrade() else {
+            return;
+        };
+        let browser = crate::Sendable(browser);
+        let path = path.to_string();
+        std::thread::spawn(move || {
+            let result = local_entries(Path::new(&path));
+            crate::run_on_main(move || {
+                let browser = browser;
+                if browser.0.local_generation.get() != generation {
+                    return;
+                }
+                match result {
+                    Ok(entries) => {
+                        browser.0.local.path.set_text(&path);
+                        browser.0.local.fill(&entries);
+                        browser.0.say(&format!("{} entries", entries.len()));
+                    }
+                    Err(error) => browser.0.say(&error),
+                }
+            });
+        });
     }
 
     fn load_remote(&self, path: &str) {
@@ -1428,6 +1451,7 @@ pub fn open(parent: &gtk::Window, connection: Connection) {
         results: result_receiver,
         pending: Cell::new(0),
         polling: Cell::new(false),
+        local_generation: Cell::new(0),
         queued: RefCell::new(VecDeque::new()),
         edits: RefCell::new(Vec::new()),
         me: RefCell::new(std::rc::Weak::new()),
