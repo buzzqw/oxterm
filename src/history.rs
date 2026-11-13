@@ -216,7 +216,8 @@ fn send_history_request(request: HistoryRequest, what: &str) -> bool {
 fn current_git_branch(cwd: &str) -> Option<String> {
     // A command can emit more than one OSC 133 command-start event in quick
     // succession; a short TTL avoids repeating even the cheap filesystem walk.
-    static CACHE: OnceLock<Mutex<HashMap<String, (Instant, Option<String>)>>> = OnceLock::new();
+    type BranchCache = Mutex<HashMap<String, (Instant, Option<String>)>>;
+    static CACHE: OnceLock<BranchCache> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(entries) = cache.lock() {
         if let Some((at, branch)) = entries.get(cwd) {
@@ -507,12 +508,22 @@ impl HistoryManager {
             return 0;
         };
         let ts = Self::now_ts();
-        let id = match conn.execute(
-            "INSERT INTO commands
-                 (command, cwd, exit_code, timestamp, duration_ms, git_branch)
-                 VALUES (?1,?2,?3,?4,?5,?6)",
-            params![command, cwd, exit_code, ts, duration_ms, git_branch],
-        ) {
+        let id = match conn
+            .prepare_cached(
+                "INSERT INTO commands
+                     (command, cwd, exit_code, timestamp, duration_ms, git_branch)
+                     VALUES (?1,?2,?3,?4,?5,?6)",
+            )
+            .and_then(|mut stmt| {
+                stmt.execute(params![
+                    command,
+                    cwd,
+                    exit_code,
+                    ts,
+                    duration_ms,
+                    git_branch
+                ])
+            }) {
             Ok(_) => conn.last_insert_rowid(),
             Err(error) => {
                 crate::logging::Logger::log(
@@ -590,10 +601,12 @@ impl HistoryManager {
                 crate::logging::log_warning("history database lock is unavailable");
                 return;
             };
-            if let Err(error) = conn.execute(
-                "UPDATE commands SET exit_code = ?1, duration_ms = ?2 WHERE id = ?3",
-                params![exit_code, duration_ms, id],
-            ) {
+            let updated = conn
+                .prepare_cached(
+                    "UPDATE commands SET exit_code = ?1, duration_ms = ?2 WHERE id = ?3",
+                )
+                .and_then(|mut stmt| stmt.execute(params![exit_code, duration_ms, id]));
+            if let Err(error) = updated {
                 crate::logging::Logger::log(
                     "WARNING",
                     "history",

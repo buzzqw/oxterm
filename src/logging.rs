@@ -51,18 +51,37 @@ fn logger_name() -> &'static str {
     LOGGER_NAME.get().copied().unwrap_or("Oxterm")
 }
 
+/// Current wall-clock time, or `None` if `gettimeofday` fails. The caller
+/// must not `assume_init` a buffer whose syscall returned an error.
+fn now_timeval() -> Option<libc::timeval> {
+    let mut tv = std::mem::MaybeUninit::<libc::timeval>::uninit();
+    if unsafe { libc::gettimeofday(tv.as_mut_ptr(), std::ptr::null_mut()) } != 0 {
+        return None;
+    }
+    Some(unsafe { tv.assume_init() })
+}
+
+fn system_timeval() -> libc::timeval {
+    let (tv_sec, tv_usec) = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| {
+            (
+                d.as_secs() as libc::time_t,
+                d.subsec_micros() as libc::suseconds_t,
+            )
+        })
+        .unwrap_or((0, 0));
+    libc::timeval { tv_sec, tv_usec }
+}
+
 /// RFC3339 UTC timestamp without external dependencies (libc `gmtime_r`).
 pub fn utc_iso_now() -> String {
     use std::mem::MaybeUninit;
 
-    let mut tv = MaybeUninit::<libc::timeval>::uninit();
-    unsafe {
-        libc::gettimeofday(tv.as_mut_ptr(), std::ptr::null_mut());
-    }
-    let tv = unsafe { tv.assume_init() };
+    let tv = now_timeval().unwrap_or_else(system_timeval);
     let mut tm = MaybeUninit::<libc::tm>::uninit();
-    unsafe {
-        libc::gmtime_r(&tv.tv_sec as *const libc::time_t, tm.as_mut_ptr());
+    if unsafe { libc::gmtime_r(&tv.tv_sec as *const libc::time_t, tm.as_mut_ptr()) }.is_null() {
+        return "1970-01-01T00:00:00.000000Z".to_string();
     }
     let tm = unsafe { tm.assume_init() };
     format!(
@@ -83,11 +102,7 @@ pub fn utc_iso_now() -> String {
 pub fn local_human_now() -> String {
     use std::mem::MaybeUninit;
 
-    let mut tv = MaybeUninit::<libc::timeval>::uninit();
-    unsafe {
-        libc::gettimeofday(tv.as_mut_ptr(), std::ptr::null_mut());
-    }
-    let tv = unsafe { tv.assume_init() };
+    let tv = now_timeval().unwrap_or_else(system_timeval);
     let mut tm = MaybeUninit::<libc::tm>::uninit();
     let tm = unsafe {
         if libc::localtime_r(&tv.tv_sec as *const libc::time_t, tm.as_mut_ptr()).is_null() {

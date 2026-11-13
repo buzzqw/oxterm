@@ -1291,7 +1291,7 @@ fn all_live_sockets() -> Vec<PathBuf> {
             Some((modified, path))
         })
         .collect();
-    sockets.sort_by(|a, b| b.0.cmp(&a.0));
+    sockets.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     sockets.into_iter().map(|(_, path)| path).collect()
 }
 
@@ -1318,7 +1318,7 @@ fn request_at_with_timeout(
     stream
         .set_write_timeout(Some(timeout))
         .map_err(|e| (1, e.to_string()))?;
-    write_json(&mut stream, &request).map_err(|e| (1, e))?;
+    write_json(&mut stream, request).map_err(|e| (1, e))?;
     let reply = read_json(&mut stream).map_err(|e| (1, e))?;
     if reply["ok"].as_bool() == Some(true) {
         Ok(reply)

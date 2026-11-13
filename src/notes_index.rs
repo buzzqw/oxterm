@@ -315,14 +315,18 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
 
 /// Split the content of a note into entries and extract tags.
 fn parse_entries(note: &str, content: &str) -> Vec<NoteEntry> {
-    let tag_re = regex::Regex::new(r"(?:^|\s)#([A-Za-z0-9][A-Za-z0-9_\-/]*)").unwrap();
+    // Compiling a regex is not free and this runs for every Markdown file on
+    // every refresh, so build it once.
+    static TAG_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"(?:^|\s)#([A-Za-z0-9][A-Za-z0-9_\-/]*)").unwrap()
+    });
     let mut entries = Vec::new();
     let mut timestamp: Option<String> = None;
     let mut body = String::new();
 
     let mut flush = |timestamp: &mut Option<String>, body: &mut String| {
         if let Some(ts) = timestamp.take() {
-            let tags: std::collections::BTreeSet<String> = tag_re
+            let tags: std::collections::BTreeSet<String> = TAG_RE
                 .captures_iter(body)
                 .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
                 .collect();

@@ -263,7 +263,7 @@ pub fn describe_tool(name: &str, arguments: &Value) -> String {
             format!(
                 "type into the shell{}:\n\n{}",
                 if enter { " and press Enter" } else { "" },
-                truncate_head(text, 600)
+                truncate_middle(text, 600)
             )
         }
         "terminal_new" | "terminal_split" => {
@@ -275,11 +275,14 @@ pub fn describe_tool(name: &str, arguments: &Value) -> String {
                     } else {
                         "pane"
                     },
-                    command
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .collect::<Vec<_>>()
-                        .join(" ")
+                    truncate_middle(
+                        &command
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                        600,
+                    )
                 ),
                 _ => format!(
                     "open a new {}",
@@ -350,6 +353,9 @@ pub fn audit_file() -> std::path::PathBuf {
 
 /// One JSON line describing a decision. `allowed` is the final outcome, which
 /// differs from the policy decision when the user answered a prompt.
+// The audit line is a flat record with independent fields; a struct would just
+// add noise at the call sites.
+#[allow(clippy::too_many_arguments)]
 pub fn audit_line(
     time: &str,
     source: &str,
@@ -398,6 +404,7 @@ pub fn append_audit(path: &Path, line: &str) -> std::io::Result<()> {
 }
 
 /// Record a decision when auditing is enabled. Never fails the caller.
+#[allow(clippy::too_many_arguments)]
 pub fn audit(
     settings: &Value,
     source: &str,
@@ -498,6 +505,26 @@ pub fn truncate_head(text: &str, max: usize) -> String {
     let mut out: String = text.chars().take(max).collect();
     out.push_str("\n… (truncated)");
     out
+}
+
+/// Keep the first and last `max` characters in total, marking what was
+/// dropped. Approval dialogs must show both ends of a command: a dangerous
+/// payload can hide after a long innocuous prefix (or in a long suffix).
+pub fn truncate_middle(text: &str, max: usize) -> String {
+    let count = text.chars().count();
+    if count <= max {
+        return text.to_string();
+    }
+    let head_len = max / 2;
+    let tail_len = max - head_len;
+    let head: String = text.chars().take(head_len).collect();
+    let tail: String = text.chars().skip(count - tail_len).collect();
+    format!(
+        "{}\n… ({} characters omitted) …\n{}",
+        head,
+        count - max,
+        tail
+    )
 }
 
 /// Keep the last `max` characters, marking what was dropped.
@@ -864,8 +891,17 @@ mod tests {
     }
 
     #[test]
+    fn middle_truncation_keeps_both_ends() {
+        let text = format!("HEAD{}TAIL", "x".repeat(2000));
+        let shown = truncate_middle(&text, 100);
+        assert!(shown.starts_with("HEAD"));
+        assert!(shown.ends_with("TAIL"));
+        assert!(shown.contains("characters omitted"));
+    }
+
+    #[test]
     fn long_output_keeps_the_tail() {
-        let output: String = std::iter::repeat('x').take(MAX_OUTPUT_CHARS + 50).collect();
+        let output = "x".repeat(MAX_OUTPUT_CHARS + 50);
         let context = FixContext {
             command: "cmd".to_string(),
             output: format!("HEAD{}TAIL", output),

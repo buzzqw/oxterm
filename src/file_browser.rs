@@ -435,7 +435,7 @@ fn local_entries(path: &Path) -> Result<Vec<RemoteEntry>, String> {
             let modified = metadata
                 .modified()
                 .ok()
-                .map(|time| {
+                .and_then(|time| {
                     let local: glib::DateTime = glib::DateTime::from_unix_local(
                         time.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64,
                     )
@@ -445,7 +445,6 @@ fn local_entries(path: &Path) -> Result<Vec<RemoteEntry>, String> {
                         .ok()
                         .map(|text| text.to_string())
                 })
-                .flatten()
                 .unwrap_or_default();
             Some(RemoteEntry {
                 name,

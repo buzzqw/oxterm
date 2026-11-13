@@ -460,7 +460,7 @@ fn parse_file_location(raw: &str) -> Option<FileLocation> {
                     | '>'
             )
         })
-        .trim_end_matches(|c| matches!(c, ',' | ';' | '.'));
+        .trim_end_matches([',', ';', '.']);
     let mut parts = text.rsplitn(3, ':');
     let last = parts.next()?;
     let second = parts.next();
@@ -704,12 +704,13 @@ fn ellipsize(text: &str, max: usize) -> String {
 }
 
 fn open_pty_slave(master: RawFd) -> Result<RawFd, String> {
-    let name = unsafe { libc::ptsname(master) };
-    if name.is_null() {
+    // `ptsname` returns a pointer to a static buffer shared by all threads;
+    // `ptsname_r` writes into our own buffer instead.
+    let mut name = [0 as libc::c_char; 128];
+    if unsafe { libc::ptsname_r(master, name.as_mut_ptr(), name.len()) } != 0 {
         return Err("ptsname failed".to_string());
     }
-    let cname = unsafe { std::ffi::CStr::from_ptr(name) };
-    let slave = unsafe { libc::open(cname.as_ptr(), libc::O_RDWR | libc::O_NOCTTY) };
+    let slave = unsafe { libc::open(name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY) };
     if slave < 0 {
         Err("cannot open slave pty".to_string())
     } else {
@@ -752,7 +753,7 @@ fn font_options_setter() -> Option<SetFontOptions> {
         let symbol = unsafe {
             libc::dlsym(
                 libc::RTLD_DEFAULT,
-                b"vte_terminal_set_font_options\0".as_ptr().cast(),
+                c"vte_terminal_set_font_options".as_ptr(),
             )
         };
         if symbol.is_null() {
@@ -1153,11 +1154,6 @@ mod imp {
         /// When true (`--hold`), keep this terminal open after its child exits
         /// instead of asking the window to close the tab.
         pub hold: RefCell<bool>,
-
-        pub resize_settle_source: RefCell<Option<glib::SourceId>>,
-        pub resize_nudge_pending: RefCell<bool>,
-        pub skip_next_resize_nudge: RefCell<bool>,
-        pub last_alloc_size: RefCell<(i32, i32)>,
 
         pub input_shadow: RefCell<String>,
         pub shadow_anchor: RefCell<Option<(i64, i64)>>,
@@ -4321,14 +4317,12 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             ));
         }
         let line = cache.as_ref()?.1.as_str();
-        let mut char_index = 0usize;
         let mut start = None;
-        for (byte, character) in line.char_indices() {
+        for (char_index, (byte, character)) in line.char_indices().enumerate() {
             if char_index == col as usize {
                 start = Some((byte, character));
                 break;
             }
-            char_index += 1;
         }
         let (start_byte, character) = start?;
         if !character.is_ascii_digit() {

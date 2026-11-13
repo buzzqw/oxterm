@@ -152,9 +152,11 @@ impl EventBus {
             .map(|state| {
                 state.subscribers.iter().any(|subscriber| {
                     subscriber.filter.include_output
-                        && subscriber.filter.events.as_ref().map_or(true, |events| {
-                            events.iter().any(|event| event == "output_line")
-                        })
+                        && subscriber
+                            .filter
+                            .events
+                            .as_ref()
+                            .is_none_or(|events| events.iter().any(|event| event == "output_line"))
                 })
             })
             .unwrap_or(false)

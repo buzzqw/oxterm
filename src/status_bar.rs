@@ -52,6 +52,12 @@ fn start_widget(label: gtk::Label, widget: Widget, cwd: Rc<dyn Fn() -> String>) 
     let weak = crate::SendWeak::new(&label);
     let interval = widget.interval.max(1) as u32;
     let refresh = std::rc::Rc::new(move || {
+        // A widget that was removed with its window must stop running shell
+        // commands; otherwise every closed status bar would keep a timer and
+        // a child process alive for the rest of the session.
+        if weak.upgrade().is_none() {
+            return glib::ControlFlow::Break;
+        }
         if running.swap(true, Ordering::SeqCst) {
             // The previous run is still in flight; skip this tick.
             return glib::ControlFlow::Continue;

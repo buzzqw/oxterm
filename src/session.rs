@@ -1,6 +1,8 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use serde_json::{json, Value};
 
@@ -12,6 +14,11 @@ use crate::settings;
 fn session_dir() -> PathBuf {
     settings::config_dir().join("sessions")
 }
+
+/// Orders concurrent writers (the autosave worker and the synchronous close
+/// save) so an older snapshot can never overwrite a newer one.
+static WRITE_ORDER: AtomicU64 = AtomicU64::new(0);
+static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 fn ensure_dir() {
     let dir = session_dir();
@@ -55,6 +62,9 @@ pub fn save_session(name: &str, data: &SessionData) -> bool {
         LOGGER.warning("session_save_too_many_tabs");
         return false;
     }
+    // Take the sequence at snapshot time, then check it while holding the write
+    // lock: a newer save queued in between makes this one a no-op.
+    let version = WRITE_ORDER.fetch_add(1, Ordering::SeqCst) + 1;
     ensure_dir();
     let payload = json!({
         "timestamp": crate::logging::utc_iso_now(),
@@ -86,6 +96,12 @@ pub fn save_session(name: &str, data: &SessionData) -> bool {
         }
     };
     let contents = serde_json::to_string_pretty(&payload).unwrap_or_default();
+    let _guard = WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if WRITE_ORDER.load(Ordering::SeqCst) != version {
+        return false;
+    }
     match atomic_write(&path, contents.as_bytes()) {
         Ok(()) => true,
         Err(e) => {

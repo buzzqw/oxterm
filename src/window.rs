@@ -1658,7 +1658,10 @@ impl TerminalWindow for DetachedWindow {
         NotesManager::new().write_note_async(text, filename.as_deref(), context, move |result| {
             if let Some(w) = weak.upgrade() {
                 match result {
-                    Ok(path) => w.note_feedback(&format!("Saved to {}", path.display()), false),
+                    Ok(path) => {
+                        w.note_feedback(&format!("Saved to {}", path.display()), false);
+                        w.note_refresh_panel_if_open();
+                    }
                     Err(e) => w.note_feedback(&format!("Could not write note: {}", e), true),
                 }
             }
@@ -1770,6 +1773,10 @@ mod main_imp {
         /// lose the open tabs.
         pub autosave_source: RefCell<Option<glib::SourceId>>,
         pub last_saved_session: RefCell<Option<crate::session::SessionData>>,
+        /// Pending debounced notes search and the generation of the newest one,
+        /// so results from an older in-flight query are discarded.
+        pub notes_search_source: RefCell<Option<glib::SourceId>>,
+        pub notes_search_generation: Cell<u64>,
         /// (columns, rows, font size) last used to size the window; settings
         /// changes only resize when one of these actually changes.
         pub applied_size_key: Cell<Option<WindowSizeKey>>,
@@ -1844,6 +1851,7 @@ impl MainWindow {
 
     fn start_session_autosave(&self) {
         let weak = self.downgrade();
+        let busy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let source = glib::timeout_add_seconds_local(30, move || {
             let Some(win) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
@@ -1857,11 +1865,53 @@ impl MainWindow {
             // With several windows in one process each would overwrite the
             // others' "last" session; only autosave a lone main window.
             if win.main_window_count() == 1 {
-                win.save_session("last");
+                win.autosave_session(&busy);
             }
             glib::ControlFlow::Continue
         });
         *self.imp().autosave_source.borrow_mut() = Some(source);
+    }
+
+    /// Serialize and fsync the session on a worker thread: `atomic_write` waits
+    /// for the disk, and the UI must not freeze every 30 seconds for it.
+    fn autosave_session(&self, busy: &std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        use std::sync::atomic::Ordering;
+        if busy.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        if !settings().get_bool("session_restore") {
+            busy.store(false, Ordering::SeqCst);
+            return;
+        }
+        let mut data = self.build_session_data();
+        if data.tabs_left.is_empty() {
+            data.tabs_left = std::mem::take(&mut data.tabs_right);
+            data.split_mode = "single".to_string();
+        }
+        if data.tabs_left.is_empty() {
+            crate::session::delete_session("last");
+            *self.imp().last_saved_session.borrow_mut() = None;
+            busy.store(false, Ordering::SeqCst);
+            return;
+        }
+        if self.imp().last_saved_session.borrow().as_ref() == Some(&data) {
+            busy.store(false, Ordering::SeqCst);
+            return;
+        }
+        let weak = crate::SendWeak::new(self);
+        let marker = data.clone();
+        let busy = busy.clone();
+        std::thread::spawn(move || {
+            let saved = crate::session::save_session("last", &data);
+            crate::run_on_main(move || {
+                if saved {
+                    if let Some(win) = weak.upgrade() {
+                        *win.imp().last_saved_session.borrow_mut() = Some(marker);
+                    }
+                }
+                busy.store(false, Ordering::SeqCst);
+            });
+        });
     }
 
     fn main_window_count(&self) -> usize {
@@ -5700,13 +5750,13 @@ impl MainWindow {
             let weak = crate::SendWeak::new(self);
             panel.search.connect_search_changed(move |_| {
                 if let Some(w) = weak.upgrade() {
-                    w.run_notes_search();
+                    w.schedule_notes_search();
                 }
             });
             let weak = crate::SendWeak::new(self);
             panel.tag.connect_changed(move |_| {
                 if let Some(w) = weak.upgrade() {
-                    w.run_notes_search();
+                    w.schedule_notes_search();
                 }
             });
             let weak = crate::SendWeak::new(self);
@@ -5791,16 +5841,42 @@ impl MainWindow {
         });
     }
 
+    /// Debounce typing in the notes search box. Every keystroke used to spawn
+    /// a thread that opened the database and re-ran the schema DDL.
+    fn schedule_notes_search(&self) {
+        self.imp()
+            .notes_search_generation
+            .set(self.imp().notes_search_generation.get() + 1);
+        if let Some(source) = self.imp().notes_search_source.borrow_mut().take() {
+            source.remove();
+        }
+        let weak = self.downgrade();
+        let source =
+            glib::timeout_add_local_once(std::time::Duration::from_millis(180), move || {
+                if let Some(w) = weak.upgrade() {
+                    *w.imp().notes_search_source.borrow_mut() = None;
+                    w.run_notes_search();
+                }
+            });
+        *self.imp().notes_search_source.borrow_mut() = Some(source);
+    }
+
     fn run_notes_search(&self) {
         let (query, tag) = match self.imp().notes_panel.borrow().as_ref() {
             Some(panel) => (panel.search_query(), panel.active_tag()),
             None => return,
         };
+        let generation = self.imp().notes_search_generation.get().wrapping_add(1);
+        self.imp().notes_search_generation.set(generation);
         let weak = crate::SendWeak::new(self);
         crate::notes_index::search_async(query, tag, 200, move |result| {
             let Some(w) = weak.upgrade() else {
                 return;
             };
+            // A newer search started while this one was running.
+            if w.imp().notes_search_generation.get() != generation {
+                return;
+            }
             match result {
                 Ok(entries) => {
                     let count = entries.len();

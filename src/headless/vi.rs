@@ -84,9 +84,7 @@ pub fn word_end(line: &str, col: usize, big: bool) -> Option<usize> {
         chars.next();
         index += 1;
     }
-    if chars.peek().is_none() {
-        return None;
-    }
+    chars.peek()?;
     chars.next();
     while chars.peek().is_some_and(|c| is_word_char(*c, big)) {
         chars.next();
@@ -191,9 +189,7 @@ fn word_object(line: &str, col: usize, big: bool, around: bool) -> Option<(usize
         chars.next();
         index += 1;
     }
-    if chars.peek().is_none() {
-        return None;
-    }
+    chars.peek()?;
     chars.next();
     let mut end = index;
     while chars.peek().is_some_and(|c| is_word_char(*c, big)) {
@@ -498,7 +494,7 @@ mod tests {
             } else if c == close {
                 if let Some(start) = stack.pop() {
                     if start <= col && col <= index {
-                        if best.map_or(true, |(bo, bi)| start >= bo && index <= bi) {
+                        if best.is_none_or(|(bo, bi)| start >= bo && index <= bi) {
                             best = Some((start, index));
                         }
                     } else if start >= col && first_after.is_none() {

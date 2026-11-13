@@ -485,7 +485,7 @@ exec sleep 60"#,
     }
 
     wait_until("the session logs", || {
-        fs::read_dir(&logs).map_or(false, |files| {
+        fs::read_dir(&logs).is_ok_and(|files| {
             files.flatten().any(|file| {
                 fs::read_to_string(file.path())
                     .is_ok_and(|text| text.contains("second-session-output"))

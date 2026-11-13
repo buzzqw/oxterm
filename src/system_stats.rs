@@ -158,7 +158,12 @@ fn proc_rss(pid: u32) -> u64 {
         .nth(1)
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(0);
-    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    let page_size = if page_size > 0 {
+        page_size as u64
+    } else {
+        4096
+    };
     rss_pages * page_size
 }
 

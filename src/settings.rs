@@ -562,6 +562,24 @@ impl Settings {
     }
 }
 
+pub fn json_to_str_map(value: &Value) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    if let Value::Object(map) = value {
+        for (k, v) in map {
+            out.insert(k.clone(), v.as_str().unwrap_or("").to_string());
+        }
+    }
+    out
+}
+
+pub fn str_map_to_json(map: &BTreeMap<String, String>) -> Value {
+    let mut obj = Map::new();
+    for (k, v) in map {
+        obj.insert(k.clone(), Value::String(v.clone()));
+    }
+    Value::Object(obj)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -625,22 +643,4 @@ mod tests {
         assert!(!SAVE_DISABLED.load(Ordering::SeqCst));
         fs::remove_dir_all(dir).unwrap();
     }
-}
-
-pub fn json_to_str_map(value: &Value) -> BTreeMap<String, String> {
-    let mut out = BTreeMap::new();
-    if let Value::Object(map) = value {
-        for (k, v) in map {
-            out.insert(k.clone(), v.as_str().unwrap_or("").to_string());
-        }
-    }
-    out
-}
-
-pub fn str_map_to_json(map: &BTreeMap<String, String>) -> Value {
-    let mut obj = Map::new();
-    for (k, v) in map {
-        obj.insert(k.clone(), Value::String(v.clone()));
-    }
-    Value::Object(obj)
 }

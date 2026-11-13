@@ -316,6 +316,11 @@ fn append_note(target: NoteTarget, text: &str, context: NoteContext) -> Result<P
     entry.push_str(&format!("\n{}\n", text.trim_end()));
 
     let (mut f, _) = open_note_file(&target)?;
+    // Hold an exclusive advisory lock for the whole append: two Oxterm
+    // instances writing to the same note must not interleave sections.
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
     f.write_all(entry.as_bytes()).map_err(|e| e.to_string())?;
     f.sync_all().map_err(|e| e.to_string())?;
     Ok(target.path)
@@ -488,48 +493,6 @@ fn open_fd(fd: libc::c_int) -> Result<fs::File, String> {
     Ok(unsafe { fs::File::from_raw_fd(fd) })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rejects_traversal_before_creating_directories() {
-        assert!(relative_note_components(Path::new("../outside.md")).is_err());
-        assert!(relative_note_components(Path::new("notes/../outside.md")).is_err());
-        assert!(relative_note_components(Path::new("/outside.md")).is_err());
-    }
-
-    #[test]
-    fn validates_and_normalizes_note_names() {
-        assert_eq!(validate_note_name(" project ").unwrap(), "project.md");
-        assert_eq!(validate_note_name("ideas.md").unwrap(), "ideas.md");
-        assert_eq!(validate_note_name("ideas.MD").unwrap(), "ideas.MD");
-        assert!(validate_note_name("").is_err());
-        assert!(validate_note_name("  ").is_err());
-        assert!(validate_note_name("/etc/passwd").is_err());
-        assert!(validate_note_name("../escape.md").is_err());
-        assert!(validate_note_name("sub/note.md").unwrap() == "sub/note.md");
-    }
-
-    #[test]
-    fn rejects_symlinked_parent_directory() {
-        let root = std::env::temp_dir().join(format!(
-            "oxterm-notes-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir(&root).unwrap();
-        std::os::unix::fs::symlink("/tmp", root.join("linked")).unwrap();
-        let root_fd = open_directory_tree(&root, false).unwrap();
-        let name = CString::new("linked").unwrap();
-        assert!(open_directory_at(&root_fd, &name, false).is_err());
-        fs::remove_dir_all(root).unwrap();
-    }
-}
-
 fn expand_user(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
@@ -578,4 +541,46 @@ pub fn reap_in_background(mut child: std::process::Child) {
     std::thread::spawn(move || {
         let _ = child.wait();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_traversal_before_creating_directories() {
+        assert!(relative_note_components(Path::new("../outside.md")).is_err());
+        assert!(relative_note_components(Path::new("notes/../outside.md")).is_err());
+        assert!(relative_note_components(Path::new("/outside.md")).is_err());
+    }
+
+    #[test]
+    fn validates_and_normalizes_note_names() {
+        assert_eq!(validate_note_name(" project ").unwrap(), "project.md");
+        assert_eq!(validate_note_name("ideas.md").unwrap(), "ideas.md");
+        assert_eq!(validate_note_name("ideas.MD").unwrap(), "ideas.MD");
+        assert!(validate_note_name("").is_err());
+        assert!(validate_note_name("  ").is_err());
+        assert!(validate_note_name("/etc/passwd").is_err());
+        assert!(validate_note_name("../escape.md").is_err());
+        assert!(validate_note_name("sub/note.md").unwrap() == "sub/note.md");
+    }
+
+    #[test]
+    fn rejects_symlinked_parent_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "oxterm-notes-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        std::os::unix::fs::symlink("/tmp", root.join("linked")).unwrap();
+        let root_fd = open_directory_tree(&root, false).unwrap();
+        let name = CString::new("linked").unwrap();
+        assert!(open_directory_at(&root_fd, &name, false).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 }

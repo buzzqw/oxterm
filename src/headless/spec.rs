@@ -1304,7 +1304,7 @@ fn man_option_name(option: &CliOption) -> String {
     let long = format!("\\-\\-{}", option.long.replace('-', "\\-"));
     let value = option
         .value
-        .map(|value| format!(" \" \" {}", value.replace(' ', " ")))
+        .map(|value| format!(" \" \" {}", value))
         .unwrap_or_default();
     match option.short {
         Some(short) => format!(".BR \\-{short} \", \" {long}{value}"),
@@ -1628,7 +1628,7 @@ pub fn bash_option_words() -> String {
         }
         out.push_str(word);
     }
-    out.push_str("\"");
+    out.push('"');
     out
 }
 

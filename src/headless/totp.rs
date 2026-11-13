@@ -11,6 +11,9 @@ const PERIOD: u64 = 30;
 const DIGITS: u32 = 6;
 const BLOCK: usize = 64;
 
+// `as_chunks` would be nicer, but it needs Rust 1.88 and this crate does not
+// declare a minimum toolchain that high yet.
+#[allow(clippy::chunks_exact_to_as_chunks)]
 fn sha1(message: &[u8]) -> [u8; 20] {
     let mut state: [u32; 5] = [
         0x6745_2301,

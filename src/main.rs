@@ -514,7 +514,7 @@ fn list_themes() -> i32 {
         .max()
         .unwrap_or(20)
         .clamp(20, 40);
-    println!("{:<width$} {:<9} {}", "THEME", "FOREGROUND", "BACKGROUND");
+    println!("{:<width$} {:<9} BACKGROUND", "THEME", "FOREGROUND");
     for (name, theme) in settings::color_schemes() {
         println!(
             "{:<width$} {:<9} {}",

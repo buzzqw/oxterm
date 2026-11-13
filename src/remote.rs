@@ -2002,11 +2002,12 @@ fn child_echo_on(state: &BrokerState) -> bool {
 
 /// Some platforms expose terminal attributes only through the slave side.
 fn read_slave_attrs(attrs: *mut libc::termios) -> bool {
-    let name = unsafe { libc::ptsname(CHILD_FD) };
-    if name.is_null() {
+    // `ptsname` uses a shared static buffer; use the reentrant variant.
+    let mut name = [0 as libc::c_char; 128];
+    if unsafe { libc::ptsname_r(CHILD_FD, name.as_mut_ptr(), name.len()) } != 0 {
         return false;
     }
-    let slave = unsafe { libc::open(name, libc::O_RDWR | libc::O_NOCTTY) };
+    let slave = unsafe { libc::open(name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY) };
     if slave < 0 {
         return false;
     }
