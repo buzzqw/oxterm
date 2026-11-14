@@ -1240,7 +1240,7 @@ fn connect_pane(browser: &Rc<Browser>, remote: bool) {
     });
     let weak = Rc::downgrade(browser);
     pane.tree.connect_key_press_event(move |_, event| {
-        use gdk::keys::constants as K;
+        use crate::keys::constants as K;
         let Some(browser) = weak.upgrade() else {
             return glib::Propagation::Proceed;
         };
@@ -1385,7 +1385,7 @@ fn show_bookmarks_menu(browser: &Rc<Browser>, remote: bool, button: &gtk::Button
 
 /// Open a browser window for `connection`.
 pub fn open(parent: &gtk::Window, connection: Connection) {
-    let window = gtk::Window::new(gtk::WindowType::Toplevel);
+    let window = gtk::Window::new();
     window.set_title(&format!("Files: {}", connection.name));
     // Keep the browser above its terminal: without a transient parent some
     // window managers open it behind and it looks as if nothing happened.

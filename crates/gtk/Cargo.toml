@@ -1,0 +1,11 @@
+[package]
+name = "gtk"
+version = "0.18.0"
+edition = "2021"
+
+[dependencies]
+gtk4 = { version = "0.11", features = ["v4_18"] }
+gdk4 = "0.11"
+glib = "0.22"
+cairo-rs = "0.22"
+pango = "0.22"

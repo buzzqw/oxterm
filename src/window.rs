@@ -5,7 +5,7 @@ use glib::subclass::prelude::*;
 use gtk::gdk;
 #[allow(non_snake_case)]
 mod K {
-    pub use gdk::keys::constants::*;
+    pub use crate::keys::constants::*;
 }
 use gtk::prelude::*;
 

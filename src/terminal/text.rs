@@ -56,7 +56,7 @@ mod tests {
         if gtk::init().is_err() {
             return;
         }
-        let window = gtk::Window::new(gtk::WindowType::Toplevel);
+        let window = gtk::Window::new();
         let terminal = Terminal::new();
         window.add(&terminal);
         window.show_all();

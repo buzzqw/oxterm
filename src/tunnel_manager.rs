@@ -92,7 +92,7 @@ pub fn add_tunnel_for(owner: &MainWindow, connection_id: &str) {
 
 impl Manager {
     fn build(owner: &MainWindow) -> Rc<Manager> {
-        let window = gtk::Window::new(gtk::WindowType::Toplevel);
+        let window = gtk::Window::new();
         window.set_title("Tunnels");
         window.set_default_size(900, 560);
         window.set_icon_name(Some("network-wired"));

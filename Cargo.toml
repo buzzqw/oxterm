@@ -3,22 +3,20 @@ name = "oxterm"
 version = "1.1.33"
 edition = "2021"
 default-run = "oxterm"
-description = "Oxterm - a GTK3/VTE terminal emulator"
+description = "Oxterm - a GTK4/VTE terminal emulator"
 license = "EUPL-1.2"
 
 [dependencies]
-gtk = "0.18"
-glib = "0.18"
+gtk = { path = "crates/gtk" }
+glib = "0.22"
 futures-channel = "0.3"
-gio = "0.18"
-gdk = "0.18"
-gdk-pixbuf = "0.18"
-pango = "0.18"
-cairo-rs = "0.18"
-zoha-vte = { version = "0.6", features = ["v0_70"] }
-# Used for vte_terminal_get_text_range(), which is the only text-extraction
-# API available on VTE 0.70 (see src/terminal/text.rs).
-zoha-vte-sys = "0.6"
+gio = "0.22"
+gdk = { package = "gdk4", version = "0.11" }
+gdk-pixbuf = "0.22"
+pango = "0.22"
+cairo-rs = "0.22"
+vte = { package = "vte4", version = "0.10", features = ["v0_84", "gtk_v4_18"] }
+vte-sys = { package = "vte4-sys", version = "0.10", features = ["v0_84"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.31", features = ["bundled", "hooks"] }

@@ -216,7 +216,7 @@ impl MainWindow {
     /// Shortcuts that work from anywhere in the panel. `Ctrl+Shift+J` is normally
     /// handled by the terminal, which does not see keys while the panel has focus.
     fn panel_shortcut(&self, key: gdk::keys::Key, state: gdk::ModifierType) -> bool {
-        use gdk::keys::constants as K;
+        use crate::keys::constants as K;
         if !state.contains(gdk::ModifierType::CONTROL_MASK) {
             return false;
         }

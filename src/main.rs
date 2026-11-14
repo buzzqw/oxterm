@@ -1,5 +1,11 @@
 #![recursion_limit = "256"]
 
+extern crate vte as zoha_vte;
+extern crate vte_sys as zoha_vte_sys;
+
+pub mod gtk_compat;
+pub use gtk_compat::*;
+
 mod agent_panel;
 mod connections_form;
 mod connections_panel;

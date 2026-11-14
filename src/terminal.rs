@@ -21,7 +21,7 @@ pub use shell_scripts::{OSC133_FISH_SCRIPT, OSC133_SCRIPT};
 
 #[allow(non_snake_case)]
 mod K {
-    pub use gdk::keys::constants::*;
+    pub use crate::keys::constants::*;
 }
 use gtk::prelude::*;
 use regex::Regex;
