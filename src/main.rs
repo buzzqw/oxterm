@@ -1,8 +1,5 @@
 #![recursion_limit = "256"]
 
-extern crate vte as zoha_vte;
-extern crate vte_sys as zoha_vte_sys;
-
 pub mod gtk_compat;
 pub use gtk_compat::*;
 
@@ -50,9 +47,9 @@ use crate::window::MainWindow;
 /// ever upgraded and used on the main thread, so carrying the `WeakRef`
 /// across to be re-upgraded there is safe.
 #[derive(Clone)]
-pub struct SendWeak<T: glib::IsA<glib::Object>>(glib::WeakRef<T>);
+pub struct SendWeak<T: glib::object::IsA<glib::Object>>(glib::WeakRef<T>);
 
-impl<T: glib::IsA<glib::Object>> SendWeak<T> {
+impl<T: glib::object::IsA<glib::Object>> SendWeak<T> {
     pub fn new(w: &T) -> Self {
         SendWeak(w.downgrade())
     }
@@ -61,8 +58,8 @@ impl<T: glib::IsA<glib::Object>> SendWeak<T> {
     }
 }
 
-unsafe impl<T: glib::IsA<glib::Object>> Send for SendWeak<T> {}
-unsafe impl<T: glib::IsA<glib::Object>> Sync for SendWeak<T> {}
+unsafe impl<T: glib::object::IsA<glib::Object>> Send for SendWeak<T> {}
+unsafe impl<T: glib::object::IsA<glib::Object>> Sync for SendWeak<T> {}
 
 /// Schedule `f` on the GTK main loop from any thread. Unlike
 /// `MainContext::invoke`, this never runs `f` synchronously on the calling
@@ -288,7 +285,7 @@ impl App {
         // session is saved and this process's temporary files are removed.
         for signal in [libc::SIGTERM, libc::SIGHUP] {
             let app = app.clone();
-            glib::unix_signal_add_local(signal, move || {
+            glib_compat::unix_signal_add_local(signal, move || {
                 for window in app.windows() {
                     if let Some(win) = window.downcast_ref::<MainWindow>() {
                         win.shutdown();

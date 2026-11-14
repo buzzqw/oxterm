@@ -429,16 +429,12 @@ mod det_imp {
 
     impl WidgetImpl for DetachedWindow {}
 
-    impl ContainerImpl for DetachedWindow {}
-
-    impl BinImpl for DetachedWindow {}
-
     impl WindowImpl for DetachedWindow {}
 }
 
 glib::wrapper! {
     pub struct DetachedWindow(ObjectSubclass<det_imp::DetachedWindow>)
-        @extends gtk::Window, gtk::Bin, gtk::Container, gtk::Widget;
+        @extends gtk::Window, gtk::Widget;
 }
 
 impl DetachedWindow {
@@ -483,10 +479,7 @@ impl DetachedWindow {
             .to_string();
         // Before the window goes: its destroy handler ends a terminal it owns.
         *self.imp().terminal.borrow_mut() = None;
-        if let Some(parent) = term
-            .parent()
-            .and_then(|parent| parent.downcast::<gtk::Container>().ok())
-        {
+        if let Some(parent) = term.parent() {
             parent.remove(&term);
         }
         main.adopt_terminal(&term, &title);
@@ -1793,10 +1786,6 @@ mod main_imp {
 
     impl WidgetImpl for MainWindow {}
 
-    impl ContainerImpl for MainWindow {}
-
-    impl BinImpl for MainWindow {}
-
     impl WindowImpl for MainWindow {}
 
     impl ApplicationWindowImpl for MainWindow {}
@@ -1804,7 +1793,7 @@ mod main_imp {
 
 glib::wrapper! {
     pub struct MainWindow(ObjectSubclass<main_imp::MainWindow>)
-        @extends gtk::ApplicationWindow, gtk::Window, gtk::Bin, gtk::Container, gtk::Widget;
+        @extends gtk::ApplicationWindow, gtk::Window, gtk::Widget;
 }
 
 /// Extra window-level options coming from the command line, inspired by modern

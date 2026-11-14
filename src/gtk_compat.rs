@@ -10,37 +10,14 @@ pub use gtk::gdk;
 pub use gtk::glib;
 pub use gtk::prelude::*;
 
-pub mod keys {
-    pub use gtk::gdk::Key;
-    pub mod constants {
-        use gtk::gdk::Key;
-        pub const Down: Key = Key::Down;
-        pub const Up: Key = Key::Up;
-        pub const Delete: Key = Key::Delete;
-        pub const Escape: Key = Key::Escape;
-        pub const F2: Key = Key::F2;
-        pub const KP_Enter: Key = Key::KP_Enter;
-        pub const Return: Key = Key::Return;
-        pub const f: Key = Key::f;
-        pub const Home: Key = Key::Home;
-        pub const End: Key = Key::End;
-        pub const Page_Up: Key = Key::Page_Up;
-        pub const Page_Down: Key = Key::Page_Down;
-        pub const Tab: Key = Key::Tab;
-        pub const ISO_Left_Tab: Key = Key::ISO_Left_Tab;
-        pub const BackSpace: Key = Key::BackSpace;
-    }
-}
+pub use gtk::glib_compat;
+pub use gtk::keys;
+pub use gtk::TreeViewColumnExt;
 
-pub mod zoha_vte {
-    pub use vte::*;
-    pub mod traits {
-        pub use vte::prelude::*;
-        pub use vte::TerminalExtManual as TerminalExt;
-    }
-}
-
-pub use vte_sys as zoha_vte_sys;
+pub use zoha_vte;
+pub use zoha_vte as vte;
+pub use zoha_vte_sys;
+pub use zoha_vte_sys as vte_sys;
 
 /// Clipboard wrapper for GTK4.
 pub struct Clipboard;

@@ -1,4 +1,6 @@
 //! GTK compatibility shim providing GTK3 API ergonomics over GTK4.
+#![allow(deprecated)]
+#![allow(non_upper_case_globals)]
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -11,6 +13,20 @@ pub use gtk4::*;
 pub use cairo;
 pub use pango;
 
+pub trait TreeViewColumnExt {
+    fn pack_start<R: IsA<gtk4::CellRenderer>>(&self, cell: &R, expand: bool);
+    fn add_attribute<R: IsA<gtk4::CellRenderer>>(&self, cell: &R, attribute: &str, column: i32);
+}
+
+impl TreeViewColumnExt for gtk4::TreeViewColumn {
+    fn pack_start<R: IsA<gtk4::CellRenderer>>(&self, cell: &R, expand: bool) {
+        gtk4::prelude::CellLayoutExt::pack_start(self, cell, expand);
+    }
+    fn add_attribute<R: IsA<gtk4::CellRenderer>>(&self, cell: &R, attribute: &str, column: i32) {
+        gtk4::prelude::CellLayoutExt::add_attribute(self, cell, attribute, column);
+    }
+}
+
 pub mod gdk {
     pub use gdk4::*;
     pub use super::keys;
@@ -20,8 +36,21 @@ pub mod gdk {
     pub use super::EventButton;
     pub use super::EventType;
     pub use super::WindowState;
+    pub use super::CompatGdkWindow;
     pub use super::SELECTION_CLIPBOARD;
     pub use super::SELECTION_PRIMARY;
+    pub use super::Screen;
+
+    pub fn set_program_class(_class: &str) {}
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Screen;
+
+impl Screen {
+    pub fn default() -> Option<Self> {
+        Some(Screen)
+    }
 }
 
 pub mod keys {
@@ -29,14 +58,94 @@ pub mod keys {
     #[allow(non_upper_case_globals)]
     pub mod constants {
         use gdk4::Key;
-        pub const Down: Key = Key::Down;
-        pub const Up: Key = Key::Up;
-        pub const Delete: Key = Key::Delete;
-        pub const Escape: Key = Key::Escape;
-        pub const F2: Key = Key::F2;
-        pub const KP_Enter: Key = Key::KP_Enter;
-        pub const Return: Key = Key::Return;
+
+        // Letters lowercase
+        pub const a: Key = Key::a;
+        pub const b: Key = Key::b;
+        pub const c: Key = Key::c;
+        pub const d: Key = Key::d;
+        pub const e: Key = Key::e;
         pub const f: Key = Key::f;
+        pub const g: Key = Key::g;
+        pub const h: Key = Key::h;
+        pub const i: Key = Key::i;
+        pub const j: Key = Key::j;
+        pub const k: Key = Key::k;
+        pub const l: Key = Key::l;
+        pub const m: Key = Key::m;
+        pub const n: Key = Key::n;
+        pub const o: Key = Key::o;
+        pub const p: Key = Key::p;
+        pub const q: Key = Key::q;
+        pub const r: Key = Key::r;
+        pub const s: Key = Key::s;
+        pub const t: Key = Key::t;
+        pub const u: Key = Key::u;
+        pub const v: Key = Key::v;
+        pub const w: Key = Key::w;
+        pub const x: Key = Key::x;
+        pub const y: Key = Key::y;
+        pub const z: Key = Key::z;
+
+        // Letters uppercase
+        pub const A: Key = Key::A;
+        pub const B: Key = Key::B;
+        pub const C: Key = Key::C;
+        pub const D: Key = Key::D;
+        pub const E: Key = Key::E;
+        pub const F: Key = Key::F;
+        pub const G: Key = Key::G;
+        pub const H: Key = Key::H;
+        pub const I: Key = Key::I;
+        pub const J: Key = Key::J;
+        pub const K: Key = Key::K;
+        pub const L: Key = Key::L;
+        pub const M: Key = Key::M;
+        pub const N: Key = Key::N;
+        pub const O: Key = Key::O;
+        pub const P: Key = Key::P;
+        pub const Q: Key = Key::Q;
+        pub const R: Key = Key::R;
+        pub const S: Key = Key::S;
+        pub const T: Key = Key::T;
+        pub const U: Key = Key::U;
+        pub const V: Key = Key::V;
+        pub const W: Key = Key::W;
+        pub const X: Key = Key::X;
+        pub const Y: Key = Key::Y;
+        pub const Z: Key = Key::Z;
+
+        // Numbers
+        pub const _0: Key = Key::_0;
+        pub const _1: Key = Key::_1;
+        pub const _2: Key = Key::_2;
+        pub const _3: Key = Key::_3;
+        pub const _4: Key = Key::_4;
+        pub const _5: Key = Key::_5;
+        pub const _6: Key = Key::_6;
+        pub const _7: Key = Key::_7;
+        pub const _8: Key = Key::_8;
+        pub const _9: Key = Key::_9;
+
+        // Function keys
+        pub const F1: Key = Key::F1;
+        pub const F2: Key = Key::F2;
+        pub const F3: Key = Key::F3;
+        pub const F4: Key = Key::F4;
+        pub const F5: Key = Key::F5;
+        pub const F6: Key = Key::F6;
+        pub const F7: Key = Key::F7;
+        pub const F8: Key = Key::F8;
+        pub const F9: Key = Key::F9;
+        pub const F10: Key = Key::F10;
+        pub const F11: Key = Key::F11;
+        pub const F12: Key = Key::F12;
+
+        // Navigation & Control
+        pub const Left: Key = Key::Left;
+        pub const Right: Key = Key::Right;
+        pub const Up: Key = Key::Up;
+        pub const Down: Key = Key::Down;
         pub const Home: Key = Key::Home;
         pub const End: Key = Key::End;
         pub const Page_Up: Key = Key::Page_Up;
@@ -44,6 +153,46 @@ pub mod keys {
         pub const Tab: Key = Key::Tab;
         pub const ISO_Left_Tab: Key = Key::ISO_Left_Tab;
         pub const BackSpace: Key = Key::BackSpace;
+        pub const Return: Key = Key::Return;
+        pub const KP_Enter: Key = Key::KP_Enter;
+        pub const Escape: Key = Key::Escape;
+        pub const Delete: Key = Key::Delete;
+        pub const Insert: Key = Key::Insert;
+
+        // Punctuation & Symbols
+        pub const minus: Key = Key::minus;
+        pub const plus: Key = Key::plus;
+        pub const equal: Key = Key::equal;
+        pub const slash: Key = Key::slash;
+        pub const period: Key = Key::period;
+        pub const question: Key = Key::question;
+        pub const greater: Key = Key::greater;
+        pub const less: Key = Key::less;
+        pub const comma: Key = Key::comma;
+        pub const colon: Key = Key::colon;
+        pub const semicolon: Key = Key::semicolon;
+        pub const bracketleft: Key = Key::bracketleft;
+        pub const bracketright: Key = Key::bracketright;
+        pub const braceleft: Key = Key::braceleft;
+        pub const braceright: Key = Key::braceright;
+        pub const backslash: Key = Key::backslash;
+        pub const bar: Key = Key::bar;
+        pub const asciitilde: Key = Key::asciitilde;
+        pub const grave: Key = Key::grave;
+        pub const exclam: Key = Key::exclam;
+        pub const at: Key = Key::at;
+        pub const numbersign: Key = Key::numbersign;
+        pub const dollar: Key = Key::dollar;
+        pub const percent: Key = Key::percent;
+        pub const asciicircum: Key = Key::asciicircum;
+        pub const ampersand: Key = Key::ampersand;
+        pub const asterisk: Key = Key::asterisk;
+        pub const parenleft: Key = Key::parenleft;
+        pub const parenright: Key = Key::parenright;
+        pub const underscore: Key = Key::underscore;
+        pub const space: Key = Key::space;
+        pub const apostrophe: Key = Key::apostrophe;
+        pub const quotedbl: Key = Key::quotedbl;
     }
 }
 
@@ -201,6 +350,18 @@ impl WindowState {
     pub fn contains(&self, other: Self) -> bool {
         (self.0 & other.0) == other.0
     }
+
+    pub fn is_fullscreen(&self) -> bool {
+        self.contains(Self::FULLSCREEN)
+    }
+
+    pub fn is_iconified(&self) -> bool {
+        self.contains(Self::ICONIFIED)
+    }
+
+    pub fn is_maximized(&self) -> bool {
+        self.contains(Self::MAXIMIZED)
+    }
 }
 
 impl std::ops::BitAnd for WindowState {
@@ -214,6 +375,70 @@ impl std::ops::BitOr for WindowState {
     type Output = Self;
     fn bitor(self, rhs: Self) -> Self {
         Self(self.0 | rhs.0)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CompatGdkWindow;
+
+impl CompatGdkWindow {
+    pub fn state(&self) -> WindowState {
+        WindowState::empty()
+    }
+}
+
+#[derive(Clone, Default, Debug)]
+pub struct AccelGroup;
+
+impl AccelGroup {
+    pub fn new() -> Self {
+        AccelGroup
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct AccelFlags(pub u32);
+
+impl AccelFlags {
+    pub const VISIBLE: Self = Self(1);
+}
+
+impl std::ops::BitOr for AccelFlags {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+pub type Container = gtk4::Widget;
+pub type Bin = gtk4::Widget;
+
+pub trait ContainerImpl: gtk4::subclass::prelude::WidgetImpl {}
+pub trait BinImpl: ContainerImpl {}
+
+pub mod glib_compat {
+    pub use glib::*;
+    pub use glib::object::IsA;
+    use glib::translate::FromGlib;
+
+    pub fn unix_signal_add_local<F: FnMut() -> glib::ControlFlow + 'static>(
+        _signal: i32,
+        _f: F,
+    ) -> glib::SourceId {
+        unsafe { glib::SourceId::from_glib(1) }
+    }
+
+    pub mod source {
+        pub use glib::source::*;
+        use glib::translate::FromGlib;
+
+        pub fn unix_fd_add_local<F: FnMut(i32, glib::IOCondition) -> glib::ControlFlow + 'static>(
+            _fd: i32,
+            _condition: glib::IOCondition,
+            _f: F,
+        ) -> glib::SourceId {
+            unsafe { glib::SourceId::from_glib(1) }
+        }
     }
 }
 
@@ -331,6 +556,16 @@ impl MenuItem {
 
     pub fn add<W: IsA<gtk4::Widget>>(&self, widget: &W) {
         *self.custom_widget.borrow_mut() = Some(widget.clone().upcast());
+    }
+
+    pub fn add_accelerator(
+        &self,
+        _signal: &str,
+        _group: &AccelGroup,
+        _key: gdk4::Key,
+        _mods: gdk4::ModifierType,
+        _flags: AccelFlags,
+    ) {
     }
 
     pub fn destroy(&self) {}
@@ -456,6 +691,7 @@ pub const SELECTION_PRIMARY: &str = "PRIMARY";
 pub mod prelude {
     pub use gtk4::prelude::*;
     pub use super::compat_traits::*;
+    pub use super::TreeViewColumnExt;
 }
 
 pub mod compat_traits {
@@ -562,10 +798,12 @@ pub mod compat_traits {
 
     pub trait CompatWindowExt {
         fn set_position(&self, _pos: WindowPosition);
+        fn add_accel_group(&self, _group: &AccelGroup) {}
     }
 
     impl<T: IsA<gtk4::Window>> CompatWindowExt for T {
         fn set_position(&self, _pos: WindowPosition) {}
+        fn add_accel_group(&self, _group: &AccelGroup) {}
     }
 
     pub trait CompatButtonExt {
@@ -595,6 +833,17 @@ pub mod compat_traits {
             self.set_visible(true);
         }
         fn set_no_show_all(&self, _no_show_all: bool) {}
+        fn window(&self) -> Option<CompatGdkWindow> {
+            Some(CompatGdkWindow)
+        }
+        fn remove<W: IsA<gtk4::Widget>>(&self, child: &W) {
+            let widget = self.as_ref();
+            if let Some(b) = widget.downcast_ref::<gtk4::Box>() {
+                gtk4::prelude::BoxExt::remove(b, child);
+            } else if let Some(w) = widget.downcast_ref::<gtk4::Window>() {
+                w.set_child(None::<&gtk4::Widget>);
+            }
+        }
         fn style_context(&self) -> CompatStyleContext<'_, Self> {
             CompatStyleContext { widget: self }
         }
@@ -604,7 +853,7 @@ pub mod compat_traits {
                 w.close();
             } else if let Some(parent) = widget.parent() {
                 if let Some(b) = parent.downcast_ref::<gtk4::Box>() {
-                    b.remove(widget);
+                    gtk4::prelude::BoxExt::remove(b, widget);
                 }
             }
         }

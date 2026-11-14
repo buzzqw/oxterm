@@ -1,0 +1,7 @@
+[package]
+name = "zoha-vte"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+vte = { package = "vte4", version = "0.10", features = ["v0_84", "gtk_v4_18"] }

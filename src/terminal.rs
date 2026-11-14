@@ -1288,8 +1288,6 @@ mod imp {
 
     impl WidgetImpl for TerminalBox {}
 
-    impl ContainerImpl for TerminalBox {}
-
     impl BoxImpl for TerminalBox {}
 }
 
@@ -1297,7 +1295,7 @@ pub type ValueRow = serde_json::Value;
 
 glib::wrapper! {
     pub struct TerminalBox(ObjectSubclass<imp::TerminalBox>)
-        @extends gtk::Box, gtk::Container, gtk::Widget,
+        @extends gtk::Box, gtk::Widget,
         @implements gtk::Orientable;
 }
 
@@ -2155,7 +2153,7 @@ impl TerminalBox {
             return;
         }
         let weak = crate::SendWeak::new(self);
-        let source = glib::source::unix_fd_add_local(
+        let source = gtk::glib_compat::source::unix_fd_add_local(
             fd,
             glib::IOCondition::IN | glib::IOCondition::HUP | glib::IOCondition::ERR,
             move |_fd, condition| {

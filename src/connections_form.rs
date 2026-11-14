@@ -7,6 +7,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use gtk::gdk;
 use gtk::prelude::*;
 
 use crate::headless::connections::{
