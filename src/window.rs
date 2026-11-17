@@ -4134,19 +4134,44 @@ impl MainWindow {
         }
     }
 
+    /// The saved connection behind a tab, if the tab came from the book.
+    fn saved_connection_for_tab(
+        &self,
+        term: &TerminalBox,
+    ) -> Option<crate::headless::connections::Connection> {
+        let id = term.connection_id()?;
+        let entries = crate::connections_ui::load_entries().ok()?;
+        let entry = crate::headless::connections::find_entry_by_id(&entries, &id)?;
+        Some(entry.connection.clone())
+    }
+
+    /// The saved or ad-hoc SSH connection behind a tab, if it has one.
+    fn connection_for_tab(
+        &self,
+        term: &TerminalBox,
+    ) -> Option<crate::headless::connections::Connection> {
+        if let Some(connection) = self.saved_connection_for_tab(term) {
+            return Some(connection);
+        }
+        let destination = term.ssh_destination()?;
+        crate::headless::connections::from_destination(&destination)
+    }
+
     fn browsing_connection_for(
         &self,
         term: &TerminalBox,
     ) -> Option<crate::headless::connections::Connection> {
-        if let Some(id) = term.connection_id() {
-            let entries = crate::connections_ui::load_entries().ok()?;
-            let entry = crate::headless::connections::find_entry_by_id(&entries, &id)?;
-            if crate::headless::remote_files::supports_browsing(&entry.connection) {
-                return Some(entry.connection.clone());
-            }
+        let connection = self.connection_for_tab(term)?;
+        if crate::headless::remote_files::supports_browsing(&connection) {
+            return Some(connection);
         }
-        let destination = term.ssh_destination()?;
-        crate::headless::connections::from_destination(&destination)
+        // A saved command tab may still be running ssh; let the destination
+        // fallback describe what is actually connected.
+        if term.connection_id().is_some() {
+            let destination = term.ssh_destination()?;
+            return crate::headless::connections::from_destination(&destination);
+        }
+        None
     }
 
     fn on_tab_button_press(&self, term: &TerminalBox) {
@@ -4170,6 +4195,20 @@ impl MainWindow {
                 }
             });
             menu.append(&item_reset);
+        }
+        if let Some(connection) = self
+            .connection_for_tab(term)
+            .filter(|connection| connection.protocol == crate::headless::connections::Protocol::Ssh)
+        {
+            let weak = crate::SendWeak::new(self);
+            let item_duplicate = gtk::MenuItem::with_label("Duplicate Connection");
+            item_duplicate.set_tooltip_text(Some("Open another tab on the same SSH host"));
+            item_duplicate.connect_activate(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.connect(connection.clone(), crate::connections_ui::Placement::Tab);
+                }
+            });
+            menu.append(&item_duplicate);
         }
         if let Some(connection) = self.browsing_connection_for(term) {
             let weak = crate::SendWeak::new(self);
