@@ -962,10 +962,11 @@ impl Connection {
         self.auth == Auth::SecretService || self.totp
     }
 
-    /// What in this entry acts on this computer, or by itself, instead of only
-    /// describing a destination: options that run a local program, a pre-connect
-    /// command, a log file, typing commands when a pattern appears. Shown before
-    /// importing an entry: the book is data, this part is not.
+    /// What in this entry acts on this computer, on a server, or by itself,
+    /// instead of only describing a destination: commands, automation, logs,
+    /// forwards, agent/X11 forwarding, weakened host-key checks and legacy
+    /// algorithms. Shown before importing an entry and when editing one: the
+    /// book is data, this part is not.
     pub fn local_execution_options(&self) -> Vec<String> {
         let mut found = Vec::new();
         if self.protocol == Protocol::Command {
@@ -980,22 +981,72 @@ impl Connection {
         if !self.pre_command.trim().is_empty() {
             found.push(format!("pre-connect command: {}", self.pre_command));
         }
+        if !self.remote_command.trim().is_empty() {
+            found.push(format!("remote command: {}", self.remote_command));
+        }
         if !self.expect.is_empty() {
             found.push(format!("{} expect rule(s)", self.expect.len()));
         }
         if self.log_output {
             found.push(format!("log folder: {}", self.log_dir));
         }
+        if self.agent_forward {
+            found.push("agent forwarding".to_string());
+        }
+        if self.x11 {
+            found.push("X11 forwarding".to_string());
+        }
+        let legacy: Vec<&str> = [
+            (self.legacy_kex, "key exchange"),
+            (self.legacy_cipher, "ciphers"),
+            (self.legacy_hostkey, "host keys"),
+            (self.legacy_mac, "MACs"),
+            (self.legacy_pubkey, "public keys"),
+        ]
+        .into_iter()
+        .filter_map(|(enabled, label)| enabled.then_some(label))
+        .collect();
+        if !legacy.is_empty() {
+            found.push(format!("legacy algorithms ({})", legacy.join(", ")));
+        }
+        for tunnel in &self.tunnels {
+            if tunnel.autostart {
+                found.push(format!("autostart tunnel: {}", tunnel.describe()));
+            }
+        }
         for argument in &self.extra_args {
             let lower = argument.to_ascii_lowercase();
-            if [
-                "proxycommand",
-                "localcommand",
-                "permitlocalcommand",
-                "knownhostscommand",
-            ]
-            .iter()
-            .any(|option| lower.contains(option))
+            let flag = argument.get(..2).unwrap_or(argument);
+            let writes_or_loads = matches!(flag, "-F" | "-E" | "-O");
+            let forwards = matches!(flag, "-L" | "-R" | "-D");
+            let session_flags = matches!(flag, "-A" | "-X" | "-Y");
+            if writes_or_loads
+                || forwards
+                || session_flags
+                || [
+                    "proxycommand",
+                    "localcommand",
+                    "permitlocalcommand",
+                    "knownhostscommand",
+                    "include",
+                    "match",
+                    "stricthostkeychecking",
+                    "userknownhostsfile",
+                    "globalknownhostsfile",
+                    "checkhostip",
+                    "verifyhostkeydns",
+                    "identityagent",
+                    "forwardagent",
+                    "forwardx11",
+                    "hostkeyalgorithms",
+                    "pubkeyacceptedalgorithms",
+                    "kexalgorithms",
+                    "ciphers",
+                    "macs",
+                    "logfile",
+                ]
+                .iter()
+                .any(|option| lower.contains(option))
             {
                 found.push(argument.clone());
             }
@@ -1262,7 +1313,7 @@ pub fn import_into(
         let risky = connection.local_execution_options();
         if !risky.is_empty() && !allow_local {
             report.skipped.push(format!(
-                "{}: runs a local program ({}); pass --allow-local-commands",
+                "{}: has risky options ({}); pass --allow-local-commands",
                 name,
                 risky.join(" ")
             ));
@@ -1419,14 +1470,19 @@ pub fn from_destination(name: &str) -> Option<Connection> {
     if host.is_empty() {
         return None;
     }
-    Some(Connection {
+    let connection = Connection {
         id: format!("browse:{}", name),
         name: name.to_string(),
         host,
         user,
         port,
         ..Default::default()
-    })
+    };
+    // The destination comes from a running ssh command line, which could
+    // contain anything after `--`; do not turn an option-like string into a
+    // second ssh command.
+    connection.validate().ok()?;
+    Some(connection)
 }
 
 // ── Tree shown by the panel ──────────────────────────────────
@@ -2541,6 +2597,8 @@ mod tests {
         assert!(manual("", "h").validate().is_err());
         assert!(manual("ok", "h").validate().is_ok());
         assert!(manual("ok", "user@[::1]").validate().is_ok());
+        assert!(from_destination("-oProxyCommand=evil").is_none());
+        assert!(from_destination("host name").is_none());
     }
 
     #[test]
@@ -2553,6 +2611,30 @@ mod tests {
             connection.local_execution_options(),
             ["-oProxyCommand=nc %h %p"]
         );
+    }
+
+    #[test]
+    fn import_warnings_cover_forwarding_and_weakened_security() {
+        let mut connection = manual("x", "h");
+        connection.remote_command = "rm -rf /tmp/x".into();
+        connection.agent_forward = true;
+        connection.legacy_cipher = true;
+        connection.tunnels = vec![Tunnel {
+            listen: "127.0.0.1:8080".into(),
+            target: "h:80".into(),
+            autostart: true,
+            ..Tunnel::default()
+        }];
+        connection.extra_args = vec!["-o".into(), "StrictHostKeyChecking=no".into(), "-X".into()];
+        let found = connection.local_execution_options();
+        assert!(found.iter().any(|line| line.starts_with("remote command")));
+        assert!(found.iter().any(|line| line == "agent forwarding"));
+        assert!(found.iter().any(|line| line.contains("legacy algorithms")));
+        assert!(found.iter().any(|line| line.contains("autostart tunnel")));
+        assert!(found
+            .iter()
+            .any(|line| line.contains("StrictHostKeyChecking=no")));
+        assert!(found.iter().any(|line| line == "-X"));
     }
 
     #[test]

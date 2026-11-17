@@ -7,6 +7,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
+use std::fs::OpenOptions;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -425,6 +427,30 @@ fn edit_local_path(connection_id: &str, remote: &str, name: &str) -> PathBuf {
         .join(format!("{:016x}-{}", hasher.finish(), safe(name)))
 }
 
+/// Prepare the private local copy used for editing a remote file. The cache can
+/// hold anything the server stores, so neither the folder nor the file may be
+/// readable by other local accounts.
+fn prepare_edit_copy(local: &Path) -> Result<(), String> {
+    if let Some(parent) = local.parent() {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)
+            .map_err(|error| format!("{}: {}", parent.display(), error))?;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| format!("{}: {}", parent.display(), error))?;
+    }
+    OpenOptions::new()
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(local)
+        .map_err(|error| format!("{}: {}", local.display(), error))?;
+    std::fs::set_permissions(local, std::fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("{}: {}", local.display(), error))
+}
+
 fn local_entries(path: &Path) -> Result<Vec<RemoteEntry>, String> {
     let reader =
         std::fs::read_dir(path).map_err(|error| format!("{}: {}", path.display(), error))?;
@@ -797,20 +823,19 @@ impl Browser {
             self.open_editor(&local);
             return;
         }
-        if let Some(parent) = local.parent() {
-            if let Err(error) = std::fs::create_dir_all(parent) {
-                self.say(&format!("{}: {}", parent.display(), error));
-                return;
-            }
-        }
         if local.exists()
             && !self.confirm(&format!(
                 "An edited copy of '{}' already exists. Download the server version and replace it?",
                 name
             ))
         {
+            let _ = std::fs::set_permissions(&local, std::fs::Permissions::from_mode(0o600));
             self.watch_edit(local.clone(), remote, name.clone());
             self.open_editor(&local);
+            return;
+        }
+        if let Err(error) = prepare_edit_copy(&local) {
+            self.say(&error);
             return;
         }
         self.say(&format!("Downloading {}...", name));
@@ -1133,7 +1158,13 @@ impl Browser {
                 name,
                 result,
             } => match result {
-                Ok(()) => self.start_editing(local, remote, name),
+                Ok(()) => {
+                    // sftp creates the file with the user's umask; keep the
+                    // downloaded copy private even on an older cache entry.
+                    let _ =
+                        std::fs::set_permissions(&local, std::fs::Permissions::from_mode(0o600));
+                    self.start_editing(local, remote, name)
+                }
                 Err(error) => self.say(&format!("Could not download {}: {}", name, error)),
             },
             Outcome::EditUploaded {
@@ -1498,4 +1529,30 @@ pub fn open(parent: &gtk::Window, connection: Connection) {
     browser.start_polling();
     window.show_all();
     window.present();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mode(path: &Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn a_remote_edit_copy_is_private() {
+        let base = std::env::temp_dir().join(format!(
+            "oxterm-edit-copy-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let file = base.join("connection").join("notes.txt");
+        prepare_edit_copy(&file).unwrap();
+        assert_eq!(mode(&file), 0o600);
+        assert_eq!(mode(file.parent().unwrap()), 0o700);
+        std::fs::remove_dir_all(base).unwrap();
+    }
 }

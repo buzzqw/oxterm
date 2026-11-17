@@ -1301,7 +1301,7 @@ pub fn edit(
                         error.set_text("");
                     } else {
                         error.set_text(&format!(
-                            "This entry acts on this computer or by itself: {}",
+                            "This entry has security-relevant options: {}",
                             risky.join(" ")
                         ));
                     }

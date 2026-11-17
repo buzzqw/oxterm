@@ -1711,6 +1711,30 @@ fn ssh_details_text(connection: &Connection, command: &str, effective: Option<&s
             ));
             let agent = ssh_config_value(config, "forwardagent").unwrap_or("no");
             text.push_str(&format!("  Agent forwarding: {}\n", agent));
+            let mut notes = Vec::new();
+            match ssh_config_value(config, "stricthostkeychecking") {
+                Some("no" | "off" | "false") => notes.push("host-key verification is disabled"),
+                _ => {}
+            }
+            if ssh_config_value(config, "userknownhostsfile")
+                .is_some_and(|paths| paths.split_whitespace().all(|path| path == "/dev/null"))
+            {
+                notes.push("host keys are not saved (known_hosts is /dev/null)");
+            }
+            if agent == "yes" {
+                notes.push("the SSH agent is forwarded to the server");
+            }
+            if ssh_config_value(config, "forwardx11").is_some_and(|value| value == "yes")
+                || ssh_config_value(config, "forwardx11trusted").is_some_and(|value| value == "yes")
+            {
+                notes.push("X11 is forwarded to the server");
+            }
+            if !notes.is_empty() {
+                text.push_str("\nSecurity notes\n");
+                for note in notes {
+                    text.push_str(&format!("  - {}\n", note));
+                }
+            }
             text.push_str("\nEffective configuration (ssh -G)\n");
             text.push_str(config.trim_end());
             text.push('\n');

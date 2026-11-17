@@ -66,8 +66,9 @@ fn create_private_dir(path: &Path) -> io::Result<()> {
         .mode(0o700)
         .create(path)
     {
-        Ok(()) => Ok(()),
-        // Another Oxterm may have created it between the check and the create.
+        // Verify even after creating: another process may have won the race
+        // and made the directory first (or `mkdir -p` accepted an existing one).
+        Ok(()) => check_private_dir(path),
         Err(_) if path.is_dir() => check_private_dir(path),
         Err(error) => Err(error),
     }

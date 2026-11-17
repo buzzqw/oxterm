@@ -1178,9 +1178,11 @@ oxterm tunnel stop db-prod-1
 ```
 
 An import gives every entry a new id and never replaces an existing one. An entry
-that would act by itself is skipped unless you pass `--allow-local-commands`:
-extra arguments such as `ProxyCommand`, a pre-connect command, automation rules, a
-log folder, a command entry, a custom VNC server command, or a shared folder.
+with security-relevant options is skipped unless you pass
+`--allow-local-commands`: extra arguments such as `ProxyCommand`, forwarded ports,
+agent or X11 forwarding, weakened host-key checks or legacy algorithms; a
+pre-connect or remote command; automation rules; an autostart tunnel; a log
+folder; a command entry; a custom VNC server command; or a shared folder.
 
 ### SSH connections
 

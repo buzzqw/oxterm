@@ -213,9 +213,10 @@ pub const VERBS: &[Verb] = &[
                List saved connections and the hosts from ~/.ssh/config, print the book\n\
                as JSON, or add the entries of an exported file. None of these opens a\n\
                window or needs a running Oxterm, and the book holds no secrets.\n\n\
-               An import never replaces an entry and always gets new ids. Entries that\n\
-               would act by themselves (ProxyCommand, a pre-connect command, automation\n\
-               rules, a log folder) are skipped unless --allow-local-commands is given.\n",
+               An import never replaces an entry and always gets new ids. Entries with\n\
+               security-relevant options (ProxyCommand, forwarded ports, agent or X11\n\
+               forwarding, commands and automation, weak host-key checks or legacy\n\
+               algorithms) are skipped unless --allow-local-commands is given.\n",
     },
     Verb {
         name: "tunnel",
