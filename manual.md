@@ -978,9 +978,14 @@ search names, hosts, users, groups, tags and notes. Right-click a group for
 connections, and the current connection's macros.
 
 - `Enter` or a double click opens a tab, `Ctrl+Enter` a split. The context menu
-  also offers a new window, `sftp`, tunnels, copying the `ssh` command, favorites,
+  also offers a new window, `sftp`, tunnels, `SSH Details` (what `ssh -G`
+  resolves), copying the `ssh` command, forgetting a stored password, favorites,
   editing, and deleting. `Ctrl+N` creates an entry, `F2` edits, `Delete` deletes,
   and `Esc` or `Ctrl+Shift+J` closes the panel.
+- Right-click an SSH tab for **Reconnect**, **Duplicate Connection**, **SSH
+  Details**, **Browse Remote Files...** and **Forget Stored Password**. Reconnect
+  replaces the tab with a fresh login; duplicate opens another tab on the same
+  host without touching the first one.
 - The command palette (`Ctrl+Shift+P`) finds connections as you type, and
   `/ssh NAME` at a local prompt opens one. `/ssh` alone opens the host picker.
 - **Color scheme** (Advanced page) gives an entry's tabs their own colors, so a
@@ -1136,7 +1141,9 @@ jump host, a generic `Password:`, passphrases and host-key questions are always
 asked in the terminal. **Answer one-time codes** does the same for 6-digit,
 30-second codes: paste the secret or `otpauth://` link, which goes to the keyring,
 and Oxterm answers a code prompt only when it names this user and host. Without `secret-tool` or the helper,
-`ssh` simply prompts as usual.
+`ssh` simply prompts as usual. **Forget Stored Password** in the panel's or the
+tab's context menu removes both the password and any one-time code from the
+keyring and switches the entry back to keys, agent or the normal ssh prompt.
 
 **Tunnels.** An entry can save local (`-L`), remote (`-R`) and SOCKS (`-D`)
 tunnels, started from the context menu, automatically with the connection, or
@@ -1200,9 +1207,10 @@ With shell integration active, `ssh` typed at the prompt goes through a small
 wrapper that:
 
 - shares one authenticated connection per server, port, and user across all
-  tabs (`ControlMaster=auto`, socket in `~/.config/oxterm/cm-<hash>`, kept for
-  10 minutes after the last session closes). A second tab to the same server
-  opens instantly without logging in again;
+  tabs (`ControlMaster=auto`, socket in `$XDG_RUNTIME_DIR/oxterm/cm-<hash>`,
+  falling back to a short private path when the runtime directory is missing,
+  kept for 10 minutes after the last session closes). A second tab to the same
+  server opens instantly without logging in again;
 - enables keepalives (`ServerAliveInterval=30`) when your configuration sets
   none, so a dropped connection ends the session instead of freezing the tab.
 

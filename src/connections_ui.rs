@@ -588,6 +588,11 @@ impl MainWindow {
         if protocol == Protocol::Ssh {
             let connection = entry.connection.clone();
             add(
+                "SSH Details...",
+                Box::new(move |window| window.show_ssh_details(connection.clone())),
+            );
+            let connection = entry.connection.clone();
+            add(
                 "Copy Public Key to Server",
                 Box::new(move |window| window.copy_key_to_server(&connection)),
             );
@@ -599,6 +604,13 @@ impl MainWindow {
                 Box::new(move |_| {
                     gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).set_text(&command);
                 }),
+            );
+        }
+        if entry.connection.uses_keyring() {
+            let id = id.to_string();
+            add(
+                "Forget Stored Password",
+                Box::new(move |window| window.forget_stored_password(&id)),
             );
         }
         {
@@ -799,6 +811,113 @@ impl MainWindow {
         }
     }
 
+    /// Forget the keyring entries of a connection and stop asking for them.
+    /// The book keeps its identity, tunnels and metadata.
+    pub(crate) fn forget_stored_password(&self, id: &str) {
+        let Ok(entries) = load_entries() else {
+            return;
+        };
+        let Some(entry) = connections::find_entry_by_id(&entries, id) else {
+            return;
+        };
+        if !entry.connection.uses_keyring() {
+            return;
+        }
+        let dialog = gtk::MessageDialog::new(
+            Some(self),
+            gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+            gtk::MessageType::Question,
+            gtk::ButtonsType::YesNo,
+            &format!(
+                "Forget the stored password and one-time code for '{}'?",
+                entry.connection.name
+            ),
+        );
+        let answer = dialog.run();
+        // SAFETY of the GTK contract: `run` has returned and nothing else owns it.
+        unsafe {
+            dialog.destroy();
+        }
+        if answer != gtk::ResponseType::Yes {
+            return;
+        }
+        let mut connection = entry.connection.clone();
+        connection.auth = Auth::Default;
+        connection.totp = false;
+        let label = connection.name.clone();
+        match connections::update_book(&connections::book_path(), |book| {
+            book.upsert(connection.clone())
+        }) {
+            Ok(()) => {
+                let id = connection.id.clone();
+                std::thread::spawn(move || {
+                    askpass::clear_secret(&id);
+                    askpass::clear_totp_secret(&id);
+                });
+                self.status_message(&format!("Stored password forgotten for {}", label), false);
+                self.reload_connections_panel();
+            }
+            Err(error) => self.status_message(&format!("Could not save: {}", error), true),
+        }
+    }
+
+    /// Show what OpenSSH will actually use for this entry. `ssh -G` can block on
+    /// `Match exec` rules, so it runs on a worker and the dialog opens after.
+    pub fn show_ssh_details(&self, connection: Connection) {
+        let title = connection.name.clone();
+        self.status_message(
+            &format!("Reading SSH configuration for {}...", title),
+            false,
+        );
+        let weak = crate::SendWeak::new(self);
+        std::thread::spawn(move || {
+            let effective =
+                ssh_config::effective_config(&connection.target_args(), connections::PROBE_TIMEOUT);
+            let command = connection.command_preview();
+            crate::run_on_main(move || {
+                if let Some(window) = weak.upgrade() {
+                    window.present_ssh_details(&connection, &command, effective.as_deref());
+                }
+            });
+        });
+    }
+
+    fn present_ssh_details(&self, connection: &Connection, command: &str, effective: Option<&str>) {
+        let text = ssh_details_text(connection, command, effective);
+        let dialog = gtk::Dialog::with_buttons(
+            Some(&format!("SSH Details: {}", connection.name)),
+            Some(self),
+            gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+            &[
+                ("Copy", gtk::ResponseType::Apply),
+                ("Close", gtk::ResponseType::Close),
+            ],
+        );
+        dialog.set_default_response(gtk::ResponseType::Close);
+        dialog.set_default_size(760, 560);
+        let view = gtk::TextView::new();
+        view.set_editable(false);
+        view.set_cursor_visible(false);
+        view.set_monospace(true);
+        view.set_wrap_mode(gtk::WrapMode::WordChar);
+        if let Some(buffer) = view.buffer() {
+            buffer.set_text(&text);
+        }
+        let scroll = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
+        scroll.set_shadow_type(gtk::ShadowType::In);
+        scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
+        scroll.add(&view);
+        dialog.content_area().pack_start(&scroll, true, true, 0);
+        dialog.show_all();
+        if dialog.run() == gtk::ResponseType::Apply {
+            gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).set_text(&text);
+        }
+        // SAFETY of the GTK contract: `run` has returned and nothing else owns it.
+        unsafe {
+            dialog.destroy();
+        }
+    }
+
     // ── Connecting ───────────────────────────────────────────
 
     pub fn connect_id(&self, id: &str, placement: Placement) {
@@ -921,6 +1040,8 @@ impl MainWindow {
             self.watch_tunnels();
         }
         if let Some(note) = prepared.keyring_note {
+            self.status_message(note, true);
+        } else if let Some(note) = prepared.probe_note {
             self.status_message(note, true);
         } else if prepared.plan.forwards_agent {
             self.status_message(
@@ -1465,7 +1586,7 @@ impl MainWindow {
         };
         if entry.connection.protocol != Protocol::Ftp && !entry.connection.no_sharing {
             // Without a master every sftp start pays a full SSH handshake.
-            let path = crate::headless::paths::config_dir().join("cm-%C");
+            let path = crate::headless::paths::ssh_socket_dir().join("cm-%C");
             argv.splice(
                 1..1,
                 [
@@ -1539,6 +1660,69 @@ impl MainWindow {
             glib::ControlFlow::Break
         });
     }
+}
+
+/// First value of a key in `ssh -G` output, which uses lowercase names.
+fn ssh_config_value<'a>(config: &'a str, key: &str) -> Option<&'a str> {
+    config.lines().find_map(|line| {
+        line.strip_prefix(key)
+            .and_then(|rest| rest.strip_prefix(' '))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    })
+}
+
+/// The text of the "SSH Details" dialog: what OpenSSH resolved, then the full
+/// effective configuration for the cases where something does not work.
+fn ssh_details_text(connection: &Connection, command: &str, effective: Option<&str>) -> String {
+    let mut text = format!(
+        "Connection\n  {}\n\nCommand\n  {}\n\n",
+        connection.name, command
+    );
+    match effective {
+        Some(config) => {
+            text.push_str("Resolved by OpenSSH\n");
+            for (label, key) in [
+                ("Host name", "hostname"),
+                ("User", "user"),
+                ("Port", "port"),
+                ("ProxyJump", "proxyjump"),
+                ("Identity file", "identityfile"),
+                ("Known hosts", "userknownhostsfile"),
+                ("Host key policy", "stricthostkeychecking"),
+            ] {
+                if let Some(value) = ssh_config_value(config, key) {
+                    text.push_str(&format!("  {}: {}\n", label, value));
+                }
+            }
+            let control = ssh_config_value(config, "controlpath").unwrap_or("none");
+            text.push_str(&format!(
+                "  Connection sharing: {}\n",
+                if control == "none" { "off" } else { control }
+            ));
+            let keepalive = ssh_config_value(config, "serveraliveinterval").unwrap_or("0");
+            text.push_str(&format!(
+                "  Keepalive: {}\n",
+                if keepalive == "0" {
+                    "off".to_string()
+                } else {
+                    format!("{} s", keepalive)
+                }
+            ));
+            let agent = ssh_config_value(config, "forwardagent").unwrap_or("no");
+            text.push_str(&format!("  Agent forwarding: {}\n", agent));
+            text.push_str("\nEffective configuration (ssh -G)\n");
+            text.push_str(config.trim_end());
+            text.push('\n');
+        }
+        None => text.push_str(
+            "OpenSSH configuration could not be read.\n\n\
+             `ssh -G` failed or timed out. The connection still works, but Oxterm cannot add \
+             connection sharing, keepalives, or the keyring helper for this entry. Check the \
+             host and the Include/Match exec rules in ~/.ssh/config.\n",
+        ),
+    }
+    text
 }
 
 /// Ask whether to reopen the SSH connections of a restored session, and open

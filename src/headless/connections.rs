@@ -1649,6 +1649,9 @@ pub struct Prepared {
     pub plan: ConnectPlan,
     /// Why a stored password cannot be used, so `ssh` will prompt instead.
     pub keyring_note: Option<&'static str>,
+    /// Why the effective configuration is unknown (usually `ssh -G` timing
+    /// out). The connection still opens, but sharing and keepalives may be off.
+    pub probe_note: Option<&'static str>,
 }
 
 pub fn prepare_session(connection: &Connection) -> Prepared {
@@ -1665,10 +1668,15 @@ pub fn prepare_session(connection: &Connection) -> Prepared {
                 forwards_agent: false,
             },
             keyring_note: None,
+            probe_note: None,
         };
     }
     let effective = ssh_config::effective_config(&connection.target_args(), PROBE_TIMEOUT);
-    let mut plan = connect_plan(connection, effective.as_deref(), &paths::config_dir());
+    let probe_note = effective.is_none().then_some(
+        "Could not read the SSH configuration (ssh -G); connection sharing and keepalives \
+         may be off",
+    );
+    let mut plan = connect_plan(connection, effective.as_deref(), &paths::ssh_socket_dir());
     let mut keyring_note = None;
     if connection.uses_keyring() {
         match askpass_environment(connection, effective.as_deref()) {
@@ -1690,7 +1698,11 @@ pub fn prepare_session(connection: &Connection) -> Prepared {
             Err(note) => keyring_note = Some(note),
         }
     }
-    Prepared { plan, keyring_note }
+    Prepared {
+        plan,
+        keyring_note,
+        probe_note,
+    }
 }
 
 /// The environment that lets `ssh` use the keyring helper for this entry.

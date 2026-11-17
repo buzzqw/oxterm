@@ -2061,6 +2061,14 @@ impl TerminalBox {
             "OXTERM_CONTROL".to_string(),
             crate::control::socket_path().to_string_lossy().into_owned(),
         ));
+        // Read by the shell's ssh wrapper (see shell_scripts.rs), so tabs where
+        // `ssh` is typed by hand share the same master sockets as saved entries.
+        env.push((
+            "OXTERM_SSH_SOCKET_DIR".to_string(),
+            crate::headless::paths::ssh_socket_dir()
+                .to_string_lossy()
+                .into_owned(),
+        ));
         if s.get_bool("osc133") {
             env.push(("OXTERM_SHELL_INTEGRATION".to_string(), "1".to_string()));
             let fifo_path = settings::config_dir().join(format!(
@@ -3410,7 +3418,7 @@ impl TerminalBox {
             // can still use a connection another tab shares for this host.
             let shared = format!(
                 "ControlPath={}/cm-%C",
-                settings::config_dir().to_string_lossy()
+                crate::headless::paths::ssh_socket_dir().to_string_lossy()
             );
             Self::ssh_control_socket_with(args, &["-o".to_string(), shared])
         })

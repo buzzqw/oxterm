@@ -953,6 +953,9 @@ fn run_connect(name: &str, split: bool, pane: Option<&str>, yes: bool) -> i32 {
     if let Some(note) = prepared.keyring_note {
         eprintln!("oxterm connect: {}", note);
     }
+    if let Some(note) = prepared.probe_note {
+        eprintln!("oxterm connect: {}", note);
+    }
     let result = if split {
         let target = match resolve_pane(pane) {
             Ok(target) => target,

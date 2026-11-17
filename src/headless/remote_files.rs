@@ -298,7 +298,10 @@ fn sftp_command(connection: &Connection) -> Command {
     command.args(["-q", "-b", "-", "-o", "BatchMode=no"]);
     if !connection.no_sharing {
         if let Some(config) = effective.as_deref() {
-            command.args(ssh_config::sharing_options(config, &paths::config_dir()));
+            command.args(ssh_config::sharing_options(
+                config,
+                &paths::ssh_socket_dir(),
+            ));
         }
     }
     command.args(&connection.sftp_argv()[1..]);

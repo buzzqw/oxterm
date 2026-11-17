@@ -52,7 +52,7 @@ __oxterm_osc133_precmd() {
 # __oxterm_ssh_options fills __oxterm_ssh_opts for the given ssh arguments.
 __oxterm_ssh_options() {
     __oxterm_ssh_opts=()
-    local socket_dir="${OXTERM_CONFIG_DIR:-${HOME}/.config/oxterm}"
+    local socket_dir="${OXTERM_SSH_SOCKET_DIR:-${OXTERM_CONFIG_DIR:-${HOME}/.config/oxterm}}"
     local cfg
     cfg=$'\n'"$(command ssh -G "$@" 2>/dev/null)"$'\n'
     if [ "${OXTERM_SSH_SHARING:-1}" = "1" ] && [[ $cfg != *$'\ncontrolpath '* ]]; then
@@ -159,7 +159,10 @@ function __oxterm_ssh_options
     set -l opts
     set -l cfg (command ssh -G $argv 2>/dev/null)
     if test "$OXTERM_SSH_SHARING" != 0; and not string match -qr '^controlpath ' -- $cfg
-        set -l socket_dir "$OXTERM_CONFIG_DIR"
+        set -l socket_dir "$OXTERM_SSH_SOCKET_DIR"
+        if test -z "$socket_dir"
+            set socket_dir "$OXTERM_CONFIG_DIR"
+        end
         if test -z "$socket_dir"
             set socket_dir "$HOME/.config/oxterm"
         end

@@ -4196,19 +4196,56 @@ impl MainWindow {
             });
             menu.append(&item_reset);
         }
-        if let Some(connection) = self
-            .connection_for_tab(term)
+        let saved = self.saved_connection_for_tab(term);
+        let tab_connection = saved.clone().or_else(|| {
+            let destination = term.ssh_destination()?;
+            crate::headless::connections::from_destination(&destination)
+        });
+        if let Some(connection) = tab_connection
             .filter(|connection| connection.protocol == crate::headless::connections::Protocol::Ssh)
         {
+            if saved.is_some() {
+                let weak = crate::SendWeak::new(self);
+                let term_c = term.clone();
+                let item_reconnect = gtk::MenuItem::with_label("Reconnect");
+                item_reconnect.set_tooltip_text(Some("Replace this tab with a fresh login"));
+                item_reconnect.connect_activate(move |_| {
+                    if let Some(w) = weak.upgrade() {
+                        w.reconnect_terminal(&term_c);
+                    }
+                });
+                menu.append(&item_reconnect);
+            }
             let weak = crate::SendWeak::new(self);
+            let duplicate = connection.clone();
             let item_duplicate = gtk::MenuItem::with_label("Duplicate Connection");
             item_duplicate.set_tooltip_text(Some("Open another tab on the same SSH host"));
             item_duplicate.connect_activate(move |_| {
                 if let Some(w) = weak.upgrade() {
-                    w.connect(connection.clone(), crate::connections_ui::Placement::Tab);
+                    w.connect(duplicate.clone(), crate::connections_ui::Placement::Tab);
                 }
             });
             menu.append(&item_duplicate);
+            let weak = crate::SendWeak::new(self);
+            let item_details = gtk::MenuItem::with_label("SSH Details...");
+            item_details.set_tooltip_text(Some("Show what OpenSSH resolves for this connection"));
+            item_details.connect_activate(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.show_ssh_details(connection.clone());
+                }
+            });
+            menu.append(&item_details);
+        }
+        if let Some(connection) = saved.filter(|connection| connection.uses_keyring()) {
+            let weak = crate::SendWeak::new(self);
+            let id = connection.id.clone();
+            let item_forget = gtk::MenuItem::with_label("Forget Stored Password");
+            item_forget.connect_activate(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.forget_stored_password(&id);
+                }
+            });
+            menu.append(&item_forget);
         }
         if let Some(connection) = self.browsing_connection_for(term) {
             let weak = crate::SendWeak::new(self);
