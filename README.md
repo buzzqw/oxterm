@@ -105,12 +105,7 @@ cd oxterm
 ```
 *(Keep `oxterm-broker` and `oxterm-askpass` in the same directory for session persistence and keyring password prompts).*
 
-### Option 2: Arch Linux (AUR)
-```bash
-yay -S oxterm        # or: paru -S oxterm
-```
-
-### Option 3: Build from Source
+### Option 2: Build from Source
 
 **Dependencies**: Rust 2021, GTK3, VTE 2.91 (>= 0.70), and `pkg-config`.
 
