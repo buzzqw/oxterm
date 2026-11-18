@@ -5,8 +5,12 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// Distinguishes fixtures that start in the same process at the same instant.
+static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const FRAME_OUTPUT: u8 = 0;
 const FRAME_INPUT: u8 = 1;
@@ -271,8 +275,15 @@ fn start_broker_with(binary: PathBuf) -> io::Result<Fixture> {
     // Keep the path short: the test passes an explicit socket under
     // `$HOME/.config/oxterm/remote`, and Oxterm only falls back to
     // `/tmp/oxterm-<uid>` when that Unix socket path would be too long.
-    let directory =
-        std::env::temp_dir().join(format!("ob{}{:06}", std::process::id(), unique % 1_000_000));
+    // Tests run in parallel, and the clock alone can repeat for two fixtures
+    // that start together, so the sequence keeps their directories apart.
+    let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let directory = std::env::temp_dir().join(format!(
+        "ob{}{:06}{:03}",
+        std::process::id(),
+        unique % 1_000_000,
+        sequence % 1_000
+    ));
     std::fs::create_dir(&directory)?;
     let socket = directory
         .join(".config/oxterm/remote")
