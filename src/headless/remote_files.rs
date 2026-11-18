@@ -425,8 +425,7 @@ pub fn run_cancellable(
         .map_err(|error| TransferError::Failed(format!("cannot run {}: {}", program, error)))?;
     if let Some(mut stdin) = child.stdin.take() {
         if let Err(error) = stdin.write_all(input.as_bytes()) {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_tree(&mut child);
             return Err(TransferError::Failed(format!(
                 "cannot talk to {}: {}",
                 program, error
@@ -434,6 +433,21 @@ pub fn run_cancellable(
         }
     }
     wait_for_output(child, program, Some(cancel))
+}
+
+/// Stop a child and anything it started.
+///
+/// The program runs in its own session, so a group kill also reaches helpers
+/// (a shell running the operation, for instance) that would otherwise keep the
+/// output pipes open and make cancellation wait for them. No group with the
+/// child's id exists unless it leads one, which makes this safe for callers
+/// that spawned without `setsid`.
+fn kill_tree(child: &mut Child) {
+    unsafe {
+        libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Wait for a child while draining both pipes on their own threads.
@@ -463,8 +477,7 @@ fn wait_for_output(
 
     loop {
         if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_tree(&mut child);
             if let Some(handle) = out_reader.take() {
                 let _ = handle.join();
             }
@@ -496,8 +509,7 @@ fn wait_for_output(
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_tree(&mut child);
                 return Err(TransferError::Failed(format!(
                     "{} failed: {}",
                     program, error
@@ -858,14 +870,22 @@ drwxr-xr-x 2 ftp ftp 0 Nov 01 15:16 folder/\n";
     }
 
     fn shell(script: &str) -> Child {
-        Command::new("sh")
+        let mut command = Command::new("sh");
+        command
             .arg("-c")
             .arg(script)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn sh")
+            .stderr(Stdio::piped());
+        // Mirror the transfer code: the shell leads its own session, so a group
+        // kill stops the command it runs even when the shell does not exec it.
+        unsafe {
+            command.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        command.spawn().expect("spawn sh")
     }
 
     #[test]
@@ -895,7 +915,10 @@ drwxr-xr-x 2 ftp ftp 0 Nov 01 15:16 folder/\n";
             trigger.store(true, Ordering::Relaxed);
         });
         let started = Instant::now();
-        let result = wait_for_output(shell("sleep 10"), "sh", Some(&cancel));
+        // The shell waits on a child of its own, so the program that holds the
+        // output pipes is not the direct child: a plain kill would leave it
+        // running and reading would hang until it exits.
+        let result = wait_for_output(shell("sleep 10 & wait"), "sh", Some(&cancel));
         assert_eq!(result, Err(TransferError::Cancelled));
         assert!(
             started.elapsed() < Duration::from_secs(2),
