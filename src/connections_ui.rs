@@ -1188,6 +1188,11 @@ impl MainWindow {
 
     /// Open the two-pane file browser on this entry's server.
     pub fn open_file_browser(&self, connection: Connection) {
+        self.open_file_browser_at(connection, None);
+    }
+
+    /// Open the file browser, optionally in a folder the terminal already shows.
+    pub fn open_file_browser_at(&self, connection: Connection, start: Option<String>) {
         let program = if connection.protocol == Protocol::Ftp {
             "lftp"
         } else {
@@ -1198,7 +1203,7 @@ impl MainWindow {
             return;
         }
         let window: gtk::Window = self.clone().upcast();
-        crate::file_browser::open(&window, connection);
+        crate::file_browser::open_at(&window, connection, start.as_deref());
     }
 
     /// Show a remote desktop. Its viewer runs in a tab, like ssh, so its logs and

@@ -4248,11 +4248,17 @@ impl MainWindow {
             menu.append(&item_forget);
         }
         if let Some(connection) = self.browsing_connection_for(term) {
+            let start = term.reported_cwd();
+            let label = if start.is_some() {
+                "Browse Remote Files Here..."
+            } else {
+                "Browse Remote Files..."
+            };
             let weak = crate::SendWeak::new(self);
-            let item_browse = gtk::MenuItem::with_label("Browse Remote Files...");
+            let item_browse = gtk::MenuItem::with_label(label);
             item_browse.connect_activate(move |_| {
                 if let Some(w) = weak.upgrade() {
-                    w.open_file_browser(connection.clone());
+                    w.open_file_browser_at(connection.clone(), start.clone());
                 }
             });
             menu.append(&item_browse);

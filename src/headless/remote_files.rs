@@ -7,7 +7,8 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -354,13 +355,54 @@ fn ftp_preamble(connection: &Connection) -> Result<String, String> {
     Ok(script)
 }
 
+/// Why a remote operation did not complete.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TransferError {
+    /// The user cancelled the transfer or closed the browser.
+    Cancelled,
+    /// The remote program failed; the message fits the status line.
+    Failed(String),
+}
+
+impl TransferError {
+    pub fn message(&self) -> String {
+        match self {
+            TransferError::Cancelled => "cancelled".to_string(),
+            TransferError::Failed(message) => message.clone(),
+        }
+    }
+}
+
+impl std::fmt::Display for TransferError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message())
+    }
+}
+
 /// Run one script and return its output. Blocks, so call it off the GUI thread.
 pub fn run(connection: &Connection, operation_script: &str) -> Result<String, String> {
+    run_cancellable(connection, operation_script, &AtomicBool::new(false))
+        .map_err(|error| error.message())
+}
+
+/// Run one script, killing the remote program when `cancel` becomes true.
+pub fn run_cancellable(
+    connection: &Connection,
+    operation_script: &str,
+    cancel: &AtomicBool,
+) -> Result<String, TransferError> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(TransferError::Cancelled);
+    }
     let ftp = connection.protocol == Protocol::Ftp;
     let (mut command, input) = if ftp {
         (
             lftp_command(),
-            format!("{}{}", ftp_preamble(connection)?, operation_script),
+            format!(
+                "{}{}",
+                ftp_preamble(connection).map_err(TransferError::Failed)?,
+                operation_script
+            ),
         )
     } else {
         (sftp_command(connection), operation_script.to_string())
@@ -380,25 +422,89 @@ pub fn run(connection: &Connection, operation_script: &str) -> Result<String, St
     let program = if ftp { "lftp" } else { "sftp" };
     let mut child = command
         .spawn()
-        .map_err(|error| format!("cannot run {}: {}", program, error))?;
+        .map_err(|error| TransferError::Failed(format!("cannot run {}: {}", program, error)))?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(input.as_bytes())
-            .map_err(|error| format!("cannot talk to {}: {}", program, error))?;
+        if let Err(error) = stdin.write_all(input.as_bytes()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(TransferError::Failed(format!(
+                "cannot talk to {}: {}",
+                program, error
+            )));
+        }
     }
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("{} failed: {}", program, error))?;
-    if output.status.success() {
-        return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+    wait_for_output(child, program, Some(cancel))
+}
+
+/// Wait for a child while draining both pipes on their own threads.
+///
+/// `Child::wait_with_output` blocks until the end and cannot be interrupted;
+/// polling `try_wait` gives cancellation a chance to kill a transfer that
+/// would otherwise keep the socket and the disk busy after the window closed.
+fn wait_for_output(
+    mut child: Child,
+    program: &str,
+    cancel: Option<&AtomicBool>,
+) -> Result<String, TransferError> {
+    let mut out_reader = child.stdout.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut buffer = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut pipe, &mut buffer);
+            buffer
+        })
+    });
+    let mut err_reader = child.stderr.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut buffer = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut pipe, &mut buffer);
+            buffer
+        })
+    });
+
+    loop {
+        if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            let _ = child.kill();
+            let _ = child.wait();
+            if let Some(handle) = out_reader.take() {
+                let _ = handle.join();
+            }
+            if let Some(handle) = err_reader.take() {
+                let _ = handle.join();
+            }
+            return Err(TransferError::Cancelled);
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = out_reader
+                    .take()
+                    .and_then(|handle| handle.join().ok())
+                    .unwrap_or_default();
+                let stderr = err_reader
+                    .take()
+                    .and_then(|handle| handle.join().ok())
+                    .unwrap_or_default();
+                if status.success() {
+                    return Ok(String::from_utf8_lossy(&stdout).to_string());
+                }
+                let errors = String::from_utf8_lossy(&stderr);
+                let message = errors
+                    .lines()
+                    .rev()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or("the connection failed");
+                return Err(TransferError::Failed(message.trim().to_string()));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(TransferError::Failed(format!(
+                    "{} failed: {}",
+                    program, error
+                )));
+            }
+        }
     }
-    let errors = String::from_utf8_lossy(&output.stderr);
-    let message = errors
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("the connection failed");
-    Err(message.trim().to_string())
 }
 
 /// The folder a session starts in.
@@ -513,10 +619,11 @@ pub fn transfer(
     is_dir: bool,
     from: &str,
     to: &str,
-) -> Result<(), String> {
+    cancel: &AtomicBool,
+) -> Result<(), TransferError> {
     let protocol = connection.protocol;
     let text = if protocol == Protocol::Ftp && !is_dir {
-        ftp_file_transfer(upload, from, to)?
+        ftp_file_transfer(upload, from, to).map_err(TransferError::Failed)?
     } else if upload {
         script(
             protocol,
@@ -524,7 +631,8 @@ pub fn transfer(
                 local: from.to_string(),
                 remote: to.to_string(),
             },
-        )?
+        )
+        .map_err(TransferError::Failed)?
     } else {
         script(
             protocol,
@@ -532,9 +640,10 @@ pub fn transfer(
                 remote: from.to_string(),
                 local: to.to_string(),
             },
-        )?
+        )
+        .map_err(TransferError::Failed)?
     };
-    run(connection, &text)?;
+    run_cancellable(connection, &text, cancel)?;
     invalidate(connection);
     Ok(())
 }
@@ -578,9 +687,10 @@ pub fn sync_directory(
     upload: bool,
     from: &str,
     to: &str,
-) -> Result<(), String> {
-    let text = sync_script(connection.protocol, upload, from, to)?;
-    run(connection, &text)?;
+    cancel: &AtomicBool,
+) -> Result<(), TransferError> {
+    let text = sync_script(connection.protocol, upload, from, to).map_err(TransferError::Failed)?;
+    run_cancellable(connection, &text, cancel)?;
     invalidate(connection);
     Ok(())
 }
@@ -744,6 +854,65 @@ drwxr-xr-x 2 ftp ftp 0 Nov 01 15:16 folder/\n";
         assert_eq!(
             parse_listing("-rw-r--r-- 1 u g 1 nov 13 08:44 there.txt").len(),
             1
+        );
+    }
+
+    fn shell(script: &str) -> Child {
+        Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn sh")
+    }
+
+    #[test]
+    fn waits_for_output_and_returns_stdout() {
+        let output = wait_for_output(shell("printf hello"), "sh", None).unwrap();
+        assert_eq!(output, "hello");
+    }
+
+    #[test]
+    fn a_failed_program_returns_its_last_error_line() {
+        let error = wait_for_output(
+            shell("printf 'first\\n' >&2; printf '  boom  \\n' >&2; exit 3"),
+            "sh",
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error, TransferError::Failed("boom".to_string()));
+    }
+
+    #[test]
+    fn cancellation_kills_a_long_running_program() {
+        use std::sync::Arc;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let trigger = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            trigger.store(true, Ordering::Relaxed);
+        });
+        let started = Instant::now();
+        let result = wait_for_output(shell("sleep 10"), "sh", Some(&cancel));
+        assert_eq!(result, Err(TransferError::Cancelled));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "cancellation must not wait for the program"
+        );
+    }
+
+    #[test]
+    fn an_already_cancelled_request_reports_cancelled() {
+        let cancel = AtomicBool::new(true);
+        let mut child = shell("printf should-not-run");
+        // The child is already spawned by the helper, so this checks the
+        // waiting side: kill it immediately and expect Cancelled.
+        child.kill().unwrap();
+        assert_eq!(
+            wait_for_output(child, "sh", Some(&cancel)),
+            Err(TransferError::Cancelled)
         );
     }
 }

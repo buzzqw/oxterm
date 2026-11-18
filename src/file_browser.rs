@@ -11,7 +11,9 @@ use std::fs::OpenOptions;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use gtk::gdk;
@@ -40,6 +42,8 @@ enum Job {
         from: String,
         to: String,
         label: String,
+        /// Set when the user closes the window or presses Cancel.
+        cancel: Arc<AtomicBool>,
     },
     MakeDir(String),
     Rename {
@@ -64,6 +68,7 @@ enum Job {
         upload: bool,
         from: String,
         to: String,
+        cancel: Arc<AtomicBool>,
     },
     /// Switch the worker's copy of the connection to the keyring helper.
     UseKeyring,
@@ -75,25 +80,26 @@ enum Outcome {
     Transferred {
         upload: bool,
         label: String,
-        result: Result<(), String>,
+        result: Result<(), remote_files::TransferError>,
     },
+    Failed(String),
     Changed(Result<(), String>),
     EditReady {
         local: PathBuf,
         remote: String,
         name: String,
-        result: Result<(), String>,
+        result: Result<(), remote_files::TransferError>,
     },
     EditUploaded {
         remote: String,
         name: String,
-        result: Result<(), String>,
+        result: Result<(), remote_files::TransferError>,
     },
     Synced {
         upload: bool,
         from: String,
         to: String,
-        result: Result<(), String>,
+        result: Result<(), remote_files::TransferError>,
     },
     AuthStored,
 }
@@ -117,7 +123,9 @@ fn worker(mut connection: Connection, jobs: mpsc::Receiver<Job>, results: mpsc::
             }
             other => other,
         };
-        let outcome = match job {
+        // A panic in one job must still produce an outcome: otherwise the
+        // spinner and the polling timer would run forever with no explanation.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match job {
             Job::Home => Outcome::Home(remote_files::home_directory(&connection)),
             Job::List(path) => {
                 let listing = remote_files::list(&connection, &path);
@@ -129,10 +137,11 @@ fn worker(mut connection: Connection, jobs: mpsc::Receiver<Job>, results: mpsc::
                 from,
                 to,
                 label,
+                cancel,
             } => Outcome::Transferred {
                 upload,
                 label,
-                result: remote_files::transfer(&connection, upload, is_dir, &from, &to),
+                result: remote_files::transfer(&connection, upload, is_dir, &from, &to, &cancel),
             },
             Job::MakeDir(path) => Outcome::Changed(simple(&connection, Operation::MakeDir(path))),
             Job::Rename { from, to } => {
@@ -147,7 +156,14 @@ fn worker(mut connection: Connection, jobs: mpsc::Receiver<Job>, results: mpsc::
                 name,
             } => Outcome::EditReady {
                 local: PathBuf::from(local.clone()),
-                result: remote_files::transfer(&connection, false, false, &remote, &local),
+                result: remote_files::transfer(
+                    &connection,
+                    false,
+                    false,
+                    &remote,
+                    &local,
+                    &AtomicBool::new(false),
+                ),
                 remote,
                 name,
             },
@@ -156,18 +172,31 @@ fn worker(mut connection: Connection, jobs: mpsc::Receiver<Job>, results: mpsc::
                 remote,
                 name,
             } => Outcome::EditUploaded {
-                result: remote_files::transfer(&connection, true, false, &local, &remote),
+                result: remote_files::transfer(
+                    &connection,
+                    true,
+                    false,
+                    &local,
+                    &remote,
+                    &AtomicBool::new(false),
+                ),
                 remote,
                 name,
             },
-            Job::Sync { upload, from, to } => Outcome::Synced {
+            Job::Sync {
                 upload,
-                result: remote_files::sync_directory(&connection, upload, &from, &to),
+                from,
+                to,
+                cancel,
+            } => Outcome::Synced {
+                upload,
+                result: remote_files::sync_directory(&connection, upload, &from, &to, &cancel),
                 from,
                 to,
             },
             Job::UseKeyring => unreachable!("handled before the job match"),
-        };
+        }))
+        .unwrap_or_else(|_| Outcome::Failed("The file operation stopped unexpectedly".to_string()));
         if results.send(outcome).is_err() {
             return;
         }
@@ -394,6 +423,11 @@ struct Browser {
     results: mpsc::Receiver<Outcome>,
     pending: Cell<usize>,
     polling: Cell<bool>,
+    /// Shared with the worker: kills the running transfer and skips queued ones.
+    cancel: Arc<AtomicBool>,
+    cancel_button: gtk::Button,
+    /// Transfers (not listings) still waiting for an outcome.
+    transfers: Cell<usize>,
     /// Discards a local directory listing that finished after a newer one.
     local_generation: Cell<u64>,
     queued: RefCell<VecDeque<String>>,
@@ -535,6 +569,30 @@ impl Browser {
         self.pending.set(left);
         if left == 0 {
             self.spinner.stop();
+            // The batch is over: a later transfer starts from a clean token.
+            self.cancel.store(false, Ordering::SeqCst);
+            self.cancel_button.set_sensitive(false);
+        }
+    }
+
+    /// Stop the running transfer and every transfer still queued.
+    fn cancel_transfers(&self) {
+        if self.pending.get() == 0 {
+            return;
+        }
+        self.cancel.store(true, Ordering::SeqCst);
+        self.cancel_button.set_sensitive(false);
+        self.say("Cancelling...");
+    }
+
+    /// One transfer reached the worker's answer: when the last one is done,
+    /// the next batch starts from a clean token.
+    fn transfer_finished(&self) {
+        let left = self.transfers.get().saturating_sub(1);
+        self.transfers.set(left);
+        if left == 0 {
+            self.cancel.store(false, Ordering::SeqCst);
+            self.cancel_button.set_sensitive(false);
         }
     }
 
@@ -668,6 +726,11 @@ impl Browser {
         {
             return;
         }
+        if self.transfers.get() == 0 {
+            self.cancel.store(false, Ordering::SeqCst);
+        }
+        self.transfers.set(self.transfers.get() + 1);
+        self.cancel_button.set_sensitive(true);
         self.queued.borrow_mut().push_back(name.to_string());
         self.update_queue_text();
         self.submit(Job::Transfer {
@@ -676,6 +739,7 @@ impl Browser {
             from,
             to: remote_files::join(to_dir, name),
             label: name.to_string(),
+            cancel: self.cancel.clone(),
         });
     }
 
@@ -799,8 +863,18 @@ impl Browser {
         }
         let from = source.current();
         let to = target.current();
+        if self.transfers.get() == 0 {
+            self.cancel.store(false, Ordering::SeqCst);
+        }
+        self.transfers.set(self.transfers.get() + 1);
+        self.cancel_button.set_sensitive(true);
         self.say(&format!("Syncing {}...", from));
-        self.submit(Job::Sync { upload, from, to });
+        self.submit(Job::Sync {
+            upload,
+            from,
+            to,
+            cancel: self.cancel.clone(),
+        });
     }
 
     /// Download the selected remote file to a temporary copy and open it; every
@@ -1118,6 +1192,7 @@ impl Browser {
                 result,
             } => {
                 self.queued.borrow_mut().pop_front();
+                self.transfer_finished();
                 match result {
                     Ok(()) => {
                         if self.queued.borrow().is_empty() {
@@ -1131,27 +1206,43 @@ impl Browser {
                             self.reload_local();
                         }
                     }
-                    Err(error) => self.say(&format!("{}: {}", label, error)),
+                    Err(remote_files::TransferError::Cancelled) => {
+                        if self.queued.borrow().is_empty() {
+                            self.say(&format!("Cancelled {}", label));
+                        } else {
+                            self.update_queue_text();
+                        }
+                    }
+                    Err(error) => self.say(&format!("{}: {}", label, error.message())),
                 }
+            }
+            Outcome::Failed(error) => {
+                if self.transfers.get() > 0 {
+                    self.transfer_finished();
+                }
+                self.say(&error)
             }
             Outcome::Synced {
                 upload,
                 from,
                 to,
                 result,
-            } => match result {
-                Ok(()) => {
-                    self.say(&format!(
-                        "Synced {} {} {}",
-                        from,
-                        if upload { "→" } else { "←" },
-                        to
-                    ));
-                    self.reload_remote();
-                    self.reload_local();
+            } => {
+                self.transfer_finished();
+                match result {
+                    Ok(()) => {
+                        self.say(&format!(
+                            "Synced {} {} {}",
+                            from,
+                            if upload { "→" } else { "←" },
+                            to
+                        ));
+                        self.reload_remote();
+                        self.reload_local();
+                    }
+                    Err(error) => self.say(&format!("Sync failed: {}", error)),
                 }
-                Err(error) => self.say(&format!("Sync failed: {}", error)),
-            },
+            }
             Outcome::EditReady {
                 local,
                 remote,
@@ -1415,7 +1506,11 @@ fn show_bookmarks_menu(browser: &Rc<Browser>, remote: bool, button: &gtk::Button
 }
 
 /// Open a browser window for `connection`.
-pub fn open(parent: &gtk::Window, connection: Connection) {
+///
+/// With `start`, the remote pane opens that directory instead of asking the
+/// server for the home: a terminal can pass the folder its shell announced
+/// through OSC 7, so "browse here" lands where the user already is.
+pub fn open_at(parent: &gtk::Window, connection: Connection, start: Option<&str>) {
     let window = gtk::Window::new(gtk::WindowType::Toplevel);
     window.set_title(&format!("Files: {}", connection.name));
     // Keep the browser above its terminal: without a transient parent some
@@ -1469,9 +1564,15 @@ pub fn open(parent: &gtk::Window, connection: Connection) {
     password.set_tooltip_text(Some(
         "Store this host's password in the keyring and reconnect",
     ));
+    let cancel = gtk::Button::with_label("Cancel");
+    cancel.set_tooltip_text(Some(
+        "Stop the transfer in progress and the ones still queued",
+    ));
+    cancel.set_sensitive(false);
     footer.pack_start(&spinner, false, false, 0);
     footer.pack_start(&status, true, true, 0);
     footer.pack_end(&password, false, false, 0);
+    footer.pack_end(&cancel, false, false, 0);
     content.pack_start(&footer, false, false, 0);
     window.add(&content);
 
@@ -1486,6 +1587,9 @@ pub fn open(parent: &gtk::Window, connection: Connection) {
         results: result_receiver,
         pending: Cell::new(0),
         polling: Cell::new(false),
+        cancel: Arc::new(AtomicBool::new(false)),
+        cancel_button: cancel.clone(),
+        transfers: Cell::new(0),
         local_generation: Cell::new(0),
         queued: RefCell::new(VecDeque::new()),
         edits: RefCell::new(Vec::new()),
@@ -1513,16 +1617,28 @@ pub fn open(parent: &gtk::Window, connection: Connection) {
                 browser.prompt_password();
             }
         });
+        let weak = Rc::downgrade(&browser);
+        cancel.connect_clicked(move |_| {
+            if let Some(browser) = weak.upgrade() {
+                browser.cancel_transfers();
+            }
+        });
     }
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
     browser.load_local(&home.to_string_lossy());
-    browser.submit(Job::Home);
+    match start.map(str::trim).filter(|path| !path.is_empty()) {
+        Some(path) => browser.load_remote(path),
+        None => browser.submit(Job::Home),
+    }
 
-    // The window's destroy handler keeps the browser alive until it closes. Dropping
-    // the browser drops the job sender, which ends the worker after its current job.
+    // The window's destroy handler keeps the browser alive until it closes and
+    // stops the transfer in progress: dropping the browser alone would leave
+    // sftp copying the current file with nobody watching it.
     {
         let keep_alive = RefCell::new(Some(browser.clone()));
+        let cancel_on_close = browser.cancel.clone();
         window.connect_destroy(move |_| {
+            cancel_on_close.store(true, Ordering::SeqCst);
             keep_alive.borrow_mut().take();
         });
     }

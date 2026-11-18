@@ -1050,6 +1050,46 @@ mod security_tests {
     }
 
     #[test]
+    fn remote_stats_show_gpu_only_when_the_host_has_one() {
+        let without = TerminalBox::format_remote_stats(
+            12.0,
+            2 * 1024 * 1024 * 1024,
+            8 * 1024 * 1024 * 1024,
+            10 * 1024 * 1024 * 1024,
+            100 * 1024 * 1024 * 1024,
+            None,
+        );
+        assert!(without.contains("CPU") && !without.contains("GPU"));
+
+        let with = TerminalBox::format_remote_stats(
+            12.0,
+            2 * 1024 * 1024 * 1024,
+            8 * 1024 * 1024 * 1024,
+            10 * 1024 * 1024 * 1024,
+            100 * 1024 * 1024 * 1024,
+            Some((42.0, 8192.0, 24576.0, Some(61.0))),
+        );
+        assert!(with.contains("GPU 42%"));
+        assert!(with.contains("8.0G/24.0G"));
+        assert!(with.contains("61°C"));
+    }
+
+    #[test]
+    fn gpu_line_keeps_a_missing_temperature() {
+        assert_eq!(
+            TerminalBox::parse_gpu_line("42, 8192, 24576, [N/A]"),
+            Some((42.0, 8192.0, 24576.0, None))
+        );
+        assert_eq!(
+            TerminalBox::parse_gpu_line("0, 512, 15360, 45"),
+            Some((0.0, 512.0, 15360.0, Some(45.0)))
+        );
+        assert_eq!(TerminalBox::parse_gpu_line(""), None);
+        assert_eq!(TerminalBox::parse_gpu_line("42, 8192"), None);
+        assert_eq!(TerminalBox::parse_gpu_line("42, 8192, 0"), None);
+    }
+
+    #[test]
     fn rebuilds_ssh_arguments_for_mosh_and_autossh() {
         let argv = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
         // Exactly as observed in /proc for
@@ -3498,7 +3538,14 @@ sleep 0.2; \
 cpu2=$(awk '/^cpu /{idle=$5+$6; total=$2+$3+$4+$5+$6+$7+$8+$9; printf \"%s %s\",idle,total; exit}' /proc/stat 2>/dev/null); \
 awk -v first=\"$cpu1\" -v second=\"$cpu2\" 'BEGIN{split(first,a);split(second,b);d=b[2]-a[2];u=d>0?(1-(b[1]-a[1])/d)*100:0;if(u<0)u=0;if(u>100)u=100;printf \"%.1f\\n\",u}'; \
 awk '/^MemTotal/{t=$2}/^MemAvailable/{a=$2}END{printf \"%d %d\\n\",(t-a)*1024,t*1024}' /proc/meminfo 2>/dev/null; \
-df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
+df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'; \
+gpu=; if command -v nvidia-smi >/dev/null 2>&1; then \
+if command -v timeout >/dev/null 2>&1; then \
+gpu=$(timeout 2 nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | head -n 1); \
+else \
+gpu=$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | head -n 1); \
+fi; fi; \
+printf '%s\\n' \"$gpu\"";
         let ssh_args = mux_args(&[&host, cmd]);
         let output = std::process::Command::new("ssh")
             .args(&ssh_args)
@@ -3531,6 +3578,35 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         }
         let disk_used = disk[0].parse::<i64>().unwrap_or(0);
         let disk_total = disk[1].parse::<i64>().unwrap_or(0);
+        let gpu = lines.get(3).and_then(|line| Self::parse_gpu_line(line));
+        Self::format_remote_stats(cpu, mem_used, mem_total, disk_used, disk_total, gpu)
+    }
+
+    /// One `nvidia-smi` CSV line: utilization, VRAM used, VRAM total, temperature.
+    fn parse_gpu_line(line: &str) -> Option<(f64, f64, f64, Option<f64>)> {
+        let fields: Vec<&str> = line.split(',').map(str::trim).collect();
+        if fields.len() < 3 {
+            return None;
+        }
+        let util = fields[0].parse::<f64>().ok()?;
+        let used = fields[1].parse::<f64>().ok()?;
+        let total = fields[2].parse::<f64>().ok()?;
+        if total <= 0.0 {
+            return None;
+        }
+        // Temperature can be [N/A] on virtual GPUs: the rest still shows.
+        let temp = fields.get(3).and_then(|value| value.parse::<f64>().ok());
+        Some((util, used, total, temp))
+    }
+
+    fn format_remote_stats(
+        cpu: f64,
+        mem_used: i64,
+        mem_total: i64,
+        disk_used: i64,
+        disk_total: i64,
+        gpu: Option<(f64, f64, f64, Option<f64>)>,
+    ) -> String {
         let mem_pct = if mem_total > 0 {
             (mem_used as f64 / mem_total as f64 * 100.0) as i64
         } else {
@@ -3541,7 +3617,7 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
         } else {
             0
         };
-        let result = format!(
+        let mut result = format!(
             "  [SSH] CPU {:5.1}%  RAM {}/{} ({}%)  Disk {}/{} ({}%)",
             cpu,
             Self::format_bytes(mem_used),
@@ -3551,6 +3627,18 @@ df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'";
             Self::format_bytes(disk_total),
             disk_pct
         );
+        if let Some((util, used, total, temp)) = gpu {
+            let mib = 1024.0 * 1024.0;
+            result.push_str(&format!(
+                "  GPU {:.0}% {}/{}",
+                util,
+                Self::format_bytes((used * mib) as i64),
+                Self::format_bytes((total * mib) as i64)
+            ));
+            if let Some(temp) = temp {
+                result.push_str(&format!(" {:.0}°C", temp));
+            }
+        }
         result
     }
 

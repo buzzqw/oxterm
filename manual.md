@@ -1072,12 +1072,16 @@ the tab, and closing the tab closes the viewer.
 the left and the server on the right. **Browse Files...** in the panel's context menu
 or the **Connections** menu does the same for any SSH entry, reusing an open
 connection so no new login is needed. Right-click an SSH tab and choose
-**Browse Remote Files...** to do it from the tab itself; a raw `ssh user@host`
-session works too, without a saved entry.
+**Browse Remote Files...** to do it from the tab itself; when the shell has
+announced a directory with OSC 7 the item becomes **Browse Remote Files Here...**
+and opens that folder directly. A raw `ssh user@host` session works too, without a
+saved entry.
 
 - Double-click a folder to enter it, or a file to copy it to the other side.
 - Use **Upload** and **Download**, or drag between the panes. You can also drop files
   from a file manager onto the server's pane.
+- **Cancel** stops the transfer in progress and the ones still queued; closing the
+  window stops them as well, instead of leaving `sftp` copying in the background.
 - **Sync →** and **← Sync** copy the whole current folder tree, recursively,
   overwriting existing files and keeping extra files in the destination. The
   transfer goes through `sftp`/`lftp`, so it reuses the connection's own
@@ -1232,7 +1236,8 @@ FIDO2 resident key with
 `ssh`, so any key the agent offers works.
 
 The status bar shows the remote host's CPU, memory, and disk usage for `ssh`,
-`autossh`, and `mosh` sessions, plus the directory a shell announces with
+`autossh`, and `mosh` sessions, plus GPU utilization, VRAM and temperature when
+the server provides `nvidia-smi`, and the directory a shell announces with
 `OSC 7` when it differs from the local process directory. Oxterm reads the
 statistics through a shared connection to that host only (for mosh, one opened
 by another tab); it never opens extra logins, so hosts without a shared

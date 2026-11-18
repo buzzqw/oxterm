@@ -11,6 +11,10 @@ use std::time::{Duration, Instant};
 use oxterm::headless::connections::{Connection, Protocol};
 use oxterm::headless::remote_files as files;
 
+fn no_cancel() -> std::sync::atomic::AtomicBool {
+    std::sync::atomic::AtomicBool::new(false)
+}
+
 struct Server {
     child: Child,
     dir: PathBuf,
@@ -140,6 +144,7 @@ fn browsing_copying_renaming_and_deleting_work_on_a_real_server() {
             is_dir,
             &files::join(&local_text, name),
             &files::join(&area_text, name),
+            &no_cancel(),
         )
         .unwrap();
     }
@@ -166,6 +171,7 @@ fn browsing_copying_renaming_and_deleting_work_on_a_real_server() {
         false,
         &files::join(&area_text, "plain.txt"),
         &back.display().to_string(),
+        &no_cancel(),
     )
     .unwrap();
     assert_eq!(fs::read_to_string(&back).unwrap(), "hello");
@@ -298,6 +304,7 @@ fn ftp_works_against_a_real_server() {
             false,
             "/there.txt",
             &back.display().to_string(),
+            &no_cancel(),
         )
         .unwrap();
         assert_eq!(fs::read_to_string(&back).unwrap(), "there");
@@ -307,6 +314,7 @@ fn ftp_works_against_a_real_server() {
             false,
             &dir.join("local/here.txt").display().to_string(),
             "/here.txt",
+            &no_cancel(),
         )
         .unwrap();
         assert_eq!(fs::read_to_string(root.join("here.txt")).unwrap(), "here");
@@ -316,6 +324,7 @@ fn ftp_works_against_a_real_server() {
             true,
             &dir.join("local/up").display().to_string(),
             "/up",
+            &no_cancel(),
         )
         .unwrap();
         assert_eq!(
@@ -323,7 +332,15 @@ fn ftp_works_against_a_real_server() {
             "deep"
         );
         let down = dir.join("local/down");
-        files::transfer(&connection, false, true, "/up", &down.display().to_string()).unwrap();
+        files::transfer(
+            &connection,
+            false,
+            true,
+            "/up",
+            &down.display().to_string(),
+            &no_cancel(),
+        )
+        .unwrap();
         assert_eq!(
             fs::read_to_string(down.join("inner/deep.txt")).unwrap(),
             "deep"
