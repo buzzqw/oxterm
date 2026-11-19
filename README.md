@@ -78,7 +78,7 @@
 
 ## Performance at a Glance
 
-Oxterm consistently delivers industry-leading startup and payload throughput while maintaining a minimal memory footprint.
+Oxterm starts fast and drains heavy output quickly while keeping a small memory footprint. These are numbers from one machine, not a universal ranking: the methodology is public, so you can reproduce them on yours.
 
 *Measured on an AMD Ryzen 7 5800H running Linux (CachyOS, kernel 7.3.3) under identical default settings:*
 
@@ -97,13 +97,14 @@ Oxterm consistently delivers industry-leading startup and payload throughput whi
 ## Quick Start & Installation
 
 ### Option 1: Pre-built Binaries (Recommended)
-Download the latest tarball from the **[GitHub Releases page](https://github.com/buzzqw/oxterm/releases/latest)**, extract it, and run:
+Download the latest `oxterm-<version>-linux-x86_64.tar.gz` from the **[GitHub Releases page](https://github.com/buzzqw/oxterm/releases/latest)**, extract it into a folder of your choice, and run:
 ```bash
-tar -xzf oxterm-latest-linux-x86_64.tar.gz
+mkdir oxterm && tar -xzf oxterm-*-linux-x86_64.tar.gz -C oxterm
 cd oxterm
-./oxterm-linux-x86-64
+sha256sum -c SHA256SUMS --ignore-missing   # optional: verify the binaries
+./oxterm-[0-9]*-linux-x86_64
 ```
-*(Keep `oxterm-broker` and `oxterm-askpass` in the same directory for session persistence and keyring password prompts).*
+*(Keep the `oxterm-broker-*` and `oxterm-askpass-*` binaries in the same directory: they provide session persistence and keyring password prompts).*
 
 ### Option 2: Build from Source
 
