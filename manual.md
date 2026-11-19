@@ -114,11 +114,14 @@ usable, and more than one remote client can attach to the same session. On
 attach the broker replays the session's most recent output, so the current
 screen is repainted instead of appearing empty. Client
 disconnects do not stop the shell or broker, so a later `-a SESSION_ID` can
-reconnect. An unexpected GUI crash also leaves the broker and shell running;
-an intentional GUI close follows the normal tab cleanup path and terminates
-its shell, except for tabs whose local view is off (`Ctrl+B`, then `d`, or a
-session taken over with `-M`): those keep running under their broker and can be
-reached again with `-a`/`-M`.
+reconnect. An unexpected GUI crash also leaves the broker and shell running.
+An intentional GUI close asks what to do when a tab is still running a
+command: **Keep Running** detaches every tab and leaves it under its broker,
+while **Stop and Exit** follows the normal tab cleanup path and terminates the
+shells. Background tabs can be reopened with `oxterm -a`/`-M` or from
+**Tabs > Move Tab from Another Oxterm…**. A tab whose local view was already
+off (`Ctrl+B`, then `d`, or a session taken over with `-M`) keeps running under
+its broker regardless.
 
 Without a `SESSION_ID`, `oxterm -a` and `oxterm -M` print the list of active
 terminals and ask which one to use. When only one terminal is running, pressing
@@ -145,7 +148,9 @@ instead, with the same permissions. The GUI normally starts the display-free
 installed), which owns the child PTY and accepts length-prefixed Unix-socket
 frames for `LIST`, `INFO`, `ATTACH`, `MOVE`, `DETACH`, `RENAME`, `COMMAND`,
 `LOCAL_ON`,
-`LOCAL_OFF`, and `KILL`. The GUI PTY is a separate endpoint, allowing its local
+`LOCAL_OFF`, and `KILL`. `FIFO` and `RELEASE_FIFO` let the broker drain the
+shell integration FIFO while no window is attached and hand it over when one
+comes back. The GUI PTY is a separate endpoint, allowing its local
 forwarding to be disabled without releasing the shell session. On attach the
 broker replays the most recent child output (bounded to a fixed size) to repaint
 the screen and then nudges the foreground program to redraw; output older than
@@ -659,15 +664,18 @@ see the full title.
 one tab is open.
 
 **Tabs > Move Tab from Another Oxterm…** lists the tabs of the other Oxterm
-windows running for the same user and adopts the one you pick: the tab opens
-here, showing the running session, and the tab (or the window, when it was the
-last one) closes in the other Oxterm. The shell, its process and the recent
-output move with it; nothing is restarted. The adopted tab is a relay to the
+windows running for the same user, plus sessions kept in the background after
+their window closed, and adopts the one you pick: the tab opens here, showing
+the running session, and the tab (or the window, when it was the last one)
+closes in the other Oxterm. The shell, its process and the recent output move
+with it; nothing is restarted. For a detached session there is no source window
+left to close, so it is simply attached. The adopted tab is a relay to the
 session, so it is exactly as wide, as fast and as stateful as the terminal it
 came from, and it keeps the OSC 133 shell integration when the source window had
-it: command blocks, history and notifications continue here. Closing the adopted
-tab ends that session, as closing any other tab does; it does not go back to the
-window it came from.
+it: command blocks, history and notifications continue here (while no window is
+attached, the broker drains the FIFO so the shell keeps running). Closing the
+adopted tab ends that session, as closing any other tab does; it does not go
+back to the window it came from.
 
 **Session switcher** (`Ctrl+Shift+O`, or `Ctrl+B` then `s`/`w`) searches across
 the panes of every local Oxterm window, panes owned by other Oxterm processes,

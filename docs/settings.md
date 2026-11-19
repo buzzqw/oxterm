@@ -48,7 +48,7 @@ never written back to disk.
 | `snippets` | string map | `{}` | Named command snippets available to /snippet. |
 | `osc133` | bool | `false` | Enable OSC 133 shell integration (prompt, command and exit markers). |
 | `enable_transparency` | bool | `false` | Allow window transparency using the opacity setting. |
-| `confirm_close` | bool | `true` | Ask before closing a tab with a running command. |
+| `confirm_close` | bool | `true` | Ask before closing a window while a tab is still running a command. |
 | `tab_title` | string | `Terminal` | Initial title of new tabs. |
 | `tab_title_color` | color (#rrggbb) | `#ffffff` | Color of inactive tab titles. |
 | `tab_active_title_color` | color (#rrggbb) | `#ffffff` | Color of the active tab title. |

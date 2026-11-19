@@ -389,6 +389,67 @@ pub trait TerminalWindow {
 
 // ── DetachedWindow ───────────────────────────────────────────
 
+/// What the user chose when closing a window with a running command.
+enum CloseChoice {
+    KeepRunning,
+    Stop,
+    Cancel,
+}
+
+struct DetachedSession {
+    id: String,
+    title: String,
+    cwd: String,
+    command: String,
+    running: bool,
+}
+
+enum MoveChoice {
+    Pane(crate::control::ForeignPane),
+    Detached(DetachedSession),
+}
+
+/// Ask whether tabs should outlive the window. The text also explains how to
+/// find them again, because the window that could show a hint is about to go
+/// away.
+fn ask_close_with_background(parent: &gtk::Window) -> CloseChoice {
+    let dialog = gtk::Dialog::with_buttons(
+        Some("Close Oxterm"),
+        Some(parent),
+        gtk::DialogFlags::MODAL,
+        &[
+            ("Keep Running", gtk::ResponseType::Accept),
+            ("Stop and Exit", gtk::ResponseType::Other(1)),
+            ("Cancel", gtk::ResponseType::Cancel),
+        ],
+    );
+    dialog.set_default_response(gtk::ResponseType::Cancel);
+    dialog.set_resizable(false);
+    let message = gtk::Label::new(None);
+    message.set_markup(
+        "Some tabs are still running a command.\n\n\
+         <b>Keep Running</b> detaches every tab and leaves it running under its broker.\n\
+         <b>Stop and Exit</b> closes the tabs and stops their commands.\n\n\
+         Background sessions can be reopened with <tt>oxterm -a</tt> or from\n\
+         <b>Tabs</b> \u{25b8} <b>Move Tab from Another Oxterm\u{2026}</b>.",
+    );
+    message.set_line_wrap(true);
+    message.set_xalign(0.0);
+    message.set_margin_start(16);
+    message.set_margin_end(16);
+    message.set_margin_top(12);
+    message.set_margin_bottom(8);
+    dialog.content_area().add(&message);
+    dialog.show_all();
+    let response = dialog.run();
+    dialog.close();
+    match response {
+        gtk::ResponseType::Accept => CloseChoice::KeepRunning,
+        gtk::ResponseType::Other(1) => CloseChoice::Stop,
+        _ => CloseChoice::Cancel,
+    }
+}
+
 mod det_imp {
     use super::*;
     use gtk::subclass::prelude::*;
@@ -1411,17 +1472,14 @@ impl DetachedWindow {
             .as_ref()
             .is_some_and(|term| term.has_active_process());
         if settings().get_bool("confirm_close") && has_active_process {
-            let dialog = gtk::MessageDialog::new(
-                Some(self),
-                gtk::DialogFlags::MODAL,
-                gtk::MessageType::Question,
-                gtk::ButtonsType::YesNo,
-                "Close all tabs and exit?",
-            );
-            let resp = dialog.run();
-            dialog.close();
-            if resp != gtk::ResponseType::Yes {
-                return glib::Propagation::Stop;
+            match ask_close_with_background(self.upcast_ref::<gtk::Window>()) {
+                CloseChoice::KeepRunning => {
+                    if let Some(term) = self.imp().terminal.borrow().as_ref() {
+                        term.keep_in_background();
+                    }
+                }
+                CloseChoice::Stop => {}
+                CloseChoice::Cancel => return glib::Propagation::Stop,
             }
         }
         self.shutdown();
@@ -4539,24 +4597,73 @@ impl MainWindow {
         item.show();
     }
 
-    /// Offer the tabs of the other running Oxterm windows and adopt one here.
+    /// Offer the tabs of the other running Oxterm windows, plus sessions that
+    /// were left running in the background when their window closed.
     fn move_tab_from_another_oxterm(&self) {
         let weak = crate::SendWeak::new(self);
         // Discovery talks to other processes: never block the GTK thread on a
         // window that is busy or wedged.
         std::thread::spawn(move || {
             let panes = crate::control::foreign_panes();
+            let remote = crate::remote::list_sessions();
             crate::run_on_main(move || {
                 if let Some(w) = weak.upgrade() {
-                    w.show_move_pane_dialog(panes);
+                    w.show_move_pane_dialog(panes, remote);
                 }
             });
         });
     }
 
-    fn show_move_pane_dialog(&self, panes: Vec<crate::control::ForeignPane>) {
-        if panes.is_empty() {
-            self.status_message("No other Oxterm window is running", false);
+    fn show_move_pane_dialog(&self, panes: Vec<crate::control::ForeignPane>, remote: Vec<String>) {
+        let mut known: std::collections::BTreeSet<String> =
+            panes.iter().map(|pane| pane.id.clone()).collect();
+        for term in self.all_terminals() {
+            known.insert(term.remote_id());
+        }
+        let mut detached = Vec::new();
+        for line in remote {
+            let fields: Vec<&str> = line.split('\t').collect();
+            let Some(id) = fields.first().copied().filter(|id| !id.is_empty()) else {
+                continue;
+            };
+            // A session with a local view is already a tab or a foreign pane;
+            // only broker-owned sessions need to be attached here.
+            if fields.get(4).copied() != Some("local-off") || !known.insert(id.to_string()) {
+                continue;
+            }
+            let name = fields.get(1).copied().unwrap_or("");
+            let listed_title = fields.get(2).copied().unwrap_or("");
+            let title = if !name.is_empty() {
+                name
+            } else if !listed_title.is_empty() {
+                listed_title
+            } else {
+                id
+            };
+            detached.push(DetachedSession {
+                id: id.to_string(),
+                title: title.to_string(),
+                cwd: fields.get(3).copied().unwrap_or("").to_string(),
+                command: fields.get(5).copied().unwrap_or("").to_string(),
+                running: fields.get(6).copied() == Some("running"),
+            });
+        }
+        detached.sort_by(|a, b| {
+            a.title
+                .to_lowercase()
+                .cmp(&b.title.to_lowercase())
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let choices: Vec<MoveChoice> = panes
+            .into_iter()
+            .map(MoveChoice::Pane)
+            .chain(detached.into_iter().map(MoveChoice::Detached))
+            .collect();
+        if choices.is_empty() {
+            self.status_message(
+                "No other Oxterm window or detached session is available",
+                false,
+            );
             return;
         }
         let dialog = gtk::Dialog::with_buttons(
@@ -4564,25 +4671,44 @@ impl MainWindow {
             Some(self),
             gtk::DialogFlags::MODAL,
             &[
-                ("Move Here", gtk::ResponseType::Accept),
+                ("Open Here", gtk::ResponseType::Accept),
                 ("Cancel", gtk::ResponseType::Cancel),
             ],
         );
         dialog.set_default_size(640, 380);
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::Single);
-        for pane in &panes {
-            let heading = if pane.title.is_empty() {
-                "(untitled)"
-            } else {
-                pane.title.as_str()
-            };
-            let detail = if pane.running {
-                format!("{}  ·  running: {}", pane.cwd, pane.command)
-            } else if pane.command.is_empty() {
-                pane.cwd.clone()
-            } else {
-                format!("{}  ·  last: {}", pane.cwd, pane.command)
+        for choice in &choices {
+            let (heading, detail, session_id) = match choice {
+                MoveChoice::Pane(pane) => {
+                    let heading = if pane.title.is_empty() {
+                        "(untitled)"
+                    } else {
+                        pane.title.as_str()
+                    };
+                    let detail = if pane.running {
+                        format!("{}  ·  running: {}", pane.cwd, pane.command)
+                    } else if pane.command.is_empty() {
+                        pane.cwd.clone()
+                    } else {
+                        format!("{}  ·  last: {}", pane.cwd, pane.command)
+                    };
+                    (heading, detail, pane.id.as_str())
+                }
+                MoveChoice::Detached(session) => {
+                    let command = if session.command.is_empty() {
+                        "-"
+                    } else {
+                        session.command.as_str()
+                    };
+                    let detail = format!(
+                        "{}  ·  {}{}  ·  detached session",
+                        session.cwd,
+                        command,
+                        if session.running { " (running)" } else { "" }
+                    );
+                    (session.title.as_str(), detail, session.id.as_str())
+                }
             };
             let title = gtk::Label::new(None);
             title.set_text(heading);
@@ -4604,7 +4730,7 @@ impl MainWindow {
             row.add(&column);
             // The whole session id is long; the tooltip carries it for bug
             // reports without eating the row.
-            row.set_tooltip_text(Some(&format!("{}  ({})", heading, pane.id)));
+            row.set_tooltip_text(Some(&format!("{}  ({})", heading, session_id)));
             list.add(&row);
         }
         // Double-click or Enter picks the row and accepts the dialog.
@@ -4629,10 +4755,52 @@ impl MainWindow {
         if response != gtk::ResponseType::Accept {
             return;
         }
-        let Some(pane) = selected.and_then(|index| panes.get(index)).cloned() else {
+        let Some(choice) = selected.and_then(|index| choices.into_iter().nth(index)) else {
             return;
         };
-        self.move_pane_here(pane);
+        match choice {
+            MoveChoice::Pane(pane) => self.move_pane_here(pane),
+            MoveChoice::Detached(session) => {
+                self.attach_detached_session(&session.id, &session.title, &session.cwd)
+            }
+        }
+    }
+
+    /// Attach a broker-only session left running by a closed window. The relay
+    /// tab opens the old OSC 133 FIFO before the broker releases it, so the
+    /// shell keeps its prompt hooks and does not die of SIGPIPE.
+    fn attach_detached_session(&self, id: &str, title: &str, cwd: &str) {
+        let binary = std::env::current_exe()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "oxterm".to_string());
+        let command = vec![binary, "-a".to_string(), id.to_string()];
+        let title = if title.is_empty() {
+            "Terminal".to_string()
+        } else {
+            title.to_string()
+        };
+        let cwd = (!cwd.is_empty()).then_some(cwd);
+        let term = self.add_new_tab(cwd, None, Some(&title), Some(&title), Some(&command));
+        let weak_term = crate::SendWeak::new(&term);
+        let id = id.to_string();
+        let title_for_status = title.clone();
+        std::thread::spawn(move || {
+            let Some(fifo) = crate::remote::session_fifo(&id) else {
+                return;
+            };
+            let Some(fd) = TerminalBox::open_osc133_fifo(&fifo) else {
+                return;
+            };
+            // The relay holds a reader now; the broker can stop draining.
+            crate::remote::release_fifo(&id);
+            crate::run_on_main(move || match weak_term.upgrade() {
+                Some(term) => term.adopt_osc133_fifo(&fifo, fd),
+                None => {
+                    unsafe { libc::close(fd) };
+                }
+            });
+        });
+        self.status_message(&format!("Attached \"{}\"", title_for_status), false);
     }
 
     /// Attach this window to `pane`'s session, then ask the other Oxterm to let
@@ -4905,6 +5073,7 @@ impl MainWindow {
             },
             Remote {
                 id: String,
+                cwd: String,
             },
         }
         struct Item {
@@ -5028,7 +5197,10 @@ impl MainWindow {
             );
             let search = format!("{} {} {} {}", title, id, cwd, command).to_lowercase();
             items.push(Item {
-                target: Target::Remote { id: id.to_string() },
+                target: Target::Remote {
+                    id: id.to_string(),
+                    cwd: cwd.to_string(),
+                },
                 title,
                 detail,
                 search,
@@ -5138,13 +5310,8 @@ impl MainWindow {
                             }
                         });
                     }
-                    Target::Remote { id } => {
-                        let binary = std::env::current_exe()
-                            .map(|path| path.to_string_lossy().into_owned())
-                            .unwrap_or_else(|_| "oxterm".to_string());
-                        let command = vec![binary, "-a".to_string(), id.clone()];
-                        let title = item.title.clone();
-                        window.add_new_tab(None, None, Some(&title), Some(&title), Some(&command));
+                    Target::Remote { id, cwd } => {
+                        window.attach_detached_session(id, &item.title, cwd);
                     }
                 }
             })
@@ -6040,23 +6207,24 @@ impl MainWindow {
             return glib::Propagation::Stop;
         }
         let has_active_process = self.any_terminal_has_active_process();
+        let mut keep_running = false;
         if settings().get_bool("confirm_close")
             && has_active_process
             && !*self.imp().skip_close_confirm.borrow()
         {
             *self.imp().closing.borrow_mut() = true;
-            let dialog = gtk::MessageDialog::new(
-                Some(self),
-                gtk::DialogFlags::MODAL,
-                gtk::MessageType::Question,
-                gtk::ButtonsType::YesNo,
-                "Close all tabs and exit?",
-            );
-            let resp = dialog.run();
-            dialog.close();
-            if resp != gtk::ResponseType::Yes {
-                *self.imp().closing.borrow_mut() = false;
-                return glib::Propagation::Stop;
+            match ask_close_with_background(self.upcast_ref::<gtk::Window>()) {
+                CloseChoice::KeepRunning => {
+                    keep_running = true;
+                    for term in self.all_terminals() {
+                        term.keep_in_background();
+                    }
+                }
+                CloseChoice::Stop => {}
+                CloseChoice::Cancel => {
+                    *self.imp().closing.borrow_mut() = false;
+                    return glib::Propagation::Stop;
+                }
             }
         }
 
@@ -6067,8 +6235,14 @@ impl MainWindow {
         }
 
         // Detached tab windows are not MainWindows and do not own a session.
+        // Keeping the tabs in the background also skips the layout autosave:
+        // restoring it would start new shells next to the detached ones.
         if self.main_window_count() <= 1 {
-            self.save_session("last");
+            if keep_running {
+                crate::session::delete_session("last");
+            } else {
+                self.save_session("last");
+            }
         }
         // A terminal started before the window was built may not have become
         // a page yet: its shell and broker must be stopped with the window,

@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -144,6 +144,25 @@ impl BrokerHandle {
 
     pub fn local_on(&self) {
         let _ = control_request(&self.path, &format!("LOCAL_ON {}", self.id));
+    }
+
+    /// Keep the shell integration FIFO readable after the GUI exits.
+    ///
+    /// The shell holds a write-only descriptor to this FIFO. If the GUI was
+    /// its last reader, the next prompt would die of SIGPIPE. The broker opens
+    /// the FIFO and discards events instead, so the session can be reattached
+    /// later.
+    pub fn drain_fifo(&self, path: &str) {
+        let _ = control_request_with_timeout(
+            &self.path,
+            &format!("FIFO\t{}\t{}", self.id, path),
+            Duration::from_secs(1),
+        );
+    }
+
+    /// Stop draining the FIFO after a new window adopts it.
+    pub fn release_fifo(&self) {
+        let _ = control_request(&self.path, &format!("RELEASE_FIFO\t{}", self.id));
     }
 
     pub fn signal(&self, signal: i32) {
@@ -698,6 +717,24 @@ pub fn list_sessions() -> Vec<String> {
     sessions
 }
 
+/// The shell integration FIFO of a broker session that is kept alive in the
+/// background. A window that adopts the session opens it again and calls
+/// [`release_fifo`].
+pub fn session_fifo(session_id: &str) -> Option<String> {
+    let path = find_socket(session_id).ok()?;
+    let response = control_request(&path, &format!("FIFO\t{}", session_id)).ok()?;
+    let fifo = response.strip_prefix("OK\n")?.trim_end_matches('\n');
+    (!fifo.is_empty()).then(|| fifo.to_string())
+}
+
+/// Stop the broker from draining a detached session's FIFO. The caller must
+/// already hold the FIFO open, or the shell dies of SIGPIPE at its next prompt.
+pub fn release_fifo(session_id: &str) {
+    if let Ok(path) = find_socket(session_id) {
+        let _ = control_request(&path, &format!("RELEASE_FIFO\t{}", session_id));
+    }
+}
+
 fn choose_session(requested: Option<String>) -> Result<String, String> {
     if let Some(id) = requested {
         return Ok(id);
@@ -1227,6 +1264,8 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         child_input_offset: 0,
         child_input_pending: 0,
         replay: VecDeque::new(),
+        fifo: None,
+        fifo_path: String::new(),
     };
     let mut clients: Vec<Client> = Vec::new();
     let mut gui_output = VecDeque::new();
@@ -1348,6 +1387,16 @@ fn run_broker(path: &Path, id: &str) -> i32 {
                 revents: 0,
             });
         }
+        // The drain descriptor is appended after the clients so their
+        // hard-coded poll indices stay valid.
+        let fifo_index = state.fifo.as_ref().map(|fifo| {
+            poll_fds.push(libc::pollfd {
+                fd: fifo.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            });
+            poll_fds.len() - 1
+        });
         // Every broker input is represented by a file descriptor, including
         // the SIGWINCH self-pipe, so `poll` can block until readiness. The one
         // deliberate exception is the quiet period before returning a large
@@ -1410,6 +1459,26 @@ fn run_broker(path: &Path, id: &str) -> i32 {
 
         // Bytes forwarded this iteration, used only by the stall guard below.
         let mut moved = 0usize;
+
+        if let (Some(index), Some(fifo)) = (fifo_index, state.fifo.as_ref()) {
+            if poll_fds[index].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+                let fd = fifo.as_raw_fd();
+                let mut bytes = [0u8; 8192];
+                loop {
+                    let count =
+                        unsafe { libc::read(fd, bytes.as_mut_ptr() as *mut _, bytes.len()) };
+                    if count > 0 {
+                        moved += count as usize;
+                    } else if count < 0
+                        && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
+                    {
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
 
         if poll_fds[0].revents & libc::POLLIN != 0 {
             loop {
@@ -1591,6 +1660,13 @@ fn run_broker(path: &Path, id: &str) -> i32 {
         close_fd(write_fd);
     }
     let _ = remove_existing_socket_file(path);
+    // A session that ends while its FIFO was being drained has no GUI left to
+    // clean it up. A FIFO adopted by a new window was released above and is
+    // that window's to remove.
+    if !state.fifo_path.is_empty() {
+        state.fifo = None;
+        let _ = std::fs::remove_file(&state.fifo_path);
+    }
     eprintln!("oxterm broker {}: exiting ({})", id, exit_reason);
     0
 }
@@ -1605,6 +1681,30 @@ fn open_session_log(path: &Path) -> io::Result<std::fs::File> {
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)
+}
+
+/// Open a FIFO for reading (and, with `O_RDWR`, writing) without blocking, so
+/// the broker can drain the shell integration events while no GUI is attached.
+/// `O_RDWR` also keeps a writer on the FIFO, so the drain loop never sees EOF.
+fn open_fifo_drain(path: &str) -> io::Result<std::fs::File> {
+    let path = std::ffi::CString::new(path)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "FIFO path contains a NUL"))?;
+    let fd = unsafe {
+        libc::open(
+            path.as_ptr(),
+            libc::O_RDWR | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    // Never drain something that is not a FIFO, even though the path comes from
+    // our own GUI.
+    if !file.metadata()?.file_type().is_fifo() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a FIFO"));
+    }
+    Ok(file)
 }
 
 struct BrokerState {
@@ -1628,6 +1728,9 @@ struct BrokerState {
     /// Most recent child output, replayed to a client when it attaches so the
     /// screen is repainted instead of appearing blank.
     replay: VecDeque<u8>,
+    /// Shell integration FIFO kept readable while no GUI is attached.
+    fifo: Option<std::fs::File>,
+    fifo_path: String,
 }
 
 fn bind_broker_socket(path: &Path, id: &str) -> Result<UnixListener, String> {
@@ -1763,6 +1866,37 @@ fn handle_command(
     frame: &[u8],
 ) -> bool {
     let command = String::from_utf8_lossy(frame);
+    // The shell integration FIFO must stay readable while the GUI is away, or
+    // the shell dies of SIGPIPE at its next prompt. `FIFO\t<id>[\t<path>]`
+    // starts draining and reports the current path; `RELEASE_FIFO` stops when
+    // a new window has opened the FIFO itself.
+    if let Some(request) = command.strip_prefix("FIFO\t") {
+        let mut fields = request.splitn(2, '\t');
+        if fields.next() != Some(state.id.as_str()) {
+            return clients[index].queue(b"ERR session not found");
+        }
+        return match fields.next() {
+            Some(path) if !path.is_empty() => match open_fifo_drain(path) {
+                Ok(file) => {
+                    state.fifo = Some(file);
+                    state.fifo_path = path.to_string();
+                    clients[index].queue(b"OK")
+                }
+                Err(_) => clients[index].queue(b"ERR cannot open the FIFO"),
+            },
+            _ => clients[index].queue(format!("OK\n{}", state.fifo_path).as_bytes()),
+        };
+    }
+    if let Some(request) = command.strip_prefix("RELEASE_FIFO\t") {
+        if request.trim() != state.id {
+            return clients[index].queue(b"ERR session not found");
+        }
+        state.fifo = None;
+        // The adopting window now owns the FIFO and removes it when its tab
+        // closes, so the broker must not unlink it on exit.
+        state.fifo_path.clear();
+        return clients[index].queue(b"OK");
+    }
     if let Some(request) = command.strip_prefix("LOG\t") {
         let reply: &[u8] = match request.split_once('\t') {
             Some((id, path)) if id == state.id => match open_session_log(Path::new(path)) {
@@ -2348,6 +2482,8 @@ mod tests {
             child_input_offset: 0,
             child_input_pending: 0,
             replay,
+            fifo: None,
+            fifo_path: String::new(),
         }
     }
 
@@ -2436,6 +2572,8 @@ mod tests {
             child_input_offset: 0,
             child_input_pending: 0,
             replay: VecDeque::new(),
+            fifo: None,
+            fifo_path: String::new(),
         };
 
         assert!(handle_command(0, &mut clients, &mut state, b"MOVE test"));
@@ -2474,6 +2612,8 @@ mod tests {
             child_input_offset: 0,
             child_input_pending: 0,
             replay: VecDeque::new(),
+            fifo: None,
+            fifo_path: String::new(),
         };
         let mut output = VecDeque::from([b"pending".to_vec()]);
         let mut offset = 2;

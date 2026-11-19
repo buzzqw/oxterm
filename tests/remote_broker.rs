@@ -461,6 +461,62 @@ fn broker_stays_idle_after_the_gui_endpoint_closes() -> io::Result<()> {
 }
 
 #[test]
+fn broker_drains_a_detached_shell_fifo() -> io::Result<()> {
+    let mut fixture = start_broker()?;
+    let fifo = fixture.directory.join("osc133.fifo");
+    let c_path = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
+    if unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    assert_eq!(
+        control_request(
+            &fixture.socket,
+            &format!("FIFO\ttest-session\t{}", fifo.display())
+        )?,
+        b"OK"
+    );
+    assert_eq!(
+        control_request(&fixture.socket, "FIFO\ttest-session")?,
+        format!("OK\n{}", fifo.display()).into_bytes()
+    );
+
+    // Without a drain reader the FIFO buffer would fill and the shell would
+    // block (or die of SIGPIPE) at its next prompt.
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let writer_path = fifo.clone();
+    let writer = thread::spawn(move || {
+        let mut file = match std::fs::OpenOptions::new().write(true).open(&writer_path) {
+            Ok(file) => file,
+            Err(_) => {
+                let _ = sender.send(false);
+                return;
+            }
+        };
+        let data = vec![b'x'; 256 * 1024];
+        let _ = sender.send(file.write_all(&data).is_ok());
+    });
+    assert!(
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap_or(false),
+        "the broker did not drain the FIFO"
+    );
+    writer.join().unwrap();
+
+    assert_eq!(
+        control_request(&fixture.socket, "RELEASE_FIFO\ttest-session")?,
+        b"OK"
+    );
+    assert_eq!(
+        control_request(&fixture.socket, "FIFO\ttest-session")?,
+        b"OK\n"
+    );
+    assert!(fixture.child.try_wait()?.is_none());
+    Ok(())
+}
+
+#[test]
 fn broker_round_trips_control_and_terminal_traffic() -> io::Result<()> {
     let mut fixture = start_broker()?;
 

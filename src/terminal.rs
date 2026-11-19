@@ -1315,6 +1315,9 @@ mod imp {
         /// Set on the tab that adopted a session from another window: closing
         /// it ends the session, as closing any other tab does.
         pub adopted: Cell<bool>,
+        /// Set when the window was closed with "Keep Running": the broker owns
+        /// the shell and its OSC 133 FIFO now, so both must outlive this tab.
+        pub background_kept: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -2353,6 +2356,29 @@ impl TerminalBox {
         self.imp().handed_over.set(true);
     }
 
+    /// Leave this session running under its broker when the window closes.
+    ///
+    /// The broker takes over reading the shell integration FIFO, because the
+    /// GUI is about to disappear and the shell would otherwise die of SIGPIPE
+    /// at its next prompt. Switching the local view off also tells `terminate`
+    /// to preserve the broker instead of killing the shell.
+    pub fn keep_in_background(&self) {
+        if self.imp().adopted.get() {
+            // A relay tab is only a client; its session belongs to the broker.
+            return;
+        }
+        let fifo = self.osc133_fifo();
+        let handle = self.imp().remote_handle.borrow();
+        let Some(handle) = handle.as_ref() else {
+            return;
+        };
+        if let Some(path) = fifo {
+            handle.drain_fifo(&path);
+        }
+        handle.local_off();
+        self.imp().background_kept.set(true);
+    }
+
     /// Open the OSC 133 FIFO of another window's session for reading, before
     /// asking it to hand over. Holding the fd on this side is what keeps the
     /// shell alive while the source closes its own reader.
@@ -2403,6 +2429,11 @@ impl TerminalBox {
                 // Another window now reads this FIFO; deleting it would silent
                 // the shell integration of the moved tab.
                 LOGGER.warning("osc133_fifo_preserved_for_handover");
+            } else if self.imp().background_kept.get() {
+                // The broker drains it while the session has no window, so a
+                // later attach can take it over instead of finding a dead
+                // shell.
+                LOGGER.warning("osc133_fifo_preserved_for_background_session");
             } else {
                 let _ = std::fs::remove_file(&fifo);
             }
@@ -2557,6 +2588,19 @@ impl TerminalBox {
 
     pub fn terminate(&self) {
         self.cleanup_shell_integration();
+        // A session whose local view is off was detached with `Ctrl+B`, `d`
+        // or taken over elsewhere with `-M`, or kept with "Keep Running". Its
+        // broker owns the shell now, so hand it the OSC 133 FIFO before this
+        // reader disappears. (A handover already has another window reading.)
+        let detached = self
+            .imp()
+            .remote_handle
+            .borrow()
+            .as_ref()
+            .is_some_and(|handle| !handle.local_is_on());
+        if detached && !self.imp().handed_over.get() && !self.imp().adopted.get() {
+            self.keep_in_background();
+        }
         self.close_osc133_fifo();
         if let Some(handler) = self.imp().settings_handler.borrow_mut().take() {
             settings().disconnect_changed(handler);

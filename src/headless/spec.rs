@@ -715,7 +715,7 @@ pub const SETTINGS: &[Setting] = &[
         "confirm_close",
         Kind::Bool,
         Default::Bool(true),
-        "Ask before closing a tab with a running command.",
+        "Ask before closing a window while a tab is still running a command.",
     ),
     setting(
         "tab_title",
