@@ -41,7 +41,7 @@
 - **Broadcast input**: Type simultaneously across all active split panes.
 
 ### ⚡ Persistent PTY Broker (<3 MB RAM)
-- **Crash & close resilience**: Terminal sessions are managed by an independent, display-free broker process (`oxterm-broker`). If the GUI closes or crashes, your shell keeps running.
+- **Crash & close resilience**: Terminal sessions are managed by an independent, display-free broker process (`oxterm-broker`). If the GUI crashes, your shell keeps running. A normal window close still ends its tabs, so detach a session first (`Ctrl+B`, then `d`) when it should outlive the window.
 - **Remote attach & detach**: Seamlessly re-attach to sessions locally or over SSH via `oxterm -a` or `oxterm -M`.
 - **Tiny footprint**: The headless broker consumes under **3 MB of resident RAM** per session.
 
