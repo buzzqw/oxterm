@@ -27,6 +27,8 @@ never written back to disk.
 | `auto_theme` | bool | `false` | Follow the desktop's light/dark preference, using theme_light or theme_dark. |
 | `theme_light` | string | `Light` | Theme used when the desktop prefers a light appearance. |
 | `theme_dark` | string | `Dark (Default)` | Theme used when the desktop prefers a dark appearance. |
+| `window_theme` | string | `terminal` | Window chrome theme: match the terminal background, follow the desktop, or force dark/light. |
+|  |  | Values: `terminal`, `system`, `dark`, `light` |  |
 | `foreground_color` | color or empty | `""` | Foreground override; empty uses the color scheme. |
 | `background_color` | color or empty | `""` | Background override; empty uses the color scheme. |
 | `cursor_color` | color (#rrggbb) | `#ffffff` | Cursor color. |

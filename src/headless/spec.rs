@@ -592,6 +592,13 @@ pub const SETTINGS: &[Setting] = &[
         Default::Text("Dark (Default)"),
         "Theme used when the desktop prefers a dark appearance.",
     ),
+    Setting {
+        key: "window_theme",
+        kind: Kind::Text,
+        default: Default::Text("terminal"),
+        description: "Window chrome theme: match the terminal background, follow the desktop, or force dark/light.",
+        choices: &["terminal", "system", "dark", "light"],
+    },
     setting(
         "foreground_color",
         Kind::HexColorOrEmpty,

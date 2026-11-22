@@ -114,10 +114,12 @@ impl App {
             // signal makes every terminal recompute its theme when the desktop
             // switches appearance at sunset (or from the control centre).
             if let Some(gtk_settings) = gtk::Settings::default() {
-                gtk_settings.connect_gtk_application_prefer_dark_theme_notify(|_| {
-                    settings().notify_changed();
+                let _ = settings::system_prefers_dark();
+                gtk_settings.connect_gtk_application_prefer_dark_theme_notify(|gtk_settings| {
+                    settings::on_gtk_dark_theme_notify(gtk_settings);
                 });
             }
+            settings().apply_window_theme();
 
             let css_provider = gtk::CssProvider::new();
             let css = b"

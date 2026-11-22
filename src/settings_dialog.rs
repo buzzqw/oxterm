@@ -946,6 +946,7 @@ struct AppearancePage {
     auto_theme: gtk::CheckButton,
     light_theme: gtk::ComboBoxText,
     dark_theme: gtk::ComboBoxText,
+    window_theme: gtk::ComboBoxText,
     fg_color: gtk::ColorButton,
     bg_color: gtk::ColorButton,
     cursor_color: gtk::ColorButton,
@@ -1082,6 +1083,21 @@ fn build_appearance(
             dark.set_sensitive(check.is_active());
         });
     }
+
+    let window_theme = gtk::ComboBoxText::new();
+    for (id, label) in [
+        ("terminal", "Match terminal"),
+        ("system", "Follow system"),
+        ("dark", "Dark"),
+        ("light", "Light"),
+    ] {
+        window_theme.append(Some(id), label);
+    }
+    window_theme.set_active_id(Some(&s.get_str_default("window_theme", "terminal")));
+    window_theme.set_tooltip_text(Some(
+        "Appearance of the window header, menus, tabs and side panels.",
+    ));
+    page.row_keyed("Window theme", &window_theme, Some("window_theme"));
 
     page.section("Colors");
     let fg_color = make_color_button(
@@ -1221,6 +1237,7 @@ fn build_appearance(
         auto_theme,
         light_theme,
         dark_theme,
+        window_theme,
         fg_color,
         bg_color,
         cursor_color,
@@ -2520,6 +2537,9 @@ impl DialogState {
         if let Some(name) = self.appearance.dark_theme.active_text() {
             s.set_str("theme_dark", &name);
         }
+        if let Some(mode) = self.appearance.window_theme.active_id() {
+            s.set_str("window_theme", &mode);
+        }
 
         let foreground = if self.fg_override.get() {
             rgba_to_hex(&self.appearance.fg_color.rgba())
@@ -2816,6 +2836,9 @@ impl DialogState {
                     .unwrap_or(0) as u32,
             ));
         }
+        self.appearance
+            .window_theme
+            .set_active_id(Some(&default_str("window_theme")));
         self.appearance
             .cursor_color
             .set_rgba(&hex_to_rgba(&default_str("cursor_color")));

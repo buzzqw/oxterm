@@ -12,6 +12,7 @@ if [ -n "$OXTERM_OSC133_FIFO" ] && [ -p "$OXTERM_OSC133_FIFO" ]; then
 fi
 
 __OXTERM_OSC133_READY=0
+__OXTERM_LAST_HIST=
 
 __oxterm_osc133_notify() {
     [ -n "$__OXTERM_OSC133_FD" ] && printf '%s\n' "$1" >&"$__OXTERM_OSC133_FD" 2>/dev/null
@@ -25,18 +26,36 @@ __oxterm_reattach_replaced_cwd() {
 }
 
 __oxterm_osc133_preexec() {
-    __oxterm_reattach_replaced_cwd
-    [ "$__OXTERM_OSC133_READY" = "1" ] || return
+    [ -z "${COMP_LINE:-}" ] || return 0
+    [ "$__OXTERM_OSC133_READY" = "1" ] || return 0
     case "$BASH_COMMAND" in
-        __oxterm_osc133_*) return ;;
+        __oxterm_osc133_*|__oxterm_reattach_replaced_cwd*) return 0 ;;
     esac
+    case ";${PROMPT_COMMAND[*]:-};" in
+        *";$BASH_COMMAND;"*|*" $BASH_COMMAND;"*|*";$BASH_COMMAND "*) return 0 ;;
+    esac
+    __oxterm_reattach_replaced_cwd
     __OXTERM_OSC133_READY=0
+    local _cmd="$BASH_COMMAND" _hist
+    _hist=$(HISTTIMEFORMAT='' builtin history 1 2>/dev/null)
+    if [ -n "$_hist" ] && [ "$_hist" != "$__OXTERM_LAST_HIST" ]; then
+        __OXTERM_LAST_HIST="$_hist"
+        _cmd="${_hist#"${_hist%%[![:space:]]*}"}"
+        _cmd="${_cmd#*[[:space:]]}"
+        _cmd="${_cmd#"${_cmd%%[![:space:]]*}"}"
+    else
+        case "$_cmd" in
+            "__oxterm_ssh "*) _cmd="ssh ${_cmd#__oxterm_ssh }" ;;
+            "__oxterm_autossh "*) _cmd="autossh ${_cmd#__oxterm_autossh }" ;;
+        esac
+    fi
     printf '\033]133;C\007'
-    __oxterm_osc133_notify "C${BASH_COMMAND//$'\n'/ }"
+    __oxterm_osc133_notify "C${_cmd//$'\n'/ }"
 }
 __oxterm_osc133_precmd() {
     local _exit=$?
     __oxterm_reattach_replaced_cwd
+    __OXTERM_LAST_HIST=$(HISTTIMEFORMAT='' builtin history 1 2>/dev/null)
     __OXTERM_OSC133_READY=1
     printf '\033]133;D;%s\007' "$_exit"
     __oxterm_osc133_notify "D$_exit"
@@ -95,8 +114,10 @@ if [ -n "$BASH_VERSION" ]; then
     if [[ "$(declare -p PROMPT_COMMAND 2>/dev/null)" == "declare -a"* ]]; then
         PROMPT_COMMAND+=(__oxterm_osc133_precmd)
     else
+        PROMPT_COMMAND="${PROMPT_COMMAND%"${PROMPT_COMMAND##*[!;[:space:]]}"}"
         PROMPT_COMMAND="${PROMPT_COMMAND}${PROMPT_COMMAND:+;}__oxterm_osc133_precmd"
     fi
+    __OXTERM_LAST_HIST=$(HISTTIMEFORMAT='' builtin history 1 2>/dev/null)
     printf '\033]133;A\007'
     __oxterm_osc133_notify A
     printf '\033]7;%s\007' "file://$PWD"
@@ -205,3 +226,72 @@ function autossh
     command autossh $pre (__oxterm_ssh_options $argv) $argv
 end
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::OSC133_SCRIPT;
+    use std::fs;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn bash_osc133_ignores_tab_completion_and_reports_full_command() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "oxterm-osc133-bash-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let script_path = dir.join("osc133.sh");
+        let log_path = dir.join("events.log");
+        fs::write(&script_path, OSC133_SCRIPT).unwrap();
+
+        let rc_path = dir.join("bashrc");
+        fs::write(
+            &rc_path,
+            format!(
+                "PROMPT_COMMAND=\"true; \"\n. \"{}\"\nexec {{__OXTERM_OSC133_FD}}>\"{}\"\n",
+                script_path.display(),
+                log_path.display()
+            ),
+        )
+        .unwrap();
+
+        let mut child = Command::new("bash")
+            .arg("--noprofile")
+            .arg("--rcfile")
+            .arg(&rc_path)
+            .arg("-i")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn interactive bash");
+        {
+            use std::io::Write;
+            let stdin = child.stdin.as_mut().unwrap();
+            writeln!(stdin, "echo hello | tr a-z A-Z").unwrap();
+            writeln!(stdin, "7z() {{ :; }}; 7z l archive.7z").unwrap();
+            writeln!(stdin, "exit 0").unwrap();
+        }
+        let status = child.wait().expect("wait for bash");
+        assert!(status.success());
+        let events = fs::read_to_string(&log_path).unwrap();
+        let c_events: Vec<&str> = events
+            .lines()
+            .filter(|line| line.starts_with('C'))
+            .collect();
+        assert_eq!(
+            c_events,
+            vec![
+                "Cecho hello | tr a-z A-Z",
+                "C7z() { :; }; 7z l archive.7z",
+                "Cexit 0"
+            ]
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

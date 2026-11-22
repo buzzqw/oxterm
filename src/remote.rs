@@ -2122,6 +2122,21 @@ fn child_foreground_is_active(state: &BrokerState) -> bool {
     foreground != shell_group
 }
 
+fn child_at_shell_prompt(state: &BrokerState) -> bool {
+    if state.child_closed {
+        return false;
+    }
+    if state.child_pid <= 0 {
+        return true;
+    }
+    if !state.interactive_shell {
+        return false;
+    }
+    let foreground = unsafe { libc::tcgetpgrp(CHILD_FD) };
+    let shell_group = unsafe { libc::getpgid(state.child_pid) };
+    foreground > 0 && shell_group > 0 && foreground == shell_group
+}
+
 fn child_echo_on(state: &BrokerState) -> bool {
     let mut attrs = std::mem::MaybeUninit::<libc::termios>::uninit();
     // The fallback keeps the conservative failure behavior below.
@@ -2131,7 +2146,7 @@ fn child_echo_on(state: &BrokerState) -> bool {
         return false;
     }
     let attrs = unsafe { attrs.assume_init() };
-    input_is_visible(attrs.c_lflag, !child_foreground_is_active(state))
+    input_is_visible(attrs.c_lflag, child_at_shell_prompt(state))
 }
 
 /// Some platforms expose terminal attributes only through the slave side.

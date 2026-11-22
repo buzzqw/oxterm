@@ -3988,6 +3988,7 @@ printf '%s\\n' \"$gpu\"";
                     let ticket = history().add_command_start_async(&command_text, &self.get_cwd());
                     *self.imp().osc133_last_history_id.borrow_mut() = ticket;
                     *self.imp().input_shadow.borrow_mut() = String::new();
+                    *self.imp().shadow_anchor.borrow_mut() = None;
                 }
                 self.publish_event(
                     "command_started",
@@ -4057,6 +4058,8 @@ printf '%s\\n' \"$gpu\"";
                 *self.imp().osc133_cmd_start_row.borrow_mut() = -1;
                 self.imp().pending_command_row.set(-1);
                 self.imp().last_prompt_row.set(cursor_row);
+                self.set_remote_command_state(false);
+                *self.imp().shadow_anchor.borrow_mut() = None;
                 let last_exit = *self.imp().osc133_last_exit.borrow();
                 if cursor_row > 0 {
                     let mut markers = self.imp().osc133_markers.borrow_mut();
@@ -5212,6 +5215,12 @@ printf '%s\\n' \"$gpu\"";
             return fallback.trim().to_string();
         };
         let (end_col, end_row) = self.vte().cursor_position();
+        if end_row < start_row
+            || end_row - start_row > 4
+            || (end_row == start_row && end_col < start_col)
+        {
+            return fallback.trim().to_string();
+        }
         let text = text::range(&self.vte(), start_row, start_col, end_row, end_col);
         match text {
             Some(t) if !t.is_empty() => t.trim().to_string(),
@@ -5589,7 +5598,9 @@ printf '%s\\n' \"$gpu\"";
         if key == K::Return || key == K::KP_Enter {
             let mut shadow = self.imp().input_shadow.borrow().trim().to_string();
             let real_text = self.get_real_command_text();
-            if !self.is_oxterm_command(&shadow) && self.is_oxterm_command(&real_text) {
+            if (shadow.is_empty() && !real_text.is_empty())
+                || (!self.is_oxterm_command(&shadow) && self.is_oxterm_command(&real_text))
+            {
                 shadow = real_text.clone();
             }
             // `?prompt` asks the agent with this pane as context, like the same
@@ -5621,7 +5632,9 @@ printf '%s\\n' \"$gpu\"";
                     let cwd = self.get_cwd();
                     if is_oxterm_cmd {
                         history().add_async(&shadow, &cwd, -1);
-                    } else if !*self.imp().osc133_integration_active.borrow() {
+                    } else if !*self.imp().osc133_integration_active.borrow()
+                        || self.foreground_process_is_ssh()
+                    {
                         let command = if real_text.is_empty() {
                             shadow.as_str()
                         } else {
@@ -5644,6 +5657,7 @@ printf '%s\\n' \"$gpu\"";
                 }
             }
             *self.imp().input_shadow.borrow_mut() = String::new();
+            *self.imp().shadow_anchor.borrow_mut() = None;
             let (_, row) = self.vte().cursor_position();
             self.imp().pending_command_row.set(row + 1);
         }

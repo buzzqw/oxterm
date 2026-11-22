@@ -115,12 +115,38 @@ pub fn color_palettes() -> &'static BTreeMap<String, themes::Theme> {
     themes::all()
 }
 
+static SYSTEM_PREFERS_DARK: OnceLock<AtomicBool> = OnceLock::new();
+static APPLYING_WINDOW_THEME: AtomicBool = AtomicBool::new(false);
+
 /// Whether the desktop currently asks for a dark theme. GTK exposes this for
 /// GNOME, XFCE, Cinnamon and most other desktops.
 pub fn system_prefers_dark() -> bool {
+    if let Some(pref) = SYSTEM_PREFERS_DARK.get() {
+        return pref.load(Ordering::SeqCst);
+    }
     gtk::Settings::default()
-        .map(|settings| settings.is_gtk_application_prefer_dark_theme())
+        .map(|settings| {
+            let dark = settings.is_gtk_application_prefer_dark_theme();
+            let _ = SYSTEM_PREFERS_DARK.set(AtomicBool::new(dark));
+            dark
+        })
         .unwrap_or(false)
+}
+
+/// Record a `gtk-application-prefer-dark-theme` change that came from the
+/// desktop rather than from [`Settings::apply_window_theme`].
+pub fn on_gtk_dark_theme_notify(gtk_settings: &gtk::Settings) {
+    if APPLYING_WINDOW_THEME.load(Ordering::SeqCst) {
+        return;
+    }
+    let dark = gtk_settings.is_gtk_application_prefer_dark_theme();
+    match SYSTEM_PREFERS_DARK.get() {
+        Some(pref) => pref.store(dark, Ordering::SeqCst),
+        None => {
+            let _ = SYSTEM_PREFERS_DARK.set(AtomicBool::new(dark));
+        }
+    }
+    settings().notify_changed();
 }
 
 mod imp {
@@ -554,6 +580,33 @@ impl Settings {
         }
         let (_, bg) = self.get_color_scheme();
         bg
+    }
+
+    /// Match the GTK window chrome (HeaderBar, MenuBar, side panels and tabs)
+    /// to `window_theme`.
+    pub fn apply_window_theme(&self) {
+        let Some(gtk_settings) = gtk::Settings::default() else {
+            return;
+        };
+        let _ = SYSTEM_PREFERS_DARK
+            .get_or_init(|| AtomicBool::new(gtk_settings.is_gtk_application_prefer_dark_theme()));
+        let prefer_dark = match self.get_str_default("window_theme", "terminal").as_str() {
+            "dark" => true,
+            "light" => false,
+            "system" => system_prefers_dark(),
+            _ => {
+                if self.get_bool("auto_theme") {
+                    system_prefers_dark()
+                } else {
+                    themes::is_dark_color(&self.get_bg_color())
+                }
+            }
+        };
+        if gtk_settings.is_gtk_application_prefer_dark_theme() != prefer_dark {
+            APPLYING_WINDOW_THEME.store(true, Ordering::SeqCst);
+            gtk_settings.set_gtk_application_prefer_dark_theme(prefer_dark);
+            APPLYING_WINDOW_THEME.store(false, Ordering::SeqCst);
+        }
     }
 
     pub(crate) fn valid_value(key: &str, value: &Value) -> bool {

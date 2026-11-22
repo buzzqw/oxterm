@@ -59,6 +59,22 @@ impl Theme {
     }
 }
 
+/// Whether a `#RRGGBB` color is perceptually dark (relative luminance < 50%).
+pub fn is_dark_color(hex: &str) -> bool {
+    let hex = hex.trim().strip_prefix('#').unwrap_or(hex.trim());
+    if hex.len() != 6 {
+        return true;
+    }
+    let (Ok(r), Ok(g), Ok(b)) = (
+        u8::from_str_radix(&hex[0..2], 16),
+        u8::from_str_radix(&hex[2..4], 16),
+        u8::from_str_radix(&hex[4..6], 16),
+    ) else {
+        return true;
+    };
+    (299 * u32::from(r) + 587 * u32::from(g) + 114 * u32::from(b)) < 128_000
+}
+
 pub fn themes_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/"))

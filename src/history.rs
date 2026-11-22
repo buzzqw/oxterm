@@ -443,9 +443,14 @@ impl HistoryManager {
             CREATE INDEX IF NOT EXISTS idx_command_stats_last_id
                 ON command_stats(last_id DESC);",
         )?;
-        if !exists {
+        let stats_empty: bool = conn.query_row(
+            "SELECT NOT EXISTS(SELECT 1 FROM command_stats LIMIT 1)",
+            [],
+            |row| row.get(0),
+        )?;
+        if !exists || stats_empty {
             conn.execute(
-                "INSERT INTO command_stats(command, last_id)
+                "INSERT OR REPLACE INTO command_stats(command, last_id)
                  SELECT command, MAX(id) FROM commands GROUP BY command",
                 [],
             )?;
