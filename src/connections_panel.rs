@@ -9,7 +9,7 @@ use std::collections::HashSet;
 
 use gtk::prelude::*;
 
-use crate::headless::connections::{Entry, Node, UsageMap};
+use crate::headless::connections::{Entry, Node, Protocol, UsageMap};
 
 const COLUMN_MARKUP: u32 = 0;
 const COLUMN_ID: u32 = 1;
@@ -78,6 +78,53 @@ fn badge(color: &str, text: &str) -> String {
         "<span background=\"{}\" foreground=\"#ffffff\"><small><b>\u{2009}{}\u{2009}</b></small></span>",
         color, text
     )
+}
+
+/// Colour and glyph of a protocol's chip. Each protocol has its own colour and
+/// mark, so a list of otherwise identical names still reads at a glance: the
+/// colour says the family, the glyph the exact protocol.
+fn protocol_style(protocol: Protocol) -> (&'static str, &'static str) {
+    match protocol {
+        Protocol::Ssh => ("#2b6cb0", ">_"),
+        Protocol::Mosh => ("#2c7a7b", "\u{2248}"),
+        Protocol::Telnet => ("#4a5568", "\u{2301}"),
+        Protocol::Serial => ("#8b5e34", "\u{2393}"),
+        Protocol::Sftp => ("#b7791f", "\u{21C5}"),
+        Protocol::Ftp => ("#975a16", "\u{21C5}"),
+        Protocol::Docker => ("#1d6fb8", "\u{25A3}"),
+        Protocol::Kubectl => ("#4c51bf", "\u{2638}"),
+        Protocol::AwsSsm => ("#c05621", "\u{2601}"),
+        Protocol::Command => ("#4a5568", "$"),
+        Protocol::Rdp => ("#6b46c1", "\u{25AD}"),
+        Protocol::Vnc => ("#2c7a7b", "\u{25AD}"),
+        Protocol::Spice => ("#b83232", "\u{25AD}"),
+    }
+}
+
+/// A compact, coloured chip naming the protocol.
+fn protocol_chip(protocol: Protocol) -> String {
+    let (color, glyph) = protocol_style(protocol);
+    let tag = if protocol.tag().is_empty() {
+        protocol.label()
+    } else {
+        protocol.tag()
+    };
+    format!(
+        "<span background=\"{}\" foreground=\"#ffffff\"><small><b>\u{2009}{} {}\u{2009}</b></small></span>",
+        color, glyph, tag
+    )
+}
+
+/// The section marks make Favorites, Recent and the hosts from `~/.ssh/config`
+/// look different from the user's own folders.
+fn group_icon(title: &str) -> Option<(&'static str, &'static str)> {
+    match title {
+        "Favorites" => Some(("\u{2605}", "#b7791f")),
+        "Recent" => Some(("\u{21BB}", "#2b6cb0")),
+        "~/.ssh/config" => Some(("\u{2261}", "#6b7280")),
+        "Ungrouped" => Some(("\u{25A4}", "#6b7280")),
+        _ => None,
+    }
 }
 
 fn activity_badges(open: usize, tunnels: usize, starting: usize, failed: usize) -> String {
@@ -300,8 +347,13 @@ impl ConnectionsPanel {
                 for child in children {
                     activity.add(self.append(Some(&iter), child, entries, decorate));
                 }
+                let icon = group_icon(title)
+                    .map(|(glyph, color)| {
+                        format!("<span foreground=\"{}\">{}</span> ", color, glyph)
+                    })
+                    .unwrap_or_default();
                 let markup = format!(
-                    "<b>{}</b> <small>({})</small>{}",
+                    "{icon}<b>{}</b> <span alpha=\"55%\"><small>({})</small></span>{}",
                     glib::markup_escape_text(title),
                     leaf_count(children),
                     activity_badges(
@@ -445,8 +497,8 @@ fn leaf_count(nodes: &[Node]) -> usize {
 }
 
 fn row_markup(entry: &Entry, decoration: &RowDecoration) -> String {
-    use crate::headless::connections::Origin;
-    let name = glib::markup_escape_text(&entry.connection.name);
+    let connection = &entry.connection;
+    let name = glib::markup_escape_text(&connection.name);
     let open = decoration.open_tabs > 0;
     // A dot in front of every row, filled and green when the connection is open:
     // the state reads down one column, whatever the length of the names.
@@ -455,6 +507,10 @@ fn row_markup(entry: &Entry, decoration: &RowDecoration) -> String {
     } else {
         "<span alpha=\"35%\">\u{25CB}</span> ".to_string()
     };
+    // A chip in a fixed column says what kind of connection this is before the
+    // name is read, so two similarly named hosts are not mistaken for each other.
+    markup.push_str(&protocol_chip(connection.protocol));
+    markup.push(' ');
     let name = if open {
         format!("<b>{}</b>", name)
     } else {
@@ -466,10 +522,6 @@ fn row_markup(entry: &Entry, decoration: &RowDecoration) -> String {
             color, name
         )),
         None => markup.push_str(&name),
-    }
-    let tag = entry.connection.protocol.tag();
-    if !tag.is_empty() {
-        markup.push_str(&format!("  <small><b>{}</b></small>", tag));
     }
     // State first: the narrow panel ellipsizes the end of the row, and the
     // address is also in the tooltip.
@@ -483,15 +535,45 @@ fn row_markup(entry: &Entry, decoration: &RowDecoration) -> String {
         decoration.starting_tunnels,
         decoration.failed_tunnels,
     ));
-    if entry.origin == Origin::Orphan {
-        markup.push_str(" <small><i>(not in ~/.ssh/config)</i></small>");
-    } else if entry.connection.kind == crate::headless::connections::Kind::Manual {
-        markup.push_str(&format!(
-            "  <small>{}</small>",
-            glib::markup_escape_text(&entry.connection.summary())
-        ));
+    // A second, dim line carries the address, so the name stays short and the
+    // rows are told apart even when several start with the same word.
+    if let Some(detail) = row_detail(entry) {
+        markup.push_str("\n   ");
+        markup.push_str(&detail);
     }
     markup
+}
+
+/// Where the entry actually goes, in dim text under its name.
+fn row_detail(entry: &Entry) -> Option<String> {
+    use crate::headless::connections::Origin;
+    let connection = &entry.connection;
+    let mut parts = Vec::new();
+    if entry.origin == Origin::Orphan {
+        parts.push("not in ~/.ssh/config".to_string());
+    } else {
+        let summary = connection.summary();
+        if !summary.is_empty() {
+            parts.push(glib::markup_escape_text(&summary).to_string());
+        }
+    }
+    if !connection.tags.is_empty() {
+        parts.push(
+            connection
+                .tags
+                .iter()
+                .map(|tag| format!("#{}", glib::markup_escape_text(tag)))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "<small><span alpha=\"60%\">{}</span></small>",
+        parts.join("  \u{00B7}  ")
+    ))
 }
 
 fn row_tooltip(entry: &Entry, decoration: &RowDecoration) -> String {
