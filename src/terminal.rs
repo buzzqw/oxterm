@@ -1261,6 +1261,11 @@ mod imp {
         pub osc133_integration_active: RefCell<bool>,
         pub osc133_last_history_id: RefCell<Option<u64>>,
         pub osc133_command_started_at: RefCell<Option<Instant>>,
+        /// Command typed at Return while shell integration was active. If no
+        /// OSC 133 `C` event reports it shortly afterwards, record it anyway:
+        /// a stale integration script must never make history stop silently.
+        pub osc133_pending_history: RefCell<Option<(String, String)>>,
+        pub osc133_history_generation: Cell<u64>,
         pub bell_notify_cmd_running: RefCell<bool>,
 
         pub search_results: RefCell<Vec<serde_json::Value>>,
@@ -2665,6 +2670,44 @@ impl TerminalBox {
         }
     }
 
+    /// Record a command typed at Return after a short grace period, unless
+    /// shell integration reports it first through an OSC 133 `C` event.
+    ///
+    /// `osc133_integration_active` only means *some* event arrived; the `A`/`D`
+    /// markers keep it true even when the shell's preexec hook has stopped
+    /// emitting `C`. Without this deferred fallback that state silently
+    /// suppressed history for every subsequent command.
+    fn queue_history_fallback(&self, command: String, cwd: String) {
+        if command.is_empty() {
+            return;
+        }
+        *self.imp().osc133_pending_history.borrow_mut() = Some((command, cwd));
+        let generation = self.imp().osc133_history_generation.get().wrapping_add(1);
+        self.imp().osc133_history_generation.set(generation);
+        let weak = self.downgrade();
+        glib::timeout_add_local_once(Duration::from_millis(400), move || {
+            let Some(term) = weak.upgrade() else {
+                return;
+            };
+            if term.imp().osc133_history_generation.get() != generation {
+                return;
+            }
+            let pending = term.imp().osc133_pending_history.borrow_mut().take();
+            if let Some((command, cwd)) = pending {
+                history().add_async(&command, &cwd, -1);
+            }
+        });
+    }
+
+    /// An OSC 133 `C` event owns this command: cancel the deferred fallback so
+    /// the entry is recorded once, with its real exit code and duration.
+    fn cancel_history_fallback(&self) {
+        *self.imp().osc133_pending_history.borrow_mut() = None;
+        self.imp()
+            .osc133_history_generation
+            .set(self.imp().osc133_history_generation.get().wrapping_add(1));
+    }
+
     pub fn connection_id(&self) -> Option<String> {
         self.imp().connection_id.borrow().clone()
     }
@@ -3058,6 +3101,11 @@ impl TerminalBox {
         }
         if *self.imp().osc133_integration_active.borrow()
             && *self.imp().remote_command_running.borrow()
+            && self
+                .imp()
+                .osc133_command_started_at
+                .borrow()
+                .is_some_and(|started| started.elapsed() < Duration::from_secs(5))
         {
             return true;
         }
@@ -3989,6 +4037,7 @@ printf '%s\\n' \"$gpu\"";
                     *self.imp().osc133_last_history_id.borrow_mut() = ticket;
                     *self.imp().input_shadow.borrow_mut() = String::new();
                     *self.imp().shadow_anchor.borrow_mut() = None;
+                    self.cancel_history_fallback();
                 }
                 self.publish_event(
                     "command_started",
@@ -5630,17 +5679,21 @@ printf '%s\\n' \"$gpu\"";
                 }
                 if settings().get_bool("history_enabled") {
                     let cwd = self.get_cwd();
+                    let command = if real_text.is_empty() {
+                        shadow.as_str()
+                    } else {
+                        real_text.as_str()
+                    };
                     if is_oxterm_cmd {
                         history().add_async(&shadow, &cwd, -1);
                     } else if !*self.imp().osc133_integration_active.borrow()
                         || self.foreground_process_is_ssh()
                     {
-                        let command = if real_text.is_empty() {
-                            shadow.as_str()
-                        } else {
-                            real_text.as_str()
-                        };
                         history().add_async(command, &cwd, -1);
+                    } else {
+                        // Shell integration claims this command. Record it
+                        // anyway unless its OSC 133 `C` event arrives in time.
+                        self.queue_history_fallback(command.to_string(), cwd);
                     }
                 }
                 *self.imp().shadow_anchor.borrow_mut() = None;
@@ -6723,6 +6776,28 @@ fn mono_us() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros() as i64)
         .unwrap_or(0)
+}
+
+/// Debug-only hooks for `tests/gui_lifecycle.rs`: exercise the real Ctrl+R
+/// gate and inspect the picker without fabricating a GdkEventKey.
+#[cfg(debug_assertions)]
+impl TerminalBox {
+    pub(crate) fn debug_ctrl_r(&self) -> bool {
+        if self.has_active_process() {
+            return false;
+        }
+        self.start_history_search();
+        true
+    }
+
+    pub(crate) fn debug_history_picker_state(&self) -> (bool, bool, usize, String) {
+        (
+            *self.imp().history_search_mode.borrow(),
+            *self.imp().history_list_display.borrow(),
+            self.imp().history_list_results.borrow().len(),
+            self.imp().history_search_query.borrow().clone(),
+        )
+    }
 }
 
 #[cfg(test)]

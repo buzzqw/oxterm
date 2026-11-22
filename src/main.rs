@@ -110,6 +110,11 @@ impl App {
         app.connect_shutdown(|_app| headless::tunnels::stop_all());
 
         app.connect_startup(|_app| {
+            // Keep the history database healthy in the background: the first
+            // pass compacts the WAL left by the previous session, then it
+            // repeats every 30 minutes. Never deletes a command.
+            history::start_history_maintenance();
+
             // Follow the desktop's light/dark preference. Emitting the settings
             // signal makes every terminal recompute its theme when the desktop
             // switches appearance at sunset (or from the control centre).

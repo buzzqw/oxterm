@@ -124,11 +124,14 @@ impl TerminalBox {
                     *self.imp().input_shadow.borrow_mut() = String::new();
                     *self.imp().shadow_anchor.borrow_mut() = None;
                     self.vte().feed_child(format!("{}\n", cmd).as_bytes());
-                    if (!*self.imp().osc133_integration_active.borrow()
-                        || self.foreground_process_is_ssh())
-                        && settings().get_bool("history_enabled")
-                    {
-                        history().add_async(&cmd, &self.get_cwd(), -1);
+                    if settings().get_bool("history_enabled") {
+                        if !*self.imp().osc133_integration_active.borrow()
+                            || self.foreground_process_is_ssh()
+                        {
+                            history().add_async(&cmd, &self.get_cwd(), -1);
+                        } else {
+                            self.queue_history_fallback(cmd.clone(), self.get_cwd());
+                        }
                     }
                 }
             } else if tab_mode {

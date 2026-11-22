@@ -20,6 +20,24 @@ pub fn history_db_path() -> PathBuf {
 const TRIM_CHECK_INTERVAL: u32 = 50;
 const TRIM_MAX_ROWS: i64 = 1_000_000;
 
+/// A command typed at a shell prompt is one line. Program output that a
+/// multi-line paste or `/learn` imported by accident is not: it bloats the FTS
+/// index (one row reached 3.6 MB) and drowns every search result.
+const MAX_COMMAND_CHARS: usize = 4096;
+
+fn is_command_like(command: &str) -> bool {
+    !command.is_empty()
+        && !command.contains(['\n', '\r'])
+        && command.chars().count() <= MAX_COMMAND_CHARS
+}
+
+fn clean_command_sql(alias: &str) -> String {
+    format!(
+        "instr({alias}.command, char(10)) = 0 AND instr({alias}.command, char(13)) = 0 \
+         AND length({alias}.command) <= {MAX_COMMAND_CHARS}"
+    )
+}
+
 type SearchCallback = Box<dyn FnOnce(Vec<Vec<Value>>) + Send + 'static>;
 type SqlCallback = Box<dyn FnOnce(Result<Vec<Vec<Value>>, String>) + Send + 'static>;
 type AddManyCallback = Box<dyn FnOnce(usize) + Send + 'static>;
@@ -60,6 +78,9 @@ enum HistoryRequest {
     Optimize {
         callback: OptimizeCallback,
     },
+    /// Periodic, non-destructive upkeep (WAL, FTS segments, planner stats and
+    /// the derived command_stats index). Never deletes a command.
+    Maintain,
     Clear,
 }
 
@@ -191,6 +212,7 @@ fn history_worker_loop(receiver: mpsc::Receiver<HistoryRequest>) {
                 callback(manager.sql_search(&sql));
             }
             HistoryRequest::Optimize { callback } => callback(manager.optimize()),
+            HistoryRequest::Maintain => manager.maintain(),
             HistoryRequest::Clear => manager.clear(),
         }
     }
@@ -379,9 +401,30 @@ impl History {
         send_history_request(HistoryRequest::Optimize { callback }, "optimize")
     }
 
+    /// Queue non-destructive upkeep on the worker. Cheap enough to run every
+    /// few minutes, and it never removes a command from the history.
+    pub fn maintain_async(&self) {
+        let _ = send_history_request(HistoryRequest::Maintain, "maintenance");
+    }
+
     pub fn clear_async(&self) {
         let _ = send_history_request(HistoryRequest::Clear, "history clear");
     }
+}
+
+/// Start periodic history upkeep on the GTK main loop. A first pass runs
+/// shortly after startup to compact a WAL left behind by a previous session,
+/// then maintenance repeats every 30 minutes. All work happens on the history
+/// worker thread, so neither pass can block the UI.
+pub fn start_history_maintenance() {
+    glib::timeout_add_seconds_local(20, || {
+        history().maintain_async();
+        glib::ControlFlow::Break
+    });
+    glib::timeout_add_seconds_local(30 * 60, || {
+        history().maintain_async();
+        glib::ControlFlow::Continue
+    });
 }
 
 impl HistoryManager {
@@ -423,7 +466,49 @@ impl HistoryManager {
             );
         }
         Self::initialize_command_stats(&conn)?;
+        match Self::remove_non_command_rows(&conn) {
+            Ok(removed) if removed > 0 => crate::logging::Logger::log(
+                "INFO",
+                "history",
+                "removed non-command rows from history",
+                Some(&format!("{removed} rows")),
+            ),
+            Ok(_) => {}
+            Err(error) => crate::logging::Logger::log(
+                "WARNING",
+                "history",
+                "could not clean history",
+                Some(&error.to_string()),
+            ),
+        }
         Ok(conn)
+    }
+
+    /// One-time migration: output of a program imported as a "command" is not
+    /// a shell command. These rows can be megabytes long and their trigram FTS
+    /// entries dominate every search, so remove them once and never recheck.
+    fn remove_non_command_rows(conn: &Connection) -> rusqlite::Result<usize> {
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if version >= 1 {
+            return Ok(0);
+        }
+        let removed = conn.execute(
+            "DELETE FROM commands
+             WHERE instr(command, char(10)) > 0 OR instr(command, char(13)) > 0
+                OR length(command) > 4096",
+            [],
+        )?;
+        conn.execute(
+            "DELETE FROM command_stats WHERE last_id NOT IN (SELECT id FROM commands)",
+            [],
+        )?;
+        conn.execute_batch("PRAGMA user_version = 1;")?;
+        if removed > 0 {
+            // Best effort: another Oxterm process may hold the WAL open.
+            // VACUUM reclaims the megabytes held by the removed FTS entries.
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;");
+        }
+        Ok(removed)
     }
 
     /// A tiny `command -> newest row` table so the default history view does not
@@ -536,6 +621,9 @@ impl HistoryManager {
         duration_ms: Option<i64>,
         git_branch: Option<&str>,
     ) -> i64 {
+        if !is_command_like(command) {
+            return 0;
+        }
         let Ok(conn) = self.conn.lock() else {
             crate::logging::log_warning("history database lock is unavailable");
             return 0;
@@ -622,6 +710,9 @@ impl HistoryManager {
             let ts = Self::now_ts();
             let mut failed = false;
             for cmd in commands {
+                if !is_command_like(cmd) {
+                    continue;
+                }
                 if stmt.execute(params![cmd, cwd, exit_code, ts]).is_ok() {
                     let id = tx.last_insert_rowid();
                     if stats.execute(params![cmd, id]).is_err() {
@@ -689,25 +780,26 @@ impl HistoryManager {
             return Vec::new();
         };
         if terms.trim().is_empty() {
+            let clean = clean_command_sql("c");
             let result = if !cwd.is_empty() {
                 (|| -> rusqlite::Result<Vec<Vec<Value>>> {
-                    let mut stmt = conn.prepare(
+                    let mut stmt = conn.prepare(&format!(
                         "SELECT c.id, c.command, c.cwd, c.timestamp, c.exit_code, c.duration_ms, c.git_branch \
                          FROM command_stats s JOIN commands c ON c.id = s.last_id \
-                         WHERE c.command NOT LIKE '/%' ESCAPE '\\' \
+                         WHERE c.command NOT LIKE '/%' ESCAPE '\\' AND {clean} \
                          ORDER BY CASE WHEN c.cwd = ?1 THEN 0 ELSE 1 END, s.last_id DESC LIMIT ?2",
-                    )?;
+                    ))?;
                     let iter = stmt.query_map(params![cwd, limit], Self::map_row_7)?;
                     iter.collect()
                 })()
             } else {
                 (|| -> rusqlite::Result<Vec<Vec<Value>>> {
-                    let mut stmt = conn.prepare(
+                    let mut stmt = conn.prepare(&format!(
                         "SELECT c.id, c.command, c.cwd, c.timestamp, c.exit_code, c.duration_ms, c.git_branch \
                          FROM command_stats s JOIN commands c ON c.id = s.last_id \
-                         WHERE c.command NOT LIKE '/%' ESCAPE '\\' \
+                         WHERE c.command NOT LIKE '/%' ESCAPE '\\' AND {clean} \
                          ORDER BY s.last_id DESC LIMIT ?1",
-                    )?;
+                    ))?;
                     let iter = stmt.query_map(params![limit], Self::map_row_7)?;
                     iter.collect()
                 })()
@@ -754,6 +846,7 @@ impl HistoryManager {
             where_params.push(Box::new(format!("%{}%", Self::like_escape(n))));
         }
         where_clauses.push("command NOT LIKE '/%' ESCAPE '\\'".to_string());
+        where_clauses.push(clean_command_sql("commands"));
         let where_sql = where_clauses.join(" AND ");
 
         let mut order_parts: Vec<String> = Vec::new();
@@ -815,6 +908,7 @@ impl HistoryManager {
         let mut subquery = vec![
             "f.commands_fts MATCH ?".to_string(),
             "c2.command NOT LIKE '/%' ESCAPE '\\'".to_string(),
+            clean_command_sql("c2"),
         ];
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(fts_query)];
         for term in negative {
@@ -834,6 +928,7 @@ impl HistoryManager {
             let mut compact = vec![
                 "REPLACE(c3.command, ' ', '') LIKE ? ESCAPE '\\'".to_string(),
                 "c3.command NOT LIKE '/%' ESCAPE '\\'".to_string(),
+                clean_command_sql("c3"),
             ];
             params.push(Box::new(format!("%{}%", Self::like_escape(positive[0]))));
             for term in negative {
@@ -1012,13 +1107,7 @@ impl HistoryManager {
             crate::logging::log_warning("history database lock is unavailable");
             return;
         };
-        let has_fts: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'commands_fts')",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(false);
+        let has_fts = Self::has_fts(&conn);
         let mut sql = String::from("PRAGMA secure_delete = ON; DELETE FROM commands;");
         if has_fts {
             sql.push_str(" INSERT INTO commands_fts(commands_fts) VALUES ('delete-all');");
@@ -1033,6 +1122,69 @@ impl HistoryManager {
                 Some(&error.to_string()),
             );
         }
+    }
+
+    /// Periodic, non-destructive upkeep. It only refreshes derived state: the
+    /// compact `command_stats` index, FTS segments, planner statistics and the
+    /// WAL. No row of `commands` is ever deleted here (that is the explicit
+    /// `/history optimize`), so maintenance can run unattended.
+    fn maintain(&self) {
+        let Ok(conn) = self.conn.lock() else {
+            crate::logging::log_warning("history database lock is unavailable");
+            return;
+        };
+
+        // Repair the derived index after a crash or a manual edit. Both
+        // statements are no-ops when the index is already consistent.
+        let repaired = conn
+            .execute_batch(
+                "DELETE FROM command_stats WHERE last_id NOT IN (SELECT id FROM commands);
+                 INSERT OR IGNORE INTO command_stats(command, last_id)
+                     SELECT command, MAX(id) FROM commands GROUP BY command;",
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+
+        // Merge FTS5 b-tree segments: without this, thousands of small
+        // segments accumulate and every search has to visit all of them.
+        let fts = if Self::has_fts(&conn) {
+            conn.execute(
+                "INSERT INTO commands_fts(commands_fts) VALUES ('optimize')",
+                [],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+        } else {
+            Ok(())
+        };
+
+        // Refresh planner statistics and truncate the WAL left by a previous
+        // session (it can grow to tens of MB otherwise).
+        let vacuum = conn
+            .execute_batch("PRAGMA optimize; PRAGMA wal_checkpoint(TRUNCATE);")
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+
+        match (repaired, fts, vacuum) {
+            (Ok(()), Ok(()), Ok(())) => {
+                crate::logging::Logger::info("history", "maintenance completed")
+            }
+            (r, f, v) => crate::logging::Logger::log(
+                "WARNING",
+                "history",
+                "history maintenance failed",
+                Some(&format!("{r:?} {f:?} {v:?}")),
+            ),
+        }
+    }
+
+    fn has_fts(conn: &Connection) -> bool {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'commands_fts')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false)
     }
 
     pub fn optimize(&self) -> Result<BTreeMap<String, Value>, String> {
@@ -1087,11 +1239,14 @@ impl HistoryManager {
     }
 
     fn remove_duplicates(conn: &rusqlite::Transaction<'_>) -> rusqlite::Result<usize> {
+        // Also drop rows that are not shell commands (multi-line program output
+        // or >4 KB text). Their FTS delete re-tokenizes the text, which is why
+        // this happens during the explicit /history optimize, not at startup.
         conn.execute(
             "DELETE FROM commands
-             WHERE id NOT IN (
-                 SELECT MAX(id) FROM commands GROUP BY command, cwd
-             )",
+             WHERE instr(command, char(10)) > 0 OR instr(command, char(13)) > 0
+                OR length(command) > 4096
+                OR id NOT IN (SELECT MAX(id) FROM commands GROUP BY command, cwd)",
             [],
         )
     }
@@ -1114,7 +1269,7 @@ fn rusqlite_value_to_json(v: rusqlite::types::Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_read_only_sql, read_git_branch, HistoryManager};
+    use super::{is_read_only_sql, read_git_branch, HistoryManager, MAX_COMMAND_CHARS};
     use rusqlite::Connection;
     use std::fs;
     use std::sync::Mutex;
@@ -1330,5 +1485,95 @@ mod tests {
         history.clear();
         assert_eq!(count(&history), 0);
         assert!(history.search("secret", 10, "/w").is_empty());
+    }
+
+    /// Ctrl+R must see a command immediately after it was recorded, both in
+    /// the default list and when the user types a term.
+    #[test]
+    fn a_newly_recorded_command_is_searchable() {
+        let history = test_history();
+        history.add("oxterm_probe_needle", "/workspace", 0);
+
+        let recent: Vec<_> = history
+            .search("", 50, "/workspace")
+            .into_iter()
+            .map(|row| row[1].as_str().unwrap().to_string())
+            .collect();
+        assert!(recent.contains(&"oxterm_probe_needle".to_string()));
+
+        let found: Vec<_> = history
+            .search("oxterm_probe_needle", 50, "/workspace")
+            .into_iter()
+            .map(|row| row[1].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(found, ["oxterm_probe_needle"]);
+    }
+
+    /// Program output imported by accident must neither be stored nor drown
+    /// search results: a shell command is a single, reasonably short line.
+    #[test]
+    fn program_output_is_not_a_command() {
+        let history = test_history();
+        let junk = "oxterm_junk_marker\n".to_string() + &"log line ".repeat(1000);
+        assert_eq!(history.add(&junk, "/w", 0), 0);
+        assert_eq!(count(&history), 0);
+
+        history.add("echo ok", "/w", 0);
+        assert!(history.search("oxterm_junk_marker", 50, "/w").is_empty());
+
+        let oversized = "x".repeat(MAX_COMMAND_CHARS + 1);
+        assert_eq!(history.add(&oversized, "/w", 0), 0);
+        assert_eq!(count(&history), 1);
+    }
+
+    /// The worker opens a real file at startup; a migration error there would
+    /// silently fall back to an in-memory database and lose all history.
+    #[test]
+    fn a_disk_database_initializes_and_is_searchable() {
+        let dir = temp_dir();
+        let path = dir.join("history.db");
+        let conn = HistoryManager::open_and_initialize(&path).expect("initialize on-disk db");
+        let manager = HistoryManager {
+            conn: Mutex::new(conn),
+            inserts_since_trim: Mutex::new(0),
+        };
+        assert!(path.exists());
+        assert_eq!(manager.add("git rebase", "/w", 0) > 0, true);
+        assert_eq!(manager.search("git rebase", 10, "/w").len(), 1);
+        drop(manager);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Automatic maintenance must never delete a command, and must repair the
+    /// derived compact index after a crash left it stale or dangling.
+    #[test]
+    fn maintenance_is_non_destructive_and_repairs_the_index() {
+        let history = test_history();
+        history.add("alpha command", "/w", 0);
+        history.add("beta command", "/w", 0);
+        let before = count(&history);
+
+        {
+            let conn = history.conn.lock().unwrap();
+            conn.execute("DELETE FROM command_stats", []).unwrap();
+            conn.execute(
+                "INSERT INTO command_stats(command, last_id) VALUES ('ghost', 99999)",
+                [],
+            )
+            .unwrap();
+        }
+
+        history.maintain();
+
+        assert_eq!(count(&history), before, "maintenance deleted commands");
+        let stats: i64 = history
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM command_stats", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(stats, 2);
+        assert_eq!(history.search("", 10, "/w").len(), 2);
+        assert_eq!(history.search("alpha", 10, "/w").len(), 1);
     }
 }

@@ -30,6 +30,7 @@ const SCENARIOS: &[&str] = &[
     "agent-session",
     "preferences",
     "connections-panel-resize",
+    "history-ctrl-r",
 ];
 
 struct TempHome(PathBuf);
@@ -230,6 +231,10 @@ fn configure_agent_script(home: &Path, script: &str) -> Result<(), String> {
 fn run_scenario(scenario: &str) -> Result<(), String> {
     let home = TempHome::new(scenario);
     let agent_scenario = scenario == "agent-question-prefix" || scenario == "agent-session";
+    // The history picker needs an idle interactive shell: with `-e sleep 30`
+    // `has_active_process()` is true and Ctrl+R is deliberately left to the
+    // foreground program.
+    let real_shell = agent_scenario || scenario == "history-ctrl-r";
     if agent_scenario {
         if scenario == "agent-session" {
             configure_session_agent(home.path())?;
@@ -239,7 +244,7 @@ fn run_scenario(scenario: &str) -> Result<(), String> {
     }
     let mut command = Command::new(env!("CARGO_BIN_EXE_oxterm"));
     command.arg("--no-restore");
-    if !agent_scenario {
+    if !real_shell {
         command.args(["-e", "sleep", "30"]);
     }
     let child = command
