@@ -29,6 +29,7 @@ const SCENARIOS: &[&str] = &[
     "agent-question-prefix",
     "agent-session",
     "preferences",
+    "connections-panel-resize",
 ];
 
 struct TempHome(PathBuf);

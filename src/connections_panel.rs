@@ -224,6 +224,7 @@ impl ConnectionsPanel {
         let renderer = gtk::CellRendererText::new();
         renderer.set_ellipsize(pango::EllipsizeMode::End);
         let column = gtk::TreeViewColumn::new();
+        column.set_expand(true);
         TreeViewColumnExt::pack_start(&column, &renderer, true);
         TreeViewColumnExt::add_attribute(&column, &renderer, "markup", COLUMN_MARKUP as i32);
         tree.append_column(&column);

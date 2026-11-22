@@ -208,7 +208,7 @@ impl MainWindow {
             }
             glib::Propagation::Stop
         });
-        slot.pack_start(&panel.root, false, true, 0);
+        slot.pack_start(&panel.root, true, true, 0);
         slot.show();
         // The slot was hidden while the panel did not exist, so the splitter's
         // position was clamped. Set the comfortable default now that it has a

@@ -2186,9 +2186,6 @@ impl MainWindow {
         // gives a hidden child no room and hides its handle, so a window that
         // never opens the panel pays nothing for it.
         let connections_pane = gtk::Paned::new(gtk::Orientation::Horizontal);
-        connections_pane
-            .style_context()
-            .add_class("oxterm-connections-pane");
         let connections_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         connections_slot.set_no_show_all(true);
         connections_slot.hide();
@@ -7257,8 +7254,54 @@ pub mod test_scenario {
             "agent-question-prefix" => agent_question_prefix(win),
             "agent-session" => agent_session(win),
             "preferences" => preferences(win),
+            "connections-panel-resize" => connections_panel_resize(win),
             other => Err(format!("unknown test scenario: {other}")),
         }
+    }
+
+    /// The connections panel must fill its slot all the way to the splitter,
+    /// both at its initial width and after the handle is dragged.
+    fn connections_panel_resize(win: &MainWindow) -> Result<(), String> {
+        win.set_connections_panel_visible(true);
+        while gtk::events_pending() {
+            gtk::main_iteration();
+        }
+        let slot = win
+            .imp()
+            .connections_slot
+            .borrow()
+            .clone()
+            .ok_or_else(|| "connections slot is missing".to_string())?;
+        let panel = win
+            .imp()
+            .connections_panel
+            .borrow()
+            .clone()
+            .ok_or_else(|| "connections panel is missing".to_string())?;
+        let pane = slot
+            .parent()
+            .and_then(|parent| parent.downcast::<gtk::Paned>().ok())
+            .ok_or_else(|| "connections paned is missing".to_string())?;
+        for target in [320, 380, 220] {
+            pane.set_position(target);
+            while gtk::events_pending() {
+                gtk::main_iteration();
+            }
+            let slot_width = slot.allocated_width();
+            let root_width = panel.root.allocated_width();
+            let tree_width = panel.tree.allocated_width();
+            if slot_width != target {
+                return Err(format!(
+                    "slot width {slot_width} did not follow splitter position {target}"
+                ));
+            }
+            if root_width != slot_width || tree_width != slot_width {
+                return Err(format!(
+                    "panel ({root_width}px, tree {tree_width}px) did not fill slot ({slot_width}px)"
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Building the preferences dialog exercises every page, which is where a
