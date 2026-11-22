@@ -2186,6 +2186,9 @@ impl MainWindow {
         // gives a hidden child no room and hides its handle, so a window that
         // never opens the panel pays nothing for it.
         let connections_pane = gtk::Paned::new(gtk::Orientation::Horizontal);
+        connections_pane
+            .style_context()
+            .add_class("oxterm-connections-pane");
         let connections_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         connections_slot.set_no_show_all(true);
         connections_slot.hide();

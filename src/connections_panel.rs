@@ -230,6 +230,9 @@ impl ConnectionsPanel {
 
         let scroll = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
         scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        // An always-visible scrollbar next to the splitter reads as a second
+        // separator; the overlay shows only while the list is being scrolled.
+        scroll.set_overlay_scrolling(true);
         scroll.add(&tree);
         root.pack_start(&scroll, true, true, 0);
 
