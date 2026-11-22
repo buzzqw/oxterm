@@ -9,7 +9,7 @@ use std::collections::HashSet;
 
 use gtk::prelude::*;
 
-use crate::headless::connections::{Entry, Node, Protocol, UsageMap};
+use crate::headless::connections::{Entry, Kind, Node, Protocol, UsageMap};
 
 const COLUMN_MARKUP: u32 = 0;
 const COLUMN_ID: u32 = 1;
@@ -175,7 +175,7 @@ pub struct ConnectionsPanel {
 impl ConnectionsPanel {
     pub fn build() -> ConnectionsPanel {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        root.set_width_request(320);
+        root.set_width_request(180);
         root.set_no_show_all(true);
         root.style_context().add_class("oxterm-connections-panel");
 
@@ -187,15 +187,18 @@ impl ConnectionsPanel {
         let title = gtk::Label::new(None);
         title.set_markup("<b>Connections</b>");
         title.set_halign(gtk::Align::Start);
-        header.pack_start(&title, false, false, 0);
-        let close = gtk::Button::with_label("Close");
-        close.set_tooltip_text(Some("Hide the connections panel"));
+        title.set_ellipsize(pango::EllipsizeMode::End);
+        header.pack_start(&title, true, true, 0);
+        let icon_button = |icon: &str, tooltip: &str| {
+            let button = gtk::Button::from_icon_name(Some(icon), gtk::IconSize::Menu);
+            button.set_tooltip_text(Some(tooltip));
+            button
+        };
+        let close = icon_button("window-close-symbolic", "Hide the connections panel");
         header.pack_end(&close, false, false, 0);
-        let add = gtk::Button::with_label("New");
-        add.set_tooltip_text(Some("Create a new connection"));
+        let add = icon_button("list-add-symbolic", "Create a new connection");
         header.pack_end(&add, false, false, 0);
-        let tunnels = gtk::Button::with_label("Tunnels");
-        tunnels.set_tooltip_text(Some("Open the tunnel manager"));
+        let tunnels = icon_button("network-workgroup-symbolic", "Open the tunnel manager");
         header.pack_end(&tunnels, false, false, 0);
         root.pack_start(&header, false, false, 0);
 
@@ -204,6 +207,7 @@ impl ConnectionsPanel {
         search_row.set_margin_end(8);
         search_row.set_margin_bottom(6);
         let search = gtk::SearchEntry::new();
+        search.set_width_chars(8);
         search.set_placeholder_text(Some("Search name, host, group, tag, notes"));
         search_row.pack_start(&search, true, true, 0);
         let live_only = gtk::ToggleButton::with_label("Active");
@@ -535,23 +539,25 @@ fn row_markup(entry: &Entry, decoration: &RowDecoration) -> String {
         decoration.starting_tunnels,
         decoration.failed_tunnels,
     ));
-    // A second, dim line carries the address, so the name stays short and the
-    // rows are told apart even when several start with the same word.
+    // The address follows on the same line, dim and after the name, so it costs
+    // no height and the narrow panel ellipsizes it before the name.
     if let Some(detail) = row_detail(entry) {
-        markup.push_str("\n   ");
+        markup.push_str("  ");
         markup.push_str(&detail);
     }
     markup
 }
 
-/// Where the entry actually goes, in dim text under its name.
+/// Where the entry actually goes, in dim text after its name.
 fn row_detail(entry: &Entry) -> Option<String> {
     use crate::headless::connections::Origin;
     let connection = &entry.connection;
     let mut parts = Vec::new();
     if entry.origin == Origin::Orphan {
         parts.push("not in ~/.ssh/config".to_string());
-    } else {
+    } else if connection.kind == Kind::Manual {
+        // An alias has no address of its own here: the name is the destination,
+        // and "~/.ssh/config" would only repeat the group it is filed under.
         let summary = connection.summary();
         if !summary.is_empty() {
             parts.push(glib::markup_escape_text(&summary).to_string());

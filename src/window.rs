@@ -2181,18 +2181,27 @@ impl MainWindow {
                 }
             });
         }
-        // The notes panel is lazy: its (fairly large) widget tree is created
-        // the first time it is shown. The empty slot keeps its place in the
-        // layout so the paned terminal area keeps the same size.
-        let content_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        // The connections panel sits in its own splitter, so it can be made as
+        // narrow or as wide as the list needs. The slot starts hidden: a Paned
+        // gives a hidden child no room and hides its handle, so a window that
+        // never opens the panel pays nothing for it.
+        let connections_pane = gtk::Paned::new(gtk::Orientation::Horizontal);
+        connections_pane.set_wide_handle(true);
+        connections_pane
+            .style_context()
+            .add_class("oxterm-connections-pane");
         let connections_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        content_row.pack_start(&connections_slot, false, true, 0);
+        connections_slot.set_no_show_all(true);
+        connections_slot.hide();
+        connections_pane.pack1(&connections_slot, false, false);
         *self.imp().connections_slot.borrow_mut() = Some(connections_slot);
+        let content_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         content_row.pack_start(&dock, true, true, 0);
         let notes_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         content_row.pack_start(&notes_slot, false, true, 0);
         *self.imp().notes_slot.borrow_mut() = Some(notes_slot);
-        vbox.pack_start(&content_row, true, true, 0);
+        connections_pane.pack2(&content_row, true, true);
+        vbox.pack_start(&connections_pane, true, true, 0);
         vbox.pack_end(&stats_box, false, false, 0);
         let weak = self.downgrade();
         let cwd = std::rc::Rc::new(move || {

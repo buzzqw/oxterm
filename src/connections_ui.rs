@@ -209,6 +209,13 @@ impl MainWindow {
             glib::Propagation::Stop
         });
         slot.pack_start(&panel.root, false, true, 0);
+        slot.show();
+        // The slot was hidden while the panel did not exist, so the splitter's
+        // position was clamped. Set the comfortable default now that it has a
+        // child; later shows keep whatever width the user dragged to.
+        if let Some(pane) = slot.parent().and_then(|p| p.downcast::<gtk::Paned>().ok()) {
+            pane.set_position(320);
+        }
         *self.imp().connections_panel.borrow_mut() = Some(panel);
         true
     }
@@ -251,6 +258,9 @@ impl MainWindow {
         };
         if visible {
             // See `set_notes_panel_visible` for why `no_show_all` is toggled.
+            if let Some(slot) = self.imp().connections_slot.borrow().clone() {
+                slot.show();
+            }
             panel.root.set_no_show_all(false);
             panel.root.show_all();
             panel.root.set_no_show_all(true);
@@ -258,6 +268,11 @@ impl MainWindow {
             panel.search.grab_focus();
         } else {
             panel.root.hide();
+            // A hidden slot also hides the splitter's handle and gives the room
+            // back to the terminals.
+            if let Some(slot) = self.imp().connections_slot.borrow().clone() {
+                slot.hide();
+            }
             if let Some(term) = self.current_terminal() {
                 term.vte().grab_focus();
             }
