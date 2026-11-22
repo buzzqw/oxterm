@@ -1504,12 +1504,15 @@ fn search(entries: &[Entry], query: &str) -> Vec<usize> {
     let mut hits: Vec<(i64, usize)> = Vec::new();
     'entry: for (index, entry) in entries.iter().enumerate() {
         let name = entry.connection.name.to_lowercase();
-        let haystack = entry.connection.haystack();
+        let mut haystack: Option<String> = None;
         let mut score = 0i64;
         for word in &words {
             if name.contains(word.as_str()) {
                 score += 2000;
-            } else if haystack.contains(word.as_str()) {
+            } else if haystack
+                .get_or_insert_with(|| entry.connection.haystack())
+                .contains(word.as_str())
+            {
                 score += 1000;
             } else if let Some(fuzzy) = fuzzy_score(word, &name) {
                 score += i64::from(fuzzy);
@@ -1519,10 +1522,11 @@ fn search(entries: &[Entry], query: &str) -> Vec<usize> {
         }
         hits.push((score, index));
     }
-    hits.sort_by(|a, b| {
-        b.0.cmp(&a.0).then_with(|| {
-            sort_key(&entries[a.1].connection).cmp(&sort_key(&entries[b.1].connection))
-        })
+    hits.sort_by_cached_key(|&(score, index)| {
+        (
+            std::cmp::Reverse(score),
+            sort_key(&entries[index].connection),
+        )
     });
     hits.into_iter().map(|(_, index)| index).collect()
 }
@@ -1566,7 +1570,7 @@ impl GroupBuilder {
 }
 
 fn sorted_leaves(mut leaves: Vec<usize>, entries: &[Entry]) -> Vec<Node> {
-    leaves.sort_by_key(|&index| sort_key(&entries[index].connection));
+    leaves.sort_by_cached_key(|&index| sort_key(&entries[index].connection));
     leaves.into_iter().map(Node::Leaf).collect()
 }
 
@@ -1643,7 +1647,7 @@ pub fn menu_shortcuts(entries: &[Entry], usage: &UsageMap, limit: usize) -> Vec<
     let mut favorites: Vec<usize> = (0..entries.len())
         .filter(|&index| entries[index].connection.favorite)
         .collect();
-    favorites.sort_by_key(|&index| sort_key(&entries[index].connection));
+    favorites.sort_by_cached_key(|&index| sort_key(&entries[index].connection));
     let mut recent: Vec<(u64, usize)> = (0..entries.len())
         .filter(|&index| !entries[index].connection.favorite)
         .filter_map(|index| {

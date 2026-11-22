@@ -433,10 +433,14 @@ impl Settings {
         {
             return Err(format!("Invalid setting value: {}", key));
         }
-        self.data_mut()
-            .as_object_mut()
-            .unwrap()
-            .insert(key.to_string(), value);
+        {
+            let mut data = self.data_mut();
+            let map = data.as_object_mut().unwrap();
+            if map.get(key) == Some(&value) && config_file().exists() {
+                return Ok(());
+            }
+            map.insert(key.to_string(), value);
+        }
         self.save()
     }
 

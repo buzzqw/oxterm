@@ -414,11 +414,11 @@ impl MainWindow {
                 (connection.id.clone(), decoration)
             })
             .collect();
-        let decorate = |entry: &Entry| {
+        let empty_decoration = RowDecoration::default();
+        let decorate = |entry: &Entry| -> &RowDecoration {
             decorations
                 .get(&entry.connection.id)
-                .cloned()
-                .unwrap_or_default()
+                .unwrap_or(&empty_decoration)
         };
         let live_only = panel.live_only.is_active();
         let live: Vec<Entry>;
@@ -523,10 +523,22 @@ impl MainWindow {
     }
 
     fn show_connection_menu(&self, id: &str) {
-        let Ok(entries) = load_entries() else {
-            return;
-        };
-        let Some(entry) = connections::find_entry_by_id(&entries, id).cloned() else {
+        let cached = self
+            .imp()
+            .connections_panel
+            .borrow()
+            .as_ref()
+            .and_then(|panel| {
+                panel
+                    .data
+                    .borrow()
+                    .as_ref()
+                    .and_then(|data| connections::find_entry_by_id(&data.entries, id).cloned())
+            });
+        let Some(entry) = cached.or_else(|| {
+            let entries = load_entries().ok()?;
+            connections::find_entry_by_id(&entries, id).cloned()
+        }) else {
             return;
         };
         let menu = gtk::Menu::new();
@@ -1543,15 +1555,23 @@ impl MainWindow {
             "Quick Connect...\tCtrl+Shift+K",
             Box::new(|window| window.ssh_picker_signal()),
         );
+        // Files are read only when the menu really opens. The menus are built at every
+        // start, when nothing may read ~/.ssh/config, which can sit on a slow disk.
+        let (entries, usage) = if with_saved {
+            (
+                load_entries().unwrap_or_default(),
+                connections::load_usage(&connections::usage_path()),
+            )
+        } else {
+            (Vec::new(), UsageMap::new())
+        };
         if let Some(term) = self.current_terminal() {
             if let Some(id) = term.connection_id() {
                 menu.append(&gtk::SeparatorMenuItem::new());
                 let name = term
                     .connection_name()
                     .unwrap_or_else(|| "this connection".to_string());
-                if let Some(entry) =
-                    connections::find_entry_by_id(&load_entries().unwrap_or_default(), &id)
-                {
+                if let Some(entry) = connections::find_entry_by_id(&entries, &id) {
                     if remote_files::supports_browsing(&entry.connection) {
                         let connection = entry.connection.clone();
                         add(
@@ -1587,16 +1607,6 @@ impl MainWindow {
                 }
             }
         }
-        // Files are read only when the menu really opens. The menus are built at every
-        // start, when nothing may read ~/.ssh/config, which can sit on a slow disk.
-        let (entries, usage) = if with_saved {
-            (
-                load_entries().unwrap_or_default(),
-                connections::load_usage(&connections::usage_path()),
-            )
-        } else {
-            (Vec::new(), UsageMap::new())
-        };
         let shortcuts = connections::menu_shortcuts(&entries, &usage, MENU_SHORTCUTS);
         if !shortcuts.is_empty() {
             menu.append(&gtk::SeparatorMenuItem::new());

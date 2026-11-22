@@ -309,18 +309,20 @@ impl ConnectionsPanel {
 
     /// Replace the rows. Groups stay folded the way the user left them, and the
     /// selection follows its connection through the rebuild.
-    pub fn populate(
+    pub fn populate<'a>(
         &self,
         nodes: &[Node],
         entries: &[Entry],
-        decorate: &dyn Fn(&Entry) -> RowDecoration,
+        decorate: &dyn Fn(&Entry) -> &'a RowDecoration,
     ) {
         let selected = self.selected_target();
         self.rebuilding.set(true);
+        self.tree.set_model(None::<&gtk::TreeStore>);
         self.store.clear();
         for node in nodes {
             self.append(None, node, entries, decorate);
         }
+        self.tree.set_model(Some(&self.store));
         self.tree.expand_all();
         let mut paths = Vec::new();
         self.store.foreach(|model, path, iter| {
@@ -342,12 +344,12 @@ impl ConnectionsPanel {
         }
     }
 
-    fn append(
+    fn append<'a>(
         &self,
         parent: Option<&gtk::TreeIter>,
         node: &Node,
         entries: &[Entry],
-        decorate: &dyn Fn(&Entry) -> RowDecoration,
+        decorate: &dyn Fn(&Entry) -> &'a RowDecoration,
     ) -> GroupActivity {
         match node {
             Node::Group { title, children } => {
@@ -392,9 +394,9 @@ impl ConnectionsPanel {
                 self.store.set(
                     &iter,
                     &[
-                        (COLUMN_MARKUP, &row_markup(entry, &decoration)),
+                        (COLUMN_MARKUP, &row_markup(entry, decoration)),
                         (COLUMN_ID, &entry.connection.id),
-                        (COLUMN_TOOLTIP, &row_tooltip(entry, &decoration)),
+                        (COLUMN_TOOLTIP, &row_tooltip(entry, decoration)),
                     ],
                 );
                 GroupActivity {
