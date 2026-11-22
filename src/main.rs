@@ -123,9 +123,6 @@ impl App {
             let css = b"
                 vte-terminal { padding-left: 8px; padding-right: 8px; }
                 .oxterm-notes-panel { border-left: 1px solid alpha(currentColor, 0.2); }
-                .oxterm-connections-panel { border-left: 1px solid alpha(currentColor, 0.2); }
-                .oxterm-connections-pane > separator { background: alpha(currentColor, 0.12); }
-                .oxterm-connections-pane > separator:hover { background: alpha(currentColor, 0.3); }
                 .oxterm-menu-row { background: alpha(@theme_fg_color, 0.05); padding: 1px 4px; }                .oxterm-menu-row button { padding: 3px 10px; }
                 .command-bar-frame { border: 1px solid alpha(currentColor, 0.3); background: alpha(@theme_bg_color, 0.95); }
                 .command-bar-frame entry { padding: 6px 10px; font-family: Monospace; }

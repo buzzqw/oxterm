@@ -177,7 +177,6 @@ impl ConnectionsPanel {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.set_width_request(180);
         root.set_no_show_all(true);
-        root.style_context().add_class("oxterm-connections-panel");
 
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         header.set_margin_top(6);
