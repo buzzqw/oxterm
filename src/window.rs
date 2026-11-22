@@ -1780,6 +1780,10 @@ mod main_imp {
         pub connections_panel:
             RefCell<Option<std::rc::Rc<crate::connections_panel::ConnectionsPanel>>>,
         pub connections_slot: RefCell<Option<gtk::Box>>,
+        pub connections_positioning: Cell<bool>,
+        pub connections_width_generation: Cell<u64>,
+        pub notes_positioning: Cell<bool>,
+        pub notes_width_generation: Cell<u64>,
         pub tunnel_watch_active: std::cell::Cell<bool>,
         pub pending_reconnect_attempts: std::cell::Cell<u32>,
         /// Menu popups are built once, after the first terminal is up.
@@ -2191,12 +2195,14 @@ impl MainWindow {
         connections_slot.hide();
         connections_pane.pack1(&connections_slot, false, false);
         *self.imp().connections_slot.borrow_mut() = Some(connections_slot);
-        let content_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        content_row.pack_start(&dock, true, true, 0);
+        let notes_pane = gtk::Paned::new(gtk::Orientation::Horizontal);
+        notes_pane.pack1(&dock, true, true);
         let notes_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        content_row.pack_start(&notes_slot, false, true, 0);
+        notes_slot.set_no_show_all(true);
+        notes_slot.hide();
+        notes_pane.pack2(&notes_slot, false, false);
         *self.imp().notes_slot.borrow_mut() = Some(notes_slot);
-        connections_pane.pack2(&content_row, true, true);
+        connections_pane.pack2(&notes_pane, true, true);
         vbox.pack_start(&connections_pane, true, true, 0);
         vbox.pack_end(&stats_box, false, false, 0);
         let weak = self.downgrade();
@@ -6032,9 +6038,51 @@ impl MainWindow {
                 }
             });
         }
-        slot.pack_start(&panel.root, false, true, 0);
+        slot.pack_start(&panel.root, true, true, 0);
+        slot.show();
+        if let Some(pane) = slot.parent().and_then(|p| p.downcast::<gtk::Paned>().ok()) {
+            let width = settings().get_i64("notes_panel_width").clamp(220, 1200) as i32;
+            let extent = pane.allocated_width();
+            if extent > width {
+                self.imp().notes_positioning.set(true);
+                pane.set_position(extent - width);
+                self.imp().notes_positioning.set(false);
+            }
+            let weak = crate::SendWeak::new(self);
+            pane.connect_notify_local(Some("position"), move |pane, _| {
+                if let Some(window) = weak.upgrade() {
+                    window.remember_notes_panel_width(pane);
+                }
+            });
+        }
         *self.imp().notes_panel.borrow_mut() = Some(panel);
         true
+    }
+
+    fn remember_notes_panel_width(&self, pane: &gtk::Paned) {
+        if !self.notes_panel_visible() || self.imp().notes_positioning.get() {
+            return;
+        }
+        let extent = pane.allocated_width();
+        if extent <= 1 {
+            return;
+        }
+        let width = ((extent - pane.position()) as i64).clamp(220, 1200);
+        if (width - settings().get_i64("notes_panel_width")).abs() <= 1 {
+            return;
+        }
+        let generation = self.imp().notes_width_generation.get().wrapping_add(1);
+        self.imp().notes_width_generation.set(generation);
+        let weak = self.downgrade();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            if window.imp().notes_width_generation.get() != generation {
+                return;
+            }
+            settings().set_i64("notes_panel_width", width);
+        });
     }
 
     fn notes_panel_visible(&self) -> bool {
@@ -6055,11 +6103,20 @@ impl MainWindow {
                 // The panel carries `no_show_all` so the window's own
                 // `show_all()` keeps it hidden; clear it just long enough to
                 // show the panel and its children, then restore it.
+                if let Some(slot) = self.imp().notes_slot.borrow().clone() {
+                    slot.show();
+                }
                 panel.root.set_no_show_all(false);
                 panel.root.show_all();
                 panel.root.set_no_show_all(true);
             } else {
                 panel.root.hide();
+                if let Some(slot) = self.imp().notes_slot.borrow().clone() {
+                    slot.hide();
+                }
+                if let Some(term) = self.current_terminal() {
+                    term.vte().grab_focus();
+                }
             }
         }
     }

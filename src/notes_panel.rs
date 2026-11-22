@@ -26,9 +26,8 @@ pub struct NotesPanel {
 impl NotesPanel {
     pub fn build() -> NotesPanel {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        root.set_width_request(380);
+        root.set_width_request(220);
         root.set_no_show_all(true);
-        root.style_context().add_class("oxterm-notes-panel");
 
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         header.set_margin_top(6);
@@ -38,7 +37,8 @@ impl NotesPanel {
         let title = gtk::Label::new(None);
         title.set_markup("<b>Notes</b>");
         title.set_halign(gtk::Align::Start);
-        header.pack_start(&title, false, false, 0);
+        title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        header.pack_start(&title, true, true, 0);
         let refresh = gtk::Button::with_label("Refresh");
         refresh.set_tooltip_text(Some("Rescan the notes directory and rebuild the index"));
         header.pack_end(&refresh, false, false, 0);
@@ -48,6 +48,7 @@ impl NotesPanel {
         root.pack_start(&header, false, false, 0);
 
         let search = gtk::SearchEntry::new();
+        search.set_width_chars(8);
         search.set_placeholder_text(Some("Search notes..."));
         search.set_margin_start(8);
         search.set_margin_end(8);
@@ -62,6 +63,7 @@ impl NotesPanel {
 
         let scroller = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
         scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        scroller.set_overlay_scrolling(true);
         scroller.set_min_content_height(220);
         scroller.set_margin_top(6);
         let list = gtk::ListBox::new();
@@ -79,6 +81,7 @@ impl NotesPanel {
         let preview_scroller =
             gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
         preview_scroller.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
+        preview_scroller.set_overlay_scrolling(true);
         preview_scroller.set_min_content_height(140);
         preview_scroller.add(&preview);
         root.pack_start(&preview_scroller, true, true, 0);
@@ -93,6 +96,7 @@ impl NotesPanel {
         footer.pack_start(&target, false, false, 0);
         let entry_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         let entry = gtk::Entry::new();
+        entry.set_width_chars(8);
         entry.set_placeholder_text(Some("New note entry..."));
         entry_row.pack_start(&entry, true, true, 0);
         let append = gtk::Button::with_label("Add");

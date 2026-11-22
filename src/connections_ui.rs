@@ -211,13 +211,47 @@ impl MainWindow {
         slot.pack_start(&panel.root, true, true, 0);
         slot.show();
         // The slot was hidden while the panel did not exist, so the splitter's
-        // position was clamped. Set the comfortable default now that it has a
-        // child; later shows keep whatever width the user dragged to.
+        // position was clamped. Restore the stored width now that it has a
+        // child, and save whatever width the user drags to afterwards.
         if let Some(pane) = slot.parent().and_then(|p| p.downcast::<gtk::Paned>().ok()) {
-            pane.set_position(320);
+            let width = settings()
+                .get_i64("connections_panel_width")
+                .clamp(180, 1200) as i32;
+            self.imp().connections_positioning.set(true);
+            pane.set_position(width);
+            self.imp().connections_positioning.set(false);
+            let weak = crate::SendWeak::new(self);
+            pane.connect_notify_local(Some("position"), move |pane, _| {
+                if let Some(window) = weak.upgrade() {
+                    window.remember_connections_panel_width(pane);
+                }
+            });
         }
         *self.imp().connections_panel.borrow_mut() = Some(panel);
         true
+    }
+
+    fn remember_connections_panel_width(&self, pane: &gtk::Paned) {
+        if !self.connections_panel_visible() || self.imp().connections_positioning.get() {
+            return;
+        }
+        let width = (pane.position() as i64).clamp(180, 1200);
+        let generation = self
+            .imp()
+            .connections_width_generation
+            .get()
+            .wrapping_add(1);
+        self.imp().connections_width_generation.set(generation);
+        let weak = self.downgrade();
+        glib::timeout_add_local_once(Duration::from_millis(500), move || {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            if window.imp().connections_width_generation.get() != generation {
+                return;
+            }
+            settings().set_i64("connections_panel_width", width);
+        });
     }
 
     /// Shortcuts that work from anywhere in the panel. `Ctrl+Shift+J` is normally
@@ -423,7 +457,7 @@ impl MainWindow {
         }
         let summary = summary.join(" \u{00B7} ");
         let empty_hint = if entries.is_empty() && query.is_empty() {
-            Some("No connections yet. Click New to add one. Hosts in ~/.ssh/config appear here by themselves.")
+            Some("No connections yet. Click + to add one. Hosts in ~/.ssh/config appear here by themselves.")
         } else if live_only && shown.is_empty() {
             Some("No open connections or tunnels.")
         } else {
@@ -431,6 +465,7 @@ impl MainWindow {
         };
         let text = status.as_deref().or(empty_hint).unwrap_or(summary.as_str());
         panel.status.set_text(text);
+        panel.status.set_visible(!text.is_empty());
     }
 
     fn open_connection_counts(&self) -> std::collections::HashMap<String, usize> {

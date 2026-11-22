@@ -1077,6 +1077,24 @@ pub const SETTINGS: &[Setting] = &[
         "Percentage of the window the agent pane takes; dragging its handle updates it.",
     ),
     setting(
+        "connections_panel_width",
+        Kind::Int {
+            min: 180,
+            max: 1200,
+        },
+        Default::Int(320),
+        "Width in pixels of the connections panel; dragging its handle updates it.",
+    ),
+    setting(
+        "notes_panel_width",
+        Kind::Int {
+            min: 220,
+            max: 1200,
+        },
+        Default::Int(380),
+        "Width in pixels of the notes panel; dragging its handle updates it.",
+    ),
+    setting(
         "agent_show_usage",
         Kind::Bool,
         Default::Bool(true),

@@ -223,6 +223,7 @@ impl ConnectionsPanel {
         tree.set_tooltip_column(COLUMN_TOOLTIP as i32);
         let renderer = gtk::CellRendererText::new();
         renderer.set_ellipsize(pango::EllipsizeMode::End);
+        renderer.set_padding(4, 3);
         let column = gtk::TreeViewColumn::new();
         column.set_expand(true);
         TreeViewColumnExt::pack_start(&column, &renderer, true);
@@ -238,6 +239,7 @@ impl ConnectionsPanel {
         root.pack_start(&scroll, true, true, 0);
 
         let status = gtk::Label::new(None);
+        status.set_no_show_all(true);
         status.set_xalign(0.0);
         status.set_margin_start(8);
         status.set_margin_end(8);
@@ -313,7 +315,7 @@ impl ConnectionsPanel {
         entries: &[Entry],
         decorate: &dyn Fn(&Entry) -> RowDecoration,
     ) {
-        let selected = self.selected_id();
+        let selected = self.selected_target();
         self.rebuilding.set(true);
         self.store.clear();
         for node in nodes {
@@ -335,8 +337,8 @@ impl ConnectionsPanel {
             }
         }
         self.rebuilding.set(false);
-        if let Some(id) = selected {
-            self.select_id(&id);
+        if let Some((group, id)) = selected {
+            self.select_target(&group, &id);
         }
     }
 
@@ -444,31 +446,64 @@ impl ConnectionsPanel {
         ids
     }
 
-    /// Select `id`, unless it is a row the search or a fold currently hides.
-    fn select_id(&self, id: &str) {
-        let mut found = None;
+    fn selected_target(&self) -> Option<(String, String)> {
+        let (model, iter) = self.tree.selection().selected()?;
+        let id = model
+            .value(&iter, COLUMN_ID as i32)
+            .get::<String>()
+            .unwrap_or_default();
+        if id.is_empty() {
+            return None;
+        }
+        let mut parent = model.path(&iter)?;
+        let group = if parent.up() && parent.depth() > 0 {
+            self.group_key(&parent)
+        } else {
+            String::new()
+        };
+        Some((group, id))
+    }
+
+    fn path_visible(&self, path: &gtk::TreePath) -> bool {
+        let mut parent = path.clone();
+        while parent.up() && parent.depth() > 0 {
+            if !self.tree.row_expanded(&parent) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Select `id` in `group` when still visible there, or the first visible
+    /// copy of `id` elsewhere in the tree.
+    fn select_target(&self, group: &str, id: &str) {
+        let mut exact = None;
+        let mut fallback = None;
         self.store.foreach(|model, path, iter| {
             let matches = model
                 .value(iter, COLUMN_ID as i32)
                 .get::<String>()
                 .is_ok_and(|value| value == id);
-            if matches {
-                found = Some(path.clone());
+            if !matches || !self.path_visible(path) {
+                return false;
             }
-            matches
-        });
-        if let Some(path) = found {
-            let visible = {
-                let mut parent = path.clone();
-                let mut open = true;
-                while parent.up() && parent.depth() > 0 {
-                    open &= self.tree.row_expanded(&parent);
-                }
-                open
+            let mut parent = path.clone();
+            let row_group = if parent.up() && parent.depth() > 0 {
+                self.group_key(&parent)
+            } else {
+                String::new()
             };
-            if visible {
-                self.tree.selection().select_path(&path);
+            if row_group == group {
+                exact = Some(path.clone());
+                return true;
             }
+            if fallback.is_none() {
+                fallback = Some(path.clone());
+            }
+            false
+        });
+        if let Some(path) = exact.or(fallback) {
+            self.tree.selection().select_path(&path);
         }
     }
 
