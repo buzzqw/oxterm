@@ -90,17 +90,6 @@ fn check_private_dir(path: &Path) -> io::Result<()> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_socket_directory_that_would_not_fit_is_refused() {
-        let dir = PathBuf::from("/tmp").join("x".repeat(90));
-        assert_eq!(usable_socket_dir(dir), None);
-    }
-}
-
 /// The user's Oxterm data directory, reserved for extension state.
 pub fn data_dir() -> PathBuf {
     if let Some(path) = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
@@ -138,4 +127,15 @@ pub fn tmux_prefix_byte() -> u8 {
         .filter(|c| c.is_ascii_alphabetic())
         .unwrap_or('b');
     (prefix as u8) & 0x1f
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_socket_directory_that_would_not_fit_is_refused() {
+        let dir = PathBuf::from("/tmp").join("x".repeat(90));
+        assert_eq!(usable_socket_dir(dir), None);
+    }
 }

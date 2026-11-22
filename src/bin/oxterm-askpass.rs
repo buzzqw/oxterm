@@ -81,9 +81,10 @@ fn ask(prompt: &str, echo: bool) -> Option<String> {
         let mut hidden = saved;
         hidden.c_lflag &= !libc::ECHO;
         hidden.c_lflag |= libc::ECHONL;
-        // SAFETY: as above.
-        unsafe {
-            libc::tcsetattr(fd, libc::TCSAFLUSH, &hidden);
+        // SAFETY: as above. Reading a secret with echo still on would print it
+        // in cleartext, so fail closed if the terminal refuses the change.
+        if unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &hidden) } != 0 {
+            return None;
         }
     }
     let _ = tty.write_all(prompt.as_bytes());

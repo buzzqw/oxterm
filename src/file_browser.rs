@@ -410,7 +410,13 @@ struct EditSession {
     remote: String,
     last_modified: Option<std::time::SystemTime>,
     uploading: Cell<bool>,
+    /// Consecutive failed stats; editors often replace a file by rename, so a
+    /// short absence while saving must not end the watch.
+    misses: Cell<u32>,
 }
+
+/// About a minute of a missing file before giving up on the watch.
+const MAX_STAT_MISSES: u32 = 30;
 
 struct Browser {
     window: gtk::Window,
@@ -1000,25 +1006,44 @@ impl Browser {
             remote: remote.clone(),
             last_modified,
             uploading: Cell::new(false),
+            misses: Cell::new(0),
         });
         let weak = Rc::downgrade(self);
         glib::timeout_add_seconds_local(2, move || {
             let Some(browser) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            let Ok(metadata) = std::fs::metadata(&local) else {
-                browser
-                    .edits
-                    .borrow_mut()
-                    .retain(|session| session.remote != remote);
-                return glib::ControlFlow::Break;
-            };
-            let modified = metadata.modified().ok();
+            let metadata = std::fs::metadata(&local);
+            if metadata.is_err() {
+                // Atomic saves make the file disappear for a moment, so do not
+                // drop the session on the first failed stat.
+                let stop = {
+                    let edits = browser.edits.borrow();
+                    match edits.iter().find(|session| session.remote == remote) {
+                        None => true,
+                        Some(session) => {
+                            let misses = session.misses.get() + 1;
+                            session.misses.set(misses);
+                            misses >= MAX_STAT_MISSES
+                        }
+                    }
+                };
+                if stop {
+                    browser
+                        .edits
+                        .borrow_mut()
+                        .retain(|session| session.remote != remote);
+                    return glib::ControlFlow::Break;
+                }
+                return glib::ControlFlow::Continue;
+            }
+            let modified = metadata.ok().and_then(|metadata| metadata.modified().ok());
             let (uploading, changed) = {
                 let edits = browser.edits.borrow();
                 let Some(session) = edits.iter().find(|session| session.remote == remote) else {
                     return glib::ControlFlow::Break;
                 };
+                session.misses.set(0);
                 (session.uploading.get(), session.last_modified != modified)
             };
             if uploading || !changed {

@@ -16,6 +16,11 @@ pub const MAX_REQUEST_FRAME: usize = 8 * 1024 * 1024;
 /// megabytes of scrollback.
 pub const MAX_RESPONSE_FRAME: usize = 64 * 1024 * 1024;
 
+/// Largest line accepted by the line-delimited JSON-RPC protocols (MCP and
+/// ACP). Unlike framed protocols, a single line cannot be checked before it is
+/// read, so cap how much of it is kept in memory.
+pub const MAX_JSON_LINE: usize = 8 * 1024 * 1024;
+
 /// Frame limit of the PTY broker protocol.
 pub const MAX_BROKER_FRAME: usize = 1024 * 1024;
 

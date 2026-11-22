@@ -14,6 +14,9 @@ use crate::headless::vi::{
 
 /// Keep at least this many lines of context above and below the VI cursor.
 const VI_SCROLLOFF: f64 = 3.0;
+/// Motions loop once per count and some arithmetic converts it to `i64`. An
+/// unbounded count from a keypress can freeze the UI or overflow that cast.
+const MAX_VI_COUNT: usize = 10_000;
 
 // ── Mode ─────────────────────────────────────────────────────
 
@@ -155,7 +158,11 @@ impl TerminalBox {
 
     fn vi_take_count(&self) -> usize {
         let raw = std::mem::take(&mut *self.imp().vi_count.borrow_mut());
-        raw.parse::<usize>().ok().filter(|n| *n > 0).unwrap_or(1)
+        raw.parse::<usize>()
+            .ok()
+            .filter(|n| *n > 0)
+            .unwrap_or(1)
+            .min(MAX_VI_COUNT)
     }
 
     fn vi_visual_range(&self) -> (i64, i64, i64, i64) {

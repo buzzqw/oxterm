@@ -25,6 +25,25 @@ pub struct RemoteEntry {
     pub permissions: String,
 }
 
+fn is_month(word: &str) -> bool {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    MONTHS.iter().any(|name| word.eq_ignore_ascii_case(name))
+}
+
+fn is_day(word: &str) -> bool {
+    !word.is_empty() && word.len() <= 2 && word.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn is_time(word: &str) -> bool {
+    (word.len() == 4 && word.bytes().all(|byte| byte.is_ascii_digit()))
+        || (word.split(':').count() >= 2
+            && word
+                .split(':')
+                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())))
+}
+
 /// Read one `ls -l` line: `drwxr-xr-x 2 user group 4096 Jan 1 12:00 name`.
 /// Owners may be missing, as some FTP servers leave them out, so the fields are
 /// found from the permissions and the date, not by position alone.
@@ -38,9 +57,6 @@ fn parse_line(line: &str) -> Option<RemoteEntry> {
     if permissions.chars().count() < 10 {
         return None;
     }
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
     // Walk the words by byte offset, so a name keeps its inner spaces exactly.
     let mut words: Vec<(usize, &str)> = Vec::new();
     let mut position = 0;
@@ -49,10 +65,17 @@ fn parse_line(line: &str) -> Option<RemoteEntry> {
         words.push((start, word));
         position = start + word.len();
     }
-    let month = words
-        .iter()
-        .position(|(_, word)| MONTHS.iter().any(|name| word.eq_ignore_ascii_case(name)))?;
-    let size = words.get(month.checked_sub(1)?)?.1.parse().ok()?;
+    // An owner or group can be named after a month ("May", "jun", ...), so a
+    // bare token match is not enough: the month is the token preceded by the
+    // size and followed by a day and a time (or a year).
+    let month = words.iter().enumerate().position(|(index, (_, word))| {
+        is_month(word)
+            && index > 0
+            && words[index - 1].1.parse::<u64>().is_ok()
+            && words.get(index + 1).is_some_and(|(_, day)| is_day(day))
+            && words.get(index + 2).is_some_and(|(_, time)| is_time(time))
+    })?;
+    let size = words[month - 1].1.parse().ok()?;
     let (name_start, _) = *words.get(month + 3)?;
     let modified = format!(
         "{} {} {}",
@@ -321,7 +344,9 @@ fn lftp_command() -> Command {
     // `cls` formats the month with the user's locale; keep the parser input
     // deterministic without changing the filename charset handling.
     command.env("LC_TIME", "C");
-    command.arg("-f").arg("/dev/stdin");
+    // A user or system rc file could redefine commands or enable tracing, which
+    // would echo the password embedded in a FTP script into the captured output.
+    command.args(["--norc", "-f", "/dev/stdin"]);
     command
 }
 
@@ -771,6 +796,26 @@ drwxr-xr-x 2 ftp ftp 0 Nov 01 15:16 folder/\n";
         let entries = parse_listing("-rw-r--r-- 1 ftp 77 Mar 3 10:10 a.txt\n");
         assert_eq!(entries[0].size, 77);
         assert_eq!(entries[0].name, "a.txt");
+    }
+
+    #[test]
+    fn an_owner_or_group_named_after_a_month_is_not_the_date() {
+        let entries = parse_listing(
+            "-rw-r--r-- 1 May staff 4096 Nov 13 08:44 report.txt\n\
+             -rw-r--r-- 1 user jun 77 Nov 13 08:44 notes.txt\n",
+        );
+        let report = entries
+            .iter()
+            .find(|entry| entry.name == "report.txt")
+            .unwrap();
+        assert_eq!(report.size, 4096);
+        assert_eq!(report.modified, "Nov 13 08:44");
+        let notes = entries
+            .iter()
+            .find(|entry| entry.name == "notes.txt")
+            .unwrap();
+        assert_eq!(notes.size, 77);
+        assert_eq!(notes.modified, "Nov 13 08:44");
     }
 
     #[test]

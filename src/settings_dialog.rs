@@ -1618,7 +1618,14 @@ fn probe_agent(
             std::time::Duration::from_secs(20),
         ));
     });
+    // A probe can outlive the dialog: never keep its widget tree alive through
+    // the polling closure.
+    let weak_combo = combo.downgrade();
+    let weak_status = status.downgrade();
     glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        let (Some(combo), Some(status)) = (weak_combo.upgrade(), weak_status.upgrade()) else {
+            return glib::ControlFlow::Break;
+        };
         match receiver.try_recv() {
             Ok(report) => {
                 // A newer test started while this one ran: drop the stale one.

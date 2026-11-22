@@ -1030,6 +1030,12 @@ fn relay_terminal(path: &Path, session_id: &str, label: &str, move_first: bool) 
     unsafe {
         libc::tcsetattr(stdin_fd, libc::TCSAFLUSH, &original);
     }
+    if move_first && !detached {
+        // MOVE turned the GUI view off. A relay that ends for any reason other
+        // than an explicit detach (broken pipe, broker closing, stdin EOF) must
+        // not leave the session running with no view anywhere.
+        restore_local();
+    }
     if detached {
         let _ = write_all_fd(stdout_fd, b"\r\n");
     }
@@ -1665,7 +1671,12 @@ fn run_broker(path: &Path, id: &str) -> i32 {
     // that window's to remove.
     if !state.fifo_path.is_empty() {
         state.fifo = None;
-        let _ = std::fs::remove_file(&state.fifo_path);
+        // The path came from a peer: never unlink anything but a FIFO.
+        if std::fs::symlink_metadata(&state.fifo_path)
+            .is_ok_and(|metadata| metadata.file_type().is_fifo())
+        {
+            let _ = std::fs::remove_file(&state.fifo_path);
+        }
     }
     eprintln!("oxterm broker {}: exiting ({})", id, exit_reason);
     0
@@ -1675,12 +1686,21 @@ fn run_broker(path: &Path, id: &str) -> i32 {
 /// the folder comes from a setting and the file may be read later as trusted.
 fn open_session_log(path: &Path) -> io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
+    // O_NONBLOCK makes a FIFO without a reader fail immediately instead of
+    // wedging the broker's single-threaded poll loop forever.
+    let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    if !file.metadata()?.file_type().is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "log path is not a regular file",
+        ));
+    }
+    Ok(file)
 }
 
 /// Open a FIFO for reading (and, with `O_RDWR`, writing) without blocking, so

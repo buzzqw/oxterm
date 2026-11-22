@@ -1538,7 +1538,7 @@ mod tests {
             inserts_since_trim: Mutex::new(0),
         };
         assert!(path.exists());
-        assert_eq!(manager.add("git rebase", "/w", 0) > 0, true);
+        assert!(manager.add("git rebase", "/w", 0) > 0);
         assert_eq!(manager.search("git rebase", 10, "/w").len(), 1);
         drop(manager);
         fs::remove_dir_all(dir).unwrap();

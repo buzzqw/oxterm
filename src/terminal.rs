@@ -3845,7 +3845,12 @@ printf '%s\\n' \"$gpu\"";
         let bottom_page = (end - rows).max(cursor_row + 1 - rows);
         let start = match scope {
             "all" => lower,
-            "lines" => (bottom_page - lines as i64).max(lower),
+            // `lines` comes from an untrusted control/MCP request. An oversized
+            // cast would wrap negative, overflow the subtraction, or invert the
+            // range handed to VTE; treat it as "as much as there is" instead.
+            "lines" => bottom_page
+                .saturating_sub(i64::try_from(lines).unwrap_or(i64::MAX))
+                .max(lower),
             _ => bottom_page.max(lower),
         };
         text::range(&vte, start, 0, end, 0).unwrap_or_default()

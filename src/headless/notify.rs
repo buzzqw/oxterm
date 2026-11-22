@@ -35,7 +35,9 @@ pub fn should_notify(notification: &Notification<'_>) -> bool {
     if failed && notification.notify_on_failure {
         return true;
     }
-    let minimum = notification.min_seconds.max(0) * 1000;
+    // A very large threshold must stay large, not wrap to a negative value and
+    // make every command notify.
+    let minimum = notification.min_seconds.max(0).saturating_mul(1000);
     notification.duration_ms.unwrap_or(0) >= minimum
 }
 
@@ -139,6 +141,13 @@ mod tests {
         n.min_seconds = 0;
         n.duration_ms = Some(0);
         assert!(should_notify(&n));
+    }
+
+    #[test]
+    fn an_extreme_threshold_does_not_wrap_into_notify_everything() {
+        let mut n = notification();
+        n.min_seconds = i64::MAX;
+        assert!(!should_notify(&n));
     }
 
     #[test]

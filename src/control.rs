@@ -235,7 +235,7 @@ fn run_events(path: &Path, names: &[String], output: bool, _json: bool) -> i32 {
         return fail(1, "events", &error);
     }
     loop {
-        match read_json(&mut stream) {
+        match read_reply(&mut stream) {
             Ok(reply) => {
                 if reply["ok"].as_bool() == Some(false) {
                     let code = reply["code"].as_i64().unwrap_or(1) as i32;
@@ -425,12 +425,26 @@ fn wait_for_window_ready(socket: &Path) {
 fn run_mcp() -> i32 {
     use crate::headless::mcp;
     let stdin = std::io::stdin();
+    let mut input = stdin.lock();
     let mut stdout = std::io::stdout();
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(line) => line,
+    loop {
+        let mut line = String::new();
+        let read = (&mut input)
+            .take(framing::MAX_JSON_LINE as u64 + 1)
+            .read_line(&mut line);
+        let read = match read {
+            Ok(read) => read,
             Err(_) => break,
         };
+        if read == 0 {
+            break;
+        }
+        if line.len() > framing::MAX_JSON_LINE {
+            let response = mcp::error(&Value::Null, -32700, "request line too long");
+            let _ = writeln!(stdout, "{}", response);
+            let _ = stdout.flush();
+            break;
+        }
         if line.trim().is_empty() {
             continue;
         }
@@ -1322,7 +1336,7 @@ fn request_at_with_timeout(
         .set_write_timeout(Some(timeout))
         .map_err(|e| (1, e.to_string()))?;
     write_json(&mut stream, request).map_err(|e| (1, e))?;
-    let reply = read_json(&mut stream).map_err(|e| (1, e))?;
+    let reply = read_reply(&mut stream).map_err(|e| (1, e))?;
     if reply["ok"].as_bool() == Some(true) {
         Ok(reply)
     } else {
@@ -1340,8 +1354,15 @@ fn write_json(stream: &mut impl Write, value: &Value) -> Result<(), String> {
     framing::write_json(stream, value, framing::MAX_RESPONSE_FRAME)
 }
 
-fn read_json(stream: &mut impl Read) -> Result<Value, String> {
+/// Requests are bounded by what a client may send.
+fn read_request(stream: &mut impl Read) -> Result<Value, String> {
     framing::read_json(stream, framing::MAX_REQUEST_FRAME)
+}
+
+/// Replies carry scrollback, so they use the larger server-side limit. The
+/// client must use this too or `capture --all` fails exactly on large buffers.
+fn read_reply(stream: &mut impl Read) -> Result<Value, String> {
+    framing::read_json(stream, framing::MAX_RESPONSE_FRAME)
 }
 
 // ── GUI server ───────────────────────────────────────────────
@@ -1453,7 +1474,7 @@ fn handle_connection(mut stream: std::os::unix::net::UnixStream) {
         framing::CONTROL_READ_TIMEOUT_SECS,
     )));
     let _ = stream.set_write_timeout(Some(CLIENT_TIMEOUT));
-    let reply = match read_json(&mut stream) {
+    let reply = match read_request(&mut stream) {
         Ok(request) => {
             // Liveness must not depend on the GUI thread. A window that is
             // busy realising a terminal or drawing a frame is still running,
@@ -1774,7 +1795,10 @@ fn dispatch(request: &Value) -> Value {
                 return error_reply("pane not found", 3);
             };
             let scope = request["scope"].as_str().unwrap_or("screen");
-            let lines = request["lines"].as_u64().unwrap_or(0) as usize;
+            let lines = request["lines"]
+                .as_u64()
+                .unwrap_or(0)
+                .min(usize::MAX as u64) as usize;
             let text = if scope == "captured" {
                 term.captured_text(request["clear"].as_bool().unwrap_or(false))
             } else {

@@ -293,13 +293,20 @@ fn run(key: &str, spec: Spec, status: &Mutex<Status>, stop: &AtomicBool) -> Stat
         })
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
+    // If the parent dies between fork and `prctl`, no signal will ever be
+    // delivered, so remember the parent and give up in that window instead of
+    // leaving a forwarded port behind.
+    let parent = std::process::id() as libc::pid_t;
     // SAFETY: only async-signal-safe calls between fork and exec. A new session
     // gives `ssh` no controlling terminal, so nothing can block on a prompt that
     // nobody sees.
     unsafe {
-        command.pre_exec(|| {
+        command.pre_exec(move || {
             libc::setsid();
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            if libc::getppid() != parent {
+                libc::_exit(1);
+            }
             Ok(())
         });
     }

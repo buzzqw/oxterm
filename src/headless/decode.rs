@@ -18,7 +18,14 @@ pub fn epoch_tooltip(token: &str) -> Option<String> {
         13 => (token.parse::<i64>().ok()? / 1000, true),
         _ => return None,
     };
-    if !(946_684_800..=4_102_444_800).contains(&seconds) {
+    // On 32-bit targets `time_t` cannot hold dates past 2038; a wider range
+    // would wrap the cast and render a date from 1901 instead.
+    let upper = if std::mem::size_of::<libc::time_t>() <= 4 {
+        i32::MAX as i64
+    } else {
+        4_102_444_800
+    };
+    if !(946_684_800..=upper).contains(&seconds) {
         return None;
     }
     let time = seconds as libc::time_t;

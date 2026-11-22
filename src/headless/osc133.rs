@@ -99,6 +99,17 @@ impl LineBuffer {
     /// Append bytes read from the FIFO and return the events they completed,
     /// already trimmed, with blank lines dropped.
     pub fn push(&mut self, bytes: &[u8]) -> Vec<String> {
+        // Bound the append before allocating: a single call with an arbitrarily
+        // large slice must not grow the buffer past MAX_BUFFER, and a line that
+        // completes inside such a slice must not slip through unchecked. A batch
+        // that does not fit is dropped whole rather than kept as a truncated
+        // line that could corrupt the next event; the next batch is read
+        // normally.
+        if self.pending.len() + bytes.len() > MAX_BUFFER {
+            self.pending.clear();
+            self.overflowed = true;
+            return Vec::new();
+        }
         self.pending.extend_from_slice(bytes);
         let mut lines = Vec::new();
         let mut start = 0;
@@ -112,10 +123,6 @@ impl LineBuffer {
             start = end + 1;
         }
         self.pending.drain(..start);
-        if self.pending.len() > MAX_BUFFER {
-            self.pending.clear();
-            self.overflowed = true;
-        }
         lines
     }
 
@@ -267,5 +274,15 @@ mod tests {
         let lines = buffer.push(&packet);
         assert_eq!(lines.len(), 1);
         assert!(!buffer.take_overflow());
+    }
+
+    #[test]
+    fn an_overlong_completed_line_in_one_read_is_dropped_too() {
+        let mut buffer = LineBuffer::new();
+        let mut packet = vec![b'C'; MAX_BUFFER];
+        packet.push(b'\n');
+        assert!(buffer.push(&packet).is_empty());
+        assert!(buffer.take_overflow());
+        assert_eq!(buffer.push(b"D0\n"), vec!["D0"]);
     }
 }

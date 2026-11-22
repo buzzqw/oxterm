@@ -10,10 +10,12 @@
 //! `mcp.rs`. The transport itself lives in `agent_panel.rs`; Oxterm is only the
 //! client, never the agent.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+use super::framing::MAX_JSON_LINE;
 
 use serde_json::{json, Value};
 
@@ -637,8 +639,19 @@ pub fn probe(argv: &[String], cwd: &str, timeout: Duration) -> Result<Probe, Str
     std::thread::Builder::new()
         .name("oxterm-acp-probe".to_string())
         .spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                let Ok(line) = line else { break };
+            // An agent processes untrusted model output: a single huge line
+            // must not exhaust memory while the dialog waits for a reply.
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let mut line = String::new();
+                let read = (&mut reader)
+                    .take(MAX_JSON_LINE as u64 + 1)
+                    .read_line(&mut line);
+                match read {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) if line.len() > MAX_JSON_LINE => break,
+                    Ok(_) => {}
+                }
                 if !line.trim().is_empty() && lines.send(line).is_err() {
                     break;
                 }

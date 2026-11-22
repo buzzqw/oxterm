@@ -7,6 +7,7 @@
 
 use std::collections::BTreeSet;
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
@@ -331,11 +332,18 @@ pub fn effective_config(args: &[String], timeout: Duration) -> Option<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        // Its own group, so a timeout can also stop a `Match exec` helper that
+        // inherited stdout; otherwise the drain thread would block forever.
+        .process_group(0)
         .spawn()
         .ok()?;
     // Drain on a thread: a child blocked on a full pipe would never exit and
     // always hit the timeout.
-    let mut stdout = child.stdout.take()?;
+    let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
     let reader = thread::spawn(move || {
         let mut output = String::new();
         stdout.read_to_string(&mut output).map(|_| output).ok()
@@ -351,8 +359,12 @@ pub fn effective_config(args: &[String], timeout: Duration) -> Option<String> {
                 thread::sleep(Duration::from_millis(5));
             }
             _ => {
-                let _ = child.kill();
+                // Killing only `ssh` could leave a helper holding the pipe open.
+                unsafe {
+                    libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+                }
                 let _ = child.wait();
+                let _ = reader.join();
                 return None;
             }
         }

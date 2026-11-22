@@ -129,6 +129,11 @@ fn quote_shell_arg(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+thread_local! {
+    /// Only the newest feedback message should hide the shared info bar.
+    static NOTE_FEEDBACK_GENERATION: Cell<u64> = const { Cell::new(0) };
+}
+
 fn show_note_feedback(
     bar: &RefCell<Option<gtk::InfoBar>>,
     label: &RefCell<Option<gtk::Label>>,
@@ -146,8 +151,18 @@ fn show_note_feedback(
         gtk::MessageType::Info
     });
     bar_widget.show_all();
+    let generation = NOTE_FEEDBACK_GENERATION.with(|current| {
+        let next = current.get() + 1;
+        current.set(next);
+        next
+    });
+    let weak = bar_widget.downgrade();
     glib::timeout_add_seconds_local(5, move || {
-        bar_widget.hide();
+        if NOTE_FEEDBACK_GENERATION.with(|current| current.get()) == generation {
+            if let Some(bar) = weak.upgrade() {
+                bar.hide();
+            }
+        }
         glib::ControlFlow::Break
     });
 }

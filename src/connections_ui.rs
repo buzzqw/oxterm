@@ -1777,9 +1777,9 @@ fn ssh_details_text(connection: &Connection, command: &str, effective: Option<&s
             let agent = ssh_config_value(config, "forwardagent").unwrap_or("no");
             text.push_str(&format!("  Agent forwarding: {}\n", agent));
             let mut notes = Vec::new();
-            match ssh_config_value(config, "stricthostkeychecking") {
-                Some("no" | "off" | "false") => notes.push("host-key verification is disabled"),
-                _ => {}
+            if let Some("no" | "off" | "false") = ssh_config_value(config, "stricthostkeychecking")
+            {
+                notes.push("host-key verification is disabled");
             }
             if ssh_config_value(config, "userknownhostsfile")
                 .is_some_and(|paths| paths.split_whitespace().all(|path| path == "/dev/null"))

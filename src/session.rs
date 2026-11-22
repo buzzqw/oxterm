@@ -1,7 +1,7 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use serde_json::{json, Value};
@@ -15,10 +15,18 @@ fn session_dir() -> PathBuf {
     settings::config_dir().join("sessions")
 }
 
-/// Orders concurrent writers (the autosave worker and the synchronous close
-/// save) so an older snapshot can never overwrite a newer one.
-static WRITE_ORDER: AtomicU64 = AtomicU64::new(0);
+/// Orders concurrent writers of the *same* session file (the autosave worker
+/// and the synchronous close save) so an older snapshot can never overwrite a
+/// newer one. Different sessions are independent and must not suppress each
+/// other's saves.
+static WRITE_ORDER: Mutex<BTreeMap<PathBuf, u64>> = Mutex::new(BTreeMap::new());
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+fn write_order() -> std::sync::MutexGuard<'static, BTreeMap<PathBuf, u64>> {
+    WRITE_ORDER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn ensure_dir() {
     let dir = session_dir();
@@ -62,10 +70,23 @@ pub fn save_session(name: &str, data: &SessionData) -> bool {
         LOGGER.warning("session_save_too_many_tabs");
         return false;
     }
-    // Take the sequence at snapshot time, then check it while holding the write
-    // lock: a newer save queued in between makes this one a no-op.
-    let version = WRITE_ORDER.fetch_add(1, Ordering::SeqCst) + 1;
     ensure_dir();
+    let path = match session_path(name) {
+        Ok(path) => path,
+        Err(e) => {
+            LOGGER.warning(&e);
+            return false;
+        }
+    };
+    // Take the sequence for this file at snapshot time, then check it while
+    // holding the write lock: a newer save of the same session in between makes
+    // this one a no-op. A save of another session never affects it.
+    let version = {
+        let mut order = write_order();
+        let next = order.get(&path).copied().unwrap_or(0) + 1;
+        order.insert(path.clone(), next);
+        next
+    };
     let payload = json!({
         "timestamp": crate::logging::utc_iso_now(),
         "split_mode": data.split_mode,
@@ -88,18 +109,11 @@ pub fn save_session(name: &str, data: &SessionData) -> bool {
             })
         }).collect::<Vec<_>>(),
     });
-    let path = match session_path(name) {
-        Ok(path) => path,
-        Err(e) => {
-            LOGGER.warning(&e);
-            return false;
-        }
-    };
     let contents = serde_json::to_string_pretty(&payload).unwrap_or_default();
     let _guard = WRITE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if WRITE_ORDER.load(Ordering::SeqCst) != version {
+    if write_order().get(&path).copied() != Some(version) {
         return false;
     }
     match atomic_write(&path, contents.as_bytes()) {

@@ -95,10 +95,12 @@ fn refresh() -> Result<usize, String> {
     }
 
     let conn = open()?;
-    conn.execute("DELETE FROM note_entries", [])
-        .map_err(|e| e.to_string())?;
+    // Delete and insert in one transaction: an autocommitted DELETE followed by
+    // a failed insert would leave the whole index empty after a transient error.
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     {
+        tx.execute("DELETE FROM note_entries", [])
+            .map_err(|e| e.to_string())?;
         let mut stmt = tx
             .prepare_cached(
                 "INSERT INTO note_entries (note, timestamp, body, tags) VALUES (?1, ?2, ?3, ?4)",
