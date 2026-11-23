@@ -1265,7 +1265,13 @@ impl MainWindow {
             return;
         }
         let window: gtk::Window = self.clone().upcast();
-        crate::file_browser::open_at(&window, connection, start.as_deref());
+        let weak = self.downgrade();
+        let open_editor: Rc<dyn Fn(&std::path::Path)> = Rc::new(move |path| {
+            if let Some(window) = weak.upgrade() {
+                window.open_file_in_editor(path, None, None);
+            }
+        });
+        crate::file_browser::open_at(&window, connection, start.as_deref(), Some(open_editor));
     }
 
     /// Show a remote desktop. Its viewer runs in a tab, like ssh, so its logs and

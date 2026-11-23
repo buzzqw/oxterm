@@ -32,6 +32,10 @@ const COLUMN_IS_DIR: u32 = 4;
 const COLUMN_SORT_SIZE: u32 = 5;
 const DRAG_TARGET: &str = "application/x-oxterm-browser-rows";
 
+/// Hands the private edit copy to the integrated editor, owned by the caller's
+/// window so the editor can outlive this browser.
+type OpenEditor = Rc<dyn Fn(&Path)>;
+
 /// Work for the thread that owns the remote side.
 enum Job {
     Home,
@@ -438,6 +442,10 @@ struct Browser {
     local_generation: Cell<u64>,
     queued: RefCell<VecDeque<String>>,
     edits: RefCell<Vec<EditSession>>,
+    /// When present, open the private edit copy in Oxterm's integrated editor
+    /// instead of an external viewer. The mtime watch below is editor-agnostic,
+    /// so every save is still uploaded back to the remote host.
+    open_editor_cb: Option<OpenEditor>,
     /// For the polling timer. Weak: the timer must not keep a closed browser alive.
     me: RefCell<std::rc::Weak<Browser>>,
 }
@@ -975,6 +983,10 @@ impl Browser {
     }
 
     fn open_editor(&self, local: &Path) {
+        if let Some(open) = self.open_editor_cb.as_ref() {
+            open(local);
+            return;
+        }
         if crate::notes::which("xdg-open").is_none() {
             self.say("Cannot open the editor: xdg-open is not installed");
             return;
@@ -1535,7 +1547,12 @@ fn show_bookmarks_menu(browser: &Rc<Browser>, remote: bool, button: &gtk::Button
 /// With `start`, the remote pane opens that directory instead of asking the
 /// server for the home: a terminal can pass the folder its shell announced
 /// through OSC 7, so "browse here" lands where the user already is.
-pub fn open_at(parent: &gtk::Window, connection: Connection, start: Option<&str>) {
+pub fn open_at(
+    parent: &gtk::Window,
+    connection: Connection,
+    start: Option<&str>,
+    open_editor: Option<OpenEditor>,
+) {
     let window = gtk::Window::new(gtk::WindowType::Toplevel);
     window.set_title(&format!("Files: {}", connection.name));
     // Keep the browser above its terminal: without a transient parent some
@@ -1618,6 +1635,7 @@ pub fn open_at(parent: &gtk::Window, connection: Connection, start: Option<&str>
         local_generation: Cell::new(0),
         queued: RefCell::new(VecDeque::new()),
         edits: RefCell::new(Vec::new()),
+        open_editor_cb: open_editor,
         me: RefCell::new(std::rc::Weak::new()),
     });
     *browser.me.borrow_mut() = Rc::downgrade(&browser);

@@ -267,6 +267,15 @@ pub trait TerminalWindow {
     /// pager; windows without tabs simply ignore it.
     fn open_command_tab(&self, _cwd: &str, _command: Vec<String>, _title: &str) {}
 
+    /// Open a resolved local file in the integrated editor. Only the main
+    /// window has one, so detached windows keep the no-op default.
+    fn open_internal_file(&self, _path: &std::path::Path, _line: u32, _column: Option<u32>) {}
+
+    /// Toggle the integrated editor panel (only the main window has one).
+    fn editor_toggle_panel(&self) {
+        self.note_feedback("The Editor panel is available in the main window", true);
+    }
+
     /// Toggle the integrated notes panel (only the main window has one).
     fn note_toggle_panel(&self) {
         self.note_feedback("The Notes panel is available in the main window", true);
@@ -1769,6 +1778,9 @@ mod main_imp {
         pub notes_panel: RefCell<Option<crate::notes_panel::NotesPanel>>,
         /// Container that receives the notes panel the first time it is shown.
         pub notes_slot: RefCell<Option<gtk::Box>>,
+        /// The integrated editor pane, built on first use like the notes panel.
+        pub editor_panel: RefCell<Option<std::rc::Rc<crate::editor_panel::EditorPanel>>>,
+        pub editor_slot: RefCell<Option<gtk::Box>>,
         /// The optional agent pane, built on first use. Keeping it out of the
         /// startup path means a terminal without agent features pays nothing.
         pub agent_panel: RefCell<Option<std::rc::Rc<crate::agent_panel::AgentPanel>>>,
@@ -1800,6 +1812,8 @@ mod main_imp {
         pub connections_width_generation: Cell<u64>,
         pub notes_positioning: Cell<bool>,
         pub notes_width_generation: Cell<u64>,
+        pub editor_positioning: Cell<bool>,
+        pub editor_width_generation: Cell<u64>,
         pub tunnel_watch_active: std::cell::Cell<bool>,
         pub pending_reconnect_attempts: std::cell::Cell<u32>,
         /// Menu popups are built once, after the first terminal is up.
@@ -2218,7 +2232,17 @@ impl MainWindow {
         notes_slot.hide();
         notes_pane.pack2(&notes_slot, false, false);
         *self.imp().notes_slot.borrow_mut() = Some(notes_slot);
-        connections_pane.pack2(&notes_pane, true, true);
+        // The editor gets its own splitter next to the notes pane. Both slots
+        // start hidden: a Paned gives a hidden child no room and hides its
+        // handle, so a window that never opens either panel pays nothing.
+        let editor_pane = gtk::Paned::new(gtk::Orientation::Horizontal);
+        editor_pane.pack1(&notes_pane, true, true);
+        let editor_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        editor_slot.set_no_show_all(true);
+        editor_slot.hide();
+        editor_pane.pack2(&editor_slot, false, false);
+        *self.imp().editor_slot.borrow_mut() = Some(editor_slot);
+        connections_pane.pack2(&editor_pane, true, true);
         vbox.pack_start(&connections_pane, true, true, 0);
         vbox.pack_end(&stats_box, false, false, 0);
         let weak = self.downgrade();
@@ -2882,6 +2906,7 @@ impl MainWindow {
             "Terminal",
             "Tabs",
             "Notes",
+            "Editor",
             "Connections",
             "Help",
         ] {
@@ -3688,6 +3713,58 @@ impl MainWindow {
             Some("Open the notes directory in the file manager"),
         );
         menus.push(("Notes".into(), notes_menu));
+
+        let editor_menu = gtk::Menu::new();
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &editor_menu,
+            "Editor Panel",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.editor_toggle_panel();
+                }
+            }),
+            Some("<Primary><Shift>E"),
+            Some("Show or hide the integrated text editor"),
+        );
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &editor_menu,
+            "Open File in Editor...",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.choose_file_in_editor();
+                }
+            }),
+            None,
+            Some("Choose a local file to open in the integrated editor"),
+        );
+        editor_menu.append(&gtk::SeparatorMenuItem::new());
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &editor_menu,
+            "Save Editor File",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.save_editor_file();
+                }
+            }),
+            None,
+            Some("Save the file currently open in the editor"),
+        );
+        let weak = crate::SendWeak::new(self);
+        self.menu_item(
+            &editor_menu,
+            "Close Editor Panel",
+            Box::new(move || {
+                if let Some(w) = weak.upgrade() {
+                    w.close_editor_panel();
+                }
+            }),
+            None,
+            Some("Hide the integrated editor panel"),
+        );
+        menus.push(("Editor".into(), editor_menu));
 
         let connections_menu = gtk::Menu::new();
         let weak = crate::SendWeak::new(self);
@@ -6861,6 +6938,12 @@ impl TerminalWindow for MainWindow {
         if !visible {
             self.reload_notes_panel();
         }
+    }
+    fn editor_toggle_panel(&self) {
+        self.toggle_editor_panel();
+    }
+    fn open_internal_file(&self, path: &std::path::Path, line: u32, column: Option<u32>) {
+        self.open_file_in_editor(path, Some(line), column);
     }
     fn note_refresh_panel_if_open(&self) {
         if self.notes_panel_visible() {

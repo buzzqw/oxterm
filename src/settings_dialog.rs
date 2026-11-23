@@ -1461,6 +1461,9 @@ struct NotesPage {
     notes_dir: gtk::Entry,
     notes_file: gtk::Entry,
     editor: gtk::Entry,
+    editor_internal: gtk::CheckButton,
+    editor_width: gtk::SpinButton,
+    editor_style: gtk::Entry,
     record_context: gtk::CheckButton,
     template: gtk::Entry,
 }
@@ -1493,6 +1496,38 @@ fn build_notes(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, N
     ));
     page.row_keyed("Fallback editor", &editor, Some("editor_command"));
 
+    let editor_internal = gtk::CheckButton::new();
+    editor_internal.set_active(s.get_bool("editor_use_internal"));
+    editor_internal.set_tooltip_text(Some(
+        "Open file:line locations from the terminal in the integrated editor.",
+    ));
+    page.row_keyed(
+        "Use integrated editor",
+        &editor_internal,
+        Some("editor_use_internal"),
+    );
+
+    let editor_width = gtk::SpinButton::with_range(220.0, 1200.0, 1.0);
+    editor_width.set_value(s.get_i64("editor_panel_width") as f64);
+    editor_width.set_tooltip_text(Some("Width in pixels of the integrated editor panel."));
+    page.row_keyed(
+        "Editor panel width",
+        &editor_width,
+        Some("editor_panel_width"),
+    );
+
+    let editor_style = gtk::Entry::new();
+    editor_style.set_text(&s.get_str("editor_style_scheme"));
+    editor_style.set_placeholder_text(Some("Follow terminal theme"));
+    editor_style.set_tooltip_text(Some(
+        "Editor syntax style scheme; empty follows the terminal theme.",
+    ));
+    page.row_keyed(
+        "Editor style scheme",
+        &editor_style,
+        Some("editor_style_scheme"),
+    );
+
     page.section("New notes");
     let record_context = gtk::CheckButton::new();
     record_context.set_active(s.get_bool("notes_record_context"));
@@ -1517,6 +1552,9 @@ fn build_notes(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, N
         notes_dir,
         notes_file,
         editor,
+        editor_internal,
+        editor_width,
+        editor_style,
         record_context,
         template,
     };
@@ -2649,6 +2687,12 @@ impl DialogState {
         s.set_str("notes_file", self.notes.notes_file.text().trim());
         s.set_str("editor_command", self.notes.editor.text().trim());
         s.set_bool(
+            "editor_use_internal",
+            self.notes.editor_internal.is_active(),
+        );
+        s.set_i64("editor_panel_width", self.notes.editor_width.value() as i64);
+        s.set_str("editor_style_scheme", self.notes.editor_style.text().trim());
+        s.set_bool(
             "notes_record_context",
             self.notes.record_context.is_active(),
         );
@@ -2912,6 +2956,15 @@ impl DialogState {
         self.notes.notes_dir.set_text(&default_str("notes_dir"));
         self.notes.notes_file.set_text(&default_str("notes_file"));
         self.notes.editor.set_text(&default_str("editor_command"));
+        self.notes
+            .editor_internal
+            .set_active(default_bool("editor_use_internal"));
+        self.notes
+            .editor_width
+            .set_value(default_i64("editor_panel_width") as f64);
+        self.notes
+            .editor_style
+            .set_text(&default_str("editor_style_scheme"));
         self.notes
             .record_context
             .set_active(default_bool("notes_record_context"));

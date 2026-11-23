@@ -701,6 +701,24 @@ pub const SETTINGS: &[Setting] = &[
         "Editor command for file:line locations from hints and the context menu; use {file}, {line} and {col}.",
     ),
     setting(
+        "editor_use_internal",
+        Kind::Bool,
+        Default::Bool(true),
+        "Open file:line locations in the integrated editor instead of an external editor.",
+    ),
+    setting(
+        "editor_panel_width",
+        Kind::Int { min: 220, max: 1200 },
+        Default::Int(420),
+        "Width in pixels of the integrated editor panel.",
+    ),
+    setting(
+        "editor_style_scheme",
+        Kind::Text,
+        Default::Text(""),
+        "Editor syntax style scheme; empty follows the terminal theme.",
+    ),
+    setting(
         "snippets",
         Kind::StringMap,
         Default::Map,

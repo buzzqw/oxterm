@@ -587,6 +587,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shell-words",
+ "sourceview4",
  "zoha-vte",
  "zoha-vte-sys",
 ]
@@ -834,6 +835,42 @@ name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+
+[[package]]
+name = "sourceview4"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "672a3862fa717758fd764fe22b81471c496f82dcb57d12391ed6bb4b67ce0333"
+dependencies = [
+ "cairo-rs",
+ "gdk",
+ "gdk-pixbuf",
+ "gio",
+ "glib",
+ "gtk",
+ "libc",
+ "pango",
+ "sourceview4-sys",
+]
+
+[[package]]
+name = "sourceview4-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2509d457e3c286ce7a2328feed16c876d4be979737f5f785c2a511bf494f81a8"
+dependencies = [
+ "cairo-sys-rs",
+ "gdk-pixbuf-sys",
+ "gdk-sys",
+ "gio-sys",
+ "glib-sys",
+ "gobject-sys",
+ "gtk-sys",
+ "libc",
+ "pango-sys",
+ "pkg-config",
+ "system-deps",
+]
 
 [[package]]
 name = "syn"

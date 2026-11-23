@@ -4775,6 +4775,13 @@ printf '%s\\n' \"$gpu\"";
             );
             return;
         }
+        // The integrated editor keeps session context (cwd, theme, control
+        // API) that an external process cannot see. Fall back to the
+        // configured command only when the user opted out of it.
+        if settings().get_bool("editor_use_internal") {
+            self.call_window(|win| win.open_internal_file(&path, location.line, location.column));
+            return;
+        }
         let configured = settings().get_str("editor_jump_command");
         let template = if configured.trim().is_empty() {
             "${EDITOR:-vi} +{line} {file}".to_string()
@@ -4959,7 +4966,7 @@ printf '%s\\n' \"$gpu\"";
                 t.open_file_location(&location_for_open)
             })
             .set_tooltip_text(Some(&format!(
-                "Open {}:{} in the configured editor",
+                "Open {}:{} in the integrated editor (or the configured editor when disabled)",
                 location.path, location.line
             )));
 
@@ -4991,6 +4998,12 @@ printf '%s\\n' \"$gpu\"";
         });
         menu_window_action(&notes_menu, self, "Open Notes Folder", |w| {
             w.note_open_folder()
+        });
+
+        // ── Editor ────────────────────────────────────────────
+        let editor_menu = menu_submenu(&menu, "Editor");
+        menu_window_action(&editor_menu, self, "Toggle Editor Panel", |w| {
+            w.editor_toggle_panel()
         });
 
         // ── Tabs and panes ───────────────────────────────────

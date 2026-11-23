@@ -15,6 +15,9 @@ gdk = "0.18"
 gdk-pixbuf = "0.18"
 pango = "0.18"
 cairo-rs = "0.18"
+# GtkSourceView 4 powers the integrated editor pane: syntax highlighting,
+# undo/redo, line numbers and auto-indent without reimplementing them in Rust.
+sourceview4 = "0.5"
 zoha-vte = { version = "0.6", features = ["v0_70"] }
 # Used for vte_terminal_get_text_range(), which is the only text-extraction
 # API available on VTE 0.70 (see src/terminal/text.rs).

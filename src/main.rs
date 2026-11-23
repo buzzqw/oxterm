@@ -5,6 +5,8 @@ mod connections_form;
 mod connections_panel;
 mod connections_ui;
 mod control;
+mod editor_panel;
+mod editor_ui;
 mod extensions;
 mod file_browser;
 mod history;

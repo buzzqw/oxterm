@@ -47,6 +47,9 @@ never written back to disk.
 | `notes_template` | string | `""` | Template prepended to new notes. |
 | `editor_command` | string | `nano` | Editor used for notes and configuration files. |
 | `editor_jump_command` | string | `${EDITOR:-vi} +{line} {file}` | Editor command for file:line locations from hints and the context menu; use {file}, {line} and {col}. |
+| `editor_use_internal` | bool | `true` | Open file:line locations in the integrated editor instead of an external editor. |
+| `editor_panel_width` | int (220..1200) | `420` | Width in pixels of the integrated editor panel. |
+| `editor_style_scheme` | string | `""` | Editor syntax style scheme; empty follows the terminal theme. |
 | `snippets` | string map | `{}` | Named command snippets available to /snippet. |
 | `osc133` | bool | `false` | Enable OSC 133 shell integration (prompt, command and exit markers). |
 | `enable_transparency` | bool | `false` | Allow window transparency using the opacity setting. |
