@@ -79,7 +79,7 @@ impl EditorPanel {
         let redo = icon_button("edit-redo", "Redo (Ctrl+Shift+Z)");
         let find = icon_button("edit-find", "Find in this file (Ctrl+F)");
         let close_document = icon_button("window-close", "Close document (Ctrl+W)");
-        let hide_panel = icon_button("go-next", "Hide the editor panel");
+        let hide_panel = icon_button("go-next", "Hide the Notes/Editor dock");
         save.set_sensitive(false);
         undo.set_sensitive(false);
         redo.set_sensitive(false);

@@ -48,7 +48,7 @@ never written back to disk.
 | `editor_command` | string | `nano` | Editor used for notes and configuration files. |
 | `editor_jump_command` | string | `${EDITOR:-vi} +{line} {file}` | Editor command for file:line locations from hints and the context menu; use {file}, {line} and {col}. |
 | `editor_use_internal` | bool | `true` | Open file:line locations in the integrated editor instead of an external editor. |
-| `editor_panel_width` | int (220..1200) | `420` | Width in pixels of the integrated editor panel. |
+| `editor_panel_width` | int (220..1200) | `420` | Width in pixels of the right-hand Notes/Editor dock; dragging its handle updates it. |
 | `editor_style_scheme` | string | `""` | Editor syntax style scheme; empty follows the terminal theme. |
 | `snippets` | string map | `{}` | Named command snippets available to /snippet. |
 | `osc133` | bool | `false` | Enable OSC 133 shell integration (prompt, command and exit markers). |
@@ -119,7 +119,6 @@ never written back to disk.
 |  |  | Values: `bottom`, `top`, `left`, `right` |  |
 | `agent_pane_share` | int (10..70) | `35` | Percentage of the window the agent pane takes; dragging its handle updates it. |
 | `connections_panel_width` | int (180..1200) | `320` | Width in pixels of the connections panel; dragging its handle updates it. |
-| `notes_panel_width` | int (220..1200) | `380` | Width in pixels of the notes panel; dragging its handle updates it. |
 | `agent_show_usage` | bool | `true` | Show the token usage and cost the agent reports in the agent pane header. |
 | `ssh_alert_patterns` | string | `(?i)(^|[-_.])(prod|production|prd|live)([-_.]|$)` | Regex for production SSH hosts; matching tabs are highlighted. Empty disables the badge. |
 | `ssh_alert_color` | color (#rrggbb) | `#cc0000` | Colour used for the production SSH tab badge. |

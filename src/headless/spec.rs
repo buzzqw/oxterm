@@ -710,7 +710,7 @@ pub const SETTINGS: &[Setting] = &[
         "editor_panel_width",
         Kind::Int { min: 220, max: 1200 },
         Default::Int(420),
-        "Width in pixels of the integrated editor panel.",
+        "Width in pixels of the right-hand Notes/Editor dock; dragging its handle updates it.",
     ),
     setting(
         "editor_style_scheme",
@@ -1109,15 +1109,6 @@ pub const SETTINGS: &[Setting] = &[
         },
         Default::Int(320),
         "Width in pixels of the connections panel; dragging its handle updates it.",
-    ),
-    setting(
-        "notes_panel_width",
-        Kind::Int {
-            min: 220,
-            max: 1200,
-        },
-        Default::Int(380),
-        "Width in pixels of the notes panel; dragging its handle updates it.",
     ),
     setting(
         "agent_show_usage",

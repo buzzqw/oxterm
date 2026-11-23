@@ -1,6 +1,6 @@
-//! Integrated Notes panel: search, tag filter, entry list, preview and a quick
-//! append box. It is built once per main window and shown on demand from the
-//! Notes menu.
+//! Notes tab of the shared right-hand dock: search, tag filter, entry list and
+//! a quick append box. Search results carry a snippet; the full note is opened
+//! in the Editor tab on double-click.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -14,7 +14,6 @@ pub struct NotesPanel {
     pub search: gtk::SearchEntry,
     pub tag: gtk::ComboBoxText,
     pub list: gtk::ListBox,
-    pub preview: gtk::TextView,
     pub target: gtk::ComboBoxText,
     pub entry: gtk::Entry,
     pub status: gtk::Label,
@@ -44,7 +43,7 @@ impl NotesPanel {
         refresh.set_tooltip_text(Some("Rescan the notes directory and rebuild the index"));
         header.pack_end(&refresh, false, false, 0);
         let close = gtk::Button::with_label("Close");
-        close.set_tooltip_text(Some("Hide the notes panel"));
+        close.set_tooltip_text(Some("Hide the Notes/Editor dock"));
         header.pack_end(&close, false, false, 0);
         root.pack_start(&header, false, false, 0);
 
@@ -71,21 +70,6 @@ impl NotesPanel {
         list.set_selection_mode(gtk::SelectionMode::Single);
         scroller.add(&list);
         root.pack_start(&scroller, true, true, 0);
-
-        let preview = gtk::TextView::new();
-        preview.set_editable(false);
-        preview.set_cursor_visible(false);
-        preview.set_monospace(true);
-        preview.set_wrap_mode(gtk::WrapMode::WordChar);
-        preview.set_left_margin(8);
-        preview.set_right_margin(8);
-        let preview_scroller =
-            gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
-        preview_scroller.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
-        preview_scroller.set_overlay_scrolling(true);
-        preview_scroller.set_min_content_height(140);
-        preview_scroller.add(&preview);
-        root.pack_start(&preview_scroller, true, true, 0);
 
         let footer = gtk::Box::new(gtk::Orientation::Vertical, 4);
         footer.set_margin_start(8);
@@ -119,7 +103,6 @@ impl NotesPanel {
             search,
             tag,
             list,
-            preview,
             target,
             entry,
             status,
@@ -140,7 +123,7 @@ impl NotesPanel {
         }
         for entry in &entries {
             let row = gtk::ListBoxRow::new();
-            row.set_tooltip_text(Some("Double-click to open this note in the editor"));
+            row.set_tooltip_text(Some("Double-click to open this note in the Editor tab"));
             let cell = gtk::Box::new(gtk::Orientation::Vertical, 0);
             cell.set_margin_top(4);
             cell.set_margin_bottom(4);
@@ -239,15 +222,13 @@ impl NotesPanel {
         Some(crate::notes::resolve_notes_dir().join(name))
     }
 
-    /// Show the entry at `index` in the preview and preselect its note as the
-    /// append target.
-    pub fn preview_index(&self, index: i32) {
+    /// Preselect the note that produced the entry at `index` as the append
+    /// target. Its full text is opened in the Editor tab, not in a second view.
+    pub fn select_note(&self, index: i32) {
         let entries = self.entries.borrow();
         let Some(entry) = usize::try_from(index).ok().and_then(|i| entries.get(i)) else {
             return;
         };
-        let buffer = self.preview.buffer().expect("preview buffer");
-        buffer.set_text(&entry.body);
         self.target.set_active_id(Some(&entry.note));
     }
 }

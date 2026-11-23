@@ -291,7 +291,7 @@ impl MainWindow {
             return;
         };
         if visible {
-            // See `set_notes_panel_visible` for why `no_show_all` is toggled.
+            // See `set_workspace_visible` for why `no_show_all` is toggled.
             if let Some(slot) = self.imp().connections_slot.borrow().clone() {
                 slot.show();
             }

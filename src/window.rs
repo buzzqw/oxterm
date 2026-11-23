@@ -14,6 +14,7 @@ use zoha_vte::traits::TerminalExt;
 use crate::notes::{NoteContext, NotesManager};
 use crate::settings::settings;
 use crate::terminal::TerminalBox;
+use crate::workspace_ui::WorkspaceTab;
 pub const SIGNALS: &[(&str, i32)] = &[
     ("SIGHUP (1)", 1),
     ("SIGINT (2)", 2),
@@ -1257,14 +1258,14 @@ impl DetachedWindow {
         let weak = crate::SendWeak::new(self);
         self.menu_item(
             &notes_menu,
-            "Notes Panel",
+            "Notes Tab",
             Box::new(move || {
                 if let Some(w) = weak.upgrade() {
                     w.note_toggle_panel();
                 }
             }),
             None,
-            Some("Show or hide the integrated notes panel"),
+            Some("Show or hide the Notes tab in the right-hand dock"),
         );
         notes_menu.append(&gtk::SeparatorMenuItem::new());
         let weak = crate::SendWeak::new(self);
@@ -1779,11 +1780,11 @@ mod main_imp {
         pub info_bar: RefCell<Option<gtk::InfoBar>>,
         pub info_label: RefCell<Option<gtk::Label>>,
         pub notes_panel: RefCell<Option<crate::notes_panel::NotesPanel>>,
-        /// Container that receives the notes panel the first time it is shown.
-        pub notes_slot: RefCell<Option<gtk::Box>>,
-        /// The integrated editor pane, built on first use like the notes panel.
+        /// The integrated editor, built on first use like the notes panel.
         pub editor_panel: RefCell<Option<std::rc::Rc<crate::editor_panel::EditorPanel>>>,
-        pub editor_slot: RefCell<Option<gtk::Box>>,
+        /// One right-hand dock hosting both panels as Notebook tabs.
+        pub workspace_slot: RefCell<Option<gtk::Box>>,
+        pub workspace_notebook: RefCell<Option<gtk::Notebook>>,
         /// The optional agent pane, built on first use. Keeping it out of the
         /// startup path means a terminal without agent features pays nothing.
         pub agent_panel: RefCell<Option<std::rc::Rc<crate::agent_panel::AgentPanel>>>,
@@ -1813,10 +1814,8 @@ mod main_imp {
         pub connections_slot: RefCell<Option<gtk::Box>>,
         pub connections_positioning: Cell<bool>,
         pub connections_width_generation: Cell<u64>,
-        pub notes_positioning: Cell<bool>,
-        pub notes_width_generation: Cell<u64>,
-        pub editor_positioning: Cell<bool>,
-        pub editor_width_generation: Cell<u64>,
+        pub workspace_positioning: Cell<bool>,
+        pub workspace_width_generation: Cell<u64>,
         pub tunnel_watch_active: std::cell::Cell<bool>,
         pub pending_reconnect_attempts: std::cell::Cell<u32>,
         /// Menu popups are built once, after the first terminal is up.
@@ -2228,24 +2227,16 @@ impl MainWindow {
         connections_slot.hide();
         connections_pane.pack1(&connections_slot, false, false);
         *self.imp().connections_slot.borrow_mut() = Some(connections_slot);
-        let notes_pane = gtk::Paned::new(gtk::Orientation::Horizontal);
-        notes_pane.pack1(&dock, true, true);
-        let notes_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        notes_slot.set_no_show_all(true);
-        notes_slot.hide();
-        notes_pane.pack2(&notes_slot, false, false);
-        *self.imp().notes_slot.borrow_mut() = Some(notes_slot);
-        // The editor gets its own splitter next to the notes pane. Both slots
-        // start hidden: a Paned gives a hidden child no room and hides its
-        // handle, so a window that never opens either panel pays nothing.
-        let editor_pane = gtk::Paned::new(gtk::Orientation::Horizontal);
-        editor_pane.pack1(&notes_pane, true, true);
-        let editor_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        editor_slot.set_no_show_all(true);
-        editor_slot.hide();
-        editor_pane.pack2(&editor_slot, false, false);
-        *self.imp().editor_slot.borrow_mut() = Some(editor_slot);
-        connections_pane.pack2(&editor_pane, true, true);
+        // Notes and Editor share one right-hand dock with two tabs. One
+        // splitter (and one width setting) replaces the two competing docks.
+        let workspace_pane = gtk::Paned::new(gtk::Orientation::Horizontal);
+        workspace_pane.pack1(&dock, true, true);
+        let workspace_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        workspace_slot.set_no_show_all(true);
+        workspace_slot.hide();
+        workspace_pane.pack2(&workspace_slot, false, false);
+        *self.imp().workspace_slot.borrow_mut() = Some(workspace_slot);
+        connections_pane.pack2(&workspace_pane, true, true);
         vbox.pack_start(&connections_pane, true, true, 0);
         vbox.pack_end(&stats_box, false, false, 0);
         let weak = self.downgrade();
@@ -3619,14 +3610,14 @@ impl MainWindow {
         let weak = crate::SendWeak::new(self);
         self.menu_item(
             &notes_menu,
-            "Notes Panel",
+            "Notes Tab",
             Box::new(move || {
                 if let Some(w) = weak.upgrade() {
                     w.note_toggle_panel();
                 }
             }),
             None,
-            Some("Show or hide the integrated notes panel"),
+            Some("Show or hide the Notes tab in the right-hand dock"),
         );
         notes_menu.append(&gtk::SeparatorMenuItem::new());
         let weak = crate::SendWeak::new(self);
@@ -3721,14 +3712,14 @@ impl MainWindow {
         let weak = crate::SendWeak::new(self);
         self.menu_item(
             &editor_menu,
-            "Editor Panel",
+            "Editor Tab",
             Box::new(move || {
                 if let Some(w) = weak.upgrade() {
                     w.editor_toggle_panel();
                 }
             }),
             Some("<Primary><Shift>E"),
-            Some("Show or hide the integrated text editor"),
+            Some("Show or hide the Editor tab in the right-hand dock"),
         );
         let weak = crate::SendWeak::new(self);
         self.menu_item(
@@ -3758,14 +3749,14 @@ impl MainWindow {
         let weak = crate::SendWeak::new(self);
         self.menu_item(
             &editor_menu,
-            "Hide Editor Panel",
+            "Hide Dock",
             Box::new(move || {
                 if let Some(w) = weak.upgrade() {
-                    w.close_editor_panel();
+                    w.hide_workspace();
                 }
             }),
             None,
-            Some("Hide the editor panel without closing the document"),
+            Some("Hide the Notes/Editor dock without closing the document"),
         );
         menus.push(("Editor".into(), editor_menu));
 
@@ -6936,14 +6927,13 @@ impl TerminalWindow for MainWindow {
         self.current_terminal()
     }
     fn note_toggle_panel(&self) {
-        let visible = self.notes_panel_visible();
-        self.set_notes_panel_visible(!visible);
-        if !visible {
+        self.toggle_workspace_tab(WorkspaceTab::Notes);
+        if self.workspace_visible() && self.notes_tab_active() {
             self.reload_notes_panel();
         }
     }
     fn editor_toggle_panel(&self) {
-        self.toggle_editor_panel();
+        self.toggle_workspace_tab(WorkspaceTab::Editor);
     }
     fn open_internal_file(&self, path: &std::path::Path, line: u32, column: Option<u32>) {
         self.open_file_in_editor(path, Some(line), column);
@@ -6958,7 +6948,7 @@ impl TerminalWindow for MainWindow {
         }
     }
     fn note_refresh_panel_if_open(&self) {
-        if self.notes_panel_visible() {
+        if self.workspace_visible() && self.notes_tab_active() {
             self.reload_notes_panel();
         }
     }

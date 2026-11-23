@@ -26,6 +26,7 @@ mod system_stats;
 mod terminal;
 mod tunnel_manager;
 mod window;
+mod workspace_ui;
 
 // The headless core lives in the library target so the docgen tool, the tests
 // and the GUI share one implementation. Re-export it at the crate root so the

@@ -1509,9 +1509,9 @@ fn build_notes(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, N
 
     let editor_width = gtk::SpinButton::with_range(220.0, 1200.0, 1.0);
     editor_width.set_value(s.get_i64("editor_panel_width") as f64);
-    editor_width.set_tooltip_text(Some("Width in pixels of the integrated editor panel."));
+    editor_width.set_tooltip_text(Some("Width in pixels of the right-hand Notes/Editor dock."));
     page.row_keyed(
-        "Editor panel width",
+        "Notes/Editor dock width",
         &editor_width,
         Some("editor_panel_width"),
     );

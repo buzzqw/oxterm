@@ -5,7 +5,6 @@ use glib::subclass::prelude::*;
 use gtk::prelude::*;
 
 use crate::notes::{self, NoteContext};
-use crate::settings::settings;
 use crate::terminal::TerminalBox;
 use crate::window::{MainWindow, TerminalWindow};
 
@@ -200,161 +199,6 @@ impl MainWindow {
         self.note_write(text, filename, context);
     }
 
-    /// Build the notes panel the first time it is needed. Keeping this out of
-    /// `init` avoids creating a dozen widgets (and an empty list/text view) in
-    /// every window that never opens the panel.
-    fn ensure_notes_panel(&self) -> bool {
-        if self.imp().notes_panel.borrow().is_some() {
-            return true;
-        }
-        let Some(slot) = self.imp().notes_slot.borrow().clone() else {
-            return false;
-        };
-        let panel = crate::notes_panel::NotesPanel::build();
-        {
-            let weak = crate::SendWeak::new(self);
-            panel.close.connect_clicked(move |_| {
-                if let Some(w) = weak.upgrade() {
-                    w.set_notes_panel_visible(false);
-                }
-            });
-            let weak = crate::SendWeak::new(self);
-            panel.refresh.connect_clicked(move |_| {
-                if let Some(w) = weak.upgrade() {
-                    w.reload_notes_panel();
-                }
-            });
-            let weak = crate::SendWeak::new(self);
-            panel.search.connect_search_changed(move |_| {
-                if let Some(w) = weak.upgrade() {
-                    w.schedule_notes_search();
-                }
-            });
-            let weak = crate::SendWeak::new(self);
-            panel.tag.connect_changed(move |_| {
-                if let Some(w) = weak.upgrade() {
-                    w.schedule_notes_search();
-                }
-            });
-            let weak = crate::SendWeak::new(self);
-            panel.list.connect_row_selected(move |_, row| {
-                if let (Some(w), Some(row)) = (weak.upgrade(), row) {
-                    w.notes_panel_preview(row.index());
-                }
-            });
-            // Double-click / Enter on a search result opens its note in the
-            // integrated editor instead of only showing the read-only preview.
-            let weak = crate::SendWeak::new(self);
-            panel.list.connect_row_activated(move |_, row| {
-                let Some(window) = weak.upgrade() else {
-                    return;
-                };
-                let path = window
-                    .imp()
-                    .notes_panel
-                    .borrow()
-                    .as_ref()
-                    .and_then(|panel| panel.note_path_at(row.index()));
-                if let Some(path) = path {
-                    window.open_file_in_editor(&path, None, None);
-                }
-            });
-            let weak = crate::SendWeak::new(self);
-            panel.append.connect_clicked(move |_| {
-                if let Some(w) = weak.upgrade() {
-                    w.notes_panel_append();
-                }
-            });
-            let weak = crate::SendWeak::new(self);
-            panel.entry.connect_activate(move |_| {
-                if let Some(w) = weak.upgrade() {
-                    w.notes_panel_append();
-                }
-            });
-        }
-        slot.pack_start(&panel.root, true, true, 0);
-        slot.show();
-        if let Some(pane) = slot.parent().and_then(|p| p.downcast::<gtk::Paned>().ok()) {
-            let width = settings().get_i64("notes_panel_width").clamp(220, 1200) as i32;
-            let extent = pane.allocated_width();
-            if extent > width {
-                self.imp().notes_positioning.set(true);
-                pane.set_position(extent - width);
-                self.imp().notes_positioning.set(false);
-            }
-            let weak = crate::SendWeak::new(self);
-            pane.connect_notify_local(Some("position"), move |pane, _| {
-                if let Some(window) = weak.upgrade() {
-                    window.remember_notes_panel_width(pane);
-                }
-            });
-        }
-        *self.imp().notes_panel.borrow_mut() = Some(panel);
-        true
-    }
-
-    fn remember_notes_panel_width(&self, pane: &gtk::Paned) {
-        if !self.notes_panel_visible() || self.imp().notes_positioning.get() {
-            return;
-        }
-        let extent = pane.allocated_width();
-        if extent <= 1 {
-            return;
-        }
-        let width = ((extent - pane.position()) as i64).clamp(220, 1200);
-        if (width - settings().get_i64("notes_panel_width")).abs() <= 1 {
-            return;
-        }
-        let generation = self.imp().notes_width_generation.get().wrapping_add(1);
-        self.imp().notes_width_generation.set(generation);
-        let weak = self.downgrade();
-        glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
-            let Some(window) = weak.upgrade() else {
-                return;
-            };
-            if window.imp().notes_width_generation.get() != generation {
-                return;
-            }
-            settings().set_i64("notes_panel_width", width);
-        });
-    }
-
-    pub(crate) fn notes_panel_visible(&self) -> bool {
-        self.imp()
-            .notes_panel
-            .borrow()
-            .as_ref()
-            .map(|p| p.root.is_visible())
-            .unwrap_or(false)
-    }
-
-    pub(crate) fn set_notes_panel_visible(&self, visible: bool) {
-        if visible && !self.ensure_notes_panel() {
-            return;
-        }
-        if let Some(panel) = self.imp().notes_panel.borrow().as_ref() {
-            if visible {
-                // The panel carries `no_show_all` so the window's own
-                // `show_all()` keeps it hidden; clear it just long enough to
-                // show the panel and its children, then restore it.
-                if let Some(slot) = self.imp().notes_slot.borrow().clone() {
-                    slot.show();
-                }
-                panel.root.set_no_show_all(false);
-                panel.root.show_all();
-                panel.root.set_no_show_all(true);
-            } else {
-                panel.root.hide();
-                if let Some(slot) = self.imp().notes_slot.borrow().clone() {
-                    slot.hide();
-                }
-                if let Some(term) = self.current_terminal() {
-                    term.vte().grab_focus();
-                }
-            }
-        }
-    }
-
     fn refresh_note_targets(&self) {
         let notes = crate::notes::list_note_files();
         if let Some(panel) = self.imp().notes_panel.borrow().as_ref() {
@@ -388,7 +232,7 @@ impl MainWindow {
 
     /// Debounce typing in the notes search box. Every keystroke used to spawn
     /// a thread that opened the database and re-ran the schema DDL.
-    fn schedule_notes_search(&self) {
+    pub(crate) fn schedule_notes_search(&self) {
         self.imp()
             .notes_search_generation
             .set(self.imp().notes_search_generation.get() + 1);
@@ -451,13 +295,13 @@ impl MainWindow {
         }
     }
 
-    fn notes_panel_preview(&self, index: i32) {
+    pub(crate) fn notes_panel_select(&self, index: i32) {
         if let Some(panel) = self.imp().notes_panel.borrow().as_ref() {
-            panel.preview_index(index);
+            panel.select_note(index);
         }
     }
 
-    fn notes_panel_append(&self) {
+    pub(crate) fn notes_panel_append(&self) {
         let (text, target) = match self.imp().notes_panel.borrow().as_ref() {
             Some(panel) => (panel.take_entry_text(), panel.selected_target()),
             None => return,
