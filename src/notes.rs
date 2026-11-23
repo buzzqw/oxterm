@@ -246,7 +246,10 @@ impl NotesManager {
         });
     }
 
-    pub fn open_notes(&self, filename: Option<&str>) -> Result<PathBuf, String> {
+    /// Resolve the note path and create the file (with its header) when it does
+    /// not exist yet, without launching any external program. Callers that
+    /// edit the note themselves -- the integrated editor -- use this.
+    pub fn prepare_note(&self, filename: Option<&str>) -> Result<PathBuf, String> {
         let target = self.note_target(filename)?;
         let (mut f, created) = open_note_file(&target)?;
         if created {
@@ -254,10 +257,15 @@ impl NotesManager {
                 .map_err(|e| e.to_string())?;
             f.sync_all().map_err(|e| e.to_string())?;
         }
+        Ok(target.path)
+    }
+
+    pub fn open_notes(&self, filename: Option<&str>) -> Result<PathBuf, String> {
+        let path = self.prepare_note(filename)?;
 
         if let Some(opener) = find_in_path("xdg-open") {
-            spawn_detached(&opener, &[&target.path.to_string_lossy()]);
-            return Ok(target.path);
+            spawn_detached(&opener, &[&path.to_string_lossy()]);
+            return Ok(path);
         }
         let editor = settings().get_str_default("editor_command", "nano");
         let parts = if editor.is_empty() {
@@ -267,10 +275,10 @@ impl NotesManager {
         };
         if let Some(first) = parts.first() {
             let mut args = parts[1..].to_vec();
-            args.push(target.path.to_string_lossy().to_string());
+            args.push(path.to_string_lossy().to_string());
             spawn_detached(first, &args.iter().map(|s| s.as_str()).collect::<Vec<_>>());
         }
-        Ok(target.path)
+        Ok(path)
     }
 }
 

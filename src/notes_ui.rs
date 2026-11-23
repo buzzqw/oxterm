@@ -242,6 +242,23 @@ impl MainWindow {
                     w.notes_panel_preview(row.index());
                 }
             });
+            // Double-click / Enter on a search result opens its note in the
+            // integrated editor instead of only showing the read-only preview.
+            let weak = crate::SendWeak::new(self);
+            panel.list.connect_row_activated(move |_, row| {
+                let Some(window) = weak.upgrade() else {
+                    return;
+                };
+                let path = window
+                    .imp()
+                    .notes_panel
+                    .borrow()
+                    .as_ref()
+                    .and_then(|panel| panel.note_path_at(row.index()));
+                if let Some(path) = path {
+                    window.open_file_in_editor(&path, None, None);
+                }
+            });
             let weak = crate::SendWeak::new(self);
             panel.append.connect_clicked(move |_| {
                 if let Some(w) = weak.upgrade() {

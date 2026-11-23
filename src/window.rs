@@ -284,6 +284,15 @@ pub trait TerminalWindow {
     /// Refresh the notes panel after a note is written, when it is open.
     fn note_refresh_panel_if_open(&self) {}
 
+    /// Open a note file. The main window uses the integrated editor; a
+    /// detached window has no editor panel and keeps the external editor.
+    fn note_open_in_editor(&self, filename: Option<&str>) {
+        match NotesManager::new().open_notes(filename) {
+            Ok(path) => self.note_feedback(&format!("Opening note: {}", path.display()), false),
+            Err(e) => self.note_feedback(&format!("Could not open note: {}", e), true),
+        }
+    }
+
     /// Append the last command output (OSC 133) to a note.
     fn note_add_command_output(&self) {
         let Some(term) = self.note_terminal() else {
@@ -381,12 +390,9 @@ pub trait TerminalWindow {
         self.note_write(text, filename, context);
     }
 
-    /// Open the default note in the configured external editor.
+    /// Open the default note in the integrated editor.
     fn note_open_default(&self) {
-        match NotesManager::new().open_notes(None) {
-            Ok(path) => self.note_feedback(&format!("Opening note: {}", path.display()), false),
-            Err(e) => self.note_feedback(&format!("Could not open note: {}", e), true),
-        }
+        self.note_open_in_editor(None);
     }
 
     /// Open the notes directory in the file manager (or `xdg-open`).
@@ -397,17 +403,14 @@ pub trait TerminalWindow {
         }
     }
 
-    /// Pick a note and open it in the external editor.
+    /// Pick a note and open it in the integrated editor.
     fn note_choose_open(&self) {
         let window = self.note_window();
         let Some(name) = crate::notes_ui::pick_note_file(&window, "Open note") else {
             return;
         };
         let filename = if name.is_empty() { None } else { Some(name) };
-        match NotesManager::new().open_notes(filename.as_deref()) {
-            Ok(path) => self.note_feedback(&format!("Opening note: {}", path.display()), false),
-            Err(e) => self.note_feedback(&format!("Could not open note: {}", e), true),
-        }
+        self.note_open_in_editor(filename.as_deref());
     }
 }
 
@@ -6944,6 +6947,15 @@ impl TerminalWindow for MainWindow {
     }
     fn open_internal_file(&self, path: &std::path::Path, line: u32, column: Option<u32>) {
         self.open_file_in_editor(path, Some(line), column);
+    }
+    fn note_open_in_editor(&self, filename: Option<&str>) {
+        match NotesManager::new().prepare_note(filename) {
+            Ok(path) => {
+                self.open_file_in_editor(&path, None, None);
+                self.note_feedback(&format!("Opened note in editor: {}", path.display()), false);
+            }
+            Err(e) => self.note_feedback(&format!("Could not open note: {}", e), true),
+        }
     }
     fn note_refresh_panel_if_open(&self) {
         if self.notes_panel_visible() {

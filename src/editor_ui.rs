@@ -26,6 +26,16 @@ impl MainWindow {
                 }
             });
         }
+        {
+            // A saved note changes the indexed text, so refresh the Notes panel
+            // even when the save was triggered by Ctrl+S inside the view.
+            let weak = crate::SendWeak::new(self);
+            panel.connect_saved(move || {
+                if let Some(window) = weak.upgrade() {
+                    window.note_refresh_panel_if_open();
+                }
+            });
+        }
         slot.pack_start(&panel.root, true, true, 0);
         slot.show();
         if let Some(pane) = slot

@@ -47,6 +47,7 @@ src/editor_ui.rs        MainWindow panel lifecycle, focus and width persistence
 src/window.rs           Paned slot, menubar entry, TerminalWindow hooks
 src/terminal.rs         file:line resolution and internal/external dispatch
 src/file_browser.rs     remote edit callback, unchanged mtime upload watch
+src/notes.rs            note path resolution/creation without an external opener
 src/headless/spec.rs    settings keys, defaults and generated documentation
 ```
 
@@ -62,6 +63,22 @@ shows the pane, loads the file with a non-undoable initial insert and jumps to
 the requested line. Saving uses `headless::persistence::atomic_write`, so a
 crash cannot leave a half-written file and the 0600 permissions of private
 copies are preserved.
+
+## Notes
+
+Notes are Markdown files in `notes_dir`, so the Notes menu opens them in this
+pane instead of launching an external program. **Notes → Open Note** and
+**Notes → Open Default Note** call `NotesManager::prepare_note`, which resolves
+(or creates with the usual header) the file and hands it to
+`open_file_in_editor`. Double-clicking or pressing Enter on a result in the
+Notes panel opens the note that produced the entry; a single click still shows
+the read-only preview.
+
+Every successful save -- toolbar, `Ctrl+S`, or Save in the close-document
+dialog -- fires `EditorPanel::connect_saved`, which calls
+`note_refresh_panel_if_open` so the FTS index, tag list and append targets stay
+in sync. Detached windows have no editor pane and keep the external
+`xdg-open`/`editor_command` flow.
 
 ## Remote files
 

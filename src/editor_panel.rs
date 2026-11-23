@@ -31,6 +31,7 @@ pub struct EditorPanel {
     path: RefCell<Option<PathBuf>>,
     loading: Cell<bool>,
     dirty: Cell<bool>,
+    saved: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
 /// Pick a syntax style scheme: the explicit setting wins, otherwise follow the
@@ -165,6 +166,7 @@ impl EditorPanel {
             path: RefCell::new(None),
             loading: Cell::new(false),
             dirty: Cell::new(false),
+            saved: RefCell::new(None),
         });
 
         let weak = Rc::downgrade(&panel);
@@ -333,6 +335,13 @@ impl EditorPanel {
         self.update_history_sensitivity();
     }
 
+    /// Register a callback fired after every successful save. The window uses
+    /// it to refresh dependent views (the notes index) no matter whether the
+    /// save came from the toolbar, Ctrl+S or the close-document dialog.
+    pub fn connect_saved(&self, callback: impl Fn() + 'static) {
+        *self.saved.borrow_mut() = Some(Rc::new(callback));
+    }
+
     pub fn current_path(&self) -> Option<PathBuf> {
         self.path.borrow().clone()
     }
@@ -495,6 +504,10 @@ impl EditorPanel {
             .map_err(|error| format!("{}: {}", path.display(), error))?;
         self.set_dirty(false);
         self.set_status(&format!("Saved {}", path.display()));
+        let callback = self.saved.borrow().clone();
+        if let Some(callback) = callback {
+            callback();
+        }
         Ok(path)
     }
 }

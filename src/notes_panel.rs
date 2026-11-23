@@ -3,6 +3,7 @@
 //! Notes menu.
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 
 use gtk::prelude::*;
 
@@ -139,6 +140,7 @@ impl NotesPanel {
         }
         for entry in &entries {
             let row = gtk::ListBoxRow::new();
+            row.set_tooltip_text(Some("Double-click to open this note in the editor"));
             let cell = gtk::Box::new(gtk::Orientation::Vertical, 0);
             cell.set_margin_top(4);
             cell.set_margin_bottom(4);
@@ -225,6 +227,16 @@ impl NotesPanel {
         let text = self.entry.text().to_string();
         self.entry.set_text("");
         text
+    }
+
+    /// Path of the note backing the result at `index`, for the editor. The
+    /// name comes from the index, so validate it before joining it to the
+    /// notes directory: it must stay a relative `.md` path.
+    pub fn note_path_at(&self, index: i32) -> Option<PathBuf> {
+        let entries = self.entries.borrow();
+        let entry = entries.get(usize::try_from(index).ok()?)?;
+        let name = crate::notes::validate_note_name(&entry.note).ok()?;
+        Some(crate::notes::resolve_notes_dir().join(name))
     }
 
     /// Show the entry at `index` in the preview and preselect its note as the
