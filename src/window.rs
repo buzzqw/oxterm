@@ -3755,14 +3755,14 @@ impl MainWindow {
         let weak = crate::SendWeak::new(self);
         self.menu_item(
             &editor_menu,
-            "Close Editor Panel",
+            "Hide Editor Panel",
             Box::new(move || {
                 if let Some(w) = weak.upgrade() {
                     w.close_editor_panel();
                 }
             }),
             None,
-            Some("Hide the integrated editor panel"),
+            Some("Hide the editor panel without closing the document"),
         );
         menus.push(("Editor".into(), editor_menu));
 

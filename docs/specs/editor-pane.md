@@ -32,7 +32,12 @@ NotePadPQ, which `editor_command` can still launch.
 
 The pane is shown from **Editor → Editor Panel** (`Ctrl+Shift+E`), from
 **Editor → Open File in Editor...**, or automatically when a `file:line` hint is
-activated. `Ctrl+S` saves through **Editor → Save Editor File**.
+activated. Its toolbar has Save, Undo, Redo, Find, Close document and Hide
+panel buttons. `Ctrl+S` saves, `Ctrl+Z`/`Ctrl+Shift+Z` undo/redo, `Ctrl+F`
+opens the search bar (Enter = next, Escape = close) and `Ctrl+W` closes the
+document. **Close document** clears the buffer but keeps the pane open; if the
+buffer is dirty it offers Save / Discard / Cancel. **Editor → Hide Editor
+Panel** hides the pane without touching the document.
 
 ## Architecture
 

@@ -21,7 +21,13 @@ pub struct EditorPanel {
     pub path_label: gtk::Label,
     pub status: gtk::Label,
     pub save: gtk::Button,
-    pub close: gtk::Button,
+    pub undo: gtk::Button,
+    pub redo: gtk::Button,
+    pub find: gtk::Button,
+    pub close_document: gtk::Button,
+    pub hide_panel: gtk::Button,
+    pub search: gtk::SearchEntry,
+    search_bar: gtk::Box,
     path: RefCell<Option<PathBuf>>,
     loading: Cell<bool>,
     dirty: Cell<bool>,
@@ -56,7 +62,7 @@ impl EditorPanel {
         root.set_width_request(320);
         root.set_no_show_all(true);
 
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         header.set_margin_start(8);
         header.set_margin_end(8);
         header.set_margin_top(6);
@@ -66,13 +72,20 @@ impl EditorPanel {
         path_label.set_hexpand(true);
         path_label.set_ellipsize(gtk::pango::EllipsizeMode::Start);
         header.pack_start(&path_label, true, true, 0);
-        let save = gtk::Button::with_label("Save");
-        save.set_tooltip_text(Some("Save this file (Ctrl+S)"));
+
+        let save = icon_button("document-save", "Save this file (Ctrl+S)");
+        let undo = icon_button("edit-undo", "Undo (Ctrl+Z)");
+        let redo = icon_button("edit-redo", "Redo (Ctrl+Shift+Z)");
+        let find = icon_button("edit-find", "Find in this file (Ctrl+F)");
+        let close_document = icon_button("window-close", "Close document (Ctrl+W)");
+        let hide_panel = icon_button("go-next", "Hide the editor panel");
         save.set_sensitive(false);
-        let close = gtk::Button::with_label("Close");
-        close.set_tooltip_text(Some("Hide the editor panel"));
-        header.pack_end(&close, false, false, 0);
-        header.pack_end(&save, false, false, 0);
+        undo.set_sensitive(false);
+        redo.set_sensitive(false);
+        close_document.set_sensitive(false);
+        for button in [&hide_panel, &close_document, &find, &redo, &undo, &save] {
+            header.pack_end(button, false, false, 0);
+        }
         root.pack_start(&header, false, false, 0);
 
         let buffer = sourceview4::Buffer::new(None::<&gtk::TextTagTable>);
@@ -108,6 +121,24 @@ impl EditorPanel {
         scroller.add(&view);
         root.pack_start(&scroller, true, true, 0);
 
+        let search_bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        search_bar.set_no_show_all(true);
+        search_bar.hide();
+        search_bar.set_margin_start(8);
+        search_bar.set_margin_end(8);
+        search_bar.set_margin_top(4);
+        let search = gtk::SearchEntry::new();
+        search.set_hexpand(true);
+        search.set_placeholder_text(Some("Find in file (Enter = next)"));
+        search_bar.pack_start(&search, true, true, 0);
+        let prev = icon_button("go-up", "Find previous (Shift+Enter)");
+        let next = icon_button("go-down", "Find next (Enter)");
+        let dismiss = icon_button("window-close", "Close search bar (Escape)");
+        search_bar.pack_end(&dismiss, false, false, 0);
+        search_bar.pack_end(&next, false, false, 0);
+        search_bar.pack_end(&prev, false, false, 0);
+        root.pack_start(&search_bar, false, false, 0);
+
         let status = gtk::Label::new(None);
         status.set_xalign(0.0);
         status.set_margin_start(8);
@@ -124,7 +155,13 @@ impl EditorPanel {
             path_label,
             status,
             save,
-            close,
+            undo,
+            redo,
+            find,
+            close_document,
+            hide_panel,
+            search,
+            search_bar,
             path: RefCell::new(None),
             loading: Cell::new(false),
             dirty: Cell::new(false),
@@ -136,15 +173,18 @@ impl EditorPanel {
                 if !panel.loading.get() {
                     panel.set_dirty(true);
                 }
+                panel.update_history_sensitivity();
             }
         });
         // Ctrl+S belongs to the editor only while it has focus: the terminal
         // keeps its own Ctrl+S handling for the shell.
         let weak = Rc::downgrade(&panel);
         panel.view.connect_key_press_event(move |_, event| {
-            if event.state().contains(gdk::ModifierType::CONTROL_MASK)
-                && event.keyval() == gdk::keys::constants::s
-            {
+            let state = event.state();
+            let control = state.contains(gdk::ModifierType::CONTROL_MASK);
+            let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+            let key = event.keyval();
+            if control && key == gdk::keys::constants::s {
                 if let Some(panel) = weak.upgrade() {
                     if let Err(error) = panel.save() {
                         panel.set_status(&error);
@@ -152,10 +192,127 @@ impl EditorPanel {
                 }
                 return glib::Propagation::Stop;
             }
+            if control && key == gdk::keys::constants::f {
+                if let Some(panel) = weak.upgrade() {
+                    panel.show_find(true);
+                }
+                return glib::Propagation::Stop;
+            }
+            if control && key == gdk::keys::constants::w {
+                if let Some(panel) = weak.upgrade() {
+                    panel.close_document();
+                }
+                return glib::Propagation::Stop;
+            }
+            if control && key == gdk::keys::constants::z {
+                if let Some(panel) = weak.upgrade() {
+                    if shift {
+                        panel.buffer.redo();
+                    } else {
+                        panel.buffer.undo();
+                    }
+                }
+                return glib::Propagation::Stop;
+            }
             glib::Propagation::Proceed
         });
 
+        let weak = Rc::downgrade(&panel);
+        panel.save.connect_clicked(move |_| {
+            if let Some(panel) = weak.upgrade() {
+                if let Err(error) = panel.save() {
+                    panel.set_status(&error);
+                }
+            }
+        });
+        let weak = Rc::downgrade(&panel);
+        panel.undo.connect_clicked(move |_| {
+            if let Some(panel) = weak.upgrade() {
+                panel.buffer.undo();
+            }
+        });
+        let weak = Rc::downgrade(&panel);
+        panel.redo.connect_clicked(move |_| {
+            if let Some(panel) = weak.upgrade() {
+                panel.buffer.redo();
+            }
+        });
+        let weak = Rc::downgrade(&panel);
+        panel.find.connect_clicked(move |_| {
+            if let Some(panel) = weak.upgrade() {
+                panel.show_find(true);
+            }
+        });
+        let weak = Rc::downgrade(&panel);
+        panel.close_document.connect_clicked(move |_| {
+            if let Some(panel) = weak.upgrade() {
+                panel.close_document();
+            }
+        });
+
+        let weak = Rc::downgrade(&panel);
+        panel.search.connect_activate(move |entry| {
+            if let Some(panel) = weak.upgrade() {
+                let text = entry.text().to_string();
+                if !panel.find_in_buffer(&text, true) {
+                    panel.set_status(&format!("No match for '{}'", text));
+                }
+            }
+        });
+        let weak = Rc::downgrade(&panel);
+        panel.search.connect_search_changed(move |entry| {
+            if let Some(panel) = weak.upgrade() {
+                let text = entry.text().to_string();
+                if !text.is_empty() {
+                    panel.find_in_buffer(&text, true);
+                }
+            }
+        });
+        let weak = Rc::downgrade(&panel);
+        panel.search.connect_key_press_event(move |_, event| {
+            let backwards = event.state().contains(gdk::ModifierType::SHIFT_MASK);
+            if event.keyval() == gdk::keys::constants::Escape {
+                if let Some(panel) = weak.upgrade() {
+                    panel.show_find(false);
+                }
+                return glib::Propagation::Stop;
+            }
+            if event.keyval() == gdk::keys::constants::Return {
+                if let Some(panel) = weak.upgrade() {
+                    let text = panel.search.text().to_string();
+                    panel.find_in_buffer(&text, !backwards);
+                }
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        let weak = Rc::downgrade(&panel);
+        prev.connect_clicked(move |_| {
+            if let Some(panel) = weak.upgrade() {
+                let text = panel.search.text().to_string();
+                panel.find_in_buffer(&text, false);
+            }
+        });
+        let weak = Rc::downgrade(&panel);
+        next.connect_clicked(move |_| {
+            if let Some(panel) = weak.upgrade() {
+                let text = panel.search.text().to_string();
+                panel.find_in_buffer(&text, true);
+            }
+        });
+        let weak = Rc::downgrade(&panel);
+        dismiss.connect_clicked(move |_| {
+            if let Some(panel) = weak.upgrade() {
+                panel.show_find(false);
+            }
+        });
+
         panel
+    }
+
+    fn update_history_sensitivity(&self) {
+        self.undo.set_sensitive(self.buffer.can_undo());
+        self.redo.set_sensitive(self.buffer.can_redo());
     }
 
     fn set_dirty(&self, dirty: bool) {
@@ -169,7 +326,11 @@ impl EditorPanel {
             .unwrap_or_else(|| "No file open".to_string());
         self.path_label
             .set_label(&if dirty { format!("{} *", name) } else { name });
-        self.save.set_sensitive(self.path.borrow().is_some());
+        let has_path = self.path.borrow().is_some();
+        self.save.set_sensitive(has_path);
+        self.close_document.set_sensitive(has_path);
+        self.find.set_sensitive(has_path);
+        self.update_history_sensitivity();
     }
 
     pub fn current_path(&self) -> Option<PathBuf> {
@@ -182,6 +343,102 @@ impl EditorPanel {
 
     pub fn set_status(&self, message: &str) {
         self.status.set_label(message);
+    }
+
+    fn show_find(&self, show: bool) {
+        if show {
+            self.search_bar.set_no_show_all(false);
+            self.search_bar.show_all();
+            self.search.grab_focus();
+        } else {
+            self.search_bar.hide();
+            self.search_bar.set_no_show_all(true);
+            self.view.grab_focus();
+        }
+    }
+
+    /// Search from the cursor, wrapping around at the end of the buffer.
+    fn find_in_buffer(&self, text: &str, forward: bool) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        let flags = gtk::TextSearchFlags::CASE_INSENSITIVE;
+        let (start, end) = self.buffer.bounds();
+        let cursor = self
+            .buffer
+            .get_insert()
+            .map(|mark| self.buffer.iter_at_mark(&mark))
+            .unwrap_or_else(|| self.buffer.start_iter());
+        let found = if forward {
+            cursor
+                .forward_search(text, flags, Some(&end))
+                .or_else(|| start.forward_search(text, flags, Some(&end)))
+        } else {
+            cursor
+                .backward_search(text, flags, Some(&start))
+                .or_else(|| end.backward_search(text, flags, Some(&start)))
+        };
+        if let Some((match_start, match_end)) = found {
+            self.buffer.select_range(&match_start, &match_end);
+            let mut iter = match_start;
+            self.view.scroll_to_iter(&mut iter, 0.0, false, 0.0, 0.0);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Close the current document, keeping the panel open. Unsaved changes are
+    /// confirmed with an explicit Save / Discard / Cancel choice.
+    pub fn close_document(&self) -> bool {
+        if self.path.borrow().is_none() {
+            return false;
+        }
+        if self.dirty.get() {
+            let parent = self
+                .root
+                .toplevel()
+                .and_then(|window| window.downcast::<gtk::Window>().ok());
+            let name = self.path_label.text().trim_end_matches(" *").to_string();
+            let dialog = gtk::MessageDialog::new(
+                parent.as_ref(),
+                gtk::DialogFlags::MODAL,
+                gtk::MessageType::Question,
+                gtk::ButtonsType::None,
+                &format!("Discard unsaved changes to {}?", name),
+            );
+            dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+            dialog.add_button("Discard", gtk::ResponseType::Reject);
+            dialog.add_button("Save", gtk::ResponseType::Accept);
+            let response = dialog.run();
+            unsafe { dialog.destroy() };
+            match response {
+                gtk::ResponseType::Accept => {
+                    if let Err(error) = self.save() {
+                        self.set_status(&error);
+                        return false;
+                    }
+                }
+                gtk::ResponseType::Cancel => return false,
+                _ => {}
+            }
+        }
+        self.clear();
+        true
+    }
+
+    fn clear(&self) {
+        self.show_find(false);
+        self.loading.set(true);
+        self.buffer.begin_not_undoable_action();
+        self.buffer.set_text("");
+        self.buffer.end_not_undoable_action();
+        self.loading.set(false);
+        self.buffer.set_language(None::<&sourceview4::Language>);
+        *self.path.borrow_mut() = None;
+        self.set_dirty(false);
+        self.set_status("No file open");
+        self.view.grab_focus();
     }
 
     /// Load one file into the buffer. The load is not an undoable action, so
@@ -240,4 +497,10 @@ impl EditorPanel {
         self.set_status(&format!("Saved {}", path.display()));
         Ok(path)
     }
+}
+
+fn icon_button(icon: &str, tooltip: &str) -> gtk::Button {
+    let button = gtk::Button::from_icon_name(Some(icon), gtk::IconSize::Button);
+    button.set_tooltip_text(Some(tooltip));
+    button
 }

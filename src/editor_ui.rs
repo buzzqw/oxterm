@@ -20,15 +20,9 @@ impl MainWindow {
         let panel = crate::editor_panel::EditorPanel::build();
         {
             let weak = crate::SendWeak::new(self);
-            panel.close.connect_clicked(move |_| {
+            panel.hide_panel.connect_clicked(move |_| {
                 if let Some(window) = weak.upgrade() {
                     window.set_editor_panel_visible(false);
-                }
-            });
-            let weak = crate::SendWeak::new(self);
-            panel.save.connect_clicked(move |_| {
-                if let Some(window) = weak.upgrade() {
-                    window.save_editor_file();
                 }
             });
         }
