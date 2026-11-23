@@ -28,7 +28,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config libgtk-3-dev libvte-2.91-dev
+            pkg-config libgtk-3-dev libvte-2.91-dev libgtksourceview-4-dev
 
       - name: Build and test release
         run: |

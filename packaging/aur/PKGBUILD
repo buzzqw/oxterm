@@ -6,7 +6,7 @@ pkgdesc="Lightweight GTK3/VTE terminal emulator with notes, command history and 
 arch=('x86_64' 'aarch64')
 url="https://github.com/buzzqw/oxterm"
 license=('EUPL-1.2')
-depends=('gtk3' 'vte3>=0.70')
+depends=('gtk3' 'vte3>=0.70' 'gtksourceview4')
 makedepends=('cargo' 'git' 'pkgconf')
 optdepends=(
   'git: show the current Git branch in the status bar'

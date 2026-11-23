@@ -11,6 +11,7 @@ pkgbase = oxterm
 	makedepends = pkgconf
 	depends = gtk3
 	depends = vte3>=0.70
+	depends = gtksourceview4
 	optdepends = git: show the current Git branch in the status bar
 	optdepends = openssh: remote attach/detach and SSH-aware session status
 	optdepends = xdg-utils: open notes and links with the desktop default applications

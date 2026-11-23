@@ -30,7 +30,7 @@ jobs:
       # repository for makepkg to clone.
       - name: Install dependencies and a build user
         run: |
-          pacman -Syu --noconfirm --needed git rust gtk3 vte3 pkgconf
+          pacman -Syu --noconfirm --needed git rust gtk3 vte3 gtksourceview4 pkgconf
           useradd -m builder
 
       - name: Check out source

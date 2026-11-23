@@ -33,13 +33,13 @@ Install the runtime libraries with your distribution:
 
 ```bash
 # Debian / Ubuntu
-sudo apt install libgtk-3-0 libvte-2.91-0
+sudo apt install libgtk-3-0 libvte-2.91-0 libgtksourceview-4-0
 
 # Fedora
-sudo dnf install gtk3 vte291
+sudo dnf install gtk3 vte291 gtksourceview4
 
 # Arch Linux
-sudo pacman -S gtk3 vte3
+sudo pacman -S gtk3 vte3 gtksourceview4
 ```
 
 ## Run it

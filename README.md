@@ -108,17 +108,17 @@ sha256sum -c SHA256SUMS --ignore-missing   # optional: verify the binaries
 
 ### Option 2: Build from Source
 
-**Dependencies**: Rust 2021, GTK3, VTE 2.91 (>= 0.70), and `pkg-config`.
+**Dependencies**: Rust 2021, GTK3, VTE 2.91 (>= 0.70), GtkSourceView 4, and `pkg-config`.
 
 ```bash
 # Debian / Ubuntu
-sudo apt update && sudo apt install build-essential pkg-config libgtk-3-dev libvte-2.91-dev
+sudo apt update && sudo apt install build-essential pkg-config libgtk-3-dev libvte-2.91-dev libgtksourceview-4-dev
 
 # Arch Linux / Manjaro
-sudo pacman -S base-devel rust gtk3 vte3
+sudo pacman -S base-devel rust gtk3 vte3 gtksourceview4
 
 # Fedora
-sudo dnf install gcc pkgconf-pkg-config gtk3-devel vte291-devel
+sudo dnf install gcc pkgconf-pkg-config gtk3-devel vte291-devel gtksourceview4-devel
 ```
 
 **Build and Install**:
