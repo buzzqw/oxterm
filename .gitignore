@@ -12,6 +12,9 @@
 /build/
 *.AppImage
 
+# Local agent notes (analisi private, non da committare)
+/AGENTS.local.md
+
 # IDE and editor files
 .idea/
 .vscode/

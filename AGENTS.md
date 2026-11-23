@@ -1,5 +1,11 @@
 # Project instructions
 
+## Note locali dell'agente (opzionali)
+
+Se esiste `AGENTS.local.md` nella root (file gitignored, specifico di questa macchina),
+leggilo all'inizio: contiene analisi e appunti delle sessioni precedenti.
+
+
 ## Git workflow
 
 - Always commit and push the changes when a task is done. Do not leave work
