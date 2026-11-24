@@ -689,6 +689,12 @@ pub const SETTINGS: &[Setting] = &[
         "Template prepended to new notes.",
     ),
     setting(
+        "note_prefix_enabled",
+        Kind::Bool,
+        Default::Bool(true),
+        "Save a prompt line starting with \":\" as a note; \"::file.md\" targets one file.",
+    ),
+    setting(
         "editor_command",
         Kind::Text,
         Default::Env("EDITOR", "nano"),

@@ -45,6 +45,7 @@ never written back to disk.
 | `notes_dir` | string | `""` | Directory for Markdown notes; empty uses the data directory. |
 | `notes_record_context` | bool | `true` | Record the command context next to new notes. |
 | `notes_template` | string | `""` | Template prepended to new notes. |
+| `note_prefix_enabled` | bool | `true` | Save a prompt line starting with ":" as a note; "::file.md" targets one file. |
 | `editor_command` | string | `nano` | Editor used for notes and configuration files. |
 | `editor_jump_command` | string | `${EDITOR:-vi} +{line} {file}` | Editor command for file:line locations from hints and the context menu; use {file}, {line} and {col}. |
 | `editor_use_internal` | bool | `true` | Open file:line locations in the integrated editor instead of an external editor. |

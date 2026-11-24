@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::Path;
 
-use oxterm::headless::{cli, control_cli, framing, settings, spec, text, vi};
+use oxterm::headless::{cli, control_cli, framing, notes_prompt, settings, spec, text, vi};
 
 #[test]
 fn headless_sources_do_not_reach_into_the_gui() {
@@ -100,6 +100,54 @@ fn control_protocol_parsing_is_independent_of_the_socket() {
             text: Some("make test".to_string()),
         }
     );
+}
+
+#[test]
+fn note_prompt_lines_are_parsed_without_a_gui() {
+    use notes_prompt::NoteLine;
+
+    assert_eq!(
+        notes_prompt::parse("  :Deploy completed  "),
+        Some(NoteLine::Default("Deploy completed"))
+    );
+    assert_eq!(
+        notes_prompt::parse("::project.md TODO: review the migration"),
+        Some(NoteLine::Named {
+            file: "project.md",
+            text: "TODO: review the migration",
+        })
+    );
+    assert_eq!(
+        notes_prompt::parse("::notes   spaced text"),
+        Some(NoteLine::Named {
+            file: "notes",
+            text: "spaced text",
+        })
+    );
+    // No text: leave the line to the shell rather than writing an empty entry.
+    assert_eq!(notes_prompt::parse(":"), None);
+    assert_eq!(notes_prompt::parse("::project.md"), None);
+    // Ordinary commands, including ones that merely contain a colon.
+    assert_eq!(notes_prompt::parse("echo hello"), None);
+    assert_eq!(notes_prompt::parse("http://example.com"), None);
+
+    assert_eq!(
+        NoteLine::Named {
+            file: "project.md",
+            text: "hello",
+        }
+        .into_parts(),
+        ("hello".to_string(), Some("project.md".to_string()))
+    );
+    assert_eq!(
+        NoteLine::Default("hello").into_parts(),
+        ("hello".to_string(), None)
+    );
+
+    assert!(notes_prompt::enabled(&serde_json::json!({})));
+    assert!(!notes_prompt::enabled(
+        &serde_json::json!({"note_prefix_enabled": false})
+    ));
 }
 
 #[test]

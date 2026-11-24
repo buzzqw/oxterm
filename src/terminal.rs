@@ -3831,6 +3831,33 @@ printf '%s\\n' \"$gpu\"";
         true
     }
 
+    /// Take a line that starts with `:` out of the shell and write it to a
+    /// note. `::file.md text` targets that file; `:text` uses the default one.
+    /// Returns `false` for ordinary commands so they reach the shell.
+    pub fn try_note_prompt(&self, line: &str) -> bool {
+        if !crate::headless::notes_prompt::enabled(&settings().raw_data()) {
+            return false;
+        }
+        let Some(note) = crate::headless::notes_prompt::parse(line) else {
+            return false;
+        };
+        let (text, filename) = note.into_parts();
+        let cwd = self.get_cwd();
+        let _ = self.call_window(move |window| {
+            window.note_write(
+                text,
+                filename,
+                crate::notes::NoteContext::from_terminal("prompt", &cwd),
+            );
+        });
+        *self.imp().input_shadow.borrow_mut() = String::new();
+        *self.imp().shadow_anchor.borrow_mut() = None;
+        self.feed_command_bytes(b"\x15");
+        // Let the shell draw a fresh prompt under the feedback message.
+        self.vte().feed_child(b"\r");
+        true
+    }
+
     /// Text for `oxterm capture`: visible screen, N lines of history, or all.
     pub fn capture_text(&self, scope: &str, lines: usize) -> String {
         let vte = self.vte();
@@ -5670,18 +5697,21 @@ printf '%s\\n' \"$gpu\"";
             {
                 shadow = real_text.clone();
             }
-            // `?prompt` asks the agent with this pane as context, like the same
-            // prefix in the command bar. The line is withdrawn before the shell
-            // sees it, so bash does not report it as a command it cannot find.
-            // Only at a shell prompt: a `?` typed into `less`, `vim` or `ssh`
-            // belongs to that program and must reach it untouched.
+            // `?prompt` asks the agent with this pane as context, and `:text`
+            // saves a note (`::file.md text` names the file). Both prefixes
+            // withdraw the line before the shell sees it, so bash does not
+            // report it as a command it cannot find. Only at a shell prompt:
+            // the same characters typed into `less`, `vim` or `ssh` belong to
+            // that program and must reach it untouched.
             if !self.has_active_process() {
-                let typed = if crate::headless::agent::prompt_from_line(&real_text).is_some() {
+                let typed = if crate::headless::agent::prompt_from_line(&real_text).is_some()
+                    || crate::headless::notes_prompt::parse(&real_text).is_some()
+                {
                     real_text.as_str()
                 } else {
                     shadow.as_str()
                 };
-                if self.try_agent_prompt(typed) {
+                if self.try_agent_prompt(typed) || self.try_note_prompt(typed) {
                     return glib::Propagation::Stop;
                 }
             }
@@ -6273,6 +6303,23 @@ printf '%s\\n' \"$gpu\"";
                 } else {
                     self.call_window(move |win| win.agent_prompt(&term, &prompt));
                 }
+                return;
+            }
+        }
+        // `:text` saves a note and `::file.md text` names the target file,
+        // mirroring the same prefixes at the shell prompt.
+        if crate::headless::notes_prompt::enabled(&settings().raw_data()) {
+            if let Some(note) = crate::headless::notes_prompt::parse(&shadow) {
+                let (text, filename) = note.into_parts();
+                let cwd = self.get_cwd();
+                self.hide_command_bar();
+                let _ = self.call_window(move |window| {
+                    window.note_write(
+                        text,
+                        filename,
+                        crate::notes::NoteContext::from_terminal("command-bar", &cwd),
+                    );
+                });
                 return;
             }
         }

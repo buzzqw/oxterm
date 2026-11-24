@@ -780,7 +780,8 @@ Save or open Markdown notes:
 ```
 
 The notes directory, default file, and editor are configurable. Selected
-terminal text can also be added to a note from the context menu.
+terminal text can also be added to a note from the context menu. For an even
+shorter form, see the `:` prompt prefix in [Notes](#notes).
 
 ### `/learn`
 
@@ -868,6 +869,24 @@ From the prompt, `/wnotes` appends and `/onotes` opens a note:
 /onotes
 /onotes -project.md
 ```
+
+**Prompt prefix.** With `note_prefix_enabled` on (the default), a line that
+starts with `:` is saved as a note instead of being run by the shell. Press
+Enter as usual:
+
+```text
+:Deploy completed on staging
+::project.md TODO: review the migration
+```
+
+A single `:` appends to the default note file; two colons followed by a name
+target that Markdown file, appending to it if it exists and creating it if not.
+The line is withdrawn before the shell sees it, so it is not executed or
+recorded in command history. A bare `:` or `::file.md` writes nothing and stays
+with the shell. The same shortcut works in the command bar (`Ctrl+Shift+P`),
+and only at a shell prompt: inside `less`, `vim` or an SSH session the
+characters reach the running program untouched. Turn the preference off in
+**Preferences > Notes** to give every line back to the shell.
 
 The editor preference is used as a fallback when the desktop `xdg-open` helper
 is unavailable.

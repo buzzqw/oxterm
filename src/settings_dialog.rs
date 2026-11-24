@@ -1465,6 +1465,7 @@ struct NotesPage {
     editor_width: gtk::SpinButton,
     editor_style: gtk::Entry,
     record_context: gtk::CheckButton,
+    note_prefix: gtk::CheckButton,
     template: gtk::Entry,
 }
 
@@ -1540,6 +1541,17 @@ fn build_notes(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, N
         Some("notes_record_context"),
     );
 
+    let note_prefix = gtk::CheckButton::new();
+    note_prefix.set_active(s.get_bool("note_prefix_enabled"));
+    note_prefix.set_tooltip_text(Some(
+        "Treat a prompt line starting with \":\" as a note; \"::file.md text\" targets one file.",
+    ));
+    page.row_keyed(
+        "Prompt note shortcut",
+        &note_prefix,
+        Some("note_prefix_enabled"),
+    );
+
     let template = gtk::Entry::new();
     template.set_text(&s.get_str("notes_template"));
     template.set_placeholder_text(Some("e.g. Task: {command} (cwd {cwd})"));
@@ -1556,6 +1568,7 @@ fn build_notes(s: &Settings, index: &Rc<FilterIndex>) -> (gtk::ScrolledWindow, N
         editor_width,
         editor_style,
         record_context,
+        note_prefix,
         template,
     };
     (page.finish(), state)
@@ -2696,6 +2709,7 @@ impl DialogState {
             "notes_record_context",
             self.notes.record_context.is_active(),
         );
+        s.set_bool("note_prefix_enabled", self.notes.note_prefix.is_active());
         s.set_str("notes_template", self.notes.template.text().trim());
 
         let mut errors = Vec::new();
@@ -2968,6 +2982,9 @@ impl DialogState {
         self.notes
             .record_context
             .set_active(default_bool("notes_record_context"));
+        self.notes
+            .note_prefix
+            .set_active(default_bool("note_prefix_enabled"));
         self.notes.template.set_text(&default_str("notes_template"));
 
         // Agents

@@ -22,6 +22,7 @@ pub mod extensions;
 pub mod file_uri;
 pub mod framing;
 pub mod mcp;
+pub mod notes_prompt;
 pub mod notify;
 pub mod osc133;
 pub mod paths;
