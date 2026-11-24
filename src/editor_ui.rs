@@ -26,21 +26,6 @@ impl MainWindow {
         }
     }
 
-    pub(crate) fn save_editor_file(&self) {
-        let Some(panel) = self.imp().editor_panel.borrow().clone() else {
-            return;
-        };
-        match panel.save() {
-            Ok(_) => self.note_feedback("Editor file saved", false),
-            Err(error) => self.note_feedback(&format!("Cannot save editor file: {}", error), true),
-        }
-    }
-
-    /// Hide the dock without touching the document (menu action).
-    pub(crate) fn hide_workspace(&self) {
-        self.set_workspace_visible(false);
-    }
-
     pub(crate) fn choose_file_in_editor(&self) {
         let dialog = gtk::FileChooserDialog::with_buttons(
             Some("Open file in editor"),

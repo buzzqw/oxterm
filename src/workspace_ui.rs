@@ -43,6 +43,20 @@ impl MainWindow {
                     w.reload_notes_panel();
                 }
             });
+            // The two actions that used to live in the Notes menu are now in
+            // the Notes tab itself: one interface for notes and text files.
+            let weak = crate::SendWeak::new(self);
+            notes_panel.new_note.connect_clicked(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.note_new();
+                }
+            });
+            let weak = crate::SendWeak::new(self);
+            notes_panel.folder.connect_clicked(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.note_open_folder();
+                }
+            });
             let weak = crate::SendWeak::new(self);
             notes_panel.search.connect_search_changed(move |_| {
                 if let Some(w) = weak.upgrade() {
@@ -265,5 +279,11 @@ impl MainWindow {
         } else {
             self.show_workspace_tab(tab);
         }
+    }
+
+    /// The single menu-bar action: show or hide the shared dock, keeping the
+    /// tab that was last active.
+    pub(crate) fn toggle_workspace(&self) {
+        self.set_workspace_visible(!self.workspace_visible());
     }
 }

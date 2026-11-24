@@ -272,9 +272,9 @@ pub trait TerminalWindow {
     /// window has one, so detached windows keep the no-op default.
     fn open_internal_file(&self, _path: &std::path::Path, _line: u32, _column: Option<u32>) {}
 
-    /// Toggle the integrated editor panel (only the main window has one).
-    fn editor_toggle_panel(&self) {
-        self.note_feedback("The Editor panel is available in the main window", true);
+    /// Open a local file in the integrated editor (main window only).
+    fn choose_file_in_editor_signal(&self) {
+        self.note_feedback("The Editor is available in the main window", true);
     }
 
     /// Toggle the integrated notes panel (only the main window has one).
@@ -2899,14 +2899,30 @@ impl MainWindow {
             "View",
             "Terminal",
             "Tabs",
-            "Notes",
-            "Editor",
+            "Workspace",
             "Connections",
             "Help",
         ] {
             let btn = gtk::MenuButton::new();
             btn.set_label(label);
             btn.set_relief(gtk::ReliefStyle::None);
+            // Notes and Editor share one dock and one button: no dropdown,
+            // just show/hide the interface where both are managed.
+            if label == "Workspace" {
+                let weak = crate::SendWeak::new(self);
+                btn.connect_clicked(move |_| {
+                    if let Some(w) = weak.upgrade() {
+                        w.toggle_workspace();
+                    }
+                });
+                if let Some(group) = self.imp().accel_group.borrow().clone() {
+                    let (key, mods) = gtk::accelerator_parse("<Primary><Shift>E");
+                    if key != 0 {
+                        btn.add_accelerator("clicked", &group, key, mods, gtk::AccelFlags::VISIBLE);
+                    }
+                }
+                btn.set_tooltip_text(Some("Show or hide the Notes/Editor dock (Ctrl+Shift+E)"));
+            }
             // The menus are built lazily after startup; make sure they exist
             // before the button's own handler tries to show the popup.
             let weak = crate::SendWeak::new(self);
@@ -3606,159 +3622,9 @@ impl MainWindow {
         });
         menus.push(("Tabs".into(), tabs_menu));
 
-        let notes_menu = gtk::Menu::new();
-        let weak = crate::SendWeak::new(self);
-        self.menu_item(
-            &notes_menu,
-            "Notes Tab",
-            Box::new(move || {
-                if let Some(w) = weak.upgrade() {
-                    w.note_toggle_panel();
-                }
-            }),
-            None,
-            Some("Show or hide the Notes tab in the right-hand dock"),
-        );
-        notes_menu.append(&gtk::SeparatorMenuItem::new());
-        let weak = crate::SendWeak::new(self);
-        self.menu_item(
-            &notes_menu,
-            "New Note...",
-            Box::new(move || {
-                if let Some(w) = weak.upgrade() {
-                    w.note_new();
-                }
-            }),
-            None,
-            Some("Compose a new note and save it to a Markdown file"),
-        );
-        notes_menu.append(&gtk::SeparatorMenuItem::new());
-        let weak = crate::SendWeak::new(self);
-        self.menu_item(
-            &notes_menu,
-            "Add Selection to Note...",
-            Box::new(move || {
-                if let Some(w) = weak.upgrade() {
-                    w.note_add_selection();
-                }
-            }),
-            None,
-            Some("Append the selected terminal text to a note"),
-        );
-        let weak = crate::SendWeak::new(self);
-        self.menu_item(
-            &notes_menu,
-            "Copy All to Note...",
-            Box::new(move || {
-                if let Some(w) = weak.upgrade() {
-                    w.note_add_all();
-                }
-            }),
-            None,
-            Some("Append the whole terminal buffer to a note after confirmation"),
-        );
-        let weak = crate::SendWeak::new(self);
-        self.menu_item(
-            &notes_menu,
-            "Note Command Output...",
-            Box::new(move || {
-                if let Some(w) = weak.upgrade() {
-                    w.note_add_command_output();
-                }
-            }),
-            None,
-            Some("Append the last command output (needs shell integration) to a note"),
-        );
-        notes_menu.append(&gtk::SeparatorMenuItem::new());
-        let weak = crate::SendWeak::new(self);
-        self.menu_item(
-            &notes_menu,
-            "Open Default Note",
-            Box::new(move || {
-                if let Some(w) = weak.upgrade() {
-                    w.note_open_default();
-                }
-            }),
-            None,
-            Some("Open the default notes file in the editor"),
-        );
-        let weak = crate::SendWeak::new(self);
-        self.menu_item(
-            &notes_menu,
-            "Open Note...",
-            Box::new(move || {
-                if let Some(w) = weak.upgrade() {
-                    w.note_choose_open();
-                }
-            }),
-            None,
-            Some("Choose a note to open in the editor"),
-        );
-        let weak = crate::SendWeak::new(self);
-        self.menu_item(
-            &notes_menu,
-            "Open Notes Folder",
-            Box::new(move || {
-                if let Some(w) = weak.upgrade() {
-                    w.note_open_folder();
-                }
-            }),
-            None,
-            Some("Open the notes directory in the file manager"),
-        );
-        menus.push(("Notes".into(), notes_menu));
-
-        let editor_menu = gtk::Menu::new();
-        let weak = crate::SendWeak::new(self);
-        self.menu_item(
-            &editor_menu,
-            "Editor Tab",
-            Box::new(move || {
-                if let Some(w) = weak.upgrade() {
-                    w.editor_toggle_panel();
-                }
-            }),
-            Some("<Primary><Shift>E"),
-            Some("Show or hide the Editor tab in the right-hand dock"),
-        );
-        let weak = crate::SendWeak::new(self);
-        self.menu_item(
-            &editor_menu,
-            "Open File in Editor...",
-            Box::new(move || {
-                if let Some(w) = weak.upgrade() {
-                    w.choose_file_in_editor();
-                }
-            }),
-            None,
-            Some("Choose a local file to open in the integrated editor"),
-        );
-        editor_menu.append(&gtk::SeparatorMenuItem::new());
-        let weak = crate::SendWeak::new(self);
-        self.menu_item(
-            &editor_menu,
-            "Save Editor File",
-            Box::new(move || {
-                if let Some(w) = weak.upgrade() {
-                    w.save_editor_file();
-                }
-            }),
-            None,
-            Some("Save the file currently open in the editor"),
-        );
-        let weak = crate::SendWeak::new(self);
-        self.menu_item(
-            &editor_menu,
-            "Hide Dock",
-            Box::new(move || {
-                if let Some(w) = weak.upgrade() {
-                    w.hide_workspace();
-                }
-            }),
-            None,
-            Some("Hide the Notes/Editor dock without closing the document"),
-        );
-        menus.push(("Editor".into(), editor_menu));
+        // One button in the menu bar opens the shared Notes/Editor dock; the
+        // actions themselves live in its tabs, in the terminal context menu
+        // and at the shell prompt. No second menu duplicates them here.
 
         let connections_menu = gtk::Menu::new();
         let weak = crate::SendWeak::new(self);
@@ -6932,8 +6798,8 @@ impl TerminalWindow for MainWindow {
             self.reload_notes_panel();
         }
     }
-    fn editor_toggle_panel(&self) {
-        self.toggle_workspace_tab(WorkspaceTab::Editor);
+    fn choose_file_in_editor_signal(&self) {
+        self.choose_file_in_editor();
     }
     fn open_internal_file(&self, path: &std::path::Path, line: u32, column: Option<u32>) {
         self.open_file_in_editor(path, Some(line), column);

@@ -635,8 +635,8 @@ Snippet** only appear when there is something to act on.
   **Copy Location** when it is over a `file:line[:col]` location.
 - **Copy As**: **HTML**, **Whole Scrollback**, and, when available, **Last
   Command** and **Last Command Output**.
-- **Notes**: **Add Selection to Note...**, **Note Command Output...**,
-  **New Note...**, **Toggle Notes Panel**, and **Open Notes Folder**.
+- **Workspace**: **Add Selection to Note...**, **Note Command Output...**,
+  **Copy All to Note...**, and **Open File in Editor...**.
 - **Tab**: **New Tab**, **Rename Tab...**, **Detach Tab**, **Close Tab**, and a
   **Split** submenu (vertical, horizontal, unsplit).
 - **Tools**: **Search Scrollback...**, **Command Bar...**, **History
@@ -837,23 +837,26 @@ Notes are Markdown files with timestamped entries (in local time). They are
 stored, by default, in `~/.local/share/oxterm/notes/`; change the directory and
 default filename in **Edit > Preferences > Notes**.
 
-The **Notes** menu lets you:
+Notes and text files are managed from one interface: the **Workspace** button
+in the menu bar (`Ctrl+Shift+E`) shows or hides the right-hand dock, which has
+a **Notes** tab and an **Editor** tab.
 
-- **Notes Panel** — show or hide the integrated panel (search, tag filter,
-  preview and a quick append box).
-- **New Note...** — compose a note and choose which file to save it to.
-- **Add Selection to Note...** — append the selected terminal text to a note.
-- **Copy All to Note...** — append the whole terminal buffer after a confirmation.
-- **Note Command Output...** — append the last command output (requires OSC 133
-  shell integration), recording the command and its exit status.
-- **Open Default Note** / **Open Note...** — open a note in the editor.
-- **Open Notes Folder** — open the notes directory in the file manager.
-
-**Notes panel.** The panel indexes every note with SQLite FTS5, so search is
+**Notes tab.** The panel indexes every note with SQLite FTS5, so search is
 full-text across all entries. Use the search box to filter, the tag selector to
-restrict to a `#tag`, the list to browse, the preview to read an entry, and the
-bottom box to append a new entry to the selected (or default) note. Entries with
-`#tags` are indexed automatically.
+restrict to a `#tag`, and the list to browse; double-click a result to open it
+in the Editor tab. The bottom box appends a new entry to the selected (or
+default) note. The header has **New** (compose a note), **Folder** (open the
+notes directory), **Refresh** and **Close** (hide the dock).
+
+**Editor tab.** Open a file with **Open File in Editor...** from the terminal
+context menu or by following a `file:line` hint; edit it and save with `Ctrl+S`.
+The toolbar also has Undo, Redo, Find, Close document and Hide.
+
+**Terminal context menu.** One **Workspace** submenu collects the actions that
+work on the current selection or a file: **Add Selection to Note...**, **Note
+Command Output...** (requires OSC 133 shell integration), **Copy All to
+Note...** and **Open File in Editor...**. Opening the two tabs is left to the
+menu-bar button and the shortcut.
 
 Each entry can record a small context comment (source, working directory, host,
 and for command output the command and exit status), which can be turned off in
@@ -991,7 +994,7 @@ while `/proc` cannot lie about the process.
 
 ### Saved connections
 
-Everything starts from the **Connections** menu, to the right of **Notes**:
+Everything starts from the **Connections** menu, to the right of **Workspace**:
 
 1. Choose **New Connection...**, fill in a name and a host, and press **Save**.
    Hosts already in `~/.ssh/config` need no setup: they are listed by themselves.

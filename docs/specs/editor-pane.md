@@ -33,10 +33,11 @@ NotePadPQ, which `editor_command` can still launch.
 }
 ```
 
-The dock is shown from **Notes → Notes Tab**, **Editor → Editor Tab**
-(`Ctrl+Shift+E`), or automatically for a `file:line` hint. Selecting the tab
-that is already active hides the dock; **Editor → Hide Dock** and the Close/Hide
-buttons inside the panels do the same without touching the editor document.
+The dock is shown by the single **Workspace** button in the menu bar
+(`Ctrl+Shift+E`), or automatically for a `file:line` hint. The button is a
+plain toggle: there is no Notes or Editor menu to duplicate the panel actions.
+The Close/Hide buttons inside the panels hide the dock without touching the
+editor document.
 
 The editor toolbar has Save, Undo, Redo, Find, Close document and Hide buttons.
 `Ctrl+S` saves, `Ctrl+Z`/`Ctrl+Shift+Z` undo/redo, `Ctrl+F` opens the search bar
@@ -66,11 +67,13 @@ of creating a second dock.
 
 ## Notes
 
-Notes are Markdown files in `notes_dir`, so the Notes menu opens them in the
-Editor tab instead of launching an external program. **Notes → Open Default
-Note** and **Notes → Open Note...** call `NotesManager::prepare_note`, which
-resolves (or creates with the usual header) the file and hands it to
-`open_file_in_editor`.
+Notes are Markdown files in `notes_dir`, so they open in the Editor tab
+instead of launching an external program. Double-clicking a search result, or
+`/onotes` at the prompt, calls `NotesManager::prepare_note`, which resolves (or
+creates with the usual header) the file and hands it to `open_file_in_editor`.
+The Notes tab header keeps **New** and **Folder** for creating a note and
+opening the notes directory; the terminal context menu keeps the actions that
+operate on a selection, a command output or a file.
 
 The Notes tab has no read-only preview: a result shows its FTS snippet, a single
 click only preselects the append target, and double-click or Enter opens that

@@ -5007,30 +5007,27 @@ printf '%s\\n' \"$gpu\"";
             .set_tooltip_text(Some("Copy this file:line location"));
         }
 
-        // ── Notes ────────────────────────────────────────────
-        let notes_menu = menu_submenu(&menu, "Notes");
-        let add_note_item = menu_action(&notes_menu, self, "Add Selection to Note...", |t| {
+        // ── Workspace ────────────────────────────────────────
+        // Notes and editor actions share one submenu. Opening the two tabs is
+        // left to the menu-bar button and the shortcut, so the context menu
+        // only keeps actions that act on the current selection or a file.
+        let workspace_menu = menu_submenu(&menu, "Workspace");
+        let add_note_item = menu_action(&workspace_menu, self, "Add Selection to Note...", |t| {
             t.add_selection_to_note()
         });
         add_note_item.set_sensitive(has_selection);
         add_note_item.set_tooltip_text(Some("Append the selected text to a notes file"));
-        let output_item = menu_window_action(&notes_menu, self, "Note Command Output...", |w| {
-            w.note_add_command_output()
-        });
+        let output_item =
+            menu_window_action(&workspace_menu, self, "Note Command Output...", |w| {
+                w.note_add_command_output()
+            });
         output_item.set_sensitive(has_command_output);
-        notes_menu.append(&gtk::SeparatorMenuItem::new());
-        menu_window_action(&notes_menu, self, "New Note...", |w| w.note_new());
-        menu_window_action(&notes_menu, self, "Toggle Notes Panel", |w| {
-            w.note_toggle_panel()
+        menu_window_action(&workspace_menu, self, "Copy All to Note...", |w| {
+            w.note_add_all()
         });
-        menu_window_action(&notes_menu, self, "Open Notes Folder", |w| {
-            w.note_open_folder()
-        });
-
-        // ── Editor ────────────────────────────────────────────
-        let editor_menu = menu_submenu(&menu, "Editor");
-        menu_window_action(&editor_menu, self, "Toggle Editor Panel", |w| {
-            w.editor_toggle_panel()
+        workspace_menu.append(&gtk::SeparatorMenuItem::new());
+        menu_window_action(&workspace_menu, self, "Open File in Editor...", |w| {
+            w.choose_file_in_editor_signal()
         });
 
         // ── Tabs and panes ───────────────────────────────────

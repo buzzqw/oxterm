@@ -18,6 +18,8 @@ pub struct NotesPanel {
     pub entry: gtk::Entry,
     pub status: gtk::Label,
     pub refresh: gtk::Button,
+    pub new_note: gtk::Button,
+    pub folder: gtk::Button,
     pub close: gtk::Button,
     pub append: gtk::Button,
     entries: RefCell<Vec<NoteEntry>>,
@@ -42,6 +44,12 @@ impl NotesPanel {
         let refresh = gtk::Button::with_label("Refresh");
         refresh.set_tooltip_text(Some("Rescan the notes directory and rebuild the index"));
         header.pack_end(&refresh, false, false, 0);
+        let folder = gtk::Button::with_label("Folder");
+        folder.set_tooltip_text(Some("Open the notes directory in the file manager"));
+        header.pack_end(&folder, false, false, 0);
+        let new_note = gtk::Button::with_label("New");
+        new_note.set_tooltip_text(Some("Compose a new note and save it to a Markdown file"));
+        header.pack_end(&new_note, false, false, 0);
         let close = gtk::Button::with_label("Close");
         close.set_tooltip_text(Some("Hide the Notes/Editor dock"));
         header.pack_end(&close, false, false, 0);
@@ -107,6 +115,8 @@ impl NotesPanel {
             entry,
             status,
             refresh,
+            new_note,
+            folder,
             close,
             append,
             entries: RefCell::new(Vec::new()),
