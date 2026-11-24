@@ -7044,9 +7044,6 @@ pub mod test_scenario {
     /// both at its initial width and after the handle is dragged.
     fn connections_panel_resize(win: &MainWindow) -> Result<(), String> {
         win.set_connections_panel_visible(true);
-        while gtk::events_pending() {
-            gtk::main_iteration();
-        }
         let slot = win
             .imp()
             .connections_slot
@@ -7063,15 +7060,30 @@ pub mod test_scenario {
             .parent()
             .and_then(|parent| parent.downcast::<gtk::Paned>().ok())
             .ok_or_else(|| "connections paned is missing".to_string())?;
+
+        /// `set_position()` only queues a resize, and a slot that was just
+        /// shown can still report 1px until GTK runs a full layout pass. Wait
+        /// for the allocation to catch up with the handle before reading it.
+        fn settle(pane: &gtk::Paned, slot: &gtk::Box) {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                gtk::main_iteration();
+                if slot.allocated_width() == pane.position()
+                    || std::time::Instant::now() >= deadline
+                {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        settle(&pane, &slot);
         // GTK clamps the handle to what the terminal side can still show, so
         // compare against the resulting slot width rather than the requested
         // position. The invariant under test is that the panel fills its slot.
-        let mut widths = Vec::new();
         for target in [320, 380, 220] {
             pane.set_position(target);
-            while gtk::events_pending() {
-                gtk::main_iteration();
-            }
+            settle(&pane, &slot);
             let slot_width = slot.allocated_width();
             let root_width = panel.root.allocated_width();
             let tree_width = panel.tree.allocated_width();
@@ -7085,9 +7097,7 @@ pub mod test_scenario {
                     "panel ({root_width}px, tree {tree_width}px) did not fill slot ({slot_width}px)"
                 ));
             }
-            widths.push(slot_width);
         }
-        let _ = widths;
         Ok(())
     }
 
