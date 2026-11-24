@@ -7433,6 +7433,15 @@ pub mod test_scenario {
         if !win.workspace_visible() {
             return Err("clicking Workspace did not show the dock".to_string());
         }
+        let editor = win
+            .imp()
+            .editor_panel
+            .borrow()
+            .clone()
+            .ok_or_else(|| "the editor panel was not built".to_string())?;
+        if !editor.open_file.is_sensitive() {
+            return Err("the editor Open button is disabled".to_string());
+        }
         button.clicked();
         if win.workspace_visible() {
             return Err("clicking Workspace again did not hide the dock".to_string());

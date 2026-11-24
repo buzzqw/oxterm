@@ -39,7 +39,8 @@ plain toggle: there is no Notes or Editor menu to duplicate the panel actions.
 The Close/Hide buttons inside the panels hide the dock without touching the
 editor document.
 
-The editor toolbar has Save, Undo, Redo, Find, Close document and Hide buttons.
+The editor toolbar has Open, Save, Undo, Redo, Find, Close document and Hide
+buttons. Open uses the same file chooser as the context-menu action.
 `Ctrl+S` saves, `Ctrl+Z`/`Ctrl+Shift+Z` undo/redo, `Ctrl+F` opens the search bar
 (Enter = next, Escape = close) and `Ctrl+W` closes the document. **Close
 document** clears the buffer but keeps the dock open; if the buffer is dirty it

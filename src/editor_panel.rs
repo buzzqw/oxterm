@@ -20,6 +20,7 @@ pub struct EditorPanel {
     pub buffer: sourceview4::Buffer,
     pub path_label: gtk::Label,
     pub status: gtk::Label,
+    pub open_file: gtk::Button,
     pub save: gtk::Button,
     pub undo: gtk::Button,
     pub redo: gtk::Button,
@@ -74,6 +75,7 @@ impl EditorPanel {
         path_label.set_ellipsize(gtk::pango::EllipsizeMode::Start);
         header.pack_start(&path_label, true, true, 0);
 
+        let open_file = icon_button("document-open", "Open a file in the editor");
         let save = icon_button("document-save", "Save this file (Ctrl+S)");
         let undo = icon_button("edit-undo", "Undo (Ctrl+Z)");
         let redo = icon_button("edit-redo", "Redo (Ctrl+Shift+Z)");
@@ -84,7 +86,15 @@ impl EditorPanel {
         undo.set_sensitive(false);
         redo.set_sensitive(false);
         close_document.set_sensitive(false);
-        for button in [&hide_panel, &close_document, &find, &redo, &undo, &save] {
+        for button in [
+            &open_file,
+            &hide_panel,
+            &close_document,
+            &find,
+            &redo,
+            &undo,
+            &save,
+        ] {
             header.pack_end(button, false, false, 0);
         }
         root.pack_start(&header, false, false, 0);
@@ -155,6 +165,7 @@ impl EditorPanel {
             buffer,
             path_label,
             status,
+            open_file,
             save,
             undo,
             redo,

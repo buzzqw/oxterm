@@ -848,9 +848,10 @@ in the Editor tab. The bottom box appends a new entry to the selected (or
 default) note. The header has **New** (compose a note), **Folder** (open the
 notes directory), **Refresh** and **Close** (hide the dock).
 
-**Editor tab.** Open a file with **Open File in Editor...** from the terminal
-context menu or by following a `file:line` hint; edit it and save with `Ctrl+S`.
-The toolbar also has Undo, Redo, Find, Close document and Hide.
+**Editor tab.** Open a file with the **Open** button in its toolbar, with
+**Open File in Editor...** from the terminal context menu, or by following a
+`file:line` hint; edit it and save with `Ctrl+S`. The toolbar also has Undo,
+Redo, Find, Close document and Hide.
 
 **Terminal context menu.** One **Workspace** submenu collects the actions that
 work on the current selection or a file: **Add Selection to Note...**, **Note

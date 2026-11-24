@@ -109,6 +109,12 @@ impl MainWindow {
         let editor_panel = crate::editor_panel::EditorPanel::build();
         {
             let weak = crate::SendWeak::new(self);
+            editor_panel.open_file.connect_clicked(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.choose_file_in_editor();
+                }
+            });
+            let weak = crate::SendWeak::new(self);
             editor_panel.hide_panel.connect_clicked(move |_| {
                 if let Some(w) = weak.upgrade() {
                     w.set_workspace_visible(false);
