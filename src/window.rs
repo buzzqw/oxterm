@@ -2903,12 +2903,12 @@ impl MainWindow {
             "Connections",
             "Help",
         ] {
-            let btn = gtk::MenuButton::new();
-            btn.set_label(label);
-            btn.set_relief(gtk::ReliefStyle::None);
-            // Notes and Editor share one dock and one button: no dropdown,
-            // just show/hide the interface where both are managed.
+            // GTK disables a GtkMenuButton that has no popup, so the single
+            // Workspace action must be a plain button. It is not part of the
+            // menu_buttons list (and has no menu to attach at ensure_menus time).
             if label == "Workspace" {
+                let btn = gtk::Button::with_label(label);
+                btn.set_relief(gtk::ReliefStyle::None);
                 let weak = crate::SendWeak::new(self);
                 btn.connect_clicked(move |_| {
                     if let Some(w) = weak.upgrade() {
@@ -2922,7 +2922,12 @@ impl MainWindow {
                     }
                 }
                 btn.set_tooltip_text(Some("Show or hide the Notes/Editor dock (Ctrl+Shift+E)"));
+                menubar.pack_start(&btn, false, false, 0);
+                continue;
             }
+            let btn = gtk::MenuButton::new();
+            btn.set_label(label);
+            btn.set_relief(gtk::ReliefStyle::None);
             // The menus are built lazily after startup; make sure they exist
             // before the button's own handler tries to show the popup.
             let weak = crate::SendWeak::new(self);
@@ -6981,6 +6986,7 @@ pub mod test_scenario {
             "preferences" => preferences(win),
             "connections-panel-resize" => connections_panel_resize(win),
             "history-ctrl-r" => history_ctrl_r(win),
+            "workspace-button" => workspace_button(win),
             other => Err(format!("unknown test scenario: {other}")),
         }
     }
@@ -7395,6 +7401,42 @@ pub mod test_scenario {
             return Err("success did not clear the marker".into());
         }
         let _ = foreground;
+        Ok(())
+    }
+
+    /// The single Workspace action is a plain button: a GtkMenuButton with no
+    /// popup is disabled by GTK, so sensitivity is part of the contract.
+    fn workspace_button(win: &MainWindow) -> Result<(), String> {
+        let menubar = win
+            .imp()
+            .menubar
+            .borrow()
+            .clone()
+            .ok_or_else(|| "no menu bar".to_string())?;
+        let button = menubar
+            .children()
+            .into_iter()
+            .find_map(|child| {
+                child
+                    .downcast::<gtk::Button>()
+                    .ok()
+                    .filter(|button| button.label().as_deref() == Some("Workspace"))
+            })
+            .ok_or_else(|| "no Workspace button in the menu bar".to_string())?;
+        if !button.is_sensitive() {
+            return Err("the Workspace button is disabled".to_string());
+        }
+        if win.workspace_visible() {
+            return Err("the dock was visible before the scenario".to_string());
+        }
+        button.clicked();
+        if !win.workspace_visible() {
+            return Err("clicking Workspace did not show the dock".to_string());
+        }
+        button.clicked();
+        if win.workspace_visible() {
+            return Err("clicking Workspace again did not hide the dock".to_string());
+        }
         Ok(())
     }
 

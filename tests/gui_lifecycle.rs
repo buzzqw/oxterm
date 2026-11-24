@@ -31,6 +31,7 @@ const SCENARIOS: &[&str] = &[
     "preferences",
     "connections-panel-resize",
     "history-ctrl-r",
+    "workspace-button",
 ];
 
 struct TempHome(PathBuf);
