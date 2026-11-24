@@ -101,6 +101,11 @@ impl EditorPanel {
 
         let buffer = sourceview4::Buffer::new(None::<&gtk::TextTagTable>);
         buffer.set_max_undo_levels(-1);
+        // Apply the scheme at build time too: without it the line-number gutter
+        // and the top margin keep GTK's light colours even in a dark theme.
+        if let Some(scheme) = style_scheme() {
+            buffer.set_style_scheme(Some(&scheme));
+        }
         let view = sourceview4::View::with_buffer(&buffer);
         view.set_show_line_numbers(true);
         view.set_highlight_current_line(true);
@@ -178,6 +183,17 @@ impl EditorPanel {
             loading: Cell::new(false),
             dirty: Cell::new(false),
             saved: RefCell::new(None),
+        });
+
+        // A theme or editor_style_scheme change must refresh the buffer even
+        // when no file is open, before open() gets a chance to reapply it.
+        let weak = Rc::downgrade(&panel);
+        settings().connect_changed(move || {
+            if let Some(panel) = weak.upgrade() {
+                if let Some(scheme) = style_scheme() {
+                    panel.buffer.set_style_scheme(Some(&scheme));
+                }
+            }
         });
 
         let weak = Rc::downgrade(&panel);
