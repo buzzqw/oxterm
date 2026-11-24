@@ -4,8 +4,8 @@
 # Flow:
 #   1. Calculate or accept the next Cargo semver version.
 #   2. Generate release notes from commits after the last tag.
-#   3. Update Cargo.toml and the packaging metadata (AUR package and man
-#      page), create a release commit and annotated tag.
+#   3. Update Cargo.toml and the man page version, create a release commit
+#      and annotated tag.
 #   4. Push the branch and tag, then create the GitHub release.
 #   5. Build and install the local binary the user launches (skip with --no-install).
 #
@@ -100,27 +100,12 @@ detect_main_branch() {
     git branch --show-current
 }
 
-# Keep packaging metadata in sync with the Cargo version; the "AUR package"
-# workflow fails when PKGBUILD or .SRCINFO lag behind a release, and the man
-# page records the version too.
-sync_packaging_version() {
-    local pkgbuild="packaging/aur/PKGBUILD"
-    local srcinfo="packaging/aur/.SRCINFO"
+# Keep the man page version in sync with the Cargo version.
+sync_manpage_version() {
     local manpage="packaging/oxterm.1"
 
     if [[ -f "$manpage" ]]; then
         sed -i -E "0,/^\.TH OXTERM 1 \"[^\"]*\" \"oxterm [0-9.]*\"/s//.TH OXTERM 1 \"$(date +%F)\" \"oxterm ${VERSION}\"/" "$manpage"
-    fi
-
-    [[ -f "$pkgbuild" ]] || return 0
-
-    sed -i -E "s/^pkgver=.*/pkgver=${VERSION}/" "$pkgbuild"
-
-    if [[ -f "$srcinfo" ]]; then
-        sed -i -E \
-            -e "s/^(\tpkgver = ).*/\1${VERSION}/" \
-            -e "s|^(\tsource = .*#tag=v)[0-9.]*$|\1${VERSION}|" \
-            "$srcinfo"
     fi
 }
 
@@ -197,16 +182,12 @@ if [[ "$CURRENT_VERSION" != "$VERSION" ]]; then
     cargo update -p oxterm --offline
 fi
 
-sync_packaging_version
+sync_manpage_version
 
-PACKAGING_FILES=()
-for file in packaging/aur/PKGBUILD packaging/aur/.SRCINFO packaging/oxterm.1; do
-    if [[ -f "$file" ]]; then
-        PACKAGING_FILES+=("$file")
-    fi
-done
-
-git add Cargo.toml Cargo.lock "${PACKAGING_FILES[@]}"
+git add Cargo.toml Cargo.lock
+if [[ -f packaging/oxterm.1 ]]; then
+    git add packaging/oxterm.1
+fi
 git commit -m "chore: release ${VERSION}"
 git tag -a "$TAG_VERSION" -m "Oxterm ${VERSION}" -m "$CHANGELOG"
 git push origin "$MAIN_BRANCH"
