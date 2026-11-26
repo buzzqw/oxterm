@@ -42,6 +42,16 @@ use crate::window::MainWindow;
 /// first prompt marker shows up.
 const OSC133_GUTTER_WIDTH: i32 = 6;
 
+/// Drag target offered by the connections panel. Keep in sync with the drag
+/// source in `connections_panel.rs`.
+const CONNECTION_DND_TARGET: &str = "oxterm-connection-id";
+/// Fallback target used when the panel can only put the id in plain text.
+const CONNECTION_DND_TEXT_TARGET: &str = "text/plain";
+/// Info ids for our targets. Deliberately high so extending a target list
+/// someone else owns cannot clash with their small ids.
+const CONNECTION_DND_INFO: u32 = 0x4f58_0001;
+const CONNECTION_DND_TEXT_INFO: u32 = 0x4f58_0002;
+
 /// Trigger rules are read once per process. A malformed file is reported in
 /// the log and ignored; it must never stop the terminal from starting.
 fn active_triggers() -> &'static crate::headless::triggers::TriggerSet {
@@ -1395,6 +1405,76 @@ impl TerminalBox {
         None
     }
 
+    /// Open a connection dropped on this terminal, the same way as choosing it
+    /// in the command palette: in a new tab of the owning window.
+    fn open_dropped_connection(&self, id: &str) {
+        let id = id.trim();
+        if id.is_empty() {
+            return;
+        }
+        if let Some(win) = self.window() {
+            if let Ok(main) = win.downcast::<MainWindow>() {
+                main.connect_id(id, crate::connections_ui::Placement::Tab);
+                return;
+            }
+            // `connect_id` is a MainWindow method: a detached window has no tab
+            // bar to host the connection. Explain that instead of failing hard.
+            self.call_window(|w| {
+                w.status_message("Connections can only be opened in the main window", true);
+            });
+            return;
+        }
+        LOGGER.warning("connection_drop ignored: terminal has no window");
+    }
+
+    /// Make the VTE widget a drop target for the connections panel. If the
+    /// widget already has a target list, extend it instead of replacing it so
+    /// other drag sources keep working.
+    fn setup_connection_drop(&self, vte: &zoha_vte::Terminal) {
+        let actions = gdk::DragAction::COPY | gdk::DragAction::MOVE;
+        let entries = [
+            gtk::TargetEntry::new(
+                CONNECTION_DND_TARGET,
+                gtk::TargetFlags::SAME_APP,
+                CONNECTION_DND_INFO,
+            ),
+            gtk::TargetEntry::new(
+                CONNECTION_DND_TEXT_TARGET,
+                gtk::TargetFlags::SAME_APP,
+                CONNECTION_DND_TEXT_INFO,
+            ),
+        ];
+        match vte.drag_dest_get_target_list() {
+            Some(list) => {
+                for entry in &entries {
+                    let atom = gdk::Atom::intern(entry.target());
+                    if list.find(&atom).is_none() {
+                        list.add(&atom, entry.flags().bits(), entry.info());
+                    }
+                }
+                vte.drag_dest_set_target_list(Some(&list));
+            }
+            None => vte.drag_dest_set(gtk::DestDefaults::ALL, &entries, actions),
+        }
+        let weak = crate::SendWeak::new(self);
+        vte.connect_drag_data_received(move |vte, context, _, _, data, info, time| {
+            if info != CONNECTION_DND_INFO && info != CONNECTION_DND_TEXT_INFO {
+                return;
+            }
+            // We finish the drag ourselves below; don't also let GTK's
+            // `DestDefaults::DROP` handler do it (same pattern as the file
+            // browser).
+            vte.stop_signal_emission_by_name("drag-data-received");
+            // The custom target carries raw utf-8 bytes, so read them directly
+            // rather than going through `SelectionData::text()`.
+            let id = String::from_utf8_lossy(&data.data()).trim().to_string();
+            if let Some(term) = weak.upgrade() {
+                term.open_dropped_connection(&id);
+            }
+            context.drag_finish(true, false, time);
+        });
+    }
+
     pub fn vte(&self) -> zoha_vte::Terminal {
         self.imp().vte.borrow().clone().unwrap()
     }
@@ -1465,6 +1545,9 @@ impl TerminalBox {
             .window
             .borrow_mut()
             .replace(window.upcast_ref::<gtk::Window>().downgrade());
+
+        // Dropping a saved connection on the terminal opens it in a new tab.
+        self.setup_connection_drop(&vte);
 
         self.apply_font();
         self.apply_colors();

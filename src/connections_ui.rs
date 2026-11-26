@@ -3,6 +3,8 @@
 //! and forwards a few calls here.
 
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -21,9 +23,11 @@ use crate::headless::connections::{
 };
 use crate::headless::desktop;
 use crate::headless::preconnect;
+use crate::headless::reachability::{self, ProbeState};
 use crate::headless::remote_files;
 use crate::headless::ssh_config;
 use crate::headless::tunnels;
+use crate::headless::workspaces::{self, WorkspaceEntry};
 use crate::logging::LOGGER;
 use crate::settings::settings;
 use crate::terminal::TerminalBox;
@@ -91,6 +95,22 @@ impl MainWindow {
             }
         });
         let weak = crate::SendWeak::new(self);
+        panel.reachable_only.connect_toggled(move |_| {
+            if let Some(window) = weak.upgrade() {
+                window.refilter_connections_panel();
+            }
+        });
+        // A destroy can arrive while a probe batch is still running: the flag
+        // makes the worker discard its results instead of touching dead widgets.
+        let weak = crate::SendWeak::new(self);
+        self.connect_destroy(move |_| {
+            if let Some(window) = weak.upgrade() {
+                if let Some(panel) = window.imp().connections_panel.borrow().as_ref() {
+                    panel.stop_reachability_timer();
+                }
+            }
+        });
+        let weak = crate::SendWeak::new(self);
         panel.search.connect_search_changed(move |_| {
             if let Some(window) = weak.upgrade() {
                 // Each key press only filters: no files to read again.
@@ -134,6 +154,13 @@ impl MainWindow {
             let Some(panel) = panel else {
                 return;
             };
+            // A double click on one of several selected rows opens the whole
+            // selection; a click on a group still just folds it.
+            let ids = panel.selected_ids();
+            if ids.len() > 1 {
+                window.connect_ids_staggered(ids, Placement::Tab);
+                return;
+            }
             match panel.id_at(path) {
                 Some(id) => window.connect_id(&id, Placement::Tab),
                 None => {
@@ -155,17 +182,24 @@ impl MainWindow {
             if window.panel_shortcut(key, event.state()) {
                 return glib::Propagation::Stop;
             }
-            let selected = window
-                .imp()
-                .connections_panel
-                .borrow()
-                .as_ref()
-                .and_then(|panel| panel.selected_id());
+            let panel = window.imp().connections_panel.borrow().clone();
+            let selected = panel.as_ref().and_then(|panel| panel.selected_id());
             match (key, selected) {
-                (gdk::keys::constants::Return | gdk::keys::constants::KP_Enter, Some(id))
-                    if control =>
-                {
-                    window.connect_id(&id, Placement::Split);
+                (gdk::keys::constants::Return | gdk::keys::constants::KP_Enter, Some(_)) => {
+                    // Handle Enter here instead of letting GTK activate the
+                    // row, so a multi-selection is opened exactly once.
+                    let ids = panel
+                        .as_ref()
+                        .map(|panel| panel.selected_ids())
+                        .unwrap_or_default();
+                    window.connect_ids_staggered(
+                        ids,
+                        if control {
+                            Placement::Split
+                        } else {
+                            Placement::Tab
+                        },
+                    );
                     glib::Propagation::Stop
                 }
                 (gdk::keys::constants::Delete, Some(id)) => {
@@ -193,7 +227,11 @@ impl MainWindow {
             };
             let (x, y) = event.position();
             let Some((Some(path), _, _, _)) = tree.path_at_pos(x as i32, y as i32) else {
-                return glib::Propagation::Proceed;
+                // The empty part of the panel is the natural place for the
+                // workspace actions: they act on the whole selection, or on
+                // every connection when nothing is selected.
+                window.show_panel_menu();
+                return glib::Propagation::Stop;
             };
             tree.selection().select_path(&path);
             let id = window
@@ -299,8 +337,10 @@ impl MainWindow {
             panel.root.show_all();
             panel.root.set_no_show_all(true);
             self.reload_connections_panel();
+            self.start_reachability_worker();
             panel.search.grab_focus();
         } else {
+            panel.stop_reachability_timer();
             panel.root.hide();
             // A hidden slot also hides the splitter's handle and gives the room
             // back to the terminals.
@@ -353,6 +393,99 @@ impl MainWindow {
         self.refilter_connections_panel();
     }
 
+    // ── Reachability ─────────────────────────────────────────
+
+    /// Probe immediately, then every minute while the panel is visible. A
+    /// timer on the main thread snapshots the rows; the actual TCP work runs
+    /// on a worker, so DNS and connect timeouts never block the UI.
+    fn start_reachability_worker(&self) {
+        let panel = self.imp().connections_panel.borrow().clone();
+        let Some(panel) = panel else {
+            return;
+        };
+        if panel.reach_timer.borrow().is_some() {
+            return;
+        }
+        panel.reach_stop.store(false, Ordering::SeqCst);
+        self.probe_reachability_once();
+        let weak = crate::SendWeak::new(self);
+        let source = glib::timeout_add_seconds_local(60, move || {
+            let Some(window) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            window.probe_reachability_once();
+            glib::ControlFlow::Continue
+        });
+        *panel.reach_timer.borrow_mut() = Some(source);
+    }
+
+    fn probe_reachability_once(&self) {
+        let panel = self.imp().connections_panel.borrow().clone();
+        let Some(panel) = panel else {
+            return;
+        };
+        if !panel.root.is_visible() || panel.reach_busy.replace(true) {
+            return;
+        }
+        // One probe per unique host: a host can appear in several groups, and
+        // the book may list both an alias and its address.
+        let mut targets: HashMap<(String, u16), Vec<String>> = HashMap::new();
+        {
+            let data = panel.data.borrow();
+            if let Some(data) = data.as_ref() {
+                for entry in &data.entries {
+                    let (host, port) = reachability::host_port(entry.connection.destination(), 22);
+                    if host.is_empty() {
+                        continue;
+                    }
+                    targets
+                        .entry((host, port))
+                        .or_default()
+                        .push(entry.connection.id.clone());
+                }
+            }
+        }
+        if targets.is_empty() {
+            panel.reach_busy.set(false);
+            return;
+        }
+        let stop = panel.reach_stop.clone();
+        let weak = crate::SendWeak::new(self);
+        std::thread::spawn(move || {
+            let mut results = Vec::new();
+            for ((host, port), ids) in targets {
+                if stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                let probe = reachability::probe_tcp(&host, port, 2000);
+                for id in ids {
+                    results.push((id, probe.clone()));
+                }
+            }
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            glib::idle_add_local_once(move || {
+                if let Some(window) = weak.upgrade() {
+                    window.finish_reachability_probe(results);
+                }
+            });
+        });
+    }
+
+    fn finish_reachability_probe(&self, results: Vec<(String, reachability::Reachability)>) {
+        let panel = self.imp().connections_panel.borrow().clone();
+        let Some(panel) = panel else {
+            return;
+        };
+        panel.reach_busy.set(false);
+        if panel.reach_stop.load(Ordering::SeqCst) {
+            return;
+        }
+        panel.reach.borrow_mut().extend(results);
+        self.refilter_connections_panel();
+    }
+
     /// Redraw the rows from what `reload_connections_panel` last read.
     fn refilter_connections_panel(&self) {
         let panel = self.imp().connections_panel.borrow().clone();
@@ -369,6 +502,7 @@ impl MainWindow {
             return;
         };
         let query = panel.search.text().to_string();
+        let reach = panel.reach.borrow();
         let open = self.open_connection_counts();
         let patterns = settings().get_str("ssh_alert_patterns");
         let alert = settings().get_str("ssh_alert_color");
@@ -379,6 +513,7 @@ impl MainWindow {
                 let connection = &entry.connection;
                 let mut decoration = RowDecoration {
                     open_tabs: open.get(&connection.id).copied().unwrap_or(0),
+                    reach: reach.get(&connection.id).cloned(),
                     ..RowDecoration::default()
                 };
                 let mut count = |status: &tunnels::Status, label: String| {
@@ -421,14 +556,21 @@ impl MainWindow {
                 .unwrap_or(&empty_decoration)
         };
         let live_only = panel.live_only.is_active();
-        let live: Vec<Entry>;
-        let shown: &[Entry] = if live_only {
-            live = entries
+        let reachable_only = panel.reachable_only.is_active();
+        let filtered: Vec<Entry>;
+        let shown: &[Entry] = if live_only || reachable_only {
+            filtered = entries
                 .iter()
-                .filter(|entry| decorate(entry).is_live())
+                .filter(|entry| {
+                    (!live_only || decorate(entry).is_live())
+                        && (!reachable_only
+                            || reach
+                                .get(&entry.connection.id)
+                                .is_some_and(|probe| probe.state == ProbeState::Online))
+                })
                 .cloned()
                 .collect();
-            &live
+            &filtered
         } else {
             entries
         };
@@ -458,6 +600,10 @@ impl MainWindow {
         let summary = summary.join(" \u{00B7} ");
         let empty_hint = if entries.is_empty() && query.is_empty() {
             Some("No connections yet. Click + to add one. Hosts in ~/.ssh/config appear here by themselves.")
+        } else if live_only && reachable_only && shown.is_empty() {
+            Some("No open and reachable connections.")
+        } else if reachable_only && shown.is_empty() {
+            Some("No reachable connections yet. Hosts are probed every minute.")
         } else if live_only && shown.is_empty() {
             Some("No open connections or tunnels.")
         } else {
@@ -498,6 +644,209 @@ impl MainWindow {
         }
     }
 
+    // ── Workspaces ───────────────────────────────────────────
+
+    /// The panel's background menu: both workspace actions work on the current
+    /// selection, so they belong where the tree has no row of its own.
+    fn show_panel_menu(&self) {
+        let menu = gtk::Menu::new();
+        self.append_workspace_items(&menu);
+        menu.show_all();
+        crate::popup_transient_menu(&menu);
+    }
+
+    fn append_workspace_items(&self, menu: &gtk::Menu) {
+        if !menu.children().is_empty() {
+            menu.append(&gtk::SeparatorMenuItem::new());
+        }
+        let add = |menu: &gtk::Menu, label: &str, action: fn(&MainWindow)| {
+            let item = gtk::MenuItem::with_label(label);
+            let weak = crate::SendWeak::new(self);
+            item.connect_activate(move |_| {
+                if let Some(window) = weak.upgrade() {
+                    action(&window);
+                }
+            });
+            menu.append(&item);
+        };
+        add(menu, "Save Workspace...", MainWindow::save_workspace);
+        add(menu, "Load Workspace...", MainWindow::load_workspace);
+    }
+
+    /// Save the selected connections (or all of them) under a name. The name
+    /// is validated by `workspaces::upsert`, so no extra parsing is needed.
+    fn save_workspace(&self) {
+        let panel = self.imp().connections_panel.borrow().clone();
+        let Some(panel) = panel else {
+            return;
+        };
+        let selected = panel.selected_ids();
+        let entries: Vec<WorkspaceEntry> = {
+            let data = panel.data.borrow();
+            let Some(data) = data.as_ref() else {
+                self.status_message("The connection list is not loaded yet", true);
+                return;
+            };
+            let mut seen = HashSet::new();
+            data.entries
+                .iter()
+                .filter(|entry| selected.is_empty() || selected.contains(&entry.connection.id))
+                .filter(|entry| seen.insert(entry.connection.id.clone()))
+                .map(|entry| WorkspaceEntry {
+                    label: entry.connection.name.clone(),
+                    kind: "connection".to_string(),
+                    target: entry.connection.id.clone(),
+                })
+                .collect()
+        };
+        if entries.is_empty() {
+            self.status_message("No connections to save", true);
+            return;
+        }
+        let dialog = gtk::Dialog::with_buttons(
+            Some("Save Workspace"),
+            Some(self),
+            gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+            &[
+                ("Cancel", gtk::ResponseType::Cancel),
+                ("Save", gtk::ResponseType::Ok),
+            ],
+        );
+        dialog.set_default_response(gtk::ResponseType::Ok);
+        let area = dialog.content_area();
+        let label = gtk::Label::new(Some(&format!(
+            "Name for these {} connection(s):",
+            entries.len()
+        )));
+        label.set_xalign(0.0);
+        area.pack_start(&label, false, false, 4);
+        let entry = gtk::Entry::new();
+        entry.set_activates_default(true);
+        area.pack_start(&entry, false, false, 4);
+        dialog.show_all();
+        entry.grab_focus();
+        let answer = dialog.run();
+        let name = entry.text().to_string();
+        // SAFETY of the GTK contract: `run` has returned and nothing else owns it.
+        unsafe {
+            dialog.destroy();
+        }
+        if answer != gtk::ResponseType::Ok {
+            return;
+        }
+        let Some(path) = workspaces::default_path() else {
+            self.status_message("Cannot locate the Oxterm configuration directory", true);
+            return;
+        };
+        let mut book = match workspaces::load(&path) {
+            Ok(book) => book,
+            Err(error) => {
+                self.status_message(&format!("Cannot read workspaces: {}", error), true);
+                return;
+            }
+        };
+        if let Err(error) = workspaces::upsert(&mut book, &name, entries) {
+            self.status_message(&error, true);
+            return;
+        }
+        match workspaces::save(&path, &book) {
+            Ok(()) => self.status_message(&format!("Workspace '{}' saved", name), false),
+            Err(error) => self.status_message(&format!("Cannot save workspace: {}", error), true),
+        }
+    }
+
+    fn load_workspace(&self) {
+        let Some(path) = workspaces::default_path() else {
+            self.status_message("Cannot locate the Oxterm configuration directory", true);
+            return;
+        };
+        let book = match workspaces::load(&path) {
+            Ok(book) => book,
+            Err(error) => {
+                self.status_message(&format!("Cannot read workspaces: {}", error), true);
+                return;
+            }
+        };
+        if book.workspaces.is_empty() {
+            self.status_message("No saved workspaces yet", false);
+            return;
+        }
+        let menu = gtk::Menu::new();
+        for workspace in book.workspaces {
+            let label = format!("{} ({} tabs)", workspace.name, workspace.entries.len());
+            let item = gtk::MenuItem::with_label(&label);
+            item.set_tooltip_text(Some(
+                &workspace
+                    .entries
+                    .iter()
+                    .map(|e| e.label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ));
+            let entries = workspace.entries;
+            let weak = crate::SendWeak::new(self);
+            item.connect_activate(move |_| {
+                if let Some(window) = weak.upgrade() {
+                    window.open_workspace_entries(entries.clone());
+                }
+            });
+            menu.append(&item);
+        }
+        menu.show_all();
+        crate::popup_transient_menu(&menu);
+    }
+
+    /// Open each saved entry in its own tab, a quarter second apart. The delay
+    /// is scheduled on the main loop: a modal confirmation in one tab must not
+    /// keep the others from opening later.
+    pub(crate) fn open_workspace_entries(&self, entries: Vec<WorkspaceEntry>) {
+        Self::schedule_workspace_entry(crate::SendWeak::new(self), entries, 0);
+    }
+
+    fn schedule_workspace_entry(
+        weak: crate::SendWeak<MainWindow>,
+        entries: Vec<WorkspaceEntry>,
+        index: usize,
+    ) {
+        let Some(entry) = entries.get(index) else {
+            return;
+        };
+        if let Some(window) = weak.upgrade() {
+            match entry.kind.as_str() {
+                "connection" => match Self::connection_for_id(&entry.target) {
+                    Ok(connection) => window.connect(connection, Placement::Tab),
+                    Err(error) => {
+                        window.status_message(&format!("{}: {}", entry.label, error), true)
+                    }
+                },
+                "local" => {
+                    if Path::new(&entry.target).is_dir() {
+                        window.add_new_tab(
+                            Some(&entry.target),
+                            None,
+                            Some(&entry.label),
+                            Some(&entry.label),
+                            None,
+                        );
+                    } else {
+                        window.status_message(
+                            &format!("Workspace folder not found: {}", entry.target),
+                            true,
+                        );
+                    }
+                }
+                other => {
+                    window.status_message(&format!("Unknown workspace entry type: {}", other), true)
+                }
+            }
+        }
+        if index + 1 < entries.len() {
+            glib::timeout_add_local_once(Duration::from_millis(250), move || {
+                Self::schedule_workspace_entry(weak, entries, index + 1);
+            });
+        }
+    }
+
     fn show_group_menu(&self, path: &gtk::TreePath) {
         let panel = self.imp().connections_panel.borrow().clone();
         let Some(panel) = panel else {
@@ -518,6 +867,7 @@ impl MainWindow {
             }
         });
         menu.append(&item);
+        self.append_workspace_items(&menu);
         menu.show_all();
         crate::popup_transient_menu(&menu);
     }
@@ -535,12 +885,17 @@ impl MainWindow {
                     .as_ref()
                     .and_then(|data| connections::find_entry_by_id(&data.entries, id).cloned())
             });
-        let Some(entry) = cached.or_else(|| {
+        let Some(mut entry) = cached.or_else(|| {
             let entries = load_entries().ok()?;
             connections::find_entry_by_id(&entries, id).cloned()
         }) else {
             return;
         };
+        // Menu actions open the connection too: inherit template fields before
+        // building command previews, browser arguments and tunnel keys.
+        if let Ok(resolved) = Self::connection_for_id(id) {
+            entry.connection = resolved;
+        }
         let menu = gtk::Menu::new();
         let add = |label: &str, action: Box<dyn Fn(&MainWindow)>| {
             let item = gtk::MenuItem::with_label(label);
@@ -709,6 +1064,7 @@ impl MainWindow {
             };
             add(label, Box::new(move |window| window.delete_connection(&id)));
         }
+        self.append_workspace_items(&menu);
         menu.show_all();
         crate::popup_transient_menu(&menu);
     }
@@ -982,12 +1338,24 @@ impl MainWindow {
 
     // ── Connecting ───────────────────────────────────────────
 
+    /// Look up a connection with its template chain resolved. Hosts from
+    /// `~/.ssh/config` are not in our book, so they still come from the merged
+    /// entries.
+    fn connection_for_id(id: &str) -> Result<Connection, String> {
+        if let Ok(book) = connections::load_book(&connections::book_path()) {
+            if let Ok(connection) = book.resolve_connection(id) {
+                return Ok(connection);
+            }
+        }
+        let entries = load_entries()?;
+        connections::find_entry_by_id(&entries, id)
+            .map(|entry| entry.connection.clone())
+            .ok_or_else(|| "That connection no longer exists".to_string())
+    }
+
     pub fn connect_id(&self, id: &str, placement: Placement) {
-        match load_entries() {
-            Ok(entries) => match connections::find_entry_by_id(&entries, id) {
-                Some(entry) => self.connect(entry.connection.clone(), placement),
-                None => self.status_message("That connection no longer exists", true),
-            },
+        match Self::connection_for_id(id) {
+            Ok(connection) => self.connect(connection, placement),
             Err(error) => self.status_message(&error, true),
         }
     }
@@ -999,10 +1367,39 @@ impl MainWindow {
             LOGGER.warning(&format!("connections_book_unreadable error={}", error));
             Vec::new()
         });
-        let connection = connections::find_entry(&entries, text)
-            .map(|entry| entry.connection.clone())
+        let connection = Self::connection_for_id(text)
+            .ok()
+            .or_else(|| {
+                connections::find_entry(&entries, text)
+                    .or_else(|| connections::find_entry_by_id(&entries, text))
+                    .map(|entry| entry.connection.clone())
+            })
             .unwrap_or_else(|| Connection::alias(text));
         self.connect(connection, Placement::Tab);
+    }
+
+    /// Open several connections one after another, leaving a moment between
+    /// tabs. The delay runs on the main loop, never as `thread::sleep`.
+    fn connect_ids_staggered(&self, ids: Vec<String>, placement: Placement) {
+        Self::schedule_connect_ids(crate::SendWeak::new(self), ids.into(), placement);
+    }
+
+    fn schedule_connect_ids(
+        weak: crate::SendWeak<MainWindow>,
+        mut queue: VecDeque<String>,
+        placement: Placement,
+    ) {
+        let Some(id) = queue.pop_front() else {
+            return;
+        };
+        if let Some(window) = weak.upgrade() {
+            window.connect_id(&id, placement);
+        }
+        if !queue.is_empty() {
+            glib::timeout_add_local_once(Duration::from_millis(250), move || {
+                Self::schedule_connect_ids(weak, queue, placement);
+            });
+        }
     }
 
     pub fn connect(&self, connection: Connection, placement: Placement) {
@@ -1145,11 +1542,8 @@ impl MainWindow {
 
     /// The same, for a terminal opened through the control API.
     pub fn attach_connection_id(&self, term: &TerminalBox, id: &str) {
-        match load_entries() {
-            Ok(entries) => match connections::find_entry_by_id(&entries, id) {
-                Some(entry) => self.attach_connection(term, &entry.connection, true),
-                None => term.set_connection(Some(id.to_string()), None),
-            },
+        match Self::connection_for_id(id) {
+            Ok(connection) => self.attach_connection(term, &connection, true),
             Err(_) => term.set_connection(Some(id.to_string()), None),
         }
     }
@@ -1164,12 +1558,7 @@ impl MainWindow {
         let Some((notebook, position)) = self.find_terminal(old) else {
             return;
         };
-        let Ok(entries) = load_entries() else {
-            return;
-        };
-        let Some(connection) =
-            connections::find_entry_by_id(&entries, &id).map(|entry| entry.connection.clone())
-        else {
+        let Ok(connection) = Self::connection_for_id(&id) else {
             return;
         };
         let attempts = old.reconnect_attempts();
@@ -1555,6 +1944,23 @@ impl MainWindow {
             menu,
             "Tunnel Manager...",
             Box::new(|window| window.show_tunnel_manager(None)),
+        );
+        add(
+            menu,
+            "Import Connections...",
+            Box::new(crate::import_sync_ui::show_import_dialog),
+        );
+        add(
+            menu,
+            "Sync ~/.ssh/config...",
+            Box::new(crate::import_sync_ui::show_ssh_sync_dialog),
+        );
+        add(
+            menu,
+            "Monitor Panel",
+            Box::new(|window| {
+                window.show_workspace_tab(crate::workspace_ui::WorkspaceTab::Monitor)
+            }),
         );
         add(
             menu,

@@ -13,6 +13,7 @@ use crate::headless::connections::{
     Auth, Connection, ExpectRule, HostKeyCheck, Kind, Macro, Protocol, Tunnel, TunnelKind,
 };
 use crate::headless::desktop::VncServer;
+use crate::headless::password;
 use crate::headless::totp;
 
 /// The result of a confirmed form.
@@ -50,6 +51,7 @@ struct TunnelRow {
 
 struct Fields {
     base: Connection,
+    template: gtk::Entry,
     name: gtk::Entry,
     host: gtk::Entry,
     user: gtk::Entry,
@@ -261,6 +263,11 @@ impl Fields {
                 .unwrap_or_default()
         };
         let mut connection = self.base.clone();
+        connection.template = {
+            let template = self.template.text();
+            let template = template.trim();
+            (!template.is_empty()).then(|| template.to_string())
+        };
         connection.name = self.name.text().trim().to_string();
         connection.group = self.group.text().trim().to_string();
         connection.tags = self
@@ -358,6 +365,28 @@ fn option_check(label: &str, active: bool, tooltip: &str) -> gtk::CheckButton {
 
 fn number_text(value: Option<impl ToString>) -> String {
     value.map(|value| value.to_string()).unwrap_or_default()
+}
+
+/// What goes in the keyring. A bare secret stays a bare secret; an `otpauth://`
+/// URI with non-default parameters is kept whole so the askpass helper honours
+/// its digits, period and algorithm.
+fn totp_to_store(typed: &str) -> Result<String, String> {
+    let typed = typed.trim();
+    let is_uri = typed.to_ascii_lowercase().starts_with("otpauth://");
+    let (secret, params) = totp::parse_otpauth_uri(typed)?;
+    Ok(if is_uri && params != totp::TotpParams::default() {
+        typed.to_string()
+    } else {
+        secret
+    })
+}
+
+/// An entry accepts any text; generated values still lose stray control chars.
+fn clean_generated(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect()
 }
 
 fn note(text: &str) -> gtk::Label {
@@ -626,6 +655,34 @@ pub fn edit(
     password.set_visibility(false);
     password.set_input_purpose(gtk::InputPurpose::Password);
     password.set_sensitive(initial.auth == Auth::SecretService);
+    let show_password = gtk::ToggleButton::with_label("Show");
+    show_password.set_tooltip_text(Some("Show the password while typing"));
+    let generate_password = gtk::Button::with_label("Generate");
+    generate_password.set_tooltip_text(Some(&format!(
+        "Create a password with about {:.0} bits of entropy",
+        password::entropy_bits(20, true).round()
+    )));
+    let generate_passphrase = gtk::Button::with_label("Passphrase");
+    generate_passphrase.set_tooltip_text(Some("Create a random word passphrase"));
+    let entropy = gtk::Label::new(None);
+    entropy.set_xalign(0.0);
+    entropy.style_context().add_class("dim-label");
+    let active_auth = initial.auth == Auth::SecretService;
+    show_password.set_sensitive(active_auth);
+    generate_password.set_sensitive(active_auth);
+    generate_passphrase.set_sensitive(active_auth);
+    let password_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    password_row.pack_start(&password, true, true, 0);
+    password_row.pack_start(&generate_password, false, false, 0);
+    password_row.pack_start(&generate_passphrase, false, false, 0);
+    password_row.pack_start(&show_password, false, false, 0);
+    {
+        let field = password.clone();
+        show_password.connect_toggled(move |button| {
+            field.set_visibility(button.is_active());
+            button.set_label(if button.is_active() { "Hide" } else { "Show" });
+        });
+    }
 
     let favorite = gtk::CheckButton::with_label("Show in Favorites");
     favorite.set_active(initial.favorite);
@@ -698,6 +755,10 @@ pub fn edit(
     ));
     let fields = Rc::new(Fields {
         base: initial.clone(),
+        template: entry(
+            initial.template.as_deref().unwrap_or(""),
+            "Name or id of another connection",
+        ),
         name: entry(&initial.name, "db-prod-1"),
         host: entry(&initial.host, "server.example or user@server"),
         user: entry(&initial.user, "Default from ~/.ssh/config"),
@@ -866,6 +927,9 @@ pub fn edit(
 
     // ── Connection ──
     let connection_page = grid();
+    fields.template.set_tooltip_text(Some(
+        "Inherit unset fields from another connection (name or id)",
+    ));
     let mut address_rows: Vec<(gtk::Label, gtk::Widget)> = Vec::new();
     let mut row = 0;
     add_row(&connection_page, row, "_Name", &fields.name);
@@ -909,6 +973,8 @@ pub fn edit(
     }
     add_row(&connection_page, row, "_Group", &fields.group);
     row += 1;
+    add_row(&connection_page, row, "_Template", &fields.template);
+    row += 1;
     add_row(&connection_page, row, "_Tags", &fields.tags);
     row += 1;
     connection_page.attach(&fields.favorite, 1, row, 1, 1);
@@ -930,11 +996,24 @@ pub fn edit(
     }
     add_row(&auth_page, row, "_Method", &fields.auth);
     row += 1;
-    add_row(&auth_page, row, "_Password", &fields.password);
+    add_row(&auth_page, row, "_Password", &password_row);
+    row += 1;
+    auth_page.attach(&entropy, 1, row, 1, 1);
     row += 1;
     auth_page.attach(&fields.totp, 1, row, 1, 1);
     row += 1;
     add_row(&auth_page, row, "One-time _secret", &fields.totp_secret);
+    row += 1;
+    auth_page.attach(
+        &note(
+            "Paste the Base32 secret, or the full otpauth:// link: digits, period and algorithm \
+             are kept when they differ from the defaults.",
+        ),
+        1,
+        row,
+        1,
+        1,
+    );
     row += 1;
     {
         let secret = fields.totp_secret.clone();
@@ -1311,6 +1390,7 @@ pub fn edit(
         })
     };
     for field in [
+        &fields.template,
         &fields.name,
         &fields.host,
         &fields.user,
@@ -1354,8 +1434,47 @@ pub fn edit(
     }
     {
         let password = fields.password.clone();
+        let show = show_password.clone();
+        let generate = generate_password.clone();
+        let passphrase = generate_passphrase.clone();
         fields.auth.connect_changed(move |combo| {
-            password.set_sensitive(combo.active_id().as_deref() == Some("secret_service"));
+            let active = combo.active_id().as_deref() == Some("secret_service");
+            password.set_sensitive(active);
+            show.set_sensitive(active);
+            generate.set_sensitive(active);
+            passphrase.set_sensitive(active);
+        });
+    }
+    {
+        let field = fields.password.clone();
+        let error = error.clone();
+        let entropy = entropy.clone();
+        generate_password.connect_clicked(move |button| {
+            match password::generate_password(20, true) {
+                Ok(value) => {
+                    field.set_text(&value);
+                    let bits = password::entropy_bits(20, true).round();
+                    entropy.set_text(&format!("Estimated entropy: {:.0} bits", bits));
+                    button.set_tooltip_text(Some(&format!("About {:.0} bits of entropy", bits)));
+                    error.set_text("");
+                }
+                Err(message) => error.set_text(&message),
+            }
+        });
+    }
+    {
+        let field = fields.password.clone();
+        let error = error.clone();
+        let entropy = entropy.clone();
+        generate_passphrase.connect_clicked(move |button| match password::generate_passphrase(5) {
+            Ok((value, bits)) => {
+                field.set_text(&clean_generated(&value));
+                entropy.set_text(&format!("Estimated entropy: {:.0} bits", bits.round()));
+                button
+                    .set_tooltip_text(Some(&format!("About {:.0} bits of entropy", bits.round())));
+                error.set_text("");
+            }
+            Err(message) => error.set_text(&message),
         });
     }
     for tunnel in &initial.tunnels {
@@ -1484,8 +1603,8 @@ pub fn edit(
             Ok(connection) => {
                 let typed_secret = fields.totp_secret.text().to_string();
                 let totp_secret = if connection.totp && !typed_secret.trim().is_empty() {
-                    match totp::normalize_secret(&typed_secret) {
-                        Ok(secret) => Some(secret),
+                    match totp_to_store(&typed_secret) {
+                        Ok(value) => Some(value),
                         Err(message) => {
                             error.set_text(&message);
                             continue;
@@ -1513,4 +1632,32 @@ pub fn edit(
         dialog.destroy();
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bare_secret_is_kept_bare() {
+        assert_eq!(totp_to_store(" GEZD GNBV ").unwrap(), "GEZDGNBV");
+    }
+
+    #[test]
+    fn a_uri_with_custom_parameters_is_stored_whole() {
+        let uri = "otpauth://totp/Issuer:user?secret=GEZDGNBV&digits=8&period=60&algorithm=SHA256";
+        assert_eq!(totp_to_store(uri).unwrap(), uri);
+    }
+
+    #[test]
+    fn a_default_uri_is_stored_as_a_secret() {
+        let uri = "otpauth://totp/x?secret=GEZDGNBV&digits=6&period=30&algorithm=SHA1";
+        assert_eq!(totp_to_store(uri).unwrap(), "GEZDGNBV");
+    }
+
+    #[test]
+    fn an_invalid_secret_is_refused() {
+        assert!(totp_to_store("otpauth://totp/x?issuer=y").is_err());
+        assert!(totp_to_store("not base32!").is_err());
+    }
 }

@@ -14,6 +14,8 @@ use crate::window::{MainWindow, TerminalWindow};
 pub(crate) enum WorkspaceTab {
     Notes,
     Editor,
+    /// Third tab: remote resource monitor above the remote log viewer.
+    Monitor,
 }
 
 impl MainWindow {
@@ -130,11 +132,52 @@ impl MainWindow {
             });
         }
 
+        // The monitoring features share the third tab instead of opening a
+        // second right-hand dock (which was the source of layout confusion).
+        let monitor_target = self.monitor_target_from_current();
+        let monitor_panel = crate::monitor_panel::MonitorPanel::build();
+        monitor_panel.set_target(monitor_target.clone());
+        {
+            let weak = crate::SendWeak::new(self);
+            monitor_panel.close.connect_clicked(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.set_workspace_visible(false);
+                }
+            });
+        }
+
+        let log_viewer_panel = crate::log_viewer_panel::LogViewerPanel::build();
+        log_viewer_panel.set_target(monitor_target);
+        {
+            let weak = crate::SendWeak::new(self);
+            log_viewer_panel.close.connect_clicked(move |_| {
+                if let Some(w) = weak.upgrade() {
+                    w.set_workspace_visible(false);
+                }
+            });
+        }
+
+        let monitor_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        monitor_page.pack_start(&monitor_panel.root, false, false, 0);
+        monitor_page.pack_start(
+            &gtk::Separator::new(gtk::Orientation::Horizontal),
+            false,
+            false,
+            0,
+        );
+        monitor_page.pack_start(&log_viewer_panel.root, true, true, 0);
+
         notebook.append_page(&notes_panel.root, Some(&gtk::Label::new(Some("Notes"))));
         notebook.append_page(&editor_panel.root, Some(&gtk::Label::new(Some("Editor"))));
-        // Both roots carry `no_show_all` from their standalone past. The
+        notebook.append_page(&monitor_page, Some(&gtk::Label::new(Some("Monitor"))));
+        // All roots carry `no_show_all` from their standalone past. The
         // notebook is the only visibility gate now, so make the pages showable.
-        for root in [&notes_panel.root, &editor_panel.root] {
+        for root in [
+            &notes_panel.root,
+            &editor_panel.root,
+            &monitor_panel.root,
+            &log_viewer_panel.root,
+        ] {
             root.set_no_show_all(false);
         }
 
@@ -151,6 +194,8 @@ impl MainWindow {
         // synchronously and its handler reloads through the window.
         *imp.notes_panel.borrow_mut() = Some(notes_panel);
         *imp.editor_panel.borrow_mut() = Some(editor_panel);
+        *imp.monitor_panel.borrow_mut() = Some(monitor_panel);
+        *imp.log_viewer_panel.borrow_mut() = Some(log_viewer_panel);
         // `show()` on the slot is not recursive: the notebook needs its own
         // explicit `show_all()` or the dock would be an empty box.
         notebook.show_all();
@@ -198,8 +243,17 @@ impl MainWindow {
                     }
                 });
             }
-        } else if let Some(slot) = self.imp().workspace_slot.borrow().clone() {
-            slot.hide();
+        } else {
+            // Stop remote polling while the dock is hidden.
+            if let Some(panel) = self.imp().monitor_panel.borrow().as_ref() {
+                panel.pause();
+            }
+            if let Some(panel) = self.imp().log_viewer_panel.borrow().as_ref() {
+                panel.pause();
+            }
+            if let Some(slot) = self.imp().workspace_slot.borrow().clone() {
+                slot.hide();
+            }
             if let Some(terminal) = self.current_terminal() {
                 terminal.vte().grab_focus();
             }
@@ -269,17 +323,26 @@ impl MainWindow {
             let page = match tab {
                 WorkspaceTab::Notes => 0,
                 WorkspaceTab::Editor => 1,
+                WorkspaceTab::Monitor => 2,
             };
             notebook.set_current_page(Some(page));
         }
     }
 
     pub(crate) fn toggle_workspace_tab(&self, tab: WorkspaceTab) {
+        let page = match tab {
+            WorkspaceTab::Notes => 0,
+            WorkspaceTab::Editor => 1,
+            WorkspaceTab::Monitor => 2,
+        };
         let active = self.workspace_visible()
-            && match tab {
-                WorkspaceTab::Notes => self.notes_tab_active(),
-                WorkspaceTab::Editor => !self.notes_tab_active(),
-            };
+            && self
+                .imp()
+                .workspace_notebook
+                .borrow()
+                .as_ref()
+                .and_then(|notebook| notebook.current_page())
+                == Some(page);
         if active {
             self.set_workspace_visible(false);
         } else {

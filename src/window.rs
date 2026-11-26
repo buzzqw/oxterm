@@ -1782,6 +1782,9 @@ mod main_imp {
         pub notes_panel: RefCell<Option<crate::notes_panel::NotesPanel>>,
         /// The integrated editor, built on first use like the notes panel.
         pub editor_panel: RefCell<Option<std::rc::Rc<crate::editor_panel::EditorPanel>>>,
+        /// Resource monitor and log viewer live in the third dock tab.
+        pub monitor_panel: RefCell<Option<crate::monitor_panel::MonitorPanel>>,
+        pub log_viewer_panel: RefCell<Option<crate::log_viewer_panel::LogViewerPanel>>,
         /// One right-hand dock hosting both panels as Notebook tabs.
         pub workspace_slot: RefCell<Option<gtk::Box>>,
         pub workspace_notebook: RefCell<Option<gtk::Notebook>>,
@@ -2474,6 +2477,18 @@ impl MainWindow {
         nb.current_page()
             .and_then(|idx| nb.nth_page(Some(idx)))
             .and_then(|w| w.downcast::<TerminalBox>().ok())
+    }
+
+    /// SSH destination of the active terminal, used to prefill the monitor
+    /// and log viewer target. Local and non-SSH tabs yield `None`.
+    pub(crate) fn monitor_target_from_current(&self) -> Option<String> {
+        let terminal = self.current_terminal()?;
+        let connection = self.connection_for_tab(&terminal)?;
+        if connection.protocol != crate::headless::connections::Protocol::Ssh {
+            return None;
+        }
+        let destination = connection.destination();
+        (!destination.trim().is_empty()).then(|| destination.to_string())
     }
 
     /// Every pane of this window, in both halves of a split.

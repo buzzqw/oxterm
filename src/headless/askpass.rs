@@ -165,9 +165,26 @@ pub fn lookup_secret(id: &str) -> Option<String> {
     lookup(SECRET_ATTRIBUTE, id)
 }
 
-/// The current one-time code, computed from the stored secret.
+/// The current one-time code, computed from what is stored for this entry.
+///
+/// Old entries hold a bare Base32 secret (six digits, SHA-1, 30 seconds). An
+/// `otpauth://` URI also carries digits, period and algorithm, so it is parsed
+/// and those parameters are used. Nothing else is interpreted as a URI: a bare
+/// secret pasted with surrounding spaces still works as before.
 pub fn lookup_totp_code(id: &str) -> Option<String> {
-    super::totp::current_code(&lookup(TOTP_ATTRIBUTE, id)?)
+    totp_code_from_secret(&lookup(TOTP_ATTRIBUTE, id)?)
+}
+
+/// Compute a code from a stored TOTP value. Kept separate from the keyring read
+/// so the two formats can be tested without `secret-tool`.
+pub fn totp_code_from_secret(stored: &str) -> Option<String> {
+    let text = stored.trim();
+    if text.to_ascii_lowercase().starts_with("otpauth://") {
+        let (secret, params) = super::totp::parse_otpauth_uri(text).ok()?;
+        super::totp::current_code_with(&secret, params)
+    } else {
+        super::totp::current_code(text)
+    }
 }
 
 fn lookup(attribute: &str, id: &str) -> Option<String> {
@@ -450,5 +467,40 @@ mod tests {
                 OsString::from("oxterm-askpass-1.2.3-linux-x86_64"),
             ]
         );
+    }
+
+    #[test]
+    fn a_bare_secret_still_gives_the_six_digit_code() {
+        let secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+        assert_eq!(
+            totp_code_from_secret(&format!(" {} \n", secret)),
+            super::super::totp::current_code(secret)
+        );
+    }
+
+    #[test]
+    fn a_stored_uri_honours_digits_period_and_algorithm() {
+        let secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+        let uri = format!(
+            "otpauth://totp/Issuer:user?secret={}&digits=8&period=60&algorithm=SHA256",
+            secret
+        );
+        let (parsed, params) = super::super::totp::parse_otpauth_uri(&uri).unwrap();
+        assert_eq!(
+            totp_code_from_secret(&uri),
+            super::super::totp::current_code_with(&parsed, params)
+        );
+        assert_eq!(totp_code_from_secret(&uri).unwrap().len(), 8);
+        assert_ne!(totp_code_from_secret(&uri), totp_code_from_secret(secret));
+    }
+
+    #[test]
+    fn a_broken_uri_is_not_answered() {
+        assert_eq!(totp_code_from_secret("otpauth://totp/x?issuer=y"), None);
+        assert_eq!(
+            totp_code_from_secret("otpauth://totp/x?secret=GEZDGNBV&digits=9"),
+            None
+        );
+        assert_eq!(totp_code_from_secret("not base32!"), None);
     }
 }

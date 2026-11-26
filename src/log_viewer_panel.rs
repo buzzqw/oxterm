@@ -1,0 +1,585 @@
+//! Remote log viewer tab of the shared right-hand dock.
+//!
+//! File discovery and tailing happen over `ssh` with arguments (never a local
+//! shell), with every user-supplied path single-quoted by `shell_quote`. The
+//! regex filter is applied on the main thread with the `regex` crate, and
+//! lines are coloured by level in a monospace `gtk::TextView`.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+use gtk::prelude::*;
+
+/// A POSIX-shell-safe single-quoted argument. An embedded `'` is written as
+/// the conventional `'\\''` sequence.
+pub fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// What the path entry means: a file tree to scan, or the systemd journal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LogSource {
+    Files(String),
+    Journal(Option<String>),
+}
+
+/// `journal` / `journal:<unit>` select the journal; everything else is a path.
+pub fn parse_source(path: &str) -> LogSource {
+    let value = path.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("journal") {
+        return LogSource::Journal(None);
+    }
+    if let Some(unit) = value.strip_prefix("journal:") {
+        let unit = unit.trim();
+        return LogSource::Journal((!unit.is_empty()).then(|| unit.to_string()));
+    }
+    LogSource::Files(value.to_string())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Other,
+}
+
+impl LogLevel {
+    /// Name of the `gtk::TextTag` created in `build()`.
+    pub fn tag(self) -> &'static str {
+        match self {
+            LogLevel::Error => "log-error",
+            LogLevel::Warn => "log-warn",
+            LogLevel::Info => "log-info",
+            LogLevel::Other => "log-other",
+        }
+    }
+}
+
+/// Classify a log line by the first level word it contains.
+pub fn parse_log_level(line: &str) -> LogLevel {
+    let upper = line.to_ascii_uppercase();
+    if upper.contains("ERROR") || upper.contains("FATAL") || upper.contains("CRITICAL") {
+        LogLevel::Error
+    } else if upper.contains("WARN") {
+        LogLevel::Warn
+    } else if upper.contains("INFO") {
+        LogLevel::Info
+    } else {
+        LogLevel::Other
+    }
+}
+
+/// Normalise remote output into lines: drop CR and blank lines.
+pub fn parse_remote_output(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(|line| line.trim_end_matches('\r'))
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn ssh_run(host: &str, command: &str) -> Result<String, String> {
+    let output = std::process::Command::new("ssh")
+        .arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg("ConnectTimeout=5")
+        .arg(host)
+        .arg(command)
+        .output()
+        .map_err(|error| format!("Impossibile avviare ssh: {error}"))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if detail.is_empty() {
+            format!("ssh terminato con {status}", status = output.status)
+        } else {
+            detail
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Only hand a pattern to `grep -E` when its syntax is also POSIX ERE. Rust
+/// extras such as `\\d` or `(?i)` stay local, where the `regex` crate handles
+/// them. The local regex is applied to every result in either case.
+fn remote_grep_pattern(pattern: Option<&regex::Regex>) -> Option<String> {
+    let text = pattern.map(|regex| regex.as_str())?;
+    if text.contains('\\') || text.contains("(?") || text.contains('[') {
+        return None;
+    }
+    Some(text.to_string())
+}
+
+fn grep_suffix(pattern: Option<&str>) -> String {
+    pattern
+        .map(|pattern| format!(" | grep -E -n {}", shell_quote(pattern)))
+        .unwrap_or_default()
+}
+
+/// Wrap a script body in `timeout 5 sh -c <quoted body>`. Quoting the whole
+/// body (not just its arguments) keeps inner quotes from breaking the outer
+/// one, even when the user path or regex contains `'`.
+fn remote_script(body: &str) -> String {
+    format!("timeout 5 sh -c {}", shell_quote(body))
+}
+
+/// Run the remote commands for a source and concatenate their output. Each
+/// file is preceded by a `==> path <==` header, like `tail -f` does.
+fn collect_remote(host: &str, source: &LogSource, grep: Option<&str>) -> Result<String, String> {
+    if host.trim().is_empty() {
+        return Err("Inserisci un host (es. user@server) per leggere i log".to_string());
+    }
+    match source {
+        LogSource::Journal(unit) => {
+            let command = match unit {
+                Some(unit) => remote_script(&format!(
+                    "journalctl --no-pager -n 200 -u {} 2>&1{}",
+                    shell_quote(unit),
+                    grep_suffix(grep)
+                )),
+                None => remote_script(&format!(
+                    "journalctl --no-pager -n 200 2>&1{}",
+                    grep_suffix(grep)
+                )),
+            };
+            ssh_run(host, &command)
+        }
+        LogSource::Files(path) => {
+            let find = remote_script(&format!(
+                "find {} -maxdepth 2 -type f 2>/dev/null | head -100",
+                shell_quote(path)
+            ));
+            let listing = ssh_run(host, &find)?;
+            let files: Vec<&str> = listing
+                .lines()
+                .map(str::trim)
+                .filter(|line| line.starts_with('/'))
+                .collect();
+            if files.is_empty() {
+                return Ok(format!("Nessun file trovato in {path}"));
+            }
+            let mut output = String::new();
+            for file in files {
+                let command = remote_script(&format!(
+                    "tail -n 200 {} 2>/dev/null{}",
+                    shell_quote(file),
+                    grep_suffix(grep)
+                ));
+                output.push_str(&format!("==> {file} <==\n"));
+                match ssh_run(host, &command) {
+                    Ok(text) => output.push_str(&text),
+                    Err(error) => output.push_str(&format!("[errore: {error}]\n")),
+                }
+            }
+            Ok(output)
+        }
+    }
+}
+
+struct LogState {
+    stop: Arc<AtomicBool>,
+    generation: u64,
+    paused: bool,
+}
+
+#[derive(Clone)]
+struct Ui {
+    status: crate::SendWeak<gtk::Label>,
+    view: crate::SendWeak<gtk::TextView>,
+}
+
+impl Ui {
+    fn new(status: &gtk::Label, view: &gtk::TextView) -> Ui {
+        Ui {
+            status: crate::SendWeak::new(status),
+            view: crate::SendWeak::new(view),
+        }
+    }
+
+    fn upgrade(&self) -> Option<(gtk::Label, gtk::TextView)> {
+        Some((self.status.upgrade()?, self.view.upgrade()?))
+    }
+}
+
+fn spawn_load(
+    state: &Arc<Mutex<LogState>>,
+    ui: &Ui,
+    host: String,
+    source: LogSource,
+    pattern: Option<regex::Regex>,
+) {
+    let (generation, stop) = {
+        let mut state = state.lock().expect("log viewer state lock poisoned");
+        state.generation = state.generation.wrapping_add(1);
+        state.stop.store(false, Ordering::SeqCst);
+        (state.generation, state.stop.clone())
+    };
+    let shared = state.clone();
+    let worker_ui = ui.clone();
+    std::thread::spawn(move || {
+        if stop.load(Ordering::SeqCst)
+            || shared
+                .lock()
+                .expect("log viewer state lock poisoned")
+                .generation
+                != generation
+        {
+            return;
+        }
+        let grep = remote_grep_pattern(pattern.as_ref());
+        let result = collect_remote(&host, &source, grep.as_deref());
+        let state = shared.clone();
+        let ui = worker_ui.clone();
+        crate::run_on_main(move || {
+            let state = state.lock().expect("log viewer state lock poisoned");
+            if state.generation != generation {
+                return; // a newer Refresh/Pause superseded this result
+            }
+            let Some((status, view)) = ui.upgrade() else {
+                return;
+            };
+            if state.paused {
+                status.set_text("In pausa — risultati ignorati");
+                return;
+            }
+            match result {
+                Ok(output) => {
+                    let lines = parse_remote_output(&output);
+                    let shown = render(&view, &lines, pattern.as_ref());
+                    status.set_text(&format!(
+                        "{} righe mostrate su {} · {}",
+                        shown,
+                        lines.len(),
+                        match &source {
+                            LogSource::Files(path) => path.clone(),
+                            LogSource::Journal(None) => "journal".to_string(),
+                            LogSource::Journal(Some(unit)) => format!("journal:{unit}"),
+                        }
+                    ));
+                }
+                Err(message) => status.set_text(&format!("Errore: {message}")),
+            }
+        });
+    });
+}
+
+fn append_line(buffer: &gtk::TextBuffer, line: &str, tag: &str) {
+    let offset = buffer.char_count();
+    let mut end = buffer.end_iter();
+    buffer.insert(&mut end, line);
+    let start = buffer.iter_at_offset(offset);
+    let end = buffer.end_iter();
+    buffer.apply_tag_by_name(tag, &start, &end);
+    let mut end = buffer.end_iter();
+    buffer.insert(&mut end, "\n");
+}
+
+fn render(view: &gtk::TextView, lines: &[String], pattern: Option<&regex::Regex>) -> usize {
+    let buffer = view.buffer().expect("text view always has a buffer");
+    buffer.set_text("");
+    let mut shown = 0;
+    for line in lines {
+        if line.starts_with("==> ") {
+            append_line(&buffer, line, "log-header");
+            shown += 1;
+            continue;
+        }
+        if pattern.is_some_and(|regex| !regex.is_match(line)) {
+            continue;
+        }
+        let tag = if line.starts_with('[') {
+            "log-header"
+        } else {
+            parse_log_level(line).tag()
+        };
+        append_line(&buffer, line, tag);
+        shown += 1;
+    }
+    let mut end = buffer.end_iter();
+    view.scroll_to_iter(&mut end, 0.0, false, 0.0, 0.0);
+    shown
+}
+
+/// Public state of the Logs tab. `build()` wires all signals; callers only
+/// keep the value alive and connect `close` if they want to hide the dock.
+pub struct LogViewerPanel {
+    pub root: gtk::Box,
+    pub host: gtk::Entry,
+    pub path: gtk::Entry,
+    pub filter: gtk::Entry,
+    pub refresh: gtk::Button,
+    pub pause: gtk::Button,
+    pub close: gtk::Button,
+    pub view: gtk::TextView,
+    pub status: gtk::Label,
+    state: Arc<Mutex<LogState>>,
+}
+
+impl LogViewerPanel {
+    pub fn build() -> LogViewerPanel {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        root.set_width_request(220);
+        root.set_no_show_all(true);
+
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        header.set_margin_top(6);
+        header.set_margin_bottom(4);
+        header.set_margin_start(8);
+        header.set_margin_end(8);
+        let title = gtk::Label::new(None);
+        title.set_markup("<b>Logs</b>");
+        title.set_halign(gtk::Align::Start);
+        title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        header.pack_start(&title, true, true, 0);
+        let close = gtk::Button::with_label("Close");
+        close.set_tooltip_text(Some("Hide the shared dock"));
+        header.pack_end(&close, false, false, 0);
+        root.pack_start(&header, false, false, 0);
+
+        let host = gtk::Entry::new();
+        host.set_margin_start(8);
+        host.set_margin_end(8);
+        host.set_placeholder_text(Some("user@host (vuoto = localhost)"));
+        let path = gtk::Entry::new();
+        path.set_margin_start(8);
+        path.set_margin_end(8);
+        path.set_text("/var/log");
+        path.set_tooltip_text(Some("Remote path, or journal / journal:<unit>"));
+        let filter = gtk::Entry::new();
+        filter.set_margin_start(8);
+        filter.set_margin_end(8);
+        filter.set_placeholder_text(Some("Filtro regex (vuoto = tutto)"));
+        root.pack_start(&host, false, false, 0);
+        root.pack_start(&path, false, false, 0);
+        root.pack_start(&filter, false, false, 0);
+
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        actions.set_margin_start(8);
+        actions.set_margin_end(8);
+        actions.set_margin_top(4);
+        let refresh = gtk::Button::with_label("Refresh");
+        let pause = gtk::Button::with_label("Pause");
+        actions.pack_start(&refresh, false, false, 0);
+        actions.pack_start(&pause, false, false, 0);
+        root.pack_start(&actions, false, false, 0);
+
+        let table = gtk::TextTagTable::new();
+        for (name, color) in [
+            ("log-error", "#ff6b6b"),
+            ("log-warn", "#f0c674"),
+            ("log-info", "#8abeb7"),
+            ("log-other", "#c0c0c0"),
+            ("log-header", "#7f9fbf"),
+        ] {
+            let tag = gtk::TextTag::new(Some(name));
+            tag.set_property("foreground", color);
+            table.add(&tag);
+        }
+        let buffer = gtk::TextBuffer::new(Some(&table));
+        let view = gtk::TextView::with_buffer(&buffer);
+        view.set_monospace(true);
+        view.set_editable(false);
+        view.set_cursor_visible(false);
+        view.set_wrap_mode(gtk::WrapMode::Word);
+        let scroller = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
+        scroller.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
+        scroller.set_overlay_scrolling(true);
+        scroller.set_min_content_height(180);
+        scroller.set_margin_top(6);
+        scroller.set_margin_start(8);
+        scroller.set_margin_end(8);
+        scroller.add(&view);
+        root.pack_start(&scroller, true, true, 0);
+
+        let status = gtk::Label::new(Some("Premi Refresh per leggere i log remoti"));
+        status.set_xalign(0.0);
+        status.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        status.set_margin_start(8);
+        status.set_margin_end(8);
+        status.set_margin_top(4);
+        status.set_margin_bottom(6);
+        status.style_context().add_class("dim-label");
+        root.pack_start(&status, false, false, 0);
+
+        let state = Arc::new(Mutex::new(LogState {
+            stop: Arc::new(AtomicBool::new(false)),
+            generation: 0,
+            paused: false,
+        }));
+        let ui = Ui::new(&status, &view);
+
+        let refresh_state = state.clone();
+        let refresh_ui = ui.clone();
+        let refresh_host = host.clone();
+        let refresh_path = path.clone();
+        let refresh_filter = filter.clone();
+        let refresh_status = status.clone();
+        refresh.connect_clicked(move |_| {
+            let pattern_text = refresh_filter.text().to_string();
+            let pattern = if pattern_text.trim().is_empty() {
+                None
+            } else {
+                match regex::Regex::new(&pattern_text) {
+                    Ok(regex) => Some(regex),
+                    Err(error) => {
+                        refresh_status.set_text(&format!("Regex non valida: {error}"));
+                        return;
+                    }
+                }
+            };
+            refresh_status.set_text("Lettura in corso...");
+            spawn_load(
+                &refresh_state,
+                &refresh_ui,
+                refresh_host.text().to_string(),
+                parse_source(&refresh_path.text()),
+                pattern,
+            );
+        });
+
+        let activate_state = state.clone();
+        let activate_ui = ui.clone();
+        let activate_host = host.clone();
+        let activate_path = path.clone();
+        let activate_filter = filter.clone();
+        let activate_status = status.clone();
+        filter.connect_activate(move |_| {
+            let pattern_text = activate_filter.text().to_string();
+            let pattern = if pattern_text.trim().is_empty() {
+                None
+            } else {
+                match regex::Regex::new(&pattern_text) {
+                    Ok(regex) => Some(regex),
+                    Err(error) => {
+                        activate_status.set_text(&format!("Regex non valida: {error}"));
+                        return;
+                    }
+                }
+            };
+            activate_status.set_text("Lettura in corso...");
+            spawn_load(
+                &activate_state,
+                &activate_ui,
+                activate_host.text().to_string(),
+                parse_source(&activate_path.text()),
+                pattern,
+            );
+        });
+
+        let pause_state = state.clone();
+        let pause_status = status.clone();
+        pause.connect_clicked(move |button| {
+            let mut state = pause_state.lock().expect("log viewer state lock poisoned");
+            state.paused = !state.paused;
+            state.generation = state.generation.wrapping_add(1);
+            let paused = state.paused;
+            button.set_label(if paused { "Resume" } else { "Pause" });
+            pause_status.set_text(if paused {
+                "In pausa — la vista non viene aggiornata"
+            } else {
+                "Ripreso — premi Refresh per rileggere"
+            });
+        });
+
+        LogViewerPanel {
+            root,
+            host,
+            path,
+            filter,
+            refresh,
+            pause,
+            close,
+            view,
+            status,
+            state,
+        }
+    }
+
+    /// Prefill the target from the active SSH connection, if any.
+    pub fn set_target(&self, target: Option<String>) {
+        if let Some(target) = target.filter(|target| !target.is_empty()) {
+            self.host.set_text(&target);
+        }
+    }
+
+    /// Release the worker when the dock is hidden.
+    pub fn pause(&self) {
+        let mut state = self.state.lock().expect("log viewer state lock poisoned");
+        state.stop.store(true, Ordering::SeqCst);
+        state.generation = state.generation.wrapping_add(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quoting_protects_spaces_and_quotes() {
+        assert_eq!(shell_quote("/var/log"), "'/var/log'");
+        assert_eq!(shell_quote("a b'c"), "'a b'\\''c'");
+    }
+
+    #[test]
+    fn remote_script_escapes_nested_quotes() {
+        assert_eq!(
+            grep_suffix(Some("ERROR|WARN")),
+            " | grep -E -n 'ERROR|WARN'"
+        );
+        let body = format!("tail -n 200 {}", shell_quote("/var/log/a'b.log"));
+        let script = remote_script(&body);
+        assert!(script.starts_with("timeout 5 sh -c '"));
+        assert!(script.contains("'\\''"), "inner quotes must be escaped");
+        assert_eq!(remote_grep_pattern(None), None);
+        let regex = regex::Regex::new(r"\d+").unwrap();
+        assert_eq!(remote_grep_pattern(Some(&regex)), None);
+        let regex = regex::Regex::new("ERROR|WARN").unwrap();
+        assert_eq!(remote_grep_pattern(Some(&regex)), Some("ERROR|WARN".into()));
+    }
+
+    #[test]
+    fn source_selects_files_or_journal() {
+        assert_eq!(
+            parse_source("/var/log"),
+            LogSource::Files("/var/log".into())
+        );
+        assert_eq!(parse_source("journal"), LogSource::Journal(None));
+        assert_eq!(
+            parse_source(" journal:ssh "),
+            LogSource::Journal(Some("ssh".into()))
+        );
+    }
+
+    #[test]
+    fn levels_are_detected_case_insensitively() {
+        assert_eq!(
+            parse_log_level("2026-01-01 ERROR disk full"),
+            LogLevel::Error
+        );
+        assert_eq!(parse_log_level("warn: retry"), LogLevel::Warn);
+        assert_eq!(parse_log_level("INFO started"), LogLevel::Info);
+        assert_eq!(parse_log_level("noise"), LogLevel::Other);
+        assert_eq!(LogLevel::Error.tag(), "log-error");
+    }
+
+    #[test]
+    fn remote_output_drops_empty_lines_and_carriage_returns() {
+        assert_eq!(
+            parse_remote_output("==> a <==\r\nfirst\r\n\r\nsecond\r\n"),
+            vec!["==> a <==", "first", "second"]
+        );
+    }
+
+    #[test]
+    fn regex_filter_is_applied_to_plain_lines() {
+        let lines = parse_remote_output("ERROR bad\nINFO ok\nWARN bad\n");
+        let regex = regex::Regex::new("bad").unwrap();
+        let matched: Vec<&String> = lines.iter().filter(|line| regex.is_match(line)).collect();
+        assert_eq!(
+            matched,
+            vec![&"ERROR bad".to_string(), &"WARN bad".to_string()]
+        );
+    }
+}

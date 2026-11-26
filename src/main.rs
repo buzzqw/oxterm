@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 
 mod agent_panel;
+mod connection_uri_ui;
 mod connections_form;
 mod connections_panel;
 mod connections_ui;
@@ -11,7 +12,10 @@ mod extensions;
 mod file_browser;
 mod history;
 mod icons;
+mod import_sync_ui;
+mod log_viewer_panel;
 mod logging;
+mod monitor_panel;
 mod notes;
 mod notes_index;
 mod notes_panel;
@@ -24,6 +28,7 @@ mod settings_dialog;
 mod status_bar;
 mod system_stats;
 mod terminal;
+mod transfer_queue_ui;
 mod tunnel_manager;
 mod window;
 mod workspace_ui;
@@ -259,6 +264,9 @@ impl App {
             let windows = app.windows();
             if !windows.is_empty() && !explicit {
                 windows[0].present();
+                if let Some(win) = windows[0].downcast_ref::<MainWindow>() {
+                    open_cli_uris(win, &args);
+                }
                 return 0;
             }
             let win = MainWindow::new(
@@ -278,6 +286,7 @@ impl App {
             );
             app.add_window(&win);
             win.present();
+            open_cli_uris(&win, &args);
             #[cfg(debug_assertions)]
             if let Some(scenario) = std::env::var_os("OXTERM_TEST_SCENARIO") {
                 window::test_scenario::schedule(app, &win, scenario.to_string_lossy().into_owned());
@@ -311,6 +320,20 @@ impl App {
             return 1;
         }
         code
+    }
+}
+
+/// Open `ssh://host`, `rdp://host`, … passed as arguments, in the window that
+/// is already on screen. A URI never carries a password: the connection flow
+/// asks for it through the usual askpass/keyring path.
+fn open_cli_uris(win: &MainWindow, args: &[String]) {
+    for arg in args {
+        if !headless::connection_uri::is_connection_uri(arg) {
+            continue;
+        }
+        if let Err(error) = win.open_connection_uri(arg) {
+            eprintln!("{}: {}: {}", window::APP_NAME, arg, error);
+        }
     }
 }
 

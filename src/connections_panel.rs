@@ -5,11 +5,15 @@
 //! `headless::connections` computes; the behaviour lives in `connections_ui`.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
+use gtk::gdk;
 use gtk::prelude::*;
 
 use crate::headless::connections::{Entry, Kind, Node, Protocol, UsageMap};
+use crate::headless::reachability;
 
 const COLUMN_MARKUP: u32 = 0;
 const COLUMN_ID: u32 = 1;
@@ -29,6 +33,13 @@ pub(crate) const OPEN_COLOR: &str = "#2e9d4f";
 pub(crate) const TUNNEL_UP_COLOR: &str = "#1d6fb8";
 pub(crate) const TUNNEL_STARTING_COLOR: &str = "#b26a00";
 pub(crate) const FAILED_COLOR: &str = "#c62828";
+pub(crate) const ONLINE_COLOR: &str = "#2e9d4f";
+pub(crate) const OFFLINE_COLOR: &str = "#c62828";
+pub(crate) const UNKNOWN_COLOR: &str = "#6b7280";
+
+/// DnD target shared with the terminal drop target. The row id is sent as raw
+/// bytes; `text/plain` is offered as a fallback for other applications.
+pub(crate) const DRAG_TARGET: &str = "oxterm-connection-id";
 
 /// What a row shows besides the entry itself.
 #[derive(Clone, Debug, Default)]
@@ -42,6 +53,8 @@ pub struct RowDecoration {
     pub alert_color: Option<String>,
     /// One line per tunnel with its state, for the tooltip.
     pub tunnel_lines: Vec<String>,
+    /// Last reachability probe for this connection, when one has run.
+    pub reach: Option<reachability::Reachability>,
 }
 
 impl RowDecoration {
@@ -163,8 +176,18 @@ pub struct ConnectionsPanel {
     pub tunnels: gtk::Button,
     /// Shows only connections with open tabs or tunnels.
     pub live_only: gtk::ToggleButton,
+    /// Shows only connections that answered the last reachability probe.
+    pub reachable_only: gtk::ToggleButton,
     pub status: gtk::Label,
     pub data: RefCell<Option<PanelData>>,
+    /// Last probe per connection id, written by the worker in `connections_ui`.
+    pub reach: RefCell<HashMap<String, reachability::Reachability>>,
+    /// Timer driving the probes, removed when the panel is hidden or destroyed.
+    pub reach_timer: RefCell<Option<glib::SourceId>>,
+    /// Avoids overlapping batches when a probe takes longer than one interval.
+    pub reach_busy: Cell<bool>,
+    /// Set when the window is gone, so an in-flight batch drops its results.
+    pub reach_stop: Arc<AtomicBool>,
     store: gtk::TreeStore,
     collapsed: RefCell<HashSet<String>>,
     /// True while `populate` runs: the expand signals it causes are not choices
@@ -206,12 +229,15 @@ impl ConnectionsPanel {
         search_row.set_margin_end(8);
         search_row.set_margin_bottom(6);
         let search = gtk::SearchEntry::new();
-        search.set_width_chars(8);
+        search.set_width_chars(6);
         search.set_placeholder_text(Some("Search name, host, group, tag, notes"));
         search_row.pack_start(&search, true, true, 0);
         let live_only = gtk::ToggleButton::with_label("Active");
         live_only.set_tooltip_text(Some("Show only connections with open tabs or tunnels"));
         search_row.pack_start(&live_only, false, false, 0);
+        let reachable_only = gtk::ToggleButton::with_label("Reachable");
+        reachable_only.set_tooltip_text(Some("Show only connections that answered the last probe"));
+        search_row.pack_start(&reachable_only, false, false, 0);
         root.pack_start(&search_row, false, false, 0);
 
         let store =
@@ -220,7 +246,44 @@ impl ConnectionsPanel {
         tree.set_headers_visible(false);
         tree.set_enable_search(false);
         tree.set_activate_on_single_click(false);
+        tree.selection().set_mode(gtk::SelectionMode::Multiple);
         tree.set_tooltip_column(COLUMN_TOOLTIP as i32);
+        // Drag a row (or several) onto a terminal to connect there. Terminals
+        // advertise the same private target; plain text is a fallback.
+        let row_target = gtk::TargetEntry::new(DRAG_TARGET, gtk::TargetFlags::SAME_APP, 0);
+        let text_target = gtk::TargetEntry::new("text/plain", gtk::TargetFlags::SAME_APP, 1);
+        tree.drag_source_set(
+            gdk::ModifierType::BUTTON1_MASK,
+            &[row_target, text_target],
+            gdk::DragAction::MOVE | gdk::DragAction::COPY,
+        );
+        tree.connect_drag_data_get(|tree, _, data, _, _| {
+            let Some(model) = tree.model() else {
+                return;
+            };
+            let id = tree
+                .cursor()
+                .0
+                .and_then(|path| model.iter(&path))
+                .and_then(|iter| {
+                    model
+                        .value(&iter, COLUMN_ID as i32)
+                        .get::<String>()
+                        .ok()
+                        .filter(|id| !id.is_empty())
+                })
+                .or_else(|| {
+                    let (model, iter) = tree.selection().selected()?;
+                    model
+                        .value(&iter, COLUMN_ID as i32)
+                        .get::<String>()
+                        .ok()
+                        .filter(|id| !id.is_empty())
+                });
+            if let Some(id) = id {
+                data.set(&data.target(), 8, id.as_bytes());
+            }
+        });
         let renderer = gtk::CellRendererText::new();
         renderer.set_ellipsize(pango::EllipsizeMode::End);
         renderer.set_padding(4, 3);
@@ -257,12 +320,25 @@ impl ConnectionsPanel {
             close,
             tunnels,
             live_only,
+            reachable_only,
             status,
             data: RefCell::new(None),
+            reach: RefCell::new(HashMap::new()),
+            reach_timer: RefCell::new(None),
+            reach_busy: Cell::new(false),
+            reach_stop: Arc::new(AtomicBool::new(false)),
             store,
             collapsed: RefCell::new(HashSet::new()),
             rebuilding: Cell::new(false),
         }
+    }
+
+    /// Stop periodic probes and make any in-flight batch drop its results.
+    pub fn stop_reachability_timer(&self) {
+        if let Some(source) = self.reach_timer.borrow_mut().take() {
+            source.remove();
+        }
+        self.reach_stop.store(true, Ordering::SeqCst);
     }
 
     /// Remember which groups the user folded, so a refresh does not undo it.
@@ -315,7 +391,7 @@ impl ConnectionsPanel {
         entries: &[Entry],
         decorate: &dyn Fn(&Entry) -> &'a RowDecoration,
     ) {
-        let selected = self.selected_target();
+        let selected = self.selected_targets();
         self.rebuilding.set(true);
         self.tree.set_model(None::<&gtk::TreeStore>);
         self.store.clear();
@@ -339,7 +415,7 @@ impl ConnectionsPanel {
             }
         }
         self.rebuilding.set(false);
-        if let Some((group, id)) = selected {
+        for (group, id) in selected {
             self.select_target(&group, &id);
         }
     }
@@ -409,6 +485,7 @@ impl ConnectionsPanel {
         }
     }
 
+    /// The primary selection, for a single click or a keyboard action.
     pub fn selected_id(&self) -> Option<String> {
         let (model, iter) = self.tree.selection().selected()?;
         let id = model
@@ -416,6 +493,26 @@ impl ConnectionsPanel {
             .get::<String>()
             .unwrap_or_default();
         (!id.is_empty()).then_some(id)
+    }
+
+    /// Ids of every selected connection row. Group rows have an empty id and
+    /// are skipped; a host listed in two groups is returned only once.
+    pub fn selected_ids(&self) -> Vec<String> {
+        let (paths, _) = self.tree.selection().selected_rows();
+        self.ids_for_paths(&paths)
+    }
+
+    /// Ids of the connections at `paths`, skipping group rows and duplicates.
+    pub fn ids_for_paths(&self, paths: &[gtk::TreePath]) -> Vec<String> {
+        let mut ids = Vec::new();
+        for path in paths {
+            if let Some(id) = self.id_at(path) {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+        ids
     }
 
     /// The connection at `path`; `None` for a group row.
@@ -448,22 +545,31 @@ impl ConnectionsPanel {
         ids
     }
 
-    fn selected_target(&self) -> Option<(String, String)> {
-        let (model, iter) = self.tree.selection().selected()?;
-        let id = model
-            .value(&iter, COLUMN_ID as i32)
-            .get::<String>()
-            .unwrap_or_default();
-        if id.is_empty() {
-            return None;
+    /// Group and id of every selected row, so a rebuild can restore the whole
+    /// multi-selection instead of only its primary row.
+    fn selected_targets(&self) -> Vec<(String, String)> {
+        let (paths, model) = self.tree.selection().selected_rows();
+        let mut targets = Vec::new();
+        for path in paths {
+            let Some(iter) = model.iter(&path) else {
+                continue;
+            };
+            let id = model
+                .value(&iter, COLUMN_ID as i32)
+                .get::<String>()
+                .unwrap_or_default();
+            if id.is_empty() {
+                continue;
+            }
+            let mut parent = path.clone();
+            let group = if parent.up() && parent.depth() > 0 {
+                self.group_key(&parent)
+            } else {
+                String::new()
+            };
+            targets.push((group, id));
         }
-        let mut parent = model.path(&iter)?;
-        let group = if parent.up() && parent.depth() > 0 {
-            self.group_key(&parent)
-        } else {
-            String::new()
-        };
-        Some((group, id))
+        targets
     }
 
     fn path_visible(&self, path: &gtk::TreePath) -> bool {
@@ -551,6 +657,16 @@ fn row_markup(entry: &Entry, decoration: &RowDecoration) -> String {
     } else {
         "<span alpha=\"35%\">\u{25CB}</span> ".to_string()
     };
+    // A reachability badge next to the state dot: green answered, red refused
+    // or timed out, grey not probed yet.
+    if let Some(reach) = &decoration.reach {
+        let (color, label) = match reach.state {
+            reachability::ProbeState::Online => (ONLINE_COLOR, "Online"),
+            reachability::ProbeState::Offline => (OFFLINE_COLOR, "Offline"),
+            reachability::ProbeState::Unknown => (UNKNOWN_COLOR, "Unknown"),
+        };
+        markup.push_str(&badge(color, label));
+    }
     // A chip in a fixed column says what kind of connection this is before the
     // name is read, so two similarly named hosts are not mistaken for each other.
     markup.push_str(&protocol_chip(connection.protocol));
@@ -639,6 +755,13 @@ fn row_tooltip(entry: &Entry, decoration: &RowDecoration) -> String {
     }
     if !connection.notes.is_empty() {
         lines.push(connection.notes.clone());
+    }
+    if let Some(reach) = &decoration.reach {
+        lines.extend(
+            reachability::tooltip_lines(reach)
+                .lines()
+                .map(|line| line.to_string()),
+        );
     }
     match decoration.open_tabs {
         0 => {}

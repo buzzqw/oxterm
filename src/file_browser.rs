@@ -1,6 +1,7 @@
 //! Two-pane file browser for SFTP and FTP: this computer on the left, the server
-//! on the right. Transfers run one at a time on a worker thread, so a large file
-//! never freezes the window, and the panes stay usable meanwhile.
+//! on the right. Copies go through the parallel transfer queue (with the
+//! original one-at-a-time worker as a fallback), so a large file never freezes
+//! the window and the panes stay usable meanwhile.
 //!
 //! Everything remote goes through `headless::remote_files`, which drives the
 //! system's `sftp` and `lftp`.
@@ -23,6 +24,8 @@ use crate::headless::askpass;
 use crate::headless::bookmarks::{self, Bookmark, Side};
 use crate::headless::connections::{Auth, Connection};
 use crate::headless::remote_files::{self, human_size, Operation, RemoteEntry};
+use crate::headless::sync::{self, SyncItem, SyncPlan};
+use crate::headless::transfer_queue::TransferDirection;
 
 const COLUMN_DISPLAY: u32 = 0;
 const COLUMN_NAME: u32 = 1;
@@ -68,12 +71,8 @@ enum Job {
         remote: String,
         name: String,
     },
-    Sync {
-        upload: bool,
-        from: String,
-        to: String,
-        cancel: Arc<AtomicBool>,
-    },
+    /// Read a listing for the compare dialog through the browser's cache.
+    SyncList(String),
     /// Switch the worker's copy of the connection to the keyring helper.
     UseKeyring,
 }
@@ -99,12 +98,7 @@ enum Outcome {
         name: String,
         result: Result<(), remote_files::TransferError>,
     },
-    Synced {
-        upload: bool,
-        from: String,
-        to: String,
-        result: Result<(), remote_files::TransferError>,
-    },
+    SyncListed(String, Result<Vec<RemoteEntry>, String>),
     AuthStored,
 }
 
@@ -187,17 +181,10 @@ fn worker(mut connection: Connection, jobs: mpsc::Receiver<Job>, results: mpsc::
                 remote,
                 name,
             },
-            Job::Sync {
-                upload,
-                from,
-                to,
-                cancel,
-            } => Outcome::Synced {
-                upload,
-                result: remote_files::sync_directory(&connection, upload, &from, &to, &cancel),
-                from,
-                to,
-            },
+            Job::SyncList(path) => {
+                let listing = remote_files::list(&connection, &path);
+                Outcome::SyncListed(path, listing)
+            }
             Job::UseKeyring => unreachable!("handled before the job match"),
         }))
         .unwrap_or_else(|_| Outcome::Failed("The file operation stopped unexpectedly".to_string()));
@@ -296,11 +283,9 @@ impl Pane {
         let bookmarks = gtk::Button::with_label("Bookmarks");
         bookmarks.set_tooltip_text(Some("Jump to a saved folder"));
         let sync = gtk::Button::with_label(if remote { "← Sync" } else { "Sync →" });
-        sync.set_tooltip_text(Some(if remote {
-            "Copy every item in this folder to this computer"
-        } else {
-            "Copy every item in this folder to the server"
-        }));
+        sync.set_tooltip_text(Some(
+            "Compare the two folders and copy the selected differences",
+        ));
         tools.pack_start(&bookmark, false, false, 0);
         tools.pack_start(&bookmarks, false, false, 0);
         tools.pack_start(&sync, false, false, 0);
@@ -373,24 +358,6 @@ impl Pane {
                 ))
             })
             .collect()
-    }
-
-    /// Every row as (name, is_dir), in display order.
-    fn all(&self) -> Vec<(String, bool)> {
-        let mut rows = Vec::new();
-        self.store.foreach(|model, _, iter| {
-            let name = model
-                .value(iter, COLUMN_NAME as i32)
-                .get::<String>()
-                .unwrap_or_default();
-            let is_dir = model
-                .value(iter, COLUMN_IS_DIR as i32)
-                .get::<bool>()
-                .unwrap_or(false);
-            rows.push((name, is_dir));
-            false
-        });
-        rows
     }
 
     fn contains(&self, name: &str) -> bool {
@@ -542,6 +509,134 @@ fn local_entries(path: &Path) -> Result<Vec<RemoteEntry>, String> {
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     Ok(entries)
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's
+/// civil-date algorithm). Kept here so remote listings can be compared with
+/// local mtimes without pulling a date crate into the GUI.
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let y = year - i64::from(month <= 2);
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = i64::from(month) + if month > 2 { -3 } else { 9 };
+    let doy = (153 * mp + 2) / 5 + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    (y + i64::from(month <= 2), month as u32, day as u32)
+}
+
+fn month_number(word: &str) -> Option<u32> {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    MONTHS
+        .iter()
+        .position(|name| name.eq_ignore_ascii_case(word))
+        .map(|index| index as u32 + 1)
+}
+
+/// Turn `ls -l`'s `Mon DD HH:MM` / `Mon DD YYYY` into Unix seconds. The clock
+/// form has minute resolution; an old date from the current year (a date in the
+/// future by more than a day) belongs to the previous year, as `ls` does.
+fn remote_mtime(text: &str, now_secs: i64) -> Option<i64> {
+    let mut words = text.split_whitespace();
+    let month = month_number(words.next()?)?;
+    let day: u32 = words.next()?.parse().ok()?;
+    let last = words.next()?;
+    if words.next().is_some() || day == 0 || day > 31 {
+        return None;
+    }
+    let (hour, minute, inferred_year) = match last.split_once(':') {
+        Some((hour, minute)) => (hour.parse::<u32>().ok()?, minute.parse::<u32>().ok()?, true),
+        None => (0, 0, false),
+    };
+    if hour > 23 || minute > 59 {
+        return None;
+    }
+    let year = if inferred_year {
+        civil_from_days(now_secs.div_euclid(86_400)).0
+    } else {
+        last.parse::<i64>().ok()?
+    };
+    let at = |year: i64| {
+        days_from_civil(year, month, day) * 86_400 + i64::from(hour) * 3600 + i64::from(minute) * 60
+    };
+    let mut seconds = at(year);
+    if inferred_year && seconds > now_secs + 86_400 {
+        seconds = at(year - 1);
+    }
+    Some(seconds)
+}
+
+/// Files in a local folder as one-sided `SyncItem`s (paths are relative).
+fn local_sync_items(directory: &Path) -> Result<Vec<SyncItem>, String> {
+    let reader = std::fs::read_dir(directory)
+        .map_err(|error| format!("{}: {}", directory.display(), error))?;
+    let mut items = Vec::new();
+    for entry in reader.flatten() {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        // Folders and symlinks are not transferred by the compare dialog.
+        if !kind.is_file() {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let mtime = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or(0);
+        items.push(SyncItem {
+            path: entry.file_name().to_string_lossy().into_owned(),
+            local_size: metadata.len(),
+            remote_size: 0,
+            local_mtime: mtime,
+            remote_mtime: 0,
+        });
+    }
+    Ok(items)
+}
+
+/// Files in a remote listing as one-sided `SyncItem`s.
+fn remote_sync_items(entries: &[RemoteEntry], now_secs: i64) -> Vec<SyncItem> {
+    entries
+        .iter()
+        .filter(|entry| !entry.is_dir && !entry.is_link)
+        .map(|entry| SyncItem {
+            path: entry.name.clone(),
+            local_size: 0,
+            remote_size: entry.size,
+            local_mtime: 0,
+            remote_mtime: remote_mtime(&entry.modified, now_secs).unwrap_or(0),
+        })
+        .collect()
+}
+
+fn sync_plans(local: &[SyncItem], remote: &[RemoteEntry], now_secs: i64) -> Vec<SyncPlan> {
+    sync::compare(local, &remote_sync_items(remote, now_secs), 2)
 }
 
 impl Browser {
@@ -740,19 +835,45 @@ impl Browser {
         {
             return;
         }
+        let to = remote_files::join(to_dir, name);
+        let direction = if upload {
+            TransferDirection::Upload
+        } else {
+            TransferDirection::Download
+        };
+        let local = if upload { from.clone() } else { to.clone() };
+        let remote = if upload { to.clone() } else { from.clone() };
+        if let Some(id) = crate::transfer_queue_ui::try_enqueue(
+            direction,
+            local,
+            remote,
+            is_dir,
+            &self.connection,
+        ) {
+            self.say(&format!("Queued {} (transfer #{})", name, id));
+            return;
+        }
+        // The parallel queue can be switched off; the original single-file
+        // worker stays available as a fallback.
+        self.legacy_transfer(upload, from, to, name, is_dir);
+    }
+
+    /// The older one-at-a-time transfer path, kept for when the parallel queue
+    /// is unavailable.
+    fn legacy_transfer(&self, upload: bool, from: String, to: String, label: &str, is_dir: bool) {
         if self.transfers.get() == 0 {
             self.cancel.store(false, Ordering::SeqCst);
         }
         self.transfers.set(self.transfers.get() + 1);
         self.cancel_button.set_sensitive(true);
-        self.queued.borrow_mut().push_back(name.to_string());
+        self.queued.borrow_mut().push_back(label.to_string());
         self.update_queue_text();
         self.submit(Job::Transfer {
             upload,
             is_dir,
             from,
-            to: remote_files::join(to_dir, name),
-            label: name.to_string(),
+            to,
+            label: label.to_string(),
             cancel: self.cancel.clone(),
         });
     }
@@ -855,40 +976,217 @@ impl Browser {
         }
     }
 
-    /// Copy the whole current folder tree to the other pane.
-    fn sync_current(&self, upload: bool) {
-        let (source, target) = if upload {
-            (&self.local, &self.remote)
-        } else {
-            (&self.remote, &self.local)
-        };
-        if source.all().is_empty() {
-            self.say("This folder is empty");
+    /// Compare the two folders and let the user pick the differences to copy.
+    fn sync_compare(&self) {
+        let local_dir = self.local.current();
+        if let Err(error) = local_sync_items(Path::new(&local_dir)) {
+            self.say(&error);
             return;
         }
-        let question = format!(
-            "Copy every item from\n{}\nto\n{}\n\nExisting files are overwritten. \
-             Extra files in the destination are kept.",
-            source.current(),
-            target.current()
+        let remote_dir = self.remote.current();
+        self.say(&format!("Comparing {} with {}...", local_dir, remote_dir));
+        self.submit(Job::SyncList(remote_dir));
+    }
+
+    /// Show the comparison and queue the accepted operations as transfers.
+    fn show_sync_dialog(&self, plans: Vec<SyncPlan>, local_dir: String, remote_dir: String) {
+        const PLAN_SELECTED: u32 = 0;
+        const PLAN_ACTION: u32 = 1;
+        const PLAN_PATH: u32 = 2;
+        const PLAN_DETAIL: u32 = 3;
+
+        let dialog = gtk::Dialog::with_buttons(
+            Some("Synchronize folders"),
+            Some(&self.window),
+            gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+            &[
+                ("Cancel", gtk::ResponseType::Cancel),
+                ("Sync selected", gtk::ResponseType::Accept),
+            ],
         );
-        if !self.confirm(&question) {
+        dialog.set_default_response(gtk::ResponseType::Accept);
+        dialog.set_default_size(780, 480);
+        let content = dialog.content_area();
+        let info = gtk::Label::new(Some(&format!(
+            "<b>Local:</b> {}\n<b>Remote:</b> {}",
+            glib::markup_escape_text(&local_dir),
+            glib::markup_escape_text(&remote_dir)
+        )));
+        info.set_xalign(0.0);
+        info.set_use_markup(true);
+        content.pack_start(&info, false, false, 0);
+
+        let store = gtk::ListStore::new(&[
+            glib::Type::BOOL,
+            glib::Type::STRING,
+            glib::Type::STRING,
+            glib::Type::STRING,
+        ]);
+        let tree = gtk::TreeView::with_model(&store);
+        tree.set_tooltip_column(PLAN_DETAIL as i32);
+        let toggle = gtk::CellRendererToggle::new();
+        toggle.set_activatable(true);
+        let column = gtk::TreeViewColumn::new();
+        column.set_title("Apply");
+        TreeViewColumnExt::pack_start(&column, &toggle, true);
+        TreeViewColumnExt::add_attribute(&column, &toggle, "active", PLAN_SELECTED as i32);
+        tree.append_column(&column);
+        for (title, column_id) in [("Action", PLAN_ACTION), ("Path", PLAN_PATH)] {
+            let column = gtk::TreeViewColumn::new();
+            column.set_title(title);
+            column.set_expand(true);
+            column.set_resizable(true);
+            let renderer = gtk::CellRendererText::new();
+            renderer.set_ellipsize(pango::EllipsizeMode::End);
+            TreeViewColumnExt::pack_start(&column, &renderer, true);
+            TreeViewColumnExt::add_attribute(&column, &renderer, "text", column_id as i32);
+            tree.append_column(&column);
+        }
+        let scroll = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
+        scroll.set_shadow_type(gtk::ShadowType::In);
+        scroll.set_vexpand(true);
+        scroll.add(&tree);
+        content.pack_start(&scroll, true, true, 0);
+
+        let plans = Rc::new(RefCell::new(plans));
+        let refresh = {
+            let store = store.clone();
+            let plans = plans.clone();
+            Rc::new(move || {
+                store.clear();
+                for plan in plans.borrow().iter() {
+                    let action = match plan.action {
+                        sync::SyncAction::Upload => "Upload",
+                        sync::SyncAction::Download => "Download",
+                        sync::SyncAction::Same => "Same",
+                        sync::SyncAction::Conflict => "Conflict",
+                    };
+                    let detail = format!(
+                        "local: {} ({})\nremote: {} ({})",
+                        human_size(plan.item.local_size),
+                        plan.item.local_mtime,
+                        human_size(plan.item.remote_size),
+                        plan.item.remote_mtime
+                    );
+                    store.set(
+                        &store.append(),
+                        &[
+                            (PLAN_SELECTED, &plan.selected),
+                            (PLAN_ACTION, &action),
+                            (PLAN_PATH, &plan.item.path),
+                            (PLAN_DETAIL, &detail),
+                        ],
+                    );
+                }
+            })
+        };
+        refresh();
+
+        let store_for_toggle = store.clone();
+        let plans_for_toggle = plans.clone();
+        let refresh_for_toggle = refresh.clone();
+        toggle.connect_toggled(move |_, path| {
+            let Some(iter) = store_for_toggle.iter(&path) else {
+                return;
+            };
+            let Ok(item_path) = store_for_toggle
+                .value(&iter, PLAN_PATH as i32)
+                .get::<String>()
+            else {
+                return;
+            };
+            let selected = store_for_toggle
+                .value(&iter, PLAN_SELECTED as i32)
+                .get::<bool>()
+                .unwrap_or(false);
+            sync::set_selected(&mut plans_for_toggle.borrow_mut(), &item_path, !selected);
+            refresh_for_toggle();
+        });
+
+        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let select_all = gtk::Button::with_label("Select all");
+        let invert = gtk::Button::with_label("Invert");
+        buttons.pack_start(&select_all, false, false, 0);
+        buttons.pack_start(&invert, false, false, 0);
+        content.pack_start(&buttons, false, false, 0);
+        let plans_for_all = plans.clone();
+        let refresh_for_all = refresh.clone();
+        select_all.connect_clicked(move |_| {
+            sync::select_all(&mut plans_for_all.borrow_mut());
+            refresh_for_all();
+        });
+        let plans_for_invert = plans.clone();
+        let refresh_for_invert = refresh.clone();
+        invert.connect_clicked(move |_| {
+            let mut entries = plans_for_invert.borrow_mut();
+            let snapshot: Vec<(String, bool)> = entries
+                .iter()
+                .map(|plan| (plan.item.path.clone(), plan.selected))
+                .collect();
+            for (path, selected) in snapshot {
+                sync::set_selected(&mut entries, &path, !selected);
+            }
+            refresh_for_invert();
+        });
+
+        dialog.show_all();
+        let answer = dialog.run();
+        let operations = if answer == gtk::ResponseType::Accept {
+            sync::to_operations(&plans.borrow())
+        } else {
+            Vec::new()
+        };
+        // SAFETY of the GTK contract: `run` has returned and nothing else owns it.
+        unsafe {
+            dialog.destroy();
+        }
+        if operations.is_empty() {
             return;
         }
-        let from = source.current();
-        let to = target.current();
-        if self.transfers.get() == 0 {
-            self.cancel.store(false, Ordering::SeqCst);
+        let mut queued = 0;
+        for (direction, path) in operations {
+            let (local, remote, kind) = if direction == "upload" {
+                (
+                    remote_files::join(&local_dir, &path),
+                    remote_files::join(&remote_dir, &path),
+                    TransferDirection::Upload,
+                )
+            } else {
+                let destination = remote_files::join(&local_dir, &path);
+                if let Some(parent) = Path::new(&destination).parent() {
+                    if let Err(error) = std::fs::create_dir_all(parent) {
+                        self.say(&format!("{}: {}", parent.display(), error));
+                        continue;
+                    }
+                }
+                (
+                    destination,
+                    remote_files::join(&remote_dir, &path),
+                    TransferDirection::Download,
+                )
+            };
+            if crate::transfer_queue_ui::try_enqueue(
+                kind,
+                local.clone(),
+                remote.clone(),
+                false,
+                &self.connection,
+            )
+            .is_some()
+            {
+                queued += 1;
+            } else {
+                self.legacy_transfer(
+                    kind == TransferDirection::Upload,
+                    local,
+                    remote,
+                    &path,
+                    false,
+                );
+                queued += 1;
+            }
         }
-        self.transfers.set(self.transfers.get() + 1);
-        self.cancel_button.set_sensitive(true);
-        self.say(&format!("Syncing {}...", from));
-        self.submit(Job::Sync {
-            upload,
-            from,
-            to,
-            cancel: self.cancel.clone(),
-        });
+        self.say(&format!("Queued {} files for synchronization", queued));
     }
 
     /// Download the selected remote file to a temporary copy and open it; every
@@ -1259,26 +1557,24 @@ impl Browser {
                 }
                 self.say(&error)
             }
-            Outcome::Synced {
-                upload,
-                from,
-                to,
-                result,
-            } => {
-                self.transfer_finished();
-                match result {
-                    Ok(()) => {
-                        self.say(&format!(
-                            "Synced {} {} {}",
-                            from,
-                            if upload { "→" } else { "←" },
-                            to
-                        ));
-                        self.reload_remote();
-                        self.reload_local();
+            Outcome::SyncListed(remote_dir, Ok(entries)) => {
+                let local_dir = self.local.current();
+                let local = match local_sync_items(Path::new(&local_dir)) {
+                    Ok(items) => items,
+                    Err(error) => {
+                        self.say(&error);
+                        return;
                     }
-                    Err(error) => self.say(&format!("Sync failed: {}", error)),
+                };
+                let plans = sync_plans(&local, &entries, unix_now());
+                if plans.is_empty() {
+                    self.say("Both folders are up to date");
+                    return;
                 }
+                self.show_sync_dialog(plans, local_dir, remote_dir);
+            }
+            Outcome::SyncListed(_, Err(error)) => {
+                self.say(&format!("Cannot read the remote folder: {}", error))
             }
             Outcome::EditReady {
                 local,
@@ -1356,10 +1652,9 @@ fn connect_pane(browser: &Rc<Browser>, remote: bool) {
         }
     });
     let weak = Rc::downgrade(browser);
-    let upload = !remote;
     pane.sync.connect_clicked(move |_| {
         if let Some(browser) = weak.upgrade() {
-            browser.sync_current(upload);
+            browser.sync_compare();
         }
     });
     if let Some(edit) = pane.edit.clone() {
@@ -1588,8 +1883,11 @@ pub fn open_at(
     upload.set_tooltip_text(Some("Copy the selection to the server"));
     let download = gtk::Button::with_label("← Download");
     download.set_tooltip_text(Some("Copy the selection to this computer"));
+    let transfers = gtk::Button::with_label("Transfers");
+    transfers.set_tooltip_text(Some("Show the parallel transfer queue"));
     middle.pack_start(&upload, false, false, 0);
     middle.pack_start(&download, false, false, 0);
+    middle.pack_start(&transfers, false, false, 0);
     panes.pack_start(&middle, false, false, 0);
     panes.pack_start(&remote.root, true, true, 0);
     content.pack_start(&panes, true, true, 0);
@@ -1655,6 +1953,12 @@ pub fn open_at(
             }
         });
         let weak = Rc::downgrade(&browser);
+        transfers.connect_clicked(move |_| {
+            if let Some(browser) = weak.upgrade() {
+                crate::transfer_queue_ui::show_transfer_queue(&browser.window);
+            }
+        });
+        let weak = Rc::downgrade(&browser);
         password.connect_clicked(move |_| {
             if let Some(browser) = weak.upgrade() {
                 browser.prompt_password();
@@ -1667,6 +1971,17 @@ pub fn open_at(
             }
         });
     }
+    // Queued transfers refresh both panes when a copy ends, without keeping
+    // the browser alive: the listener only holds a weak reference.
+    crate::transfer_queue_ui::subscribe({
+        let weak = Rc::downgrade(&browser);
+        move || {
+            if let Some(browser) = weak.upgrade() {
+                browser.reload_local();
+                browser.reload_remote();
+            }
+        }
+    });
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
     browser.load_local(&home.to_string_lossy());
     match start.map(str::trim).filter(|path| !path.is_empty()) {
@@ -1713,5 +2028,81 @@ mod tests {
         assert_eq!(mode(&file), 0o600);
         assert_eq!(mode(file.parent().unwrap()), 0o700);
         std::fs::remove_dir_all(base).unwrap();
+    }
+
+    fn temp_dir() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "oxterm-sync-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn local_sync_items_capture_size_and_unix_mtime() {
+        let base = temp_dir();
+        std::fs::create_dir_all(base.join("folder")).unwrap();
+        std::fs::write(base.join("file.txt"), "hello").unwrap();
+        let before = unix_now();
+        let items = local_sync_items(&base).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].path, "file.txt");
+        assert_eq!(items[0].local_size, 5);
+        assert!(items[0].local_mtime >= before);
+        assert!(items[0].local_mtime <= unix_now() + 2);
+        assert_eq!(items[0].remote_size, 0);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn remote_mtime_reads_both_listing_formats() {
+        assert_eq!(
+            remote_mtime("Jan 1 2026", 1_800_000_000),
+            Some(1_767_225_600)
+        );
+        assert_eq!(remote_mtime("Feb 29 2024", 0), Some(1_709_164_800));
+        // Clock form has minute resolution; a date in next year means last year.
+        assert_eq!(
+            remote_mtime("Nov 26 15:04", 1_795_705_800),
+            Some(1_795_705_440)
+        );
+        assert_eq!(
+            remote_mtime("Dec 25 12:00", 1_795_705_800),
+            Some(1_766_664_000)
+        );
+        assert_eq!(remote_mtime("not a date", 0), None);
+    }
+
+    #[test]
+    fn remote_sync_items_and_compare_produce_a_plan() {
+        let entries = [
+            RemoteEntry {
+                name: "new.txt".to_string(),
+                is_dir: false,
+                is_link: false,
+                size: 12,
+                modified: "Jan 1 2026".to_string(),
+                permissions: String::new(),
+            },
+            RemoteEntry {
+                name: "folder".to_string(),
+                is_dir: true,
+                is_link: false,
+                size: 4096,
+                modified: "Jan 1 2026".to_string(),
+                permissions: String::new(),
+            },
+        ];
+        let plans = sync_plans(&[], &entries, 1_800_000_000);
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].item.path, "new.txt");
+        assert_eq!(plans[0].action, sync::SyncAction::Download);
+        assert_eq!(
+            sync::to_operations(&plans),
+            vec![("download".to_string(), "new.txt".to_string())]
+        );
     }
 }
