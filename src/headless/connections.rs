@@ -40,6 +40,65 @@ const MAX_CONNECTIONS: usize = 5000;
 const MAX_FIELD_CHARS: usize = 4096;
 const LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 const ALIAS_ID_PREFIX: &str = "alias:";
+/// Longest template chain `resolve_connection` follows before giving up.
+const MAX_TEMPLATE_DEPTH: usize = 8;
+
+/// Fields a connection can inherit from its template.
+///
+/// Identity (`id`, `name`), organisation (`group`, `tags`, `favorite`, `notes`),
+/// the template link itself, secrets (`auth`, `totp`) and anything that runs a
+/// program or automation on connect (`remote_command`, `pre_command`, tunnels,
+/// macros, expect rules, logging) are deliberately absent: a template changes
+/// *where* and *how* an entry connects, not who it is or what it executes.
+pub const INHERITABLE_FIELDS: &[&str] = &[
+    "protocol",
+    "host",
+    "user",
+    "port",
+    "identity_file",
+    "proxy_jump",
+    "color_scheme",
+    "x11",
+    "compression",
+    "agent_forward",
+    "keepalive_interval",
+    "connect_timeout",
+    "host_key_check",
+    "no_sharing",
+    "legacy_kex",
+    "legacy_cipher",
+    "legacy_hostkey",
+    "legacy_mac",
+    "legacy_pubkey",
+    "terminal_type",
+    "keep_shell",
+    "auto_reconnect",
+    "reconnect_delay",
+    "ftp_tls",
+    "vnc_server",
+    "vnc_display",
+    "vnc_geometry",
+    "desktop_fullscreen",
+    "view_only",
+    "rdp_domain",
+    "rdp_clipboard",
+    "rdp_multimon",
+    "spice_tls",
+    "device",
+    "baud",
+    "container",
+    "shell",
+    "pod",
+    "namespace",
+    "kube_context",
+    "instance_id",
+    "aws_region",
+    "aws_profile",
+    "service_port",
+    "font",
+    "scrollback",
+    "encoding",
+];
 
 pub fn book_path() -> PathBuf {
     paths::config_dir().join("connections.json")
@@ -286,6 +345,10 @@ pub struct Connection {
     #[serde(default, skip_serializing_if = "is_default")]
     pub protocol: Protocol,
     pub name: String,
+    /// Name (or id) of another entry in the book whose settings this one
+    /// inherits. Stored as data only: `Book::resolve_connection` does the merge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub host: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -1214,6 +1277,110 @@ impl Book {
         let before = self.connections.len();
         self.connections.retain(|entry| entry.id != id);
         self.connections.len() != before
+    }
+
+    /// Resolve a connection and its template chain into a complete entry.
+    ///
+    /// Templates are looked up by id or name, case-insensitively, and followed
+    /// up to `MAX_TEMPLATE_DEPTH` entries. The book is never changed: the child
+    /// keeps its own identity, group, notes, template link and secrets, while
+    /// the fields in `INHERITABLE_FIELDS` that are empty or hold their default
+    /// value are taken from the nearest ancestor that sets them.
+    pub fn resolve_connection(&self, id: &str) -> Result<Connection, String> {
+        let mut chain: Vec<&Connection> = Vec::new();
+        let mut visited: Vec<String> = Vec::new();
+        let mut current = id.to_string();
+        loop {
+            if chain.len() >= MAX_TEMPLATE_DEPTH {
+                return Err(format!(
+                    "Template chain is too long (maximum {} connections)",
+                    MAX_TEMPLATE_DEPTH
+                ));
+            }
+            let connection = self
+                .connections
+                .iter()
+                .find(|entry| {
+                    entry.id.eq_ignore_ascii_case(&current)
+                        || entry.name.eq_ignore_ascii_case(&current)
+                })
+                .ok_or_else(|| {
+                    if chain.is_empty() {
+                        format!("Connection not found: {current}")
+                    } else {
+                        format!("Template not found: {current}")
+                    }
+                })?;
+            if let Some(position) = visited
+                .iter()
+                .position(|name| name.eq_ignore_ascii_case(&connection.name))
+            {
+                let mut path: Vec<String> = visited[position..].to_vec();
+                path.push(connection.name.clone());
+                return Err(format!("Template cycle: {}", path.join(" -> ")));
+            }
+            visited.push(connection.name.clone());
+            let template = connection.template.clone();
+            chain.push(connection);
+            match template {
+                Some(name) => current = name,
+                None => break,
+            }
+        }
+        // Fold from the oldest ancestor down to the child. Unknown fields come
+        // from the child's serialized form, so no ancestor metadata leaks in.
+        let mut value = serde_json::to_value(*chain.last().unwrap())
+            .map_err(|error| format!("cannot resolve template: {error}"))?;
+        for connection in chain[..chain.len() - 1].iter().rev() {
+            let child = serde_json::to_value(*connection)
+                .map_err(|error| format!("cannot resolve template: {error}"))?;
+            value = inherit_fields(&value, &child);
+        }
+        serde_json::from_value(value).map_err(|error| format!("cannot resolve template: {error}"))
+    }
+
+    /// Resolve every entry, keeping each error in its original position.
+    pub fn resolve_all(&self) -> Vec<Result<Connection, String>> {
+        self.connections
+            .iter()
+            .map(|connection| self.resolve_connection(&connection.id))
+            .collect()
+    }
+}
+
+/// Start from `child` and fill its empty inheritable fields with `base`.
+fn inherit_fields(base: &Value, child: &Value) -> Value {
+    let Some(child_object) = child.as_object() else {
+        return child.clone();
+    };
+    let Some(base_object) = base.as_object() else {
+        return child.clone();
+    };
+    let mut merged = child.clone();
+    let target = merged.as_object_mut().unwrap();
+    for field in INHERITABLE_FIELDS {
+        if child_object.get(*field).is_none_or(is_empty_value) {
+            if let Some(value) = base_object.get(*field) {
+                if !is_empty_value(value) {
+                    target.insert((*field).to_string(), value.clone());
+                }
+            }
+        }
+    }
+    merged
+}
+
+/// Empty means "unset" for a template field: an absent key, null, an empty
+/// string, a false flag, a zero number or an empty collection.
+fn is_empty_value(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Bool(false) => true,
+        Value::Number(number) => number.as_f64().is_some_and(|number| number == 0.0),
+        Value::String(text) => text.trim().is_empty(),
+        Value::Array(items) => items.is_empty(),
+        Value::Object(items) => items.is_empty(),
+        _ => false,
     }
 }
 
@@ -3001,6 +3168,147 @@ mod tests {
         let report = import_into(&mut book, incoming, true).unwrap();
         assert!(book.connections.iter().any(|entry| entry.name == "risky"));
         assert_eq!(report.imported, 1, "{:?}", report.skipped);
+    }
+
+    #[test]
+    fn template_inherits_empty_fields_but_keeps_the_child() {
+        let mut book = Book::default();
+        book.connections.push(Connection {
+            user: "admin".into(),
+            port: Some(2222),
+            identity_file: "~/.ssh/id_prod".into(),
+            color_scheme: "Nord".into(),
+            auth: Auth::SecretService,
+            notes: "parent note".into(),
+            group: "ParentGroup".into(),
+            ..manual("base", "prod.example")
+        });
+        book.connections.push(Connection {
+            id: "id-child".into(),
+            name: "child".into(),
+            template: Some("BASE".into()), // names match case-insensitively
+            user: "override".into(),
+            auth: Auth::SecretService,
+            notes: "child note".into(),
+            unknown: BTreeMap::from([("future".to_string(), serde_json::json!(1))]),
+            ..Connection::default()
+        });
+
+        let resolved = book.resolve_connection("id-child").unwrap();
+        assert_eq!(resolved.host, "prod.example");
+        assert_eq!(resolved.user, "override", "an explicit child value wins");
+        assert_eq!(resolved.port, Some(2222));
+        assert_eq!(resolved.identity_file, "~/.ssh/id_prod");
+        assert_eq!(resolved.color_scheme, "Nord");
+        assert_eq!(resolved.auth, Auth::SecretService);
+        assert_eq!(resolved.notes, "child note");
+        assert_eq!(resolved.group, "", "group is never inherited");
+        assert_eq!(resolved.template.as_deref(), Some("BASE"));
+        assert_eq!(resolved.unknown["future"], serde_json::json!(1));
+        assert_eq!(
+            book.find_by_id("id-child").unwrap().host,
+            "",
+            "resolving must not mutate the book"
+        );
+        assert_eq!(book.resolve_all().len(), 2);
+    }
+
+    #[test]
+    fn template_walks_a_chain_without_overriding_nearer_values() {
+        let mut book = Book::default();
+        book.connections.push(Connection {
+            port: Some(2200),
+            user: "root".into(),
+            ..manual("grand", "grand.example")
+        });
+        book.connections.push(Connection {
+            template: Some("GRAND".into()),
+            user: "admin".into(),
+            font: "Monospace 12".into(),
+            ..manual("parent", "")
+        });
+        book.connections.push(Connection {
+            template: Some("parent".into()),
+            ..manual("child", "child.example")
+        });
+        let resolved = book.resolve_connection("id-child").unwrap();
+        assert_eq!(resolved.host, "child.example");
+        assert_eq!(
+            resolved.user, "admin",
+            "the parent is nearer than the grandparent"
+        );
+        assert_eq!(resolved.port, Some(2200));
+        assert_eq!(resolved.font, "Monospace 12");
+        assert!(book.resolve_all().iter().all(|result| result.is_ok()));
+    }
+
+    #[test]
+    fn template_cycles_name_the_whole_path() {
+        let mut book = Book::default();
+        let mut a = manual("a", "h");
+        a.template = Some("b".into());
+        let mut b = manual("b", "h");
+        b.template = Some("a".into());
+        book.connections.extend([a, b]);
+        assert_eq!(
+            book.resolve_connection("a").unwrap_err(),
+            "Template cycle: a -> b -> a"
+        );
+
+        let mut book = Book::default();
+        let mut a = manual("a", "h");
+        a.template = Some("B".into());
+        let mut b = manual("b", "h");
+        b.template = Some("c".into());
+        let mut c = manual("c", "h");
+        c.template = Some("a".into());
+        book.connections.extend([a, b, c]);
+        assert_eq!(
+            book.resolve_connection("a").unwrap_err(),
+            "Template cycle: a -> b -> c -> a"
+        );
+    }
+
+    #[test]
+    fn missing_templates_and_books_without_templates() {
+        let mut book = Book::default();
+        book.connections.push(Connection {
+            template: Some("ghost".into()),
+            ..manual("a", "h")
+        });
+        book.connections.push(manual("solo", "own.example"));
+        assert_eq!(
+            book.resolve_connection("a").unwrap_err(),
+            "Template not found: ghost"
+        );
+        assert_eq!(
+            book.resolve_connection("nope").unwrap_err(),
+            "Connection not found: nope"
+        );
+        assert_eq!(
+            book.resolve_connection("id-solo").unwrap(),
+            manual("solo", "own.example")
+        );
+    }
+
+    #[test]
+    fn template_depth_is_limited() {
+        let mut book = Book::default();
+        for index in 0..8 {
+            let mut connection = manual(&format!("n{index}"), "h");
+            if index < 7 {
+                connection.template = Some(format!("n{}", index + 1));
+            }
+            book.connections.push(connection);
+        }
+        assert!(book.resolve_connection("n0").is_ok());
+        let mut ninth = manual("n8", "h");
+        ninth.template = Some("n0".into());
+        book.connections.push(ninth);
+        assert!(book
+            .resolve_connection("n8")
+            .unwrap_err()
+            .contains("too long"));
     }
 
     #[test]
