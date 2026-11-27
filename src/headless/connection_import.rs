@@ -625,27 +625,80 @@ fn json_get(object: &serde_json::Map<String, Value>, keys: &[&str]) -> String {
     String::new()
 }
 
+/// A value encrypted by another manager is not usable here: never copy an
+/// `ENC:...` token into a field that Oxterm will use as data (a user name, for
+/// instance). The dedicated PCM importer can unlock those values.
+fn json_field(object: &serde_json::Map<String, Value>, keys: &[&str]) -> String {
+    let value = json_get(object, keys);
+    if value.starts_with("ENC:") {
+        String::new()
+    } else {
+        value
+    }
+}
+
+/// Notes are checked as single-line text. Other managers allow newlines and
+/// tabs there, so keep the words but drop the control characters.
+fn json_notes(object: &serde_json::Map<String, Value>) -> String {
+    json_field(object, &["notes", "Notes", "description"])
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Some managers keep the book as `{"<display name>": {...}}`: the name is the
+/// key, not a field of the entry. Only treat objects that look like
+/// connections as entries, so a map of unrelated settings is not imported.
+fn json_keyed_entries(object: &serde_json::Map<String, Value>) -> Vec<(String, Value)> {
+    object
+        .iter()
+        .filter_map(|(name, value)| {
+            let entry = value.as_object()?;
+            let looks_like_connection = [
+                "host", "Host", "hostname", "HostName", "server", "protocol", "Protocol", "port",
+                "Port", "group", "Group",
+            ]
+            .iter()
+            .any(|key| entry.contains_key(*key));
+            if name.trim().is_empty() || !looks_like_connection {
+                return None;
+            }
+            Some((name.clone(), value.clone()))
+        })
+        .collect()
+}
+
 fn parse_json(text: &str) -> Result<Vec<Connection>, String> {
     let value: Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
-    let values: Vec<Value> = match value {
-        Value::Array(items) => items,
+    // The first item is a name to fall back on when the entry has no name of
+    // its own, as in a book keyed by display name.
+    let values: Vec<(String, Value)> = match value {
+        Value::Array(items) => items
+            .into_iter()
+            .map(|value| (String::new(), value))
+            .collect(),
         Value::Object(object) => {
             let nested = object
                 .get("connections")
                 .or_else(|| object.get("Connections"))
                 .or_else(|| object.get("Entries"));
             match nested {
-                Some(Value::Array(items)) => items.to_vec(),
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .cloned()
+                    .map(|value| (String::new(), value))
+                    .collect(),
+                Some(Value::Object(entries)) => json_keyed_entries(entries),
                 _ if object.contains_key("name") || object.contains_key("host") => {
-                    vec![Value::Object(object)]
+                    vec![(String::new(), Value::Object(object))]
                 }
-                _ => Vec::new(),
+                _ => json_keyed_entries(&object),
             }
         }
         _ => Vec::new(),
     };
     let mut entries = Vec::new();
-    for value in values {
+    for (key, value) in values {
         // A full Oxterm entry needs no translation.
         if let Ok(entry) = serde_json::from_value::<Connection>(value.clone()) {
             if !entry.name.is_empty() {
@@ -656,24 +709,26 @@ fn parse_json(text: &str) -> Result<Vec<Connection>, String> {
         let Value::Object(object) = value else {
             continue;
         };
-        let name = json_get(&object, &["name", "Name", "title", "alias", "Alias"]);
+        let name = json_field(&object, &["name", "Name", "title", "alias", "Alias"]);
+        let name = if name.is_empty() { key } else { name };
         if name.is_empty() {
             continue;
         }
         let mut entry = connection(&name);
-        entry.host = json_get(
+        entry.host = json_field(
             &object,
             &["host", "Host", "hostname", "HostName", "server", "Server"],
         );
-        entry.user = json_get(&object, &["user", "User", "username", "UserName", "login"]);
-        let port = json_get(&object, &["port", "Port"]);
+        entry.user = json_field(&object, &["user", "User", "username", "UserName", "login"]);
+        let port = json_field(&object, &["port", "Port"]);
         entry.port = parse_port(&port);
-        entry.protocol = protocol(&json_get(
-            &object,
-            &["protocol", "Protocol", "type", "Type"],
-        ));
-        entry.group = json_get(&object, &["group", "Group", "folder"]);
-        entry.notes = json_get(&object, &["notes", "Notes", "description"]);
+        let raw_protocol = json_field(&object, &["protocol", "Protocol", "type", "Type"]);
+        entry.protocol = protocol(&raw_protocol);
+        if raw_protocol.eq_ignore_ascii_case("file_transfer") {
+            entry.protocol = protocol(&json_field(&object, &["ft_protocol", "file_protocol"]));
+        }
+        entry.group = json_field(&object, &["group", "Group", "folder"]);
+        entry.notes = json_notes(&object);
         entries.push(entry);
     }
     Ok(entries)
@@ -847,6 +902,38 @@ Host web prod\n\
         assert_eq!(entries.len(), 1);
         assert!(entries[0].favorite);
         assert!(parse("not json", ImportFormat::Json).is_err());
+    }
+
+    #[test]
+    fn json_accepts_books_keyed_by_display_name() {
+        // Python Connection Manager stores the display name as the key and
+        // encrypts credentials with an `ENC:` prefix. Those tokens are not
+        // user names and must never reach Oxterm's fields.
+        let text = r#"{
+            "web prod": {
+                "protocol": "ssh", "group": "Prod", "host": "web.example",
+                "port": "2223", "user": "ENC:unusable", "password": "ENC:secret",
+                "notes": "first step\t\nsecond step", "x11": true,
+                "pre_cmd": "touch /tmp/unsafe", "macros": [{"nome":"m","cmd":"id"}]
+            },
+            "transfer": {"protocol": "file_transfer", "ft_protocol": "SFTP", "host": "ftp.example"},
+            "unnamed template": {"protocol": "ssh", "group": "Templates"},
+            "": {"protocol": "ssh", "host": "empty.example"}
+        }"#;
+        let entries = parse(text, ImportFormat::Json).unwrap();
+        assert_eq!(entries.len(), 3);
+        let find = |name: &str| entries.iter().find(|entry| entry.name == name).unwrap();
+        let web = find("web prod");
+        assert_eq!(web.host, "web.example");
+        assert_eq!(web.port, Some(2223));
+        assert_eq!(web.user, "");
+        assert_eq!(web.notes, "first step second step");
+        // Nothing that runs a local command was carried over.
+        assert!(web.local_execution_options().is_empty());
+        assert_eq!(find("transfer").protocol, Protocol::Sftp);
+        // An entry with no host is invalid, but still parsed so that `preview`
+        // can report why it was skipped rather than dropping it silently.
+        assert_eq!(find("unnamed template").host, "");
     }
 
     #[test]

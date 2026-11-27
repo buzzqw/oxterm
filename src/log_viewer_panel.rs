@@ -80,20 +80,38 @@ pub fn parse_remote_output(output: &str) -> Vec<String> {
         .collect()
 }
 
-fn ssh_run(host: &str, command: &str) -> Result<String, String> {
-    let output = std::process::Command::new("ssh")
+fn log_command(host: &str, command: &str) -> Result<std::process::Command, String> {
+    if host.trim().is_empty() {
+        // The entry says an empty target means localhost: run the same script
+        // here rather than needing sshd on this machine. `command` is built by
+        // `remote_script` from quoted, fixed bodies.
+        let mut process = std::process::Command::new("sh");
+        process.arg("-c").arg(command);
+        return Ok(process);
+    }
+    // A typed `user@host:port` must become -l/-p arguments: ssh reads the port
+    // in the destination as part of the hostname.
+    let args = crate::headless::connections::ssh_target_args(host)
+        .map_err(|error| format!("{error} (es. user@server:2222)"))?;
+    let mut process = std::process::Command::new("ssh");
+    process
         .arg("-o")
         .arg("BatchMode=yes")
         .arg("-o")
         .arg("ConnectTimeout=5")
-        .arg(host)
-        .arg(command)
+        .args(args)
+        .arg(command);
+    Ok(process)
+}
+
+fn ssh_run(host: &str, command: &str) -> Result<String, String> {
+    let output = log_command(host, command)?
         .output()
-        .map_err(|error| format!("Impossibile avviare ssh: {error}"))?;
+        .map_err(|error| format!("Impossibile avviare il comando: {error}"))?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if detail.is_empty() {
-            format!("ssh terminato con {status}", status = output.status)
+            format!("comando terminato con {status}", status = output.status)
         } else {
             detail
         });
@@ -128,9 +146,6 @@ fn remote_script(body: &str) -> String {
 /// Run the remote commands for a source and concatenate their output. Each
 /// file is preceded by a `==> path <==` header, like `tail -f` does.
 fn collect_remote(host: &str, source: &LogSource, grep: Option<&str>) -> Result<String, String> {
-    if host.trim().is_empty() {
-        return Err("Inserisci un host (es. user@server) per leggere i log".to_string());
-    }
     match source {
         LogSource::Journal(unit) => {
             let command = match unit {
@@ -341,7 +356,7 @@ impl LogViewerPanel {
         let host = gtk::Entry::new();
         host.set_margin_start(8);
         host.set_margin_end(8);
-        host.set_placeholder_text(Some("user@host (vuoto = localhost)"));
+        host.set_placeholder_text(Some("user@host[:port] (vuoto = localhost)"));
         let path = gtk::Entry::new();
         path.set_margin_start(8);
         path.set_margin_end(8);
@@ -515,6 +530,38 @@ impl LogViewerPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn argv(command: &std::process::Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn log_command_splits_the_port_and_runs_locally_when_empty() {
+        let script = remote_script("journalctl --no-pager -n 200");
+        assert_eq!(
+            argv(&log_command("andres@192.168.1.161:2223", &script).unwrap()),
+            [
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=5",
+                "-l",
+                "andres",
+                "-p",
+                "2223",
+                "192.168.1.161",
+                script.as_str()
+            ]
+        );
+        assert_eq!(
+            argv(&log_command("", &script).unwrap()),
+            ["-c", script.as_str()]
+        );
+        assert!(log_command("-oProxyCommand=evil", &script).is_err());
+    }
 
     #[test]
     fn quoting_protects_spaces_and_quotes() {

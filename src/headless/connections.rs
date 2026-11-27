@@ -1652,6 +1652,18 @@ pub fn from_destination(name: &str) -> Option<Connection> {
     Some(connection)
 }
 
+/// SSH arguments for a destination typed as `[user@]host[:port]`.
+///
+/// `ssh` does not understand `host:port` in the destination argument: it tries
+/// to resolve the whole string as a hostname. Split the port out into `-p`, and
+/// the user into `-l`, before handing the target to `ssh`. Option-like strings
+/// are rejected by `from_destination`, so they cannot become ssh options.
+pub fn ssh_target_args(target: &str) -> Result<Vec<String>, String> {
+    let connection = from_destination(target)
+        .ok_or_else(|| format!("Invalid SSH destination: {}", target.trim()))?;
+    Ok(connection.target_args())
+}
+
 // ── Tree shown by the panel ──────────────────────────────────
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2770,6 +2782,25 @@ mod tests {
         assert!(manual("ok", "user@[::1]").validate().is_ok());
         assert!(from_destination("-oProxyCommand=evil").is_none());
         assert!(from_destination("host name").is_none());
+    }
+
+    #[test]
+    fn ssh_target_args_splits_user_and_port_out_of_the_destination() {
+        assert_eq!(
+            ssh_target_args(" andres@192.168.1.161:2223 ").unwrap(),
+            ["-l", "andres", "-p", "2223", "192.168.1.161"]
+        );
+        assert_eq!(ssh_target_args("server").unwrap(), ["server"]);
+        assert_eq!(
+            ssh_target_args("alice@server").unwrap(),
+            ["-l", "alice", "server"]
+        );
+        assert_eq!(
+            ssh_target_args("server:2222").unwrap(),
+            ["-p", "2222", "server"]
+        );
+        assert!(ssh_target_args("").is_err());
+        assert!(ssh_target_args("-oProxyCommand=evil").is_err());
     }
 
     #[test]

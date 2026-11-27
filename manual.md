@@ -1052,6 +1052,23 @@ secrets, so it can be copied or versioned; usage counts live in
 `connections-state.json`. A damaged file is reported and never overwritten, and a
 file from a newer Oxterm opens read-only.
 
+**Importing other managers.** **Connections → Import Connections...** reads an
+Oxterm book, a list of entries, a JSON book keyed by display name, a Remmina
+`.remmina`, a Remote Desktop Manager `.rdm`, a PuTTY `.reg`, a MobaXterm
+`.mxtsessions` or an OpenSSH `config`. It shows what will be added before saving
+and reports why anything was skipped. Values encrypted by another manager
+(`ENC:...` tokens) are left empty: Oxterm cannot read those secrets. To migrate
+Python Connection Manager with its credentials, use the script in the source
+tree instead:
+
+```bash
+scripts/import-pcm.py --import --with-passwords   # asks for PCM's master password
+```
+
+It decrypts the usernames, adds the connections and stores the passwords in the
+Secret Service, never in the book. Without `--with-passwords` only the
+connections themselves are imported.
+
 **Other connections.** The **Protocol** field of a new entry offers more than SSH:
 
 | Protocol | Runs | Where |

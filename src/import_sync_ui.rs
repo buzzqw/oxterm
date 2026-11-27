@@ -16,6 +16,24 @@ use crate::headless::ssh_config;
 use crate::headless::ssh_sync;
 use crate::window::{MainWindow, TerminalWindow};
 
+/// Import failures used to go only to the info bar, which disappears after a
+/// few seconds: it looked as if the menu item did nothing. Keep the status
+/// message and also show a dialog the user has to dismiss.
+fn import_problem(window: &MainWindow, message: &str) {
+    window.status_message(message, true);
+    let dialog = gtk::MessageDialog::new(
+        Some(window),
+        gtk::DialogFlags::MODAL,
+        gtk::MessageType::Error,
+        gtk::ButtonsType::Ok,
+        "Import connections",
+    );
+    dialog.set_secondary_text(Some(message));
+    dialog.run();
+    // SAFETY: `run` has returned and nothing else owns this dialog.
+    unsafe { dialog.destroy() };
+}
+
 /// Ask for an exported book, preview it, then merge the non-conflicting entries.
 pub(crate) fn show_import_dialog(window: &MainWindow) {
     let chooser = gtk::FileChooserDialog::with_buttons(
@@ -66,7 +84,10 @@ pub(crate) fn show_import_dialog(window: &MainWindow) {
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(error) => {
-            window.status_message(&format!("Cannot read {}: {}", path.display(), error), true);
+            import_problem(
+                window,
+                &format!("Cannot read {}: {}", path.display(), error),
+            );
             return;
         }
     };
@@ -74,9 +95,9 @@ pub(crate) fn show_import_dialog(window: &MainWindow) {
     let entries = match connection_import::parse(&text, format) {
         Ok(entries) => entries,
         Err(error) => {
-            window.status_message(
+            import_problem(
+                window,
                 &format!("Cannot import {}: {}", path.display(), error),
-                true,
             );
             return;
         }
@@ -84,13 +105,23 @@ pub(crate) fn show_import_dialog(window: &MainWindow) {
     let book = match connections::load_book(&connections::book_path()) {
         Ok(book) => book,
         Err(error) => {
-            window.status_message(&format!("Cannot open the connection book: {}", error), true);
+            import_problem(
+                window,
+                &format!("Cannot open the connection book: {}", error),
+            );
             return;
         }
     };
     let preview = connection_import::preview(&book, entries);
     if preview.entries.is_empty() && preview.skipped.is_empty() {
-        window.status_message("No connections found in that file", true);
+        import_problem(
+            window,
+            "No connections found in that file. Supported files are Oxterm books, \
+             lists of entries, Remmina, Remote Desktop Manager, PuTTY, MobaXterm \
+             and OpenSSH config. A Python Connection Manager book should be \
+             converted with scripts/import-pcm.py --import so its encrypted \
+             credentials can be unlocked.",
+        );
         return;
     }
 
@@ -104,7 +135,7 @@ pub(crate) fn show_import_dialog(window: &MainWindow) {
 
     let area = dialog.content_area();
     let heading = gtk::Label::new(Some(&format!(
-        "<b>{} connection(s) ready</b>\nExisting names and invalid entries are skipped. Passwords and one-time secrets are never imported.",
+        "<b>{} connection(s) ready</b>\nExisting names and invalid entries are skipped. Passwords, one-time secrets and values encrypted by another manager are never imported.",
         preview.entries.len()
     )));
     heading.set_use_markup(true);

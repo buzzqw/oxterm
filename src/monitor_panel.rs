@@ -198,19 +198,33 @@ const PROBE_SCRIPT: &str = "timeout 5 sh -c 'echo @@CPU@@; top -bn1 | head -n 5;
      echo @@GPU@@; nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total \
      --format=csv,noheader 2>/dev/null || true'";
 
-fn run_remote_stats(host: &str) -> Result<RemoteStats, String> {
+fn probe_command(host: &str) -> Result<Command, String> {
     if host.trim().is_empty() {
-        return Err("Inserisci un host (es. user@server) prima di avviare il monitor".to_string());
+        // The entry says an empty target means localhost. Probe this machine
+        // directly: requiring sshd on localhost made the tooltip a lie.
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(PROBE_SCRIPT);
+        return Ok(command);
     }
-    let output = Command::new("ssh")
+    // `user@host:2223` is a display string, not an ssh destination: ssh would
+    // try to resolve `host:2223` as a hostname. Split it into -l/-p.
+    let args = crate::headless::connections::ssh_target_args(host)
+        .map_err(|error| format!("{error} (es. user@server:2222)"))?;
+    let mut command = Command::new("ssh");
+    command
         .arg("-o")
         .arg("BatchMode=yes")
         .arg("-o")
         .arg("ConnectTimeout=5")
-        .arg(host)
-        .arg(PROBE_SCRIPT)
+        .args(args)
+        .arg(PROBE_SCRIPT);
+    Ok(command)
+}
+
+fn run_remote_stats(host: &str) -> Result<RemoteStats, String> {
+    let output = probe_command(host)?
         .output()
-        .map_err(|error| format!("Impossibile avviare ssh: {error}"))?;
+        .map_err(|error| format!("Impossibile avviare il comando: {error}"))?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if detail.is_empty() {
@@ -494,7 +508,7 @@ impl MonitorPanel {
         target_row.set_margin_end(8);
         let host = gtk::Entry::new();
         host.set_hexpand(true);
-        host.set_placeholder_text(Some("user@host (vuoto = localhost)"));
+        host.set_placeholder_text(Some("user@host[:port] (vuoto = localhost)"));
         let interval = gtk::SpinButton::new(
             Some(&gtk::Adjustment::new(2.0, 1.0, 60.0, 1.0, 10.0, 0.0)),
             0.0,
@@ -664,6 +678,34 @@ impl MonitorPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn argv(command: &Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn probe_splits_the_port_and_probes_localhost_when_empty() {
+        assert_eq!(
+            argv(&probe_command("andres@192.168.1.161:2223").unwrap()),
+            [
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=5",
+                "-l",
+                "andres",
+                "-p",
+                "2223",
+                "192.168.1.161",
+                PROBE_SCRIPT
+            ]
+        );
+        assert_eq!(argv(&probe_command("").unwrap()), ["-c", PROBE_SCRIPT]);
+        assert!(probe_command("-oProxyCommand=evil").is_err());
+    }
 
     #[test]
     fn cpu_is_one_minus_idle() {
