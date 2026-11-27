@@ -26,6 +26,7 @@ pub mod framing;
 pub mod git_status;
 pub mod jobs;
 pub mod mcp;
+pub mod monitor;
 pub mod notes_prompt;
 pub mod notify;
 pub mod osc133;

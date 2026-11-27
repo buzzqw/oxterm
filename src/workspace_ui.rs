@@ -135,7 +135,8 @@ impl MainWindow {
         // The monitoring features share the third tab instead of opening a
         // second right-hand dock (which was the source of layout confusion).
         let monitor_target = self.monitor_target_from_current();
-        let monitor_panel = crate::monitor_panel::MonitorPanel::build();
+        let connection_choices = self.monitor_connection_choices();
+        let monitor_panel = crate::monitor_panel::MonitorPanel::build(connection_choices);
         monitor_panel.set_target(monitor_target.clone());
         {
             let weak = crate::SendWeak::new(self);
@@ -148,6 +149,13 @@ impl MainWindow {
 
         let log_viewer_panel = crate::log_viewer_panel::LogViewerPanel::build();
         log_viewer_panel.set_target(monitor_target);
+        {
+            // The Logs section reads from whatever target Monitor is using,
+            // whether it came from the dropdown or was typed by hand.
+            let monitor_host = monitor_panel.host.clone();
+            let log_host = log_viewer_panel.host.clone();
+            monitor_host.connect_changed(move |entry| log_host.set_text(&entry.text()));
+        }
         {
             let weak = crate::SendWeak::new(self);
             log_viewer_panel.close.connect_clicked(move |_| {
@@ -236,6 +244,11 @@ impl MainWindow {
             // a width the user just dragged. The allocation needs one main-loop
             // pass after `show()`.
             if !was_visible {
+                // Which SSH tabs are open can change while the dock is hidden.
+                let choices = self.monitor_connection_choices();
+                if let Some(panel) = self.imp().monitor_panel.borrow().as_ref() {
+                    panel.set_connections(choices);
+                }
                 let weak = self.downgrade();
                 glib::idle_add_local_once(move || {
                     if let Some(window) = weak.upgrade() {

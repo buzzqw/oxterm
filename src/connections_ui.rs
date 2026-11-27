@@ -634,6 +634,58 @@ impl MainWindow {
         counts
     }
 
+    /// Targets for the Monitor dropdown as `(target, label, is_active)`.
+    /// SSH connections with an open tab come first, the others keep book order.
+    pub(crate) fn monitor_connection_choices(&self) -> Vec<(String, String, bool)> {
+        let active_ids = self.open_connection_counts();
+        let terminals: Vec<TerminalBox> = match self.application() {
+            Some(app) => crate::control::terminals(&app)
+                .into_iter()
+                .map(|(_, term)| term)
+                .collect(),
+            None => self.all_terminals(),
+        };
+        let live: Vec<String> = terminals
+            .iter()
+            .filter_map(|term| term.ssh_destination())
+            .collect();
+
+        let mut choices = Vec::new();
+        let mut seen = HashSet::new();
+        for entry in load_entries().unwrap_or_default() {
+            if entry.connection.protocol != Protocol::Ssh {
+                continue;
+            }
+            // An alias is a real ssh destination; `summary()` would only say
+            // "~/.ssh/config" and could not be used by the monitor probe.
+            let target = if entry.connection.kind == Kind::Alias {
+                entry.connection.name.clone()
+            } else {
+                entry.connection.summary()
+            };
+            if target.trim().is_empty() || !seen.insert(target.clone()) {
+                continue;
+            }
+            let label = if entry.connection.name.is_empty() || entry.connection.name == target {
+                target.clone()
+            } else {
+                format!("{} ({target})", entry.connection.name)
+            };
+            let active = active_ids.contains_key(&entry.connection.id)
+                || live
+                    .iter()
+                    .any(|value| crate::headless::monitor::same_ssh_host(value, &target));
+            choices.push((target, label, active));
+        }
+        // Ad-hoc ssh sessions are not in the book but are active right now.
+        for target in live {
+            if seen.insert(target.clone()) {
+                choices.push((target.clone(), target, true));
+            }
+        }
+        crate::headless::monitor::order_connection_choices(choices)
+    }
+
     fn connect_first_result(&self) {
         let id = self
             .imp()

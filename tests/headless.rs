@@ -7,7 +7,9 @@
 use std::fs;
 use std::path::Path;
 
-use oxterm::headless::{cli, control_cli, framing, notes_prompt, settings, spec, text, vi};
+use oxterm::headless::{
+    cli, control_cli, framing, monitor, notes_prompt, settings, spec, text, vi,
+};
 
 #[test]
 fn headless_sources_do_not_reach_into_the_gui() {
@@ -103,6 +105,25 @@ fn control_protocol_parsing_is_independent_of_the_socket() {
             timeout: None,
         }
     );
+}
+
+#[test]
+fn monitor_parses_locales_and_per_interface_traffic_without_a_gui() {
+    // An Italian `top` really prints `95,6 id`; splitting on commas reports
+    // 94% CPU on an idle machine. The headless parser must stay correct.
+    let top = "%Cpu(s):  1,4 us,  0,0 ni, 95,6 id,  1,7 wa\n";
+    assert!((monitor::parse_cpu(top).unwrap() - 4.4).abs() < 0.001);
+
+    let dev = "lo: 999 1 0 0 0 0 0 0 999 1 0 0 0 0 0 0\n\
+               eth0: 1000 10 0 0 0 0 0 0 2000 20 0 0 0 0 0 0\n\
+               wlan0: 500 5 0 0 0 0 0 0 700 7 0 0 0 0 0 0\n";
+    let interfaces = monitor::parse_net(dev);
+    assert_eq!(interfaces.len(), 2);
+    assert_eq!(
+        monitor::net_counters(&interfaces, Some("wlan0")),
+        (500, 700)
+    );
+    assert_eq!(monitor::net_counters(&interfaces, None), (1500, 2700));
 }
 
 #[test]

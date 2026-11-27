@@ -10,6 +10,20 @@ use std::sync::{Arc, Mutex};
 
 use gtk::prelude::*;
 
+/// Common log destinations offered by the Logs dropdown. The combo has an
+/// entry, so any other path or `journal:<unit>` can still be typed.
+pub const LOG_PATHS: [&str; 9] = [
+    "/var/log",
+    "/var/log/syslog",
+    "/var/log/messages",
+    "/var/log/auth.log",
+    "/var/log/secure",
+    "/var/log/journal",
+    "journal",
+    "journal:ssh",
+    "journal:systemd-journald",
+];
+
 /// A POSIX-shell-safe single-quoted argument. An embedded `'` is written as
 /// the conventional `'\\''` sequence.
 pub fn shell_quote(value: &str) -> String {
@@ -21,6 +35,14 @@ pub fn shell_quote(value: &str) -> String {
 pub enum LogSource {
     Files(String),
     Journal(Option<String>),
+}
+
+/// Text of an editable combo (a preset or whatever the user typed).
+fn combo_text(combo: &gtk::ComboBoxText) -> String {
+    combo
+        .active_text()
+        .map(|text| text.to_string())
+        .unwrap_or_default()
 }
 
 /// `journal` / `journal:<unit>` select the journal; everything else is a path.
@@ -321,8 +343,11 @@ fn render(view: &gtk::TextView, lines: &[String], pattern: Option<&regex::Regex>
 /// keep the value alive and connect `close` if they want to hide the dock.
 pub struct LogViewerPanel {
     pub root: gtk::Box,
+    /// Opt-in gate: nothing is read until Logs is enabled.
+    pub enabled: gtk::CheckButton,
     pub host: gtk::Entry,
-    pub path: gtk::Entry,
+    /// Editable combo: pick a canonical path or type a custom one.
+    pub path: gtk::ComboBoxText,
     pub filter: gtk::Entry,
     pub refresh: gtk::Button,
     pub pause: gtk::Button,
@@ -353,15 +378,29 @@ impl LogViewerPanel {
         header.pack_end(&close, false, false, 0);
         root.pack_start(&header, false, false, 0);
 
+        let enabled = gtk::CheckButton::with_label("Logs");
+        enabled.set_active(false);
+        enabled.set_margin_start(8);
+        enabled.set_margin_top(2);
+        enabled.set_tooltip_text(Some(
+            "Abilita la lettura dei log del target impostato in Monitor",
+        ));
+        root.pack_start(&enabled, false, false, 0);
+
         let host = gtk::Entry::new();
         host.set_margin_start(8);
         host.set_margin_end(8);
         host.set_placeholder_text(Some("user@host[:port] (vuoto = localhost)"));
-        let path = gtk::Entry::new();
+        let path = gtk::ComboBoxText::with_entry();
         path.set_margin_start(8);
         path.set_margin_end(8);
-        path.set_text("/var/log");
-        path.set_tooltip_text(Some("Remote path, or journal / journal:<unit>"));
+        for preset in LOG_PATHS {
+            path.append_text(preset);
+        }
+        path.set_active(Some(0));
+        path.set_tooltip_text(Some(
+            "Percorso remoto o journal / journal:<unit>; scrivi pure un percorso personalizzato",
+        ));
         let filter = gtk::Entry::new();
         filter.set_margin_start(8);
         filter.set_margin_end(8);
@@ -431,7 +470,11 @@ impl LogViewerPanel {
         let refresh_path = path.clone();
         let refresh_filter = filter.clone();
         let refresh_status = status.clone();
+        let refresh_enabled = enabled.clone();
         refresh.connect_clicked(move |_| {
+            if !refresh_enabled.is_active() {
+                return;
+            }
             let pattern_text = refresh_filter.text().to_string();
             let pattern = if pattern_text.trim().is_empty() {
                 None
@@ -449,7 +492,7 @@ impl LogViewerPanel {
                 &refresh_state,
                 &refresh_ui,
                 refresh_host.text().to_string(),
-                parse_source(&refresh_path.text()),
+                parse_source(&combo_text(&refresh_path)),
                 pattern,
             );
         });
@@ -460,7 +503,11 @@ impl LogViewerPanel {
         let activate_path = path.clone();
         let activate_filter = filter.clone();
         let activate_status = status.clone();
+        let activate_enabled = enabled.clone();
         filter.connect_activate(move |_| {
+            if !activate_enabled.is_active() {
+                return;
+            }
             let pattern_text = activate_filter.text().to_string();
             let pattern = if pattern_text.trim().is_empty() {
                 None
@@ -478,7 +525,7 @@ impl LogViewerPanel {
                 &activate_state,
                 &activate_ui,
                 activate_host.text().to_string(),
-                parse_source(&activate_path.text()),
+                parse_source(&combo_text(&activate_path)),
                 pattern,
             );
         });
@@ -498,8 +545,44 @@ impl LogViewerPanel {
             });
         });
 
+        let toggle_state = state.clone();
+        let toggle_status = status.clone();
+        let toggle_view = view.clone();
+        let toggle_refresh = refresh.clone();
+        let toggle_pause = pause.clone();
+        let toggle_refresh_action = refresh.downgrade();
+        enabled.connect_toggled(move |button| {
+            if button.is_active() {
+                toggle_refresh.set_sensitive(true);
+                toggle_pause.set_sensitive(true);
+                toggle_status.set_text("Logs attivi — premi Refresh per rileggere");
+                if let Some(refresh) = toggle_refresh_action.upgrade() {
+                    refresh.activate();
+                }
+            } else {
+                // Cancel any in-flight read and drop what was on screen: Logs
+                // is opt-in, so an unchecked box must not show or fetch data.
+                let mut state = toggle_state.lock().expect("log viewer state lock poisoned");
+                state.stop.store(true, Ordering::SeqCst);
+                state.generation = state.generation.wrapping_add(1);
+                state.paused = false;
+                drop(state);
+                if let Some(buffer) = toggle_view.buffer() {
+                    buffer.set_text("");
+                }
+                toggle_refresh.set_sensitive(false);
+                toggle_pause.set_sensitive(false);
+                toggle_pause.set_label("Pause");
+                toggle_status.set_text("Logs disabilitati — spunta Logs per leggere");
+            }
+        });
+        refresh.set_sensitive(false);
+        pause.set_sensitive(false);
+        status.set_text("Spunta Logs per leggere i log del target in Monitor");
+
         LogViewerPanel {
             root,
+            enabled,
             host,
             path,
             filter,
@@ -584,6 +667,18 @@ mod tests {
         assert_eq!(remote_grep_pattern(Some(&regex)), None);
         let regex = regex::Regex::new("ERROR|WARN").unwrap();
         assert_eq!(remote_grep_pattern(Some(&regex)), Some("ERROR|WARN".into()));
+    }
+
+    #[test]
+    fn canonical_log_paths_cover_files_and_journal() {
+        assert!(LOG_PATHS.contains(&"/var/log"));
+        assert!(LOG_PATHS.contains(&"journal"));
+        assert!(LOG_PATHS.iter().all(|path| !path.trim().is_empty()));
+        assert_eq!(parse_source("journal"), LogSource::Journal(None));
+        assert_eq!(
+            parse_source("/var/log/syslog"),
+            LogSource::Files("/var/log/syslog".into())
+        );
     }
 
     #[test]

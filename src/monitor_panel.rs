@@ -5,242 +5,26 @@
 //! loop. Text sparklines keep the widget tree cheap: no drawing area, no
 //! native dependency, just labels over the last 60 samples.
 
-use std::process::Command;
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
 
+use crate::headless::monitor::{
+    net_counters, run_remote_stats, sparkline, GpuStats, RemoteStats, ALL_INTERFACES,
+};
+
 const MAX_SAMPLES: usize = 60;
-const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-const MARKERS: [&str; 5] = ["@@CPU@@", "@@MEM@@", "@@DISK@@", "@@NET@@", "@@GPU@@"];
 
-/// Output of `df -P` for one mounted filesystem: only the fields we show.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct DiskUsage {
-    pub mount: String,
-    pub used_percent: f32,
-}
-
-/// One line of `nvidia-smi --query-gpu=...`. `None` when the tool is absent.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct GpuStats {
-    pub utilization: f32,
-    pub used_mb: u64,
-    pub total_mb: u64,
-}
-
-/// Display-free result of the remote probe. Every `parse_*` function works on
-/// a plain `&str`, so it can be tested without ssh or GTK.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct RemoteStats {
-    pub cpu_percent: Option<f32>,
-    pub mem_total: Option<u64>,
-    pub mem_used: Option<u64>,
-    pub disks: Vec<DiskUsage>,
-    pub net_rx_bytes: Option<u64>,
-    pub net_tx_bytes: Option<u64>,
-    pub gpu: Option<GpuStats>,
-}
-
-impl RemoteStats {
-    /// Split the combined remote script output into its sections and parse
-    /// each one independently. Missing sections simply leave a field `None`.
-    pub fn parse(output: &str) -> RemoteStats {
-        let [cpu, mem, disk, net, gpu] = sections(output);
-        let (mem_total, mem_used) = parse_memory(mem).unzip();
-        let (net_rx_bytes, net_tx_bytes) = parse_net(net).unzip();
-        RemoteStats {
-            cpu_percent: parse_cpu(cpu),
-            mem_total,
-            mem_used,
-            disks: parse_disk(disk),
-            net_rx_bytes,
-            net_tx_bytes,
-            gpu: parse_gpu(gpu),
-        }
-    }
-}
-
-/// CPU usage from the summary line of `top -bn1` (100 - idle).
-pub fn parse_cpu(top: &str) -> Option<f32> {
-    for line in top.lines() {
-        let Some(pos) = line.find("%Cpu(s):") else {
-            continue;
-        };
-        for field in line[pos + "%Cpu(s):".len()..].split(',') {
-            let field = field.trim();
-            if !field.ends_with("id") {
-                continue;
-            }
-            if let Some(idle) = field
-                .split_whitespace()
-                .next()
-                .and_then(|v| v.parse::<f32>().ok())
-            {
-                return Some((100.0 - idle).clamp(0.0, 100.0));
-            }
-        }
-    }
-    None
-}
-
-/// `(total, used)` in bytes from the `Mem:` line of `free -b`.
-pub fn parse_memory(free: &str) -> Option<(u64, u64)> {
-    for line in free.lines() {
-        let mut fields = line.split_whitespace();
-        if fields.next() != Some("Mem:") {
-            continue;
-        }
-        let total = fields.next()?.parse::<u64>().ok()?;
-        let used = fields.next()?.parse::<u64>().ok()?;
-        return Some((total, used));
-    }
-    None
-}
-
-/// Used percentage and mount point from every data line of `df -P`.
-pub fn parse_disk(df: &str) -> Vec<DiskUsage> {
-    let mut disks = Vec::new();
-    for line in df.lines().skip(1) {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() < 6 || fields[0] == "Filesystem" {
-            continue;
-        }
-        if let Ok(used_percent) = fields[4].trim_end_matches('%').parse::<f32>() {
-            disks.push(DiskUsage {
-                mount: fields[5].to_string(),
-                used_percent,
-            });
-        }
-    }
-    disks
-}
-
-/// `(received, transmitted)` bytes from `/proc/net/dev`, excluding `lo`.
-pub fn parse_net(dev: &str) -> Option<(u64, u64)> {
-    let (mut rx, mut tx) = (0u64, 0u64);
-    let mut found = false;
-    for line in dev.lines() {
-        let Some((name, rest)) = line.split_once(':') else {
-            continue;
-        };
-        if name.trim() == "lo" {
-            continue;
-        }
-        let fields: Vec<&str> = rest.split_whitespace().collect();
-        if fields.len() < 9 {
-            continue;
-        }
-        let (Some(r), Some(t)) = (fields[0].parse::<u64>().ok(), fields[8].parse::<u64>().ok())
-        else {
-            continue;
-        };
-        rx = rx.saturating_add(r);
-        tx = tx.saturating_add(t);
-        found = true;
-    }
-    found.then_some((rx, tx))
-}
-
-/// First GPU row of `nvidia-smi --query-gpu=... --format=csv,noheader`.
-pub fn parse_gpu(text: &str) -> Option<GpuStats> {
-    let line = text.lines().find(|line| !line.trim().is_empty())?.trim();
-    let fields: Vec<&str> = line.split(',').map(str::trim).collect();
-    if fields.len() < 3 {
-        return None;
-    }
-    let utilization = fields[0].trim_end_matches('%').parse::<f32>().ok()?;
-    let used_mb = fields[1].split_whitespace().next()?.parse::<u64>().ok()?;
-    let total_mb = fields[2].split_whitespace().next()?.parse::<u64>().ok()?;
-    Some(GpuStats {
-        utilization,
-        used_mb,
-        total_mb,
-    })
-}
-
-/// Map 0..=100 values onto the eight Unicode block glyphs.
-pub fn sparkline(values: &[f32]) -> String {
-    values
-        .iter()
-        .map(|value| {
-            let index =
-                ((value.clamp(0.0, 100.0) / 100.0) * (BARS.len() - 1) as f32).round() as usize;
-            BARS[index]
-        })
-        .collect()
-}
-
-fn sections(output: &str) -> [&str; 5] {
-    let mut found = ["", "", "", "", ""];
-    let mut rest = output;
-    for (index, marker) in MARKERS.iter().enumerate() {
-        let Some(pos) = rest.find(marker) else {
-            break;
-        };
-        let after = &rest[pos + marker.len()..];
-        let end = MARKERS
-            .get(index + 1)
-            .and_then(|next| after.find(next))
-            .unwrap_or(after.len());
-        found[index] = &after[..end];
-        rest = &after[end..];
-    }
-    found
-}
-
-/// The exact remote script. `timeout 5` bounds a whole probe; the GPU query is
-/// optional so hosts without nvidia-smi still report the other metrics.
-const PROBE_SCRIPT: &str = "timeout 5 sh -c 'echo @@CPU@@; top -bn1 | head -n 5; \
-     echo @@MEM@@; free -b; echo @@DISK@@; df -P; echo @@NET@@; cat /proc/net/dev; \
-     echo @@GPU@@; nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total \
-     --format=csv,noheader 2>/dev/null || true'";
-
-fn probe_command(host: &str) -> Result<Command, String> {
-    if host.trim().is_empty() {
-        // The entry says an empty target means localhost. Probe this machine
-        // directly: requiring sshd on localhost made the tooltip a lie.
-        let mut command = Command::new("sh");
-        command.arg("-c").arg(PROBE_SCRIPT);
-        return Ok(command);
-    }
-    // `user@host:2223` is a display string, not an ssh destination: ssh would
-    // try to resolve `host:2223` as a hostname. Split it into -l/-p.
-    let args = crate::headless::connections::ssh_target_args(host)
-        .map_err(|error| format!("{error} (es. user@server:2222)"))?;
-    let mut command = Command::new("ssh");
-    command
-        .arg("-o")
-        .arg("BatchMode=yes")
-        .arg("-o")
-        .arg("ConnectTimeout=5")
-        .args(args)
-        .arg(PROBE_SCRIPT);
-    Ok(command)
-}
-
-fn run_remote_stats(host: &str) -> Result<RemoteStats, String> {
-    let output = probe_command(host)?
-        .output()
-        .map_err(|error| format!("Impossibile avviare il comando: {error}"))?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if detail.is_empty() {
-            format!("ssh terminato con {status}", status = output.status)
-        } else {
-            detail
-        });
-    }
-    Ok(RemoteStats::parse(&String::from_utf8_lossy(&output.stdout)))
-}
-
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Sample {
     cpu: f32,
     ram: f32,
     net: f32,
+    /// Interface this rate belongs to; `None` means the summed "all" view.
+    net_iface: Option<String>,
     gpu: Option<GpuStats>,
 }
 
@@ -250,6 +34,11 @@ struct State {
     host: String,
     samples: Vec<Sample>,
     last_net: Option<(Instant, u64, u64)>,
+    /// Selected interface for the Net row; `None` sums every non-loopback one.
+    net_interface: Option<String>,
+    /// Set while `apply()` rebuilds the selector, so programmatic changes do
+    /// not reset the counters or fire a user-driven refresh.
+    syncing_net: Arc<AtomicBool>,
 }
 
 enum PollResult {
@@ -264,6 +53,7 @@ struct Ui {
     ram: crate::SendWeak<gtk::Label>,
     disk: crate::SendWeak<gtk::Label>,
     net: crate::SendWeak<gtk::Label>,
+    net_iface: crate::SendWeak<gtk::ComboBoxText>,
     gpu: crate::SendWeak<gtk::Label>,
 }
 
@@ -274,6 +64,7 @@ impl Ui {
         ram: &gtk::Label,
         disk: &gtk::Label,
         net: &gtk::Label,
+        net_iface: &gtk::ComboBoxText,
         gpu: &gtk::Label,
     ) -> Ui {
         Ui {
@@ -282,6 +73,7 @@ impl Ui {
             ram: crate::SendWeak::new(ram),
             disk: crate::SendWeak::new(disk),
             net: crate::SendWeak::new(net),
+            net_iface: crate::SendWeak::new(net_iface),
             gpu: crate::SendWeak::new(gpu),
         }
     }
@@ -293,6 +85,7 @@ impl Ui {
             ram: self.ram.upgrade()?,
             disk: self.disk.upgrade()?,
             net: self.net.upgrade()?,
+            net_iface: self.net_iface.upgrade()?,
             gpu: self.gpu.upgrade()?,
         })
     }
@@ -304,6 +97,7 @@ struct StrongUi {
     ram: gtk::Label,
     disk: gtk::Label,
     net: gtk::Label,
+    net_iface: gtk::ComboBoxText,
     gpu: gtk::Label,
 }
 
@@ -375,14 +169,44 @@ fn apply(ui: &StrongUi, state: &mut State, result: PollResult) {
             let (ram_percent, ram_text) = match (stats.mem_total, stats.mem_used) {
                 (Some(total), Some(used)) if total > 0 => (
                     used as f32 * 100.0 / total as f32,
-                    format!("{} / {} MiB", used / 1024 / 1024, total / 1024 / 1024),
+                    format!("{}/{}MiB", used / 1024 / 1024, total / 1024 / 1024),
                 ),
                 _ => (0.0, "n/d".to_string()),
             };
-            let (rx, tx) = (
-                stats.net_rx_bytes.unwrap_or(0),
-                stats.net_tx_bytes.unwrap_or(0),
-            );
+
+            // The interfaces exist on the target, so the list is rebuilt from
+            // every probe (localhost and SSH alike). A vanished selection
+            // falls back to the summed view rather than showing stale data.
+            let names: Vec<String> = stats
+                .net_interfaces
+                .iter()
+                .map(|interface| interface.name.clone())
+                .collect();
+            let wanted = state.net_interface.clone();
+            let active = match &wanted {
+                None => 0,
+                Some(name) => names
+                    .iter()
+                    .position(|candidate| candidate == name)
+                    .map(|index| index + 1)
+                    .unwrap_or(0),
+            };
+            if active == 0 && wanted.is_some() {
+                state.net_interface = None;
+                state.last_net = None;
+            }
+            let net_interface = state.net_interface.clone();
+
+            state.syncing_net.store(true, Ordering::SeqCst);
+            ui.net_iface.remove_all();
+            ui.net_iface.append_text(ALL_INTERFACES);
+            for name in &names {
+                ui.net_iface.append_text(name);
+            }
+            ui.net_iface.set_active(Some(active as u32));
+            state.syncing_net.store(false, Ordering::SeqCst);
+
+            let (rx, tx) = net_counters(&stats.net_interfaces, net_interface.as_deref());
             let now = Instant::now();
             let net_kbps = match state.last_net {
                 Some((previous, previous_rx, previous_tx)) => {
@@ -397,6 +221,7 @@ fn apply(ui: &StrongUi, state: &mut State, result: PollResult) {
                 cpu,
                 ram: ram_percent,
                 net: net_kbps.min(100.0),
+                net_iface: net_interface.clone(),
                 gpu: stats.gpu,
             });
             if state.samples.len() > MAX_SAMPLES {
@@ -412,8 +237,9 @@ fn apply(ui: &StrongUi, state: &mut State, result: PollResult) {
                 column(|sample| sample.cpu)
             ));
             ui.ram.set_markup(&format!(
-                "<tt>RAM  {:5.1}%  {}</tt>",
+                "<tt>RAM  {:5.1}%  {:<15} {}</tt>",
                 ram_percent,
+                ram_text,
                 column(|sample| sample.ram)
             ));
             let disk_text = if stats.disks.is_empty() {
@@ -431,10 +257,20 @@ fn apply(ui: &StrongUi, state: &mut State, result: PollResult) {
                 "<tt>Disk  {}</tt>",
                 glib::markup_escape_text(&disk_text)
             ));
+            // Only rates sampled while this interface was selected feed the
+            // trend, otherwise switching would mix incomparable counters.
+            let net_trend: Vec<f32> = state
+                .samples
+                .iter()
+                .filter(|sample| sample.net_iface == net_interface)
+                .map(|sample| sample.net)
+                .collect();
+            let iface_text = net_interface.unwrap_or_else(|| "tutte".to_string());
             ui.net.set_markup(&format!(
-                "<tt>Net   {:7.1} KiB/s  {}</tt>",
+                "<tt>Net {} {:7.1} KiB/s  {}</tt>",
+                glib::markup_escape_text(&iface_text),
                 net_kbps,
-                column(|sample| sample.net)
+                sparkline(&net_trend)
             ));
             let gpu_text = match stats.gpu {
                 Some(gpu) => {
@@ -467,6 +303,9 @@ fn apply(ui: &StrongUi, state: &mut State, result: PollResult) {
 /// only need to keep the returned value alive and connect `close` if wanted.
 pub struct MonitorPanel {
     pub root: gtk::Box,
+    /// Dropdown of saved SSH connections (active ones first). Selecting an
+    /// entry fills `host`; typing in `host` still works for arbitrary targets.
+    pub connections: gtk::ComboBoxText,
     pub host: gtk::Entry,
     pub interval: gtk::SpinButton,
     pub start: gtk::Button,
@@ -478,12 +317,19 @@ pub struct MonitorPanel {
     pub ram: gtk::Label,
     pub disk: gtk::Label,
     pub net: gtk::Label,
+    /// Interface used by the Net row; populated by every probe.
+    pub net_iface: gtk::ComboBoxText,
     pub gpu: gtk::Label,
     state: Arc<Mutex<State>>,
+    /// Target behind each entry of `connections` (index-aligned).
+    connection_targets: RefCell<Vec<String>>,
+    syncing_connections: Arc<AtomicBool>,
 }
 
 impl MonitorPanel {
-    pub fn build() -> MonitorPanel {
+    /// `connection_choices` is `(target, label, active)`; active SSH
+    /// connections are passed first and keep that order in the dropdown.
+    pub fn build(connection_choices: Vec<(String, String, bool)>) -> MonitorPanel {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.set_width_request(220);
         root.set_no_show_all(true);
@@ -502,6 +348,35 @@ impl MonitorPanel {
         close.set_tooltip_text(Some("Hide the shared dock"));
         header.pack_end(&close, false, false, 0);
         root.pack_start(&header, false, false, 0);
+
+        let conn_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        conn_row.set_margin_start(8);
+        conn_row.set_margin_end(8);
+        let conn_label = gtk::Label::new(Some("Conn."));
+        conn_label.set_xalign(0.0);
+        let connections = gtk::ComboBoxText::new();
+        connections.set_hexpand(true);
+        connections.set_tooltip_text(Some(
+            "Connessioni SSH salvate (prime quelle attive); oppure scrivi un target qui sotto",
+        ));
+        let mut connection_targets = Vec::new();
+        for (target, label, active) in &connection_choices {
+            let text = if *active {
+                format!("● {label}")
+            } else {
+                label.clone()
+            };
+            connections.append_text(&text);
+            connection_targets.push(target.clone());
+        }
+        // Localhost is not one of the saved connections: keep it below them,
+        // while the active SSH sessions stay at the top as requested.
+        connections.append_text("localhost (questa macchina)");
+        connection_targets.push(String::new());
+        connections.set_active(Some((connection_targets.len() - 1) as u32));
+        conn_row.pack_start(&conn_label, false, false, 0);
+        conn_row.pack_start(&connections, true, true, 0);
+        root.pack_start(&conn_row, false, false, 0);
 
         let target_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         target_row.set_margin_start(8);
@@ -522,6 +397,21 @@ impl MonitorPanel {
         target_row.pack_end(&interval, false, false, 0);
         target_row.pack_end(&interval_label, false, false, 0);
         root.pack_start(&target_row, false, false, 0);
+
+        let syncing_connections = Arc::new(AtomicBool::new(false));
+        let conn_sync = syncing_connections.clone();
+        let conn_host = host.clone();
+        let conn_targets = Arc::new(connection_targets.clone());
+        connections.connect_changed(move |combo| {
+            if conn_sync.load(Ordering::SeqCst) {
+                return;
+            }
+            if let Some(index) = combo.active() {
+                if let Some(target) = conn_targets.get(index as usize) {
+                    conn_host.set_text(target);
+                }
+            }
+        });
 
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         actions.set_margin_start(8);
@@ -553,6 +443,21 @@ impl MonitorPanel {
         }
         root.pack_start(&metrics, false, false, 0);
 
+        let net_iface_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        net_iface_row.set_margin_start(8);
+        net_iface_row.set_margin_end(8);
+        net_iface_row.set_margin_top(2);
+        let net_iface_label = gtk::Label::new(Some("Scheda"));
+        net_iface_label.set_xalign(0.0);
+        let net_iface = gtk::ComboBoxText::new();
+        net_iface.set_hexpand(true);
+        net_iface.append_text(ALL_INTERFACES);
+        net_iface.set_active(Some(0));
+        net_iface.set_tooltip_text(Some("Scheda di rete usata dalla riga Net"));
+        net_iface_row.pack_start(&net_iface_label, false, false, 0);
+        net_iface_row.pack_start(&net_iface, true, true, 0);
+        root.pack_start(&net_iface_row, false, false, 0);
+
         let status = gtk::Label::new(Some("Premi Start per campionare le risorse remote"));
         status.set_xalign(0.0);
         status.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -563,14 +468,17 @@ impl MonitorPanel {
         status.style_context().add_class("dim-label");
         root.pack_start(&status, false, false, 0);
 
+        let syncing_net = Arc::new(AtomicBool::new(false));
         let state = Arc::new(Mutex::new(State {
             stop: Arc::new(AtomicBool::new(false)),
             generation: 0,
             host: String::new(),
             samples: Vec::new(),
             last_net: None,
+            net_interface: None,
+            syncing_net: syncing_net.clone(),
         }));
-        let ui = Ui::new(&status, &cpu, &ram, &disk, &net, &gpu);
+        let ui = Ui::new(&status, &cpu, &ram, &disk, &net, &net_iface, &gpu);
 
         let start_state = state.clone();
         let start_ui = ui.clone();
@@ -641,8 +549,34 @@ impl MonitorPanel {
             );
         });
 
+        let net_state = state.clone();
+        let net_sync = syncing_net.clone();
+        let net_refresh = refresh.downgrade();
+        net_iface.connect_changed(move |combo| {
+            // `apply()` rebuilds the list on every probe; those programmatic
+            // changes must not look like a user picking a different card.
+            if net_sync.load(Ordering::SeqCst) {
+                return;
+            }
+            let selection = match combo.active_text() {
+                Some(text) if text.as_str() != ALL_INTERFACES => Some(text.to_string()),
+                _ => None,
+            };
+            let mut state = net_state.lock().expect("monitor state lock poisoned");
+            if state.net_interface != selection {
+                state.net_interface = selection;
+                // Counters of different interfaces are not comparable.
+                state.last_net = None;
+                drop(state);
+                if let Some(refresh) = net_refresh.upgrade() {
+                    refresh.activate();
+                }
+            }
+        });
+
         MonitorPanel {
             root,
+            connections,
             host,
             interval,
             start,
@@ -654,17 +588,59 @@ impl MonitorPanel {
             ram,
             disk,
             net,
+            net_iface,
             gpu,
             state,
+            connection_targets: RefCell::new(connection_targets),
+            syncing_connections,
         }
     }
 
     /// Prefill the target from the active SSH connection, if any. Kept as a
     /// method so the window can decide when the value is worth overriding.
+    /// The dropdown follows the entry when the target is one of its choices.
     pub fn set_target(&self, target: Option<String>) {
         if let Some(target) = target.filter(|target| !target.is_empty()) {
             self.host.set_text(&target);
         }
+        let text = self.host.text();
+        let targets = self.connection_targets.borrow();
+        let index = targets
+            .iter()
+            .position(|candidate| candidate == text.as_str())
+            .unwrap_or_else(|| targets.len() - 1);
+        // Keep a typed target that is not in the book: the callback would
+        // otherwise overwrite the entry with the fallback localhost value.
+        self.syncing_connections.store(true, Ordering::SeqCst);
+        self.connections.set_active(Some(index as u32));
+        self.syncing_connections.store(false, Ordering::SeqCst);
+    }
+
+    /// Refresh the saved-SSH dropdown (e.g. when the dock is shown again)
+    /// without losing a target the user typed by hand.
+    pub fn set_connections(&self, choices: Vec<(String, String, bool)>) {
+        let current = self.host.text().to_string();
+        let mut targets = Vec::new();
+        self.syncing_connections.store(true, Ordering::SeqCst);
+        self.connections.remove_all();
+        for (target, label, active) in &choices {
+            let text = if *active {
+                format!("● {label}")
+            } else {
+                label.clone()
+            };
+            self.connections.append_text(&text);
+            targets.push(target.clone());
+        }
+        self.connections.append_text("localhost (questa macchina)");
+        targets.push(String::new());
+        let index = targets
+            .iter()
+            .position(|target| target == &current)
+            .unwrap_or(targets.len() - 1);
+        self.connections.set_active(Some(index as u32));
+        self.syncing_connections.store(false, Ordering::SeqCst);
+        *self.connection_targets.borrow_mut() = targets;
     }
 
     /// Cancel the worker, e.g. when the dock is hidden.
@@ -672,122 +648,5 @@ impl MonitorPanel {
         stop_poll(&self.state);
         self.start.set_sensitive(true);
         self.stop.set_sensitive(false);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn argv(command: &Command) -> Vec<String> {
-        command
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect()
-    }
-
-    #[test]
-    fn probe_splits_the_port_and_probes_localhost_when_empty() {
-        assert_eq!(
-            argv(&probe_command("andres@192.168.1.161:2223").unwrap()),
-            [
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "ConnectTimeout=5",
-                "-l",
-                "andres",
-                "-p",
-                "2223",
-                "192.168.1.161",
-                PROBE_SCRIPT
-            ]
-        );
-        assert_eq!(argv(&probe_command("").unwrap()), ["-c", PROBE_SCRIPT]);
-        assert!(probe_command("-oProxyCommand=evil").is_err());
-    }
-
-    #[test]
-    fn cpu_is_one_minus_idle() {
-        let top = "top - 12:00:00 up 1 day\nTasks: 1 total\n\
-                   %Cpu(s):  5.9 us,  1.9 sy,  0.0 ni, 91.9 id,  0.2 wa,  0.0 hi\n";
-        assert!((parse_cpu(top).unwrap() - 8.1).abs() < 0.001);
-        assert_eq!(parse_cpu("no summary here"), None);
-    }
-
-    #[test]
-    fn memory_reads_total_and_used() {
-        let free = "              total        used        free      shared  buff/cache   available\n\
-                    Mem:        1048576000   419430400   629145600           0     209715200     800000000\n\
-                    Swap:                 0           0           0\n";
-        assert_eq!(parse_memory(free), Some((1048576000, 419430400)));
-        assert_eq!(parse_memory("Swap: 1 2 3"), None);
-    }
-
-    #[test]
-    fn disk_keeps_mount_and_capacity() {
-        let df = "Filesystem 1024-blocks      Used Available Capacity Mounted on\n\
-                  /dev/sda1    10240000   4194304   6045696      41% /\n\
-                  tmpfs           1024         0      1024       0% /run\n\
-                  bad line\n";
-        assert_eq!(
-            parse_disk(df),
-            vec![
-                DiskUsage {
-                    mount: "/".to_string(),
-                    used_percent: 41.0,
-                },
-                DiskUsage {
-                    mount: "/run".to_string(),
-                    used_percent: 0.0,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn net_sums_interfaces_without_loopback() {
-        let dev = "Inter-|   Receive                                                |  Transmit\n\
-                    lo: 999 1 0 0 0 0 0 0 999 1 0 0 0 0 0 0\n\
-                  eth0: 1000 10 0 0 0 0 0 0 2000 20 0 0 0 0 0 0\n\
-                  eth1: 500 5 0 0 0 0 0 0 700 7 0 0 0 0 0 0\n";
-        assert_eq!(parse_net(dev), Some((1500, 2700)));
-        assert_eq!(parse_net("only a header"), None);
-    }
-
-    #[test]
-    fn gpu_parses_csv_and_tolerates_missing_tool() {
-        let csv = "45, 2048, 8192\n";
-        assert_eq!(
-            parse_gpu(csv),
-            Some(GpuStats {
-                utilization: 45.0,
-                used_mb: 2048,
-                total_mb: 8192,
-            })
-        );
-        assert_eq!(parse_gpu(""), None);
-    }
-
-    #[test]
-    fn combined_output_is_split_into_sections() {
-        let output = "@@CPU@@\n%Cpu(s): 10.0 id\n@@MEM@@\nMem: 100 40 60 0 0 0\n\
-                      @@DISK@@\nFilesystem 1024-blockes Used Avail Capacity Mounted on\n/dev/sda1 10 4 6 40% /\n\
-                      @@NET@@\n eth0: 10 1 0 0 0 0 0 0 20 2 0 0 0 0 0 0\n@@GPU@@\n\n";
-        let stats = RemoteStats::parse(output);
-        assert_eq!(stats.cpu_percent, Some(90.0));
-        assert_eq!(stats.mem_used, Some(40));
-        assert_eq!(stats.disks.len(), 1);
-        assert_eq!(stats.net_tx_bytes, Some(20));
-        assert_eq!(stats.gpu, None);
-    }
-
-    #[test]
-    fn sparkline_maps_extremes_and_keeps_order() {
-        assert_eq!(sparkline(&[0.0, 100.0]), "▁█");
-        assert_eq!(sparkline(&[]).len(), 0);
-        let line = sparkline(&vec![50.0; 60]);
-        assert_eq!(line.chars().count(), 60);
-        assert!(line.chars().all(|glyph| BARS.contains(&glyph)));
     }
 }
