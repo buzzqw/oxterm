@@ -1,5 +1,9 @@
 # Rust build output
 /target/
+
+# Python bytecode (helper scripts)
+__pycache__/
+*.py[cod]
 /oxterm-linux-x86-64
 /oxterm-linux-x86_64
 /oxterm-broker-linux-x86-64
