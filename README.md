@@ -258,7 +258,7 @@ Utilities (no window is opened):
 Scriptable control (no window unless noted):
   new [DIR] [--cwd DIR] [--title TITLE] [-- CMD...]                                    Open a tab, print its pane id
   split [--pane ID] [--vertical|--horizontal] [--cwd DIR] [--title TITLE] [-- CMD...]  Split a single-pane window
-  send [--pane ID] [--enter] TEXT...|-                                                 Type into a pane
+  send [--pane ID] [--enter] [--receipt [--expect TEXT] [--timeout S]] TEXT...|-       Type into a pane
   capture [--pane ID] [--scrollback N|--all|--captured [--clear]]                      Print a pane's text
   wait [--pane ID] [--timeout SECONDS]                                                 Wait for the next command to finish
   connect NAME [--split [--pane ID]] [--yes]                                           Open a saved connection or host

@@ -28,6 +28,7 @@ use crate::headless::control_cli::{
     ActionCommand, AgentAction, CaptureScope, CliMode, TunnelAction,
 };
 use crate::headless::framing;
+use crate::headless::jobs::{self, ReceiptState};
 use crate::headless::ssh_config;
 use crate::headless::tunnels;
 use crate::logging::LOGGER;
@@ -111,7 +112,14 @@ pub fn run_cli(mode: CliMode) -> i32 {
             name,
             index,
         } => run_tunnel(action, name.as_deref(), index),
-        CliMode::Send { pane, enter, text } => {
+        CliMode::Send {
+            pane,
+            enter,
+            text,
+            receipt,
+            expect,
+            timeout,
+        } => {
             let text = match text {
                 Some(text) => text,
                 None => {
@@ -126,6 +134,13 @@ pub fn run_cli(mode: CliMode) -> i32 {
                 Ok(target) => target,
                 Err(error) => return fail(error.0, "send", &error.1),
             };
+            // Take the baseline before typing, so an old occurrence of the
+            // expected text cannot be mistaken for proof of this send.
+            let before = if expect.is_some() {
+                capture_text(&target).ok()
+            } else {
+                None
+            };
             let request = json!({
                 "op": "send",
                 "pane": target.id,
@@ -133,8 +148,50 @@ pub fn run_cli(mode: CliMode) -> i32 {
                 "enter": enter,
             });
             match request_at(&target.socket, &request) {
-                Ok(_) => 0,
-                Err(error) => fail(error.0, "send", &error.1),
+                Ok(_) => {
+                    if receipt {
+                        let report = match expect {
+                            None => jobs::Receipt::new(
+                                &target.id,
+                                ReceiptState::HandedToTerminal,
+                                "accepted by the terminal; no output was checked",
+                            ),
+                            Some(expected) => {
+                                let limit = timeout.unwrap_or(Duration::from_secs(5));
+                                let seen = before
+                                    .map(|baseline| {
+                                        wait_for_expected(&target, &baseline, &expected, limit)
+                                    })
+                                    .unwrap_or(false);
+                                jobs::Receipt::new(
+                                    &target.id,
+                                    if seen {
+                                        ReceiptState::Delivered
+                                    } else {
+                                        ReceiptState::Unconfirmed
+                                    },
+                                    if seen {
+                                        "the expected output appeared after the send"
+                                    } else {
+                                        "the expected output did not appear in time"
+                                    },
+                                )
+                            }
+                        };
+                        println!("{}", report.to_json());
+                    }
+                    0
+                }
+                Err(error) => {
+                    if receipt {
+                        println!(
+                            "{}",
+                            jobs::Receipt::new(&target.id, ReceiptState::NotDelivered, &error.1)
+                                .to_json()
+                        );
+                    }
+                    fail(error.0, "send", &error.1)
+                }
             }
         }
         CliMode::Capture { pane, scope } => {
@@ -1232,6 +1289,42 @@ fn all_panes() -> Vec<(PathBuf, Value)> {
         }
     }
     panes
+}
+
+/// The whole scrollback, used as a baseline for `send --receipt --expect`.
+fn capture_text(target: &Target) -> Result<String, (i32, String)> {
+    let reply = request_at(
+        &target.socket,
+        &json!({
+            "op": "capture", "pane": target.id, "scope": "all", "lines": 0, "clear": false
+        }),
+    )?;
+    Ok(reply["text"].as_str().unwrap_or("").to_string())
+}
+
+/// Look for evidence that appeared *after* a baseline capture. A match in old
+/// output is not evidence, so it is deliberately ignored.
+fn wait_for_expected(target: &Target, before: &str, expected: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(after) = capture_text(target) {
+            // The prompt may be redrawn between captures, so an exact prefix
+            // match is too strict. Only look past the baseline's length: a
+            // match in the old part of the buffer is not evidence of this send.
+            let fresh = if after.len() > before.len() {
+                after.get(before.len()..).unwrap_or(&after)
+            } else {
+                "" // the buffer shrank: there is no fresh text to trust
+            };
+            if fresh.contains(expected) {
+                return true;
+            }
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(120));
+    }
 }
 
 fn wait_for_command(target: &Target, timeout: Option<Duration>) -> i32 {

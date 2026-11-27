@@ -179,7 +179,8 @@ GUI toolkit:
 oxterm new [DIR] [--cwd DIR] [--title TITLE] [-- COMMAND...]
 oxterm split [--pane ID] [--vertical|--horizontal] [--cwd DIR] [--title TITLE]
              [-- COMMAND...]
-oxterm send [--pane ID] [--enter] TEXT...        # or: ... - (read stdin)
+oxterm send [--pane ID] [--enter] [--receipt [--expect TEXT] [--timeout S]] TEXT...
+                                                   # or: ... - (read stdin)
 oxterm capture [--pane ID] [--scrollback N | --all | --captured [--clear]]
 oxterm wait [--pane ID] [--timeout SECONDS]
 oxterm connect NAME [--split [--pane ID]] [--yes]
@@ -202,6 +203,23 @@ command's status (clamped to 0–255), which makes it possible to chain a build 
 read its result. If the shell integration finishes the command without reporting
 a status, `wait` fails with a message and exit status 1 rather than reporting a
 success it cannot confirm:
+
+By default `send` prints nothing: a reply from the GUI only means the bytes were
+accepted, not that the shell ran them. `send --receipt` prints one JSON line
+with an id, the pane and the state `handed_to_terminal`, `delivered`,
+`unconfirmed` or `not_delivered`. Add `--expect TEXT` (and optionally
+`--timeout SECONDS`, 5 by default) to promote the receipt to `delivered` only
+when that text appears in the capture taken *after* the send. An expected text
+that does not appear is reported as `unconfirmed`, never as a failure: the
+command may have run without printing it. Scripts should use the id to
+correlate later `capture` or agent actions with the send.
+
+```sh
+pane=$(oxterm split --horizontal --cwd ~/src/app)
+receipt=$(oxterm send --pane "$pane" --enter --receipt --expect 'ready' \
+  --timeout 20 'make test')
+printf '%s\n' "$receipt" | jq -r '.state'   # delivered, unconfirmed, ...
+```
 
 ```sh
 pane=$(oxterm split --horizontal --cwd ~/src/app)

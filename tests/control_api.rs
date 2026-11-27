@@ -273,6 +273,48 @@ fn control_api_drives_tabs_panes_and_commands() {
     );
     assert!(capture.contains("ctl-ok"), "capture: {capture:?}");
 
+    // A receipt with --expect is only "delivered" when fresh output proves it;
+    // without --expect it honestly reports only that bytes were accepted.
+    thread::sleep(Duration::from_millis(300));
+    let receipt = cli(
+        fixture.home.path(),
+        &[
+            "send",
+            "--pane",
+            &pane,
+            "--receipt",
+            "--expect",
+            "receipt-ok",
+            "--timeout",
+            "5",
+            "--enter",
+            "printf receipt-ok",
+        ],
+    );
+    assert!(
+        receipt.contains("\"state\":\"delivered\""),
+        "receipt: {receipt:?}"
+    );
+    assert!(receipt.contains("\"id\":\"job-"), "receipt: {receipt:?}");
+    let waiting = spawn_wait(fixture.home.path(), &pane, "10");
+    thread::sleep(Duration::from_millis(300));
+    let receipt = cli(
+        fixture.home.path(),
+        &[
+            "send",
+            "--pane",
+            &pane,
+            "--receipt",
+            "--enter",
+            "printf plain-ok",
+        ],
+    );
+    assert!(
+        receipt.contains("\"state\":\"handed_to_terminal\""),
+        "receipt: {receipt:?}"
+    );
+    assert_eq!(wait_status(waiting), 0, "receipt send should still run");
+
     // A failing command makes wait exit with its status.
     let waiting = spawn_wait(fixture.home.path(), &pane, "10");
     thread::sleep(Duration::from_millis(300));

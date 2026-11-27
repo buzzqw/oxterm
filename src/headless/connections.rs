@@ -1493,6 +1493,10 @@ pub fn import_into(
         // A new id has nothing stored in the keyring under it.
         connection.auth = Auth::Default;
         connection.totp = false;
+        // Forward-compatible fields are preserved when *reading* our own book,
+        // but an imported file may contain anything in them, including a
+        // secret from another manager. Import copies known fields only.
+        connection.unknown.clear();
         if book.connections.iter().any(|entry| entry.name == name) {
             report.skipped.push(format!("{}: the name is taken", name));
             continue;
@@ -3176,6 +3180,9 @@ mod tests {
         let mut stolen = manual("other", "evil.example");
         stolen.id = "id-mine".into();
         stolen.auth = Auth::SecretService;
+        stolen
+            .unknown
+            .insert("password".into(), Value::String("secret".into()));
         incoming.connections.push(stolen);
         incoming.connections.push(Connection {
             extra_args: vec!["-oProxyCommand=evil".into()],
@@ -3194,6 +3201,7 @@ mod tests {
             .unwrap();
         assert_ne!(added.id, "id-mine");
         assert_eq!(added.auth, Auth::Default);
+        assert!(added.unknown.is_empty());
         assert!(!book.connections.iter().any(|entry| entry.name == "risky"));
 
         let report = import_into(&mut book, incoming, true).unwrap();

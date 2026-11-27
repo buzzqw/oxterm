@@ -178,6 +178,10 @@ pub fn merge(book: &mut Book, entries: Vec<Connection>) -> ImportPreview {
         entry.auth = Auth::Default;
         entry.totp = false;
         entry.template = None; // a template from another book would dangle
+                               // Unknown fields are kept when Oxterm reads its own book, but a file
+                               // from another manager can hide secrets or settings in them. Never
+                               // carry them into our book: import copies known fields only.
+        entry.unknown.clear();
         if book.find_by_id(&entry.id).is_some() {
             report
                 .skipped
@@ -934,6 +938,36 @@ Host web prod\n\
         // An entry with no host is invalid, but still parsed so that `preview`
         // can report why it was skipped rather than dropping it silently.
         assert_eq!(find("unnamed template").host, "");
+    }
+
+    #[test]
+    fn importing_never_copies_secrets_or_program_options() {
+        // A full Oxterm-looking entry may carry fields from another manager in
+        // its forward-compatible map. They are data from an untrusted file,
+        // not settings to copy into our book.
+        let text = r#"{"connections":[
+            {"id":"old","name":"risky","host":"h","password":"secret",
+             "pre_command":"touch /tmp/unsafe","extra_args":["-oProxyCommand=evil"]},
+            {"id":"other","name":"clean","host":"h2","auth":"secret_service",
+             "totp":true,"template":"gone","password":"secret","totp_secret":"JBSWY3DPEHPK3PXP"}
+        ]}"#;
+        let entries = parse(text, ImportFormat::Json).unwrap();
+        let mut book = Book::default();
+        let report = merge(&mut book, entries);
+        assert_eq!(report.entries.len(), 1);
+        assert!(report
+            .skipped
+            .iter()
+            .any(|(name, reason)| name == "risky" && reason.contains("runs local commands")));
+        let saved = &book.connections[0];
+        assert_ne!(saved.id, "other");
+        assert_eq!(saved.auth, Auth::Default);
+        assert!(!saved.totp);
+        assert!(saved.template.is_none());
+        assert!(saved.unknown.is_empty());
+        let serialized = serde_json::to_string(saved).unwrap();
+        assert!(!serialized.contains("secret"));
+        assert!(!serialized.contains("JBSWY3"));
     }
 
     #[test]

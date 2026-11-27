@@ -98,6 +98,9 @@ fn control_protocol_parsing_is_independent_of_the_socket() {
             pane: Some("42".to_string()),
             enter: true,
             text: Some("make test".to_string()),
+            receipt: false,
+            expect: None,
+            timeout: None,
         }
     );
 }

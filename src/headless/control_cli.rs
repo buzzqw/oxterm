@@ -37,6 +37,12 @@ pub enum CliMode {
         enter: bool,
         /// `None` means: read the text from standard input (`send ... -`).
         text: Option<String>,
+        /// Print a JSON receipt instead of staying silent.
+        receipt: bool,
+        /// With `--receipt`, output that proves the send took effect.
+        expect: Option<String>,
+        /// How long to wait for `--expect` before reporting `unconfirmed`.
+        timeout: Option<Duration>,
     },
     Capture {
         pane: Option<String>,
@@ -167,12 +173,18 @@ pub const VERBS: &[Verb] = &[
     },
     Verb {
         name: "send",
-        synopsis: "send [--pane ID] [--enter] TEXT...|-",
+        synopsis: "send [--pane ID] [--enter] [--receipt [--expect TEXT] [--timeout S]] TEXT...|-",
         summary: "Type into a pane",
         help: "Usage: oxterm send [--pane ID] [--enter] TEXT...\n\
-               \x20      oxterm send [--pane ID] [--enter] -\n\n\
+               \x20      oxterm send [--pane ID] [--enter] -\n\
+               \x20      oxterm send --receipt --expect ready --timeout 5 TEXT...\n\n\
                Type TEXT into the target pane, or standard input with '-'. --enter\n\
-               appends a carriage return, as if Enter had been pressed.\n",
+               appends a carriage return, as if Enter had been pressed. By default\n\
+               send prints nothing: the GUI accepting the bytes is not proof that\n\
+               the shell ran them. --receipt prints one JSON line naming what was\n\
+               observed: handed_to_terminal, delivered (only when --expect text\n\
+               appeared), unconfirmed (it did not appear in time), or\n\
+               not_delivered. Without --expect the state is handed_to_terminal.\n",
     },
     Verb {
         name: "capture",
@@ -752,6 +764,9 @@ pub fn parse_verb(args: &[String]) -> Result<CliMode, String> {
     let mut read_stdin = false;
     let mut captured = false;
     let mut clear = false;
+    let mut receipt = false;
+    let mut expect: Option<String> = None;
+    let mut send_timeout: Option<Duration> = None;
     let mut i = 1;
     while i < args.len() {
         let arg = &args[i];
@@ -773,6 +788,15 @@ pub fn parse_verb(args: &[String]) -> Result<CliMode, String> {
             "--vertical" if name == "split" => vertical = true,
             "--horizontal" if name == "split" => vertical = false,
             "--enter" if name == "send" => enter = true,
+            "--receipt" if name == "send" => receipt = true,
+            "--expect" if name == "send" => {
+                i += 1;
+                expect = Some(
+                    args.get(i)
+                        .ok_or("--expect requires the text to look for")?
+                        .clone(),
+                );
+            }
             "--all" if name == "capture" => scope = CaptureScope::All,
             "--captured" if name == "capture" => captured = true,
             "--clear" if name == "capture" => clear = true,
@@ -784,13 +808,17 @@ pub fn parse_verb(args: &[String]) -> Result<CliMode, String> {
                     .map_err(|_| format!("invalid --scrollback '{}'", value))?;
                 scope = CaptureScope::Lines(lines);
             }
-            "--timeout" if name == "wait" => {
+            "--timeout" if name == "wait" || name == "send" => {
                 i += 1;
                 let value = args.get(i).ok_or("--timeout requires seconds")?;
                 let secs = value
                     .parse::<u64>()
                     .map_err(|_| format!("invalid --timeout '{}': expected seconds", value))?;
-                timeout = Some(Duration::from_secs(secs));
+                if name == "send" {
+                    send_timeout = Some(Duration::from_secs(secs));
+                } else {
+                    timeout = Some(Duration::from_secs(secs));
+                }
             }
             "--" if name == "new" || name == "split" => {
                 command = args[i + 1..].to_vec();
@@ -832,6 +860,12 @@ pub fn parse_verb(args: &[String]) -> Result<CliMode, String> {
     } else if clear {
         return Err("--clear only applies with --captured".to_string());
     }
+    if expect.is_some() && !receipt {
+        return Err("--expect only applies with --receipt".to_string());
+    }
+    if send_timeout.is_some() && !receipt {
+        return Err("--timeout on send only applies with --receipt".to_string());
+    }
 
     match name {
         "new" => Ok(CliMode::New {
@@ -855,7 +889,14 @@ pub fn parse_verb(args: &[String]) -> Result<CliMode, String> {
             if text.as_deref() == Some("") && !enter {
                 return Err("nothing to send".to_string());
             }
-            Ok(CliMode::Send { pane, enter, text })
+            Ok(CliMode::Send {
+                pane,
+                enter,
+                text,
+                receipt,
+                expect,
+                timeout: send_timeout,
+            })
         }
         "capture" => Ok(CliMode::Capture { pane, scope }),
         "wait" => Ok(CliMode::Wait { pane, timeout }),
@@ -1000,6 +1041,9 @@ mod tests {
                 pane: Some("1".to_string()),
                 enter: true,
                 text: Some("make test".to_string()),
+                receipt: false,
+                expect: None,
+                timeout: None,
             }
         );
         assert_eq!(
@@ -1008,10 +1052,44 @@ mod tests {
                 pane: None,
                 enter: false,
                 text: None,
+                receipt: false,
+                expect: None,
+                timeout: None,
             }
         );
         assert!(parse_verb(&args(&["send"])).is_err());
         assert!(parse_verb(&args(&["send", "--enter", "--"])).is_ok());
+    }
+
+    #[test]
+    fn parses_send_receipts_without_claiming_proof() {
+        let mode = parse_verb(&args(&[
+            "send",
+            "--receipt",
+            "--expect",
+            "ready",
+            "--timeout",
+            "5",
+            "--enter",
+            "make",
+            "test",
+        ]))
+        .unwrap();
+        assert_eq!(
+            mode,
+            CliMode::Send {
+                pane: None,
+                enter: true,
+                text: Some("make test".to_string()),
+                receipt: true,
+                expect: Some("ready".to_string()),
+                timeout: Some(Duration::from_secs(5)),
+            }
+        );
+        assert!(parse_verb(&args(&["send", "--expect", "x", "hi"])).is_err());
+        assert!(parse_verb(&args(&["send", "--timeout", "5", "hi"])).is_err());
+        assert!(parse_verb(&args(&["send", "--receipt", "--expect"])).is_err());
+        assert!(parse_verb(&args(&["send", "--receipt", "--timeout", "x", "hi"])).is_err());
     }
 
     #[test]
