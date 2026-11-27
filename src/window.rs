@@ -1,4 +1,6 @@
 use std::cell::{Cell, RefCell};
+use std::path::Path;
+use std::time::Duration;
 
 use glib::prelude::*;
 use glib::subclass::prelude::*;
@@ -1777,6 +1779,9 @@ mod main_imp {
         pub stats_self_label: RefCell<Option<gtk::Label>>,
         pub stats_box: RefCell<Option<gtk::Box>>,
         pub cwd_label: RefCell<Option<gtk::Label>>,
+        /// Compact git status of the active tab, independent of `show_stats`.
+        pub git_label: RefCell<Option<gtk::Label>>,
+        pub git_badge_pending: Cell<bool>,
         pub info_bar: RefCell<Option<gtk::InfoBar>>,
         pub info_label: RefCell<Option<gtk::Label>>,
         pub notes_panel: RefCell<Option<crate::notes_panel::NotesPanel>>,
@@ -2252,6 +2257,17 @@ impl MainWindow {
         if let Some(bar) = crate::status_bar::StatusBar::new(crate::extensions::config(), cwd) {
             vbox.pack_end(bar.widget(), false, false, 0);
         }
+        let git_label = gtk::Label::new(None);
+        git_label.set_halign(gtk::Align::Start);
+        git_label.set_margin_start(8);
+        git_label.set_margin_end(8);
+        git_label.set_single_line_mode(true);
+        git_label.set_ellipsize(pango::EllipsizeMode::End);
+        git_label.style_context().add_class("oxterm-stats-label");
+        git_label.set_no_show_all(true);
+        git_label.hide();
+        vbox.pack_end(&git_label, false, false, 0);
+        *self.imp().git_label.borrow_mut() = Some(git_label);
         self.add(&vbox);
 
         let weak = crate::SendWeak::new(self);
@@ -6344,6 +6360,43 @@ impl MainWindow {
         *self.imp().remote_stats_generation.borrow_mut() += 1;
     }
 
+    /// The git badge is computed off the GTK thread: `git status` can be slow
+    /// on a large tree and must never block typing. One probe at a time.
+    fn refresh_git_badge(&self, term: &TerminalBox) {
+        let Some(label) = self.imp().git_label.borrow().clone() else {
+            return;
+        };
+        let cwd = term.display_cwd();
+        if term.is_ssh_client() || cwd.is_empty() {
+            label.hide();
+            return;
+        }
+        if self.imp().git_badge_pending.get() {
+            return;
+        }
+        self.imp().git_badge_pending.set(true);
+        let weak = crate::SendWeak::new(self);
+        std::thread::spawn(move || {
+            let status =
+                crate::headless::git_status::snapshot(Path::new(&cwd), Duration::from_secs(2));
+            crate::run_on_main(move || {
+                if let Some(window) = weak.upgrade() {
+                    window.imp().git_badge_pending.set(false);
+                    if let Some(label) = window.imp().git_label.borrow().clone() {
+                        match status {
+                            Some(status) => {
+                                label.set_text(&status.compact());
+                                label.set_tooltip_text(Some(&status.summary()));
+                                label.show();
+                            }
+                            None => label.hide(),
+                        }
+                    }
+                }
+            });
+        });
+    }
+
     fn refresh_stats(&self) {
         let Some(term) = self.current_terminal() else {
             return;
@@ -6351,6 +6404,7 @@ impl MainWindow {
         // Focus can move between split panes without a tab switch; the badge
         // follows the active terminal on every stats tick as well.
         self.update_cwd_badge(&term);
+        self.refresh_git_badge(&term);
         self.apply_ssh_alert(&term);
         if term.is_ssh_client() {
             if let Some(label) = self.imp().stats_sys_label.borrow().clone() {

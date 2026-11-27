@@ -23,6 +23,7 @@ pub mod expect;
 pub mod extensions;
 pub mod file_uri;
 pub mod framing;
+pub mod git_status;
 pub mod jobs;
 pub mod mcp;
 pub mod notes_prompt;

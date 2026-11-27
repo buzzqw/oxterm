@@ -949,6 +949,12 @@ Choose the font and size, bold text, color scheme, automatic light/dark theme,
 foreground, background, cursor and selection colors, tab colors, cursor shape
 and blinking, transparency and opacity, padding, and underline style.
 
+When the active tab's directory is a Git work tree, a small badge at the bottom
+shows the branch and compact counts: `+` staged, `~` changed, `?` untracked and
+`↑`/`↓` commits ahead/behind the upstream. Its tooltip spells the counts out.
+The badge follows the active tab, is refreshed in the background and is hidden
+on SSH tabs and outside repositories; it needs no font beyond the system's.
+
 ### Colors
 
 Edit all 16 ANSI palette entries individually; the current hex value is shown
