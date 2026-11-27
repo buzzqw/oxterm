@@ -140,8 +140,12 @@ impl MainWindow {
         monitor_panel.set_target(monitor_target.clone());
         {
             let weak = crate::SendWeak::new(self);
+            let monitored_target = monitor_panel.host.clone();
             monitor_panel.close.connect_clicked(move |_| {
                 if let Some(w) = weak.upgrade() {
+                    // Close really closes the monitored SSH session, like
+                    // closing its tab; hiding the dock then cancels probes.
+                    w.close_monitored_connection(&monitored_target.text());
                     w.set_workspace_visible(false);
                 }
             });

@@ -58,6 +58,42 @@ pub fn load_entries() -> Result<Vec<Entry>, String> {
     Ok(connections::merge(&book, &ssh_config::load_hosts()))
 }
 
+/// Whether a terminal tab is the SSH session behind a Monitor target.
+/// `exact` restricts the comparison to identical spellings; the second pass
+/// also accepts the same host with a different user/port spelling.
+fn term_matches_target(term: &TerminalBox, target: &str, entries: &[Entry], exact: bool) -> bool {
+    let live = term.ssh_destination();
+    if live.as_deref() == Some(target) {
+        return true;
+    }
+    let saved_match = term.connection_id().and_then(|id| {
+        let entry = connections::find_entry_by_id(entries, &id)?;
+        if entry.connection.protocol != Protocol::Ssh {
+            return None;
+        }
+        let saved = if entry.connection.kind == Kind::Alias {
+            entry.connection.name.clone()
+        } else {
+            entry.connection.summary()
+        };
+        if saved == target || entry.connection.destination() == target {
+            return Some(true);
+        }
+        if exact {
+            return Some(false);
+        }
+        Some(crate::headless::monitor::same_ssh_host(&saved, target))
+    });
+    if saved_match == Some(true) {
+        return true;
+    }
+    if exact {
+        return false;
+    }
+    live.as_deref()
+        .is_some_and(|value| crate::headless::monitor::same_ssh_host(value, target))
+}
+
 impl MainWindow {
     // ── Panel ────────────────────────────────────────────────
 
@@ -684,6 +720,42 @@ impl MainWindow {
             }
         }
         crate::headless::monitor::order_connection_choices(choices)
+    }
+
+    /// Close the SSH session shown by the Monitor panel, using the same path
+    /// as the tab's X button so the remote process is really terminated.
+    /// An empty target means localhost: there is no session to close.
+    pub(crate) fn close_monitored_connection(&self, target: &str) {
+        if target.trim().is_empty() {
+            return;
+        }
+        let entries = load_entries().unwrap_or_default();
+        let terminals: Vec<(Option<MainWindow>, TerminalBox)> = match self.application() {
+            Some(app) => crate::control::terminals(&app),
+            None => self
+                .all_terminals()
+                .into_iter()
+                .map(|term| (Some(self.clone()), term))
+                .collect(),
+        };
+
+        // Prefer an exact destination match: a host-only match could close a
+        // different user's session on the same machine.
+        for exact in [true, false] {
+            for (window, term) in &terminals {
+                let matches = term_matches_target(&term, target, &entries, exact);
+                if !matches {
+                    continue;
+                }
+                match window {
+                    Some(window) => window.close_tab_signal(Some(term)),
+                    // A detached window owns no MainWindow: terminating the
+                    // terminal still kills its shell, as closing its tab does.
+                    None => term.terminate(),
+                }
+                return;
+            }
+        }
     }
 
     fn connect_first_result(&self) {
