@@ -3,7 +3,9 @@
 //! parsers are covered by the headless tests as well as by unit tests.
 
 use std::process::Command;
+use std::sync::atomic::AtomicBool;
 
+use super::commands::{output_cancellable, CommandError};
 use super::connections::ssh_target_args;
 
 const MARKERS: [&str; 5] = ["@@CPU@@", "@@MEM@@", "@@DISK@@", "@@NET@@", "@@GPU@@"];
@@ -270,10 +272,15 @@ pub fn probe_command(host: &str) -> Result<Command, String> {
     Ok(command)
 }
 
-pub fn run_remote_stats(host: &str) -> Result<RemoteStats, String> {
-    let output = probe_command(host)?
-        .output()
-        .map_err(|error| format!("Impossibile avviare il comando: {error}"))?;
+/// Collect one probe, stopping promptly when `cancel` is set (e.g. when the
+/// dock is closed) instead of leaving `ssh` running in the background.
+pub fn run_remote_stats(host: &str, cancel: &AtomicBool) -> Result<RemoteStats, String> {
+    let mut command = probe_command(host)?;
+    let output = match output_cancellable(&mut command, cancel) {
+        Ok(output) => output,
+        Err(CommandError::Cancelled) => return Err("interrotto".to_string()),
+        Err(CommandError::Failed(message)) => return Err(message),
+    };
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if detail.is_empty() {

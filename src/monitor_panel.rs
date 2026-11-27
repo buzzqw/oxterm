@@ -127,7 +127,7 @@ fn spawn_poll(state: &Arc<Mutex<State>>, ui: &Ui, host: String, interval: u64, o
         {
             break;
         }
-        let result = match run_remote_stats(&host) {
+        let result = match run_remote_stats(&host, &stop) {
             Ok(stats) => PollResult::Stats(stats),
             Err(message) => PollResult::Error(message),
         };

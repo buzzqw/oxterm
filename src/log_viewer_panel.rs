@@ -10,6 +10,13 @@ use std::sync::{Arc, Mutex};
 
 use gtk::prelude::*;
 
+use crate::headless::commands::{output_cancellable, CommandError};
+
+/// Guard against a huge directory turning into minutes of sequential ssh
+/// calls and an unbounded GTK buffer rebuild.
+const MAX_LOG_FILES: usize = 40;
+const MAX_RENDER_LINES: usize = 2000;
+
 /// Common log destinations offered by the Logs dropdown. The combo has an
 /// entry, so any other path or `journal:<unit>` can still be typed.
 pub const LOG_PATHS: [&str; 9] = [
@@ -126,10 +133,13 @@ fn log_command(host: &str, command: &str) -> Result<std::process::Command, Strin
     Ok(process)
 }
 
-fn ssh_run(host: &str, command: &str) -> Result<String, String> {
-    let output = log_command(host, command)?
-        .output()
-        .map_err(|error| format!("Impossibile avviare il comando: {error}"))?;
+fn ssh_run(host: &str, command: &str, cancel: &AtomicBool) -> Result<String, String> {
+    let mut process = log_command(host, command)?;
+    let output = match output_cancellable(&mut process, cancel) {
+        Ok(output) => output,
+        Err(CommandError::Cancelled) => return Err("interrotto".to_string()),
+        Err(CommandError::Failed(message)) => return Err(message),
+    };
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if detail.is_empty() {
@@ -167,7 +177,12 @@ fn remote_script(body: &str) -> String {
 
 /// Run the remote commands for a source and concatenate their output. Each
 /// file is preceded by a `==> path <==` header, like `tail -f` does.
-fn collect_remote(host: &str, source: &LogSource, grep: Option<&str>) -> Result<String, String> {
+fn collect_remote(
+    host: &str,
+    source: &LogSource,
+    grep: Option<&str>,
+    cancel: &AtomicBool,
+) -> Result<String, String> {
     match source {
         LogSource::Journal(unit) => {
             let command = match unit {
@@ -181,14 +196,15 @@ fn collect_remote(host: &str, source: &LogSource, grep: Option<&str>) -> Result<
                     grep_suffix(grep)
                 )),
             };
-            ssh_run(host, &command)
+            ssh_run(host, &command, cancel)
         }
         LogSource::Files(path) => {
             let find = remote_script(&format!(
-                "find {} -maxdepth 2 -type f 2>/dev/null | head -100",
-                shell_quote(path)
+                "find {} -maxdepth 2 -type f 2>/dev/null | head -{}",
+                shell_quote(path),
+                MAX_LOG_FILES
             ));
-            let listing = ssh_run(host, &find)?;
+            let listing = ssh_run(host, &find, cancel)?;
             let files: Vec<&str> = listing
                 .lines()
                 .map(str::trim)
@@ -205,7 +221,7 @@ fn collect_remote(host: &str, source: &LogSource, grep: Option<&str>) -> Result<
                     grep_suffix(grep)
                 ));
                 output.push_str(&format!("==> {file} <==\n"));
-                match ssh_run(host, &command) {
+                match ssh_run(host, &command, cancel) {
                     Ok(text) => output.push_str(&text),
                     Err(error) => output.push_str(&format!("[errore: {error}]\n")),
                 }
@@ -266,7 +282,7 @@ fn spawn_load(
             return;
         }
         let grep = remote_grep_pattern(pattern.as_ref());
-        let result = collect_remote(&host, &source, grep.as_deref());
+        let result = collect_remote(&host, &source, grep.as_deref(), &stop);
         let state = shared.clone();
         let ui = worker_ui.clone();
         crate::run_on_main(move || {
@@ -302,37 +318,48 @@ fn spawn_load(
     });
 }
 
-fn append_line(buffer: &gtk::TextBuffer, line: &str, tag: &str) {
-    let offset = buffer.char_count();
-    let mut end = buffer.end_iter();
-    buffer.insert(&mut end, line);
-    let start = buffer.iter_at_offset(offset);
-    let end = buffer.end_iter();
-    buffer.apply_tag_by_name(tag, &start, &end);
-    let mut end = buffer.end_iter();
-    buffer.insert(&mut end, "\n");
-}
-
+/// Build the whole text first and insert it once. Applying a tag per line
+/// through its own `TextIter` used to keep the GTK main loop busy for seconds
+/// with large logs, which looked like a frozen monitor panel.
 fn render(view: &gtk::TextView, lines: &[String], pattern: Option<&regex::Regex>) -> usize {
     let buffer = view.buffer().expect("text view always has a buffer");
     buffer.set_text("");
-    let mut shown = 0;
-    for line in lines {
-        if line.starts_with("==> ") {
-            append_line(&buffer, line, "log-header");
-            shown += 1;
+    let mut text = String::new();
+    let mut spans: Vec<(i32, i32, &'static str)> = Vec::new();
+    let mut offset = 0usize;
+    let mut shown = 0usize;
+
+    for line in lines.iter().take(MAX_RENDER_LINES) {
+        let tag = if line.starts_with("==> ") {
+            "log-header"
+        } else if pattern.is_some_and(|regex| !regex.is_match(line)) {
             continue;
-        }
-        if pattern.is_some_and(|regex| !regex.is_match(line)) {
-            continue;
-        }
-        let tag = if line.starts_with('[') {
+        } else if line.starts_with('[') {
             "log-header"
         } else {
             parse_log_level(line).tag()
         };
-        append_line(&buffer, line, tag);
+        let start = offset as i32;
+        text.push_str(line);
+        text.push('\n');
+        offset += line.chars().count() + 1;
+        spans.push((start, offset as i32, tag));
         shown += 1;
+    }
+    if lines.len() > MAX_RENDER_LINES {
+        text.push_str(&format!(
+            "... {} righe non mostrate\n",
+            lines.len() - MAX_RENDER_LINES
+        ));
+    }
+    if !text.is_empty() {
+        let mut cursor = buffer.end_iter();
+        buffer.insert(&mut cursor, &text);
+        for (start, end, tag) in spans {
+            let from = buffer.iter_at_offset(start);
+            let to = buffer.iter_at_offset(end);
+            buffer.apply_tag_by_name(tag, &from, &to);
+        }
     }
     let mut end = buffer.end_iter();
     view.scroll_to_iter(&mut end, 0.0, false, 0.0, 0.0);
@@ -537,6 +564,10 @@ impl LogViewerPanel {
             state.paused = !state.paused;
             state.generation = state.generation.wrapping_add(1);
             let paused = state.paused;
+            if paused {
+                // Pausing must interrupt a read in flight, not just hide it.
+                state.stop.store(true, Ordering::SeqCst);
+            }
             button.set_label(if paused { "Resume" } else { "Pause" });
             pause_status.set_text(if paused {
                 "In pausa — la vista non viene aggiornata"

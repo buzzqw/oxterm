@@ -11,6 +11,7 @@ pub mod agent;
 pub mod askpass;
 pub mod bookmarks;
 pub mod cli;
+pub mod commands;
 pub mod connection_import;
 pub mod connection_uri;
 pub mod connections;
