@@ -1,10 +1,11 @@
 # Contributing
 
 Before a commit that changes Rust source or build configuration, the project
-must pass the same formatting and build checks as CI. The repository hook
-`.githooks/pre-commit` runs `cargo fmt --check` and
-`cargo build --release --locked` automatically and rejects the commit if either
-fails.
+must pass the same formatting, lint and build checks as CI. The repository hook
+`.githooks/pre-commit` runs `cargo fmt --check`,
+`cargo clippy --all-targets --locked -- -D warnings` and
+`cargo build --release --locked` automatically and rejects the commit if any of
+them fails.
 
 Run `./setup.sh` once after cloning to configure Git to use the repository
 hooks. The `post-commit` hook then rebuilds the release executables, refreshes

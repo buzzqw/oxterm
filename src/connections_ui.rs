@@ -743,7 +743,7 @@ impl MainWindow {
         // different user's session on the same machine.
         for exact in [true, false] {
             for (window, term) in &terminals {
-                let matches = term_matches_target(&term, target, &entries, exact);
+                let matches = term_matches_target(term, target, &entries, exact);
                 if !matches {
                     continue;
                 }

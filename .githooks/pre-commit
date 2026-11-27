@@ -31,5 +31,11 @@ if ! cargo fmt --manifest-path "$ROOT_DIR/Cargo.toml" --check; then
     exit 1
 fi
 
+printf '%s\n' 'Oxterm pre-commit: linting with Clippy...'
+if ! cargo clippy --manifest-path "$ROOT_DIR/Cargo.toml" --all-targets --locked -- -D warnings; then
+    printf '%s\n' 'Oxterm pre-commit: fix the Clippy warnings and commit again' >&2
+    exit 1
+fi
+
 printf '%s\n' 'Oxterm pre-commit: building release executable...'
 cargo build --release --locked --bins --manifest-path "$ROOT_DIR/Cargo.toml"
