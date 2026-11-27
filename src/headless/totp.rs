@@ -165,9 +165,9 @@ fn sha256(message: &[u8]) -> [u8; 32] {
         0x1f83_d9ab,
         0x5be0_cd19,
     ];
-    for chunk in pad(message, BLOCK_64, 8).chunks_exact(BLOCK_64) {
+    for chunk in pad(message, BLOCK_64, 8).as_chunks::<BLOCK_64>().0 {
         let mut words = [0u32; 64];
-        for (word, bytes) in words.iter_mut().zip(chunk.chunks_exact(4)) {
+        for (word, bytes) in words.iter_mut().zip(chunk.as_chunks::<4>().0) {
             *word = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         }
         for i in 16..64 {
@@ -208,7 +208,7 @@ fn sha256(message: &[u8]) -> [u8; 32] {
         }
     }
     let mut digest = [0u8; 32];
-    for (bytes, word) in digest.chunks_exact_mut(4).zip(state) {
+    for (bytes, word) in digest.as_chunks_mut::<4>().0.iter_mut().zip(state) {
         bytes.copy_from_slice(&word.to_be_bytes());
     }
     digest
@@ -308,9 +308,9 @@ fn sha512(message: &[u8]) -> [u8; 64] {
         0x1f83_d9ab_fb41_bd6b,
         0x5be0_cd19_137e_2179,
     ];
-    for chunk in pad(message, BLOCK_128, 16).chunks_exact(BLOCK_128) {
+    for chunk in pad(message, BLOCK_128, 16).as_chunks::<BLOCK_128>().0 {
         let mut words = [0u64; 80];
-        for (word, bytes) in words.iter_mut().zip(chunk.chunks_exact(8)) {
+        for (word, bytes) in words.iter_mut().zip(chunk.as_chunks::<8>().0) {
             *word = u64::from_be_bytes([
                 bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
             ]);
@@ -352,7 +352,7 @@ fn sha512(message: &[u8]) -> [u8; 64] {
         }
     }
     let mut digest = [0u8; 64];
-    for (bytes, word) in digest.chunks_exact_mut(8).zip(state) {
+    for (bytes, word) in digest.as_chunks_mut::<8>().0.iter_mut().zip(state) {
         bytes.copy_from_slice(&word.to_be_bytes());
     }
     digest
