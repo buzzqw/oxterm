@@ -434,7 +434,7 @@ impl MainWindow {
             let data = panel.data.borrow();
             if let Some(data) = data.as_ref() {
                 for entry in &data.entries {
-                    let (host, port) = reachability::host_port(entry.connection.destination(), 22);
+                    let (host, port) = reachability::connection_target(&entry.connection);
                     if host.is_empty() {
                         continue;
                     }

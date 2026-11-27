@@ -7,6 +7,8 @@
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::headless::connections::{Connection, Kind};
+
 /// Result of the last probe. `Unknown` means the target was never checked.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ProbeState {
@@ -96,6 +98,23 @@ pub fn host_port(target: &str, default_port: u16) -> (String, u16) {
     (host_part.to_string(), default_port)
 }
 
+/// Host and port a connection really talks to.
+///
+/// `Connection::destination()` is the `ssh` argument: for manual entries it is
+/// only the host, while the port lives in its own field and is passed as
+/// `-p`. Probing `destination()` with a default port would therefore mark
+/// every manual connection on a non-standard port as offline. Aliases keep
+/// using their name, since their hostname and port come from `~/.ssh/config`.
+pub fn connection_target(connection: &Connection) -> (String, u16) {
+    match connection.kind {
+        Kind::Manual => {
+            let default_port = connection.port.unwrap_or(22);
+            host_port(&connection.host, default_port)
+        }
+        Kind::Alias => host_port(connection.destination(), 22),
+    }
+}
+
 /// Short status lines for tooltips and status bars.
 pub fn tooltip_lines(state: &Reachability) -> String {
     match state.state {
@@ -152,6 +171,49 @@ mod tests {
         );
         assert_eq!(host_port("alice@[::1]:5900", 22), ("::1".to_string(), 5900));
         assert_eq!(host_port("alice@server", 22), ("server".to_string(), 22));
+    }
+
+    #[test]
+    fn uses_the_connection_port_for_manual_entries() {
+        let manual = Connection {
+            kind: Kind::Manual,
+            host: "192.168.1.161".to_string(),
+            user: "andres".to_string(),
+            port: Some(2223),
+            ..Default::default()
+        };
+        assert_eq!(
+            connection_target(&manual),
+            ("192.168.1.161".to_string(), 2223)
+        );
+
+        // Older entries can carry `host:port` in the host field instead.
+        let inline = Connection {
+            port: None,
+            host: "192.168.1.161:2223".to_string(),
+            ..manual.clone()
+        };
+        assert_eq!(
+            connection_target(&inline),
+            ("192.168.1.161".to_string(), 2223)
+        );
+
+        let default = Connection {
+            port: None,
+            host: "192.168.1.168".to_string(),
+            ..manual
+        };
+        assert_eq!(
+            connection_target(&default),
+            ("192.168.1.168".to_string(), 22)
+        );
+
+        let alias = Connection {
+            kind: Kind::Alias,
+            name: "synas".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(connection_target(&alias), ("synas".to_string(), 22));
     }
 
     #[test]
