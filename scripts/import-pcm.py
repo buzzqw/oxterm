@@ -6,6 +6,9 @@ PCM's credential encryption is on, usernames and passwords are ``ENC:...``
 tokens: the script asks for the master password (through zenity when there is a
 display, otherwise on the terminal) and decrypts what it needs.
 
+Without ``--pcm-dir`` the script looks for the ``gtk3`` folder in ``~`` and the
+usual project folders (``~/Progetti``, ``~/Projects``, ``~/Documents``, ...).
+
 The output is an ordinary Oxterm book, written to a temporary file unless
 ``--output`` says otherwise. With ``--import`` the script runs
 ``oxterm connections import`` on it. Entries that act on this computer (a
@@ -55,6 +58,39 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PCM_DIR = Path.home() / "Python_Connection_Manager" / "gtk3"
+
+
+def find_pcm_dir() -> Path:
+    """Locate PCM's gtk3 directory in the layouts people actually use.
+
+    PCM has no installer-fixed location: the checkout is often under a folder
+    such as ``~/Progetti`` or ``~/Projects`` instead of directly in ``~``.
+    Prefer a directory with both files; fall back to one with the book only so
+    the missing settings file gets a precise error. ``--pcm-dir`` always wins.
+    """
+    roots = [
+        Path.home(),
+        Path.home() / "Progetti",
+        Path.home() / "Projects",
+        Path.home() / "Documenti",
+        Path.home() / "Documents",
+        Path.home() / "git",
+        Path.home() / "src",
+    ]
+    candidates: list[Path] = []
+    for root in roots:
+        candidate = root / "Python_Connection_Manager" / "gtk3"
+        if candidate not in candidates:
+            candidates.append(candidate)
+    book_only = None
+    for candidate in candidates:
+        if not (candidate / "connections.json").is_file():
+            continue
+        if (candidate / "pcm_settings.json").is_file():
+            return candidate
+        if book_only is None:
+            book_only = candidate
+    return book_only or DEFAULT_PCM_DIR
 
 # PCM's crypto_manager.py uses the same parameters: Fernet (AES-128-CBC +
 # HMAC-SHA256) over a key derived with PBKDF2-HMAC-SHA256.
@@ -705,8 +741,11 @@ def main() -> int:
     parser.add_argument(
         "--pcm-dir",
         type=Path,
-        default=DEFAULT_PCM_DIR,
-        help=f"PCM directory with connections.json (default: {DEFAULT_PCM_DIR})",
+        default=find_pcm_dir(),
+        help=(
+            "PCM directory with connections.json and pcm_settings.json "
+            "(default: search ~ and the usual project folders)"
+        ),
     )
     parser.add_argument(
         "--output",
@@ -751,7 +790,11 @@ def main() -> int:
         raw_connections = json.loads(connections_path.read_text(encoding="utf-8"))
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
     except FileNotFoundError as error:
-        print(f"error: {error.filename} does not exist", file=sys.stderr)
+        print(
+            f"error: {error.filename} does not exist; pass --pcm-dir with the "
+            "folder holding connections.json and pcm_settings.json",
+            file=sys.stderr,
+        )
         return 1
     except ValueError as error:
         print(f"error: {error}", file=sys.stderr)
