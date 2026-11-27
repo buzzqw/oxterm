@@ -1947,6 +1947,7 @@ impl MainWindow {
             "Tunnel Manager...",
             Box::new(|window| window.show_tunnel_manager(None)),
         );
+        add(menu, "Workspaces...", Box::new(crate::workspaces_ui::show));
         add(
             menu,
             "Import Connections...",

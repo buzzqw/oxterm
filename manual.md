@@ -1070,6 +1070,21 @@ secrets, so it can be copied or versioned; usage counts live in
 `connections-state.json`. A damaged file is reported and never overwritten, and a
 file from a newer Oxterm opens read-only.
 
+### Saved workspaces
+
+**Connections → Workspaces...** opens the catalogue of named working sets. A
+workspace is a name, an optional icon name and an optional `#rgb`/`#rrggbb`
+colour, plus a list of connections stored in
+`~/.config/oxterm/workspaces.json` (mode `0600`). Use **Save Current...** to
+store the tabs you have open: only tabs that came from a saved connection are
+included, so a workspace never becomes a scratchpad of commands typed by hand.
+**Open** (or a double click) replaces the current tabs with that set; Oxterm
+asks first when a tab is running a foreground program. **Edit...** renames or
+restyles a workspace and **Delete** removes it. The older **Save Workspace...**
+and **Load Workspace...** items in the connections panel's right-click menu
+still work: they save a selection from the tree and add tabs to the current
+window instead of switching.
+
 **Importing other managers.** **Connections → Import Connections...** reads an
 Oxterm book, a list of entries, a JSON book keyed by display name, a Remmina
 `.remmina`, a Remote Desktop Manager `.rdm`, a PuTTY `.reg`, a MobaXterm

@@ -34,6 +34,10 @@ pub struct Workspace {
     pub entries: Vec<WorkspaceEntry>,
     /// Seconds since the Unix epoch, for display and conflict resolution.
     pub saved_at: u64,
+    /// Optional GTK icon name shown by the catalogue, e.g. `code` or `folder`.
+    pub icon: String,
+    /// Optional `#rgb` / `#rrggbb` colour used to identify the workspace.
+    pub color: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,10 +87,42 @@ fn validate_name(name: &str) -> Result<String, String> {
     Ok(name.to_string())
 }
 
-/// Insert or replace a workspace. Names are unique case-insensitively, so
-/// `Work` and `work` cannot both be saved.
+/// An optional icon name: a short token that can be passed to GTK, never a
+/// path or free text from a file that ends up in a UI attribute.
+fn validate_icon(raw: &str) -> Result<String, String> {
+    let icon = raw.trim();
+    if icon.is_empty() {
+        return Ok(String::new());
+    }
+    if icon.chars().count() > 32 {
+        return Err("The workspace icon is too long".to_string());
+    }
+    if icon.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err("The workspace icon cannot contain spaces".to_string());
+    }
+    Ok(icon.to_string())
+}
+
+/// Insert or replace a workspace. Names are unique case-insensitively.
 pub fn upsert(book: &mut WorkBook, name: &str, entries: Vec<WorkspaceEntry>) -> Result<(), String> {
+    upsert_styled(book, name, entries, "", "")
+}
+
+/// Like [`upsert`], with the icon and colour shown by the catalogue.
+pub fn upsert_styled(
+    book: &mut WorkBook,
+    name: &str,
+    entries: Vec<WorkspaceEntry>,
+    icon: &str,
+    color: &str,
+) -> Result<(), String> {
     let name = validate_name(name)?;
+    let icon = validate_icon(icon)?;
+    let color = if color.trim().is_empty() {
+        String::new()
+    } else {
+        crate::headless::triggers::parse_color(color.trim())?
+    };
     if entries.len() > MAX_ENTRIES {
         return Err(format!(
             "A workspace cannot have more than {} entries",
@@ -96,21 +132,16 @@ pub fn upsert(book: &mut WorkBook, name: &str, entries: Vec<WorkspaceEntry>) -> 
     if let Some(slot) = book
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.name == name)
+        .find(|workspace| same_name(&workspace.name, &name))
     {
         *slot = Workspace {
             name,
             entries,
             saved_at: now_secs(),
+            icon,
+            color,
         };
         return Ok(());
-    }
-    if let Some(other) = book
-        .workspaces
-        .iter()
-        .find(|workspace| same_name(&workspace.name, &name))
-    {
-        return Err(format!("A workspace named '{}' already exists", other.name));
     }
     if book.workspaces.len() >= MAX_WORKSPACES {
         return Err(format!(
@@ -122,6 +153,8 @@ pub fn upsert(book: &mut WorkBook, name: &str, entries: Vec<WorkspaceEntry>) -> 
         name,
         entries,
         saved_at: now_secs(),
+        icon,
+        color,
     });
     Ok(())
 }
@@ -161,7 +194,12 @@ pub fn load(path: &Path) -> Result<WorkBook, String> {
         }
         Err(error) => return Err(format!("cannot read {}: {}", path.display(), error)),
     };
-    serde_json::from_str(&contents).map_err(|error| format!("{}: {}", path.display(), error))
+    let book: WorkBook = serde_json::from_str(&contents)
+        .map_err(|error| format!("{}: {}", path.display(), error))?;
+    if book.version > CURRENT_VERSION {
+        return Err(format!("{} was written by a newer Oxterm", path.display()));
+    }
+    Ok(book)
 }
 
 /// Write the workbook atomically with mode 0600, creating a private (0700)
@@ -276,11 +314,11 @@ mod tests {
         assert_eq!(book.workspaces.len(), 1);
 
         assert!(upsert(&mut book, "Work", vec![]).is_ok());
-        let error = upsert(&mut book, "work", vec![]).unwrap_err();
-        assert!(
-            error.to_lowercase().contains("already") || error.to_lowercase().contains("exists")
-        );
+        // A different spelling of the same name replaces, it does not create
+        // a second entry and it does not fail.
+        assert!(upsert(&mut book, "work", vec![]).is_ok());
         assert_eq!(book.workspaces.len(), 2);
+        assert_eq!(find(&book, "WORK").unwrap().name, "work");
 
         let many = (0..=MAX_ENTRIES)
             .map(|n| entry(&format!("e{}", n), "local", "/tmp"))
@@ -297,8 +335,8 @@ mod tests {
         }
         assert_eq!(book.workspaces.len(), MAX_WORKSPACES);
         assert!(upsert(&mut book, "one too many", vec![]).is_err());
-        // A full book may still replace one of its workspaces by its exact name.
-        assert!(upsert(&mut book, "w0", vec![entry("x", "local", "/tmp")]).is_ok());
+        // A full book may still replace one of its workspaces.
+        assert!(upsert(&mut book, "W0", vec![entry("x", "local", "/tmp")]).is_ok());
         assert_eq!(book.workspaces.len(), MAX_WORKSPACES);
     }
 
@@ -306,19 +344,45 @@ mod tests {
     fn upsert_replace_and_remove_are_case_insensitive() {
         let mut book = WorkBook::default();
         upsert(&mut book, "Release", vec![entry("one", "local", "/tmp")]).unwrap();
-        assert!(upsert(&mut book, "release", vec![]).is_err());
-        upsert(
+        upsert(&mut book, "release", vec![]).unwrap();
+        upsert_styled(
             &mut book,
-            "Release",
+            "RELEASE",
             vec![entry("two", "local", "/tmp/opencode")],
+            "code",
+            "#39f",
         )
         .unwrap();
+        let saved = find(&book, "Release").unwrap();
+        assert_eq!(saved.icon, "code");
+        assert_eq!(saved.color, "#3399ff");
         assert_eq!(book.workspaces.len(), 1);
         assert_eq!(find(&book, "RELEASE").unwrap().entries[0].label, "two");
 
         assert!(remove(&mut book, "ReLeAsE"));
         assert!(!remove(&mut book, "release"));
         assert!(find(&book, "Release").is_none());
+    }
+
+    #[test]
+    fn styled_upsert_validates_icon_and_color() {
+        let mut book = WorkBook::default();
+        assert!(upsert_styled(&mut book, "ok", vec![], "code", "#39f").is_ok());
+        let saved = find(&book, "ok").unwrap();
+        assert_eq!(saved.icon, "code");
+        assert_eq!(saved.color, "#3399ff");
+        assert!(upsert_styled(&mut book, "bad color", vec![], "", "red").is_err());
+        assert!(upsert_styled(&mut book, "bad icon", vec![], "a b", "").is_err());
+        assert!(upsert_styled(&mut book, "long icon", vec![], &"x".repeat(33), "").is_err());
+    }
+
+    #[test]
+    fn a_newer_workbook_is_never_rewritten() {
+        let file = TestPath::new("newer");
+        let future = format!("{{\"version\":{},\"workspaces\":[]}}", CURRENT_VERSION + 1);
+        fs::write(file.path(), &future).unwrap();
+        assert!(load(file.path()).unwrap_err().contains("newer"));
+        assert_eq!(fs::read_to_string(file.path()).unwrap(), future);
     }
 
     #[test]

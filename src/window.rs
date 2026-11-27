@@ -6622,6 +6622,12 @@ impl MainWindow {
     }
 
     fn prepare_session_restore(&self) {
+        self.clear_tabs_for_workspace();
+    }
+
+    /// Remove every tab without letting `on_page_removed` destroy the window.
+    /// Used by the saved-workspace catalogue before opening another set.
+    pub(crate) fn clear_tabs_for_workspace(&self) {
         *self.imp().restoring_session.borrow_mut() = true;
         let nb = self.imp().notebook.borrow().clone().unwrap();
         let nb2 = self.imp().notebook2.borrow().clone().unwrap();
@@ -6643,6 +6649,25 @@ impl MainWindow {
         nb2.hide();
         nb.set_show_tabs(settings().get_bool("show_tabs"));
         *self.imp().restoring_session.borrow_mut() = false;
+    }
+
+    /// Ask before a workspace switch kills running programs. The check is
+    /// deliberately conservative: an idle shell is safe to replace, anything
+    /// with a foreground process deserves a question.
+    pub(crate) fn confirm_replace_tabs(&self) -> bool {
+        if !self.any_terminal_has_active_process() {
+            return true;
+        }
+        let dialog = gtk::MessageDialog::new(
+            Some(self),
+            gtk::DialogFlags::MODAL,
+            gtk::MessageType::Question,
+            gtk::ButtonsType::YesNo,
+            "Opening this workspace closes all open tabs, including running programs.\n\nContinue?",
+        );
+        let answer = dialog.run();
+        dialog.close();
+        answer == gtk::ResponseType::Yes
     }
 
     fn load_session_named(&self, name: &str) {
