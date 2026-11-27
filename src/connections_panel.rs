@@ -273,7 +273,9 @@ impl ConnectionsPanel {
                         .filter(|id| !id.is_empty())
                 })
                 .or_else(|| {
-                    let (model, iter) = tree.selection().selected()?;
+                    // `selected()` is None in Multiple mode: use the rows API.
+                    let (paths, model) = tree.selection().selected_rows();
+                    let iter = model.iter(paths.first()?)?;
                     model
                         .value(&iter, COLUMN_ID as i32)
                         .get::<String>()
@@ -486,13 +488,14 @@ impl ConnectionsPanel {
     }
 
     /// The primary selection, for a single click or a keyboard action.
+    ///
+    /// `TreeSelection::selected()` returns `None` in `SelectionMode::Multiple`
+    /// (GTK asserts on it), so take the first selected path instead. Without
+    /// this, F2/Delete/Enter silently stopped working when multi-select was
+    /// introduced.
     pub fn selected_id(&self) -> Option<String> {
-        let (model, iter) = self.tree.selection().selected()?;
-        let id = model
-            .value(&iter, COLUMN_ID as i32)
-            .get::<String>()
-            .unwrap_or_default();
-        (!id.is_empty()).then_some(id)
+        let (paths, _) = self.tree.selection().selected_rows();
+        paths.first().and_then(|path| self.id_at(path))
     }
 
     /// Ids of every selected connection row. Group rows have an empty id and

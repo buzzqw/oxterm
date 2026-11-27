@@ -465,7 +465,9 @@ impl MainWindow {
             if stop.load(Ordering::SeqCst) {
                 return;
             }
-            glib::idle_add_local_once(move || {
+            // `_local` would try to acquire the default main context on this
+            // worker thread and panic; `run_on_main` posts from any thread.
+            crate::run_on_main(move || {
                 if let Some(window) = weak.upgrade() {
                     window.finish_reachability_probe(results);
                 }

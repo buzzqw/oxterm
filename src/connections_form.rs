@@ -996,7 +996,11 @@ pub fn edit(
     }
     add_row(&auth_page, row, "_Method", &fields.auth);
     row += 1;
-    add_row(&auth_page, row, "_Password", &password_row);
+    // The row is a Box (entry + Generate buttons); a Box cannot take focus, so
+    // point the mnemonic at the entry itself. `alt+p` in the smoke tests and in
+    // the UI must land in the password field, not on a button.
+    let password_caption = add_row(&auth_page, row, "_Password", &password_row);
+    password_caption.set_mnemonic_widget(Some(&fields.password));
     row += 1;
     auth_page.attach(&entropy, 1, row, 1, 1);
     row += 1;
