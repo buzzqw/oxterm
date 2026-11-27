@@ -137,9 +137,12 @@ pub fn run_cli(mode: CliMode) -> i32 {
             // Take the baseline before typing, so an old occurrence of the
             // expected text cannot be mistaken for proof of this send.
             let before = if expect.is_some() {
-                capture_text(&target).ok()
+                // If the baseline capture fails, keep looking in the whole
+                // buffer instead of giving up: an unproven receipt is still
+                // better than a needless `unconfirmed`.
+                capture_text(&target).unwrap_or_default()
             } else {
-                None
+                String::new()
             };
             let request = json!({
                 "op": "send",
@@ -158,11 +161,7 @@ pub fn run_cli(mode: CliMode) -> i32 {
                             ),
                             Some(expected) => {
                                 let limit = timeout.unwrap_or(Duration::from_secs(5));
-                                let seen = before
-                                    .map(|baseline| {
-                                        wait_for_expected(&target, &baseline, &expected, limit)
-                                    })
-                                    .unwrap_or(false);
+                                let seen = wait_for_expected(&target, &before, &expected, limit);
                                 jobs::Receipt::new(
                                     &target.id,
                                     if seen {

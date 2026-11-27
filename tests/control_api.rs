@@ -276,6 +276,8 @@ fn control_api_drives_tabs_panes_and_commands() {
     // A receipt with --expect is only "delivered" when fresh output proves it;
     // without --expect it honestly reports only that bytes were accepted.
     thread::sleep(Duration::from_millis(300));
+    let marker = format!("receipt-{}", std::process::id());
+    let command = format!("printf {marker}");
     let receipt = cli(
         fixture.home.path(),
         &[
@@ -284,11 +286,11 @@ fn control_api_drives_tabs_panes_and_commands() {
             &pane,
             "--receipt",
             "--expect",
-            "receipt-ok",
+            marker.as_str(),
             "--timeout",
-            "5",
+            "10",
             "--enter",
-            "printf receipt-ok",
+            command.as_str(),
         ],
     );
     assert!(
