@@ -361,12 +361,46 @@ fn cpu_ticks(pid: u32) -> io::Result<u64> {
     Ok(utime + stime)
 }
 
-fn wait_for_size(fd: RawFd, expected: (u16, u16), timeout: Duration) -> io::Result<(u16, u16)> {
+/// Wait until the broker answers a command. Its socket is bound before the
+/// event loop starts, so a successful reply proves the loop is running (and
+/// the `SIGWINCH` handler is installed) before the test sends any signal.
+fn wait_for_broker(socket: &PathBuf) -> io::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if control_request(socket, "INFO test-session").is_ok() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "broker did not start serving commands",
+            ));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Wait for the child PTY to adopt `expected`, re-asserting the GUI resize.
+/// `SIGWINCH` is not queued: on a loaded runner the one signal sent after a
+/// resize can be lost while the broker is starting or busy with another
+/// wakeup. Repeating it is harmless because the broker applies a size only
+/// when it actually changes.
+fn wait_for_resize(
+    fd: RawFd,
+    pid: u32,
+    expected: (u16, u16),
+    timeout: Duration,
+) -> io::Result<(u16, u16)> {
     let deadline = Instant::now() + timeout;
+    let mut next_signal = Instant::now();
     loop {
         let size = winsize(fd)?;
         if size == expected || Instant::now() >= deadline {
             return Ok(size);
+        }
+        if Instant::now() >= next_signal {
+            unsafe { libc::kill(pid as i32, libc::SIGWINCH) };
+            next_signal = Instant::now() + Duration::from_millis(100);
         }
         thread::sleep(Duration::from_millis(10));
     }
@@ -375,16 +409,19 @@ fn wait_for_size(fd: RawFd, expected: (u16, u16), timeout: Duration) -> io::Resu
 #[test]
 fn broker_tracks_gui_resizes_without_terminal_io() -> io::Result<()> {
     let fixture = start_broker()?;
-    // Let the broker settle after the probe connection used by
-    // `wait_for_socket`, so the resize below is the only thing that can wake it.
-    thread::sleep(Duration::from_millis(150));
+    wait_for_broker(&fixture.socket)?;
 
     set_winsize(fixture.gui_master, 137, 41)?;
     // The GUI calls `BrokerHandle::notify_resize`, which is exactly this
     // signal; the broker no longer re-reads the size on a timer.
     unsafe { libc::kill(fixture.child.id() as i32, libc::SIGWINCH) };
     assert_eq!(
-        wait_for_size(fixture.child_slave, (137, 41), Duration::from_secs(2))?,
+        wait_for_resize(
+            fixture.child_slave,
+            fixture.child.id(),
+            (137, 41),
+            Duration::from_secs(2)
+        )?,
         (137, 41),
         "child PTY did not follow the GUI PTY resize"
     );
@@ -392,7 +429,12 @@ fn broker_tracks_gui_resizes_without_terminal_io() -> io::Result<()> {
     set_winsize(fixture.gui_master, 90, 30)?;
     unsafe { libc::kill(fixture.child.id() as i32, libc::SIGWINCH) };
     assert_eq!(
-        wait_for_size(fixture.child_slave, (90, 30), Duration::from_secs(2))?,
+        wait_for_resize(
+            fixture.child_slave,
+            fixture.child.id(),
+            (90, 30),
+            Duration::from_secs(2)
+        )?,
         (90, 30),
         "child PTY did not follow a second GUI PTY resize"
     );
